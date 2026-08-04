@@ -1,0 +1,340 @@
+@import "tailwindcss";
+
+/* ====================================================================
+   Wandrlust motion system — inspired by PebbleOS
+
+   The house curve is "moook": a short ramp, linear travel, then an
+   overshoot that settles in discrete steps. CSS beziers can't reproduce
+   the discreteness, but they carry the silhouette, which is most of the
+   character. JS-driven frames live in src/utils/animation.ts.
+
+   EVERY animation here is disabled under prefers-reduced-motion at the
+   bottom of this file. That is a hard requirement, not a nicety.
+   ==================================================================== */
+
+@layer base {
+  :root {
+    --ease-moook: cubic-bezier(0.16, 1.36, 0.36, 1);
+    --ease-moook-soft: cubic-bezier(0.22, 1.12, 0.36, 1);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-enter: cubic-bezier(0, 0, 0.2, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    --dur-tap: 120ms;
+    --dur-base: 250ms;   /* Pebble's default */
+    --dur-panel: 320ms;
+    --dur-scene: 420ms;
+  }
+
+  /* Focus rings that are actually visible — keyboard users exist. */
+  :focus-visible {
+    outline: 2px solid #10b981;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* --------------------------------------------------------------
+     Global tactility.
+
+     Rather than sprinkling a `pressable` class across ~200 buttons
+     (fragile, easy to miss one), every button gets the press response
+     by default. Opt out with `.no-press`.
+     -------------------------------------------------------------- */
+  button:not(.no-press),
+  [role="button"]:not(.no-press),
+  a.btn:not(.no-press) {
+    transition: transform var(--dur-tap) var(--ease-moook),
+                filter var(--dur-tap) var(--ease-standard),
+                background-color var(--dur-tap) var(--ease-standard),
+                border-color var(--dur-tap) var(--ease-standard),
+                color var(--dur-tap) var(--ease-standard);
+  }
+
+  button:not(:disabled):not(.no-press):active,
+  [role="button"]:not(.no-press):active {
+    transform: scale(0.955);
+  }
+
+  button:not(:disabled):not(.no-press):hover { filter: brightness(1.07); }
+  button:disabled { cursor: not-allowed; filter: saturate(0.6); }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    transition: border-color var(--dur-base) var(--ease-standard),
+                box-shadow var(--dur-base) var(--ease-moook),
+                background-color var(--dur-base) var(--ease-standard);
+  }
+
+  /* Checkboxes pop when ticked. */
+  input[type="checkbox"] { transition: transform var(--dur-tap) var(--ease-moook); }
+  input[type="checkbox"]:checked { transform: scale(1.14); }
+  input[type="checkbox"]:active { transform: scale(0.9); }
+
+  a:not(.btn) { transition: color var(--dur-tap) var(--ease-standard); }
+
+  /* Momentum scrolling without heavy visible bars. */
+  .scroll-soft {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(51 65 85) transparent;
+    -webkit-overflow-scrolling: touch;
+  }
+  .scroll-soft::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scroll-soft::-webkit-scrollbar-track { background: transparent; }
+  .scroll-soft::-webkit-scrollbar-thumb { background: rgb(51 65 85); border-radius: 3px; }
+  .scroll-soft::-webkit-scrollbar-thumb:hover { background: rgb(71 85 105); }
+
+  /* Stop iOS zooming the page when a small input is focused. */
+  @supports (-webkit-touch-callout: none) {
+    input, select, textarea { font-size: 16px; }
+  }
+}
+
+/* ====================================================================
+   Keyframes
+   ==================================================================== */
+
+/* The signature move: slide in past the target, settle back. */
+@keyframes moook-in-up {
+  0%   { opacity: 0; transform: translateY(18px); }
+  55%  { opacity: 1; transform: translateY(-3px); }
+  75%  { transform: translateY(1px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes moook-in-down {
+  0%   { opacity: 0; transform: translateY(-18px); }
+  55%  { opacity: 1; transform: translateY(3px); }
+  75%  { transform: translateY(-1px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes moook-in-right {
+  0%   { opacity: 0; transform: translateX(-16px); }
+  55%  { opacity: 1; transform: translateX(3px); }
+  75%  { transform: translateX(-1px); }
+  100% { transform: translateX(0); }
+}
+
+/* Pebble's pin→card transition: the icon expands into the detail view. */
+@keyframes moook-expand {
+  0%   { opacity: 0; transform: scale(0.86); }
+  55%  { opacity: 1; transform: scale(1.035); }
+  78%  { transform: scale(0.994); }
+  100% { transform: scale(1); }
+}
+
+@keyframes moook-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.14); }
+  70%  { transform: scale(0.97); }
+  100% { transform: scale(1); }
+}
+
+@keyframes sheet-up {
+  0%   { transform: translateY(100%); }
+  62%  { transform: translateY(-6px); }
+  82%  { transform: translateY(2px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+@keyframes backdrop-in {
+  from { opacity: 0; backdrop-filter: blur(0); }
+  to   { opacity: 1; backdrop-filter: blur(4px); }
+}
+
+/* Marker drop, borrowed from the timeline pin animation. */
+@keyframes pin-drop {
+  0%   { opacity: 0; transform: translateY(-22px) scale(0.7); }
+  55%  { opacity: 1; transform: translateY(3px) scale(1.06); }
+  78%  { transform: translateY(-1px) scale(0.98); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+  70%  { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+@keyframes pulse-ring-danger {
+  0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  70%  { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -420px 0; }
+  100% { background-position: 420px 0; }
+}
+
+@keyframes toast-in {
+  0%   { opacity: 0; transform: translateY(-14px) scale(0.96); }
+  58%  { opacity: 1; transform: translateY(3px) scale(1.02); }
+  80%  { transform: translateY(-1px) scale(0.998); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(-10px) scale(0.96); }
+}
+
+/* ====================================================================
+   Utilities
+   ==================================================================== */
+
+@layer utilities {
+  .anim-in-up      { animation: moook-in-up var(--dur-base) var(--ease-moook) both; }
+  .anim-in-down    { animation: moook-in-down var(--dur-base) var(--ease-moook) both; }
+  .anim-in-right   { animation: moook-in-right var(--dur-base) var(--ease-moook) both; }
+  .anim-expand     { animation: moook-expand var(--dur-panel) var(--ease-moook) both; }
+  .anim-pop        { animation: moook-pop var(--dur-base) var(--ease-moook); }
+  .anim-sheet-up   { animation: sheet-up var(--dur-panel) var(--ease-moook) both; }
+  .anim-fade       { animation: fade-in var(--dur-base) var(--ease-enter) both; }
+  .anim-backdrop   { animation: backdrop-in var(--dur-base) var(--ease-enter) both; }
+  .anim-pin-drop   { animation: pin-drop var(--dur-panel) var(--ease-moook) both; }
+  .anim-toast-in   { animation: toast-in var(--dur-base) var(--ease-moook) both; }
+  .anim-toast-out  { animation: toast-out var(--dur-tap) var(--ease-exit) both; }
+  .anim-pulse      { animation: pulse-ring 2s var(--ease-standard) infinite; }
+  .anim-pulse-danger { animation: pulse-ring-danger 1.6s var(--ease-standard) infinite; }
+
+  /* Stagger helpers, applied as data-stagger on list children. */
+  [data-stagger="0"] { animation-delay: 0ms; }
+  [data-stagger="1"] { animation-delay: 28ms; }
+  [data-stagger="2"] { animation-delay: 56ms; }
+  [data-stagger="3"] { animation-delay: 84ms; }
+  [data-stagger="4"] { animation-delay: 112ms; }
+  [data-stagger="5"] { animation-delay: 140ms; }
+  [data-stagger="6"] { animation-delay: 168ms; }
+  [data-stagger="7"] { animation-delay: 196ms; }
+  [data-stagger="8"] { animation-delay: 224ms; }
+
+  .pressable {
+    transition: transform var(--dur-tap) var(--ease-moook),
+                filter var(--dur-tap) var(--ease-standard);
+    will-change: transform;
+  }
+  .pressable:active { transform: scale(0.955); }
+  .pressable:hover  { filter: brightness(1.08); }
+
+  /* Cards lift slightly on hover. */
+  .liftable {
+    transition: transform var(--dur-base) var(--ease-moook),
+                box-shadow var(--dur-base) var(--ease-standard),
+                border-color var(--dur-base) var(--ease-standard);
+    will-change: transform;
+  }
+  .liftable:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.6);
+  }
+  .liftable:active { transform: translateY(0) scale(0.995); }
+
+  .skeleton {
+    background: linear-gradient(90deg, rgb(30 41 59) 0%, rgb(51 65 85) 50%, rgb(30 41 59) 100%);
+    background-size: 840px 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+
+  .transition-moook {
+    transition-timing-function: var(--ease-moook);
+    transition-duration: var(--dur-base);
+  }
+
+  /* Screen-reader-only, but focusable (skip links). */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .tap-target { min-height: 44px; min-width: 44px; }
+}
+
+/* ====================================================================
+   Leaflet integration
+   ==================================================================== */
+
+.leaflet-container { background: #0f172a; font-family: inherit; }
+
+/* Markers drop in with the pin animation. */
+.custom-campsite-marker { animation: pin-drop var(--dur-panel) var(--ease-moook) both; }
+
+.custom-campsite-marker > div,
+.camper-presence-marker > div {
+  transition: transform var(--dur-base) var(--ease-moook);
+}
+.custom-campsite-marker:hover > div { transform: scale(1.12); }
+
+.camper-presence-marker { animation: moook-expand var(--dur-base) var(--ease-moook) both; }
+
+.custom-cluster-icon { animation: moook-expand var(--dur-base) var(--ease-moook) both; }
+.custom-cluster-icon > div { transition: transform var(--dur-base) var(--ease-moook); }
+.custom-cluster-icon:hover > div { transform: scale(1.1); }
+
+.leaflet-popup-content-wrapper {
+  background: rgb(248 250 252);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.55);
+}
+.leaflet-popup-tip { background: rgb(248 250 252); }
+.leaflet-popup { animation: moook-expand var(--dur-base) var(--ease-moook) both; }
+
+.leaflet-control-zoom a {
+  background: rgb(15 23 42) !important;
+  color: rgb(226 232 240) !important;
+  border-color: rgb(51 65 85) !important;
+  transition: background var(--dur-tap) var(--ease-standard),
+              transform var(--dur-tap) var(--ease-moook);
+}
+.leaflet-control-zoom a:hover { background: rgb(30 41 59) !important; }
+.leaflet-control-zoom a:active { transform: scale(0.92); }
+
+/* ====================================================================
+   Reduced motion — everything above collapses here.
+
+   Users who set this at OS level often do so because motion makes them
+   physically unwell. We keep opacity transitions (they don't cause
+   vestibular symptoms) and remove all travel, scale and overshoot.
+   ==================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .anim-in-up, .anim-in-down, .anim-in-right,
+  .anim-expand, .anim-sheet-up, .anim-pin-drop, .anim-toast-in {
+    animation: fade-in 0.01ms both;
+  }
+
+  button:active,
+  .pressable:active,
+  .liftable:hover,
+  .liftable:active {
+    transform: none;
+  }
+
+  .skeleton { animation: none; background: rgb(30 41 59); }
+  .anim-pulse, .anim-pulse-danger { animation: none; }
+}
+
+/* High-contrast preference: strengthen borders. */
+@media (prefers-contrast: more) {
+  .border-slate-700 { border-color: rgb(148 163 184) !important; }
+  .border-slate-800 { border-color: rgb(100 116 139) !important; }
+  .text-slate-500   { color: rgb(148 163 184) !important; }
+}

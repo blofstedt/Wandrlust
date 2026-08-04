@@ -1,0 +1,8 @@
+{
+  "name": "Wandrlust",
+  "description": "Find BLM, National Forest, and public land dispersed camping sites with interactive maps, detailed amenities, address search, and offline map support.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
+
