@@ -113,14 +113,68 @@ export const BOUNDARY_STYLES: Record<
   }
 };
 
+/* -------------------------------------------------------------------------- */
+/* Request geometry                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Grid cell size, in degrees, that requests are snapped to at a given zoom.
+ *
+ * Asking for the exact viewport means every nudge of the map is a brand new
+ * bounding box, so nothing ever hits a cache — client, server, or browser —
+ * and five government ArcGIS services get re-queried for a view the user has
+ * already seen. Snapping the request outward to a grid makes small pans
+ * resolve to the identical URL, which is what makes panning feel instant.
+ */
+const gridSize = (zoom: number): number =>
+  // Rounded, because mid-animation Leaflet reports a fractional zoom, and a
+  // fractional exponent gives a grid that no two requests ever agree on.
+  Math.pow(2, 7 - Math.min(Math.max(Math.round(zoom), 7), 14));
+
+/**
+ * Turn a viewport into the box we actually ask for: padded, so a short pan
+ * stays inside data we already hold, then snapped out to the grid.
+ */
+export const requestBoxFor = (view: BoundingBox, zoom: number): BoundingBox => {
+  const padLat = (view.maxLat - view.minLat) * 0.25;
+  const padLon = (view.maxLon - view.minLon) * 0.25;
+  const cell = gridSize(zoom);
+
+  return {
+    minLat: Math.floor((view.minLat - padLat) / cell) * cell,
+    minLon: Math.floor((view.minLon - padLon) / cell) * cell,
+    maxLat: Math.ceil((view.maxLat + padLat) / cell) * cell,
+    maxLon: Math.ceil((view.maxLon + padLon) / cell) * cell
+  };
+};
+
+/** True when `outer` fully contains `inner` — i.e. no new data is needed. */
+export const boxContains = (outer: BoundingBox, inner: BoundingBox): boolean =>
+  outer.minLat <= inner.minLat && outer.minLon <= inner.minLon &&
+  outer.maxLat >= inner.maxLat && outer.maxLon >= inner.maxLon;
+
+/* -------------------------------------------------------------------------- */
+/* Fetching                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Recently fetched viewports, so panning back somewhere is free. */
+const responseCache = new Map<string, { at: number; collection: BoundaryCollection }>();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 40;
+
 /**
  * Fetch land boundaries intersecting a viewport.
- * Returns an empty collection (never throws) when out of coverage or offline.
+ *
+ * Never throws. Returns an empty collection when out of coverage or when the
+ * request fails, and `null` when the request was cancelled — the caller must
+ * keep whatever it is already showing in that case. Returning an empty
+ * collection for a cancellation is what used to make boundaries blink out
+ * every time the map moved.
  */
 export const fetchBoundaries = async (
   box: BoundingBox,
   signal?: AbortSignal
-): Promise<BoundaryCollection> => {
+): Promise<BoundaryCollection | null> => {
   if (!bboxIntersectsCoverage(box)) return EMPTY_BOUNDARIES;
 
   const clamped = clampToCoverage(box);
@@ -130,20 +184,33 @@ export const fetchBoundaries = async (
     maxLat: clamped.maxLat.toFixed(5),
     maxLon: clamped.maxLon.toFixed(5)
   });
+  const query = params.toString();
+
+  const cached = responseCache.get(query);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.collection;
 
   try {
-    const response = await fetch(`/api/boundaries?${params.toString()}`, { signal });
+    const response = await fetch(`/api/boundaries?${query}`, { signal });
     if (!response.ok) return EMPTY_BOUNDARIES;
 
     const data = await response.json();
     if (data?.type !== 'FeatureCollection') return EMPTY_BOUNDARIES;
 
-    return {
+    const collection: BoundaryCollection = {
       type: 'FeatureCollection',
       features: Array.isArray(data.features) ? data.features : [],
       meta: data.meta ?? { sources: [] }
     };
-  } catch {
+
+    if (responseCache.size >= CACHE_MAX_ENTRIES) {
+      const oldest = responseCache.keys().next().value;
+      if (oldest) responseCache.delete(oldest);
+    }
+    responseCache.set(query, { at: Date.now(), collection });
+
+    return collection;
+  } catch (error) {
+    if (signal?.aborted || (error as Error)?.name === 'AbortError') return null;
     return EMPTY_BOUNDARIES;
   }
 };

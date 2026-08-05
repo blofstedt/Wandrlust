@@ -15,6 +15,15 @@ import type { EdgeAccuracy } from '../services/boundaryService';
  * pixels. A fixed pixel width would silently shrink the implied uncertainty as
  * you zoom in — exactly backwards, because zooming in is when people decide
  * where to park.
+ *
+ * HOW THE FADE IS PRODUCED (this changed for performance):
+ * The band used to be five stacked SVG strokes per polygon, smoothed by an SVG
+ * `feGaussianBlur` applied to the whole map pane. That filter forced the
+ * browser to re-rasterise every path in the pane on every frame of a pan, and
+ * with a few hundred polygons on screen it made the map unusable. The band is
+ * now drawn on a canvas with fewer strokes and smoothed by a compositor-level
+ * CSS blur, which the GPU handles for free. Same band, same width, same
+ * meaning — only the smoothing technique is different.
  */
 
 export const UNCERTAINTY_METRES: Record<EdgeAccuracy, number> = {
@@ -41,31 +50,73 @@ export interface FuzzRing {
   opacity: number;
 }
 
-/** Build the stack of strokes that renders the uncertainty band. */
+/**
+ * Width of the uncertainty band in screen pixels.
+ *
+ * Clamped so it stays legible without swallowing the map when zoomed far out.
+ */
+export const bandWidthPx = (
+  accuracy: EdgeAccuracy,
+  latitude: number,
+  zoom: number
+): number => {
+  const mpp = metresPerPixel(latitude, zoom);
+  const uncertainty = UNCERTAINTY_METRES[accuracy] ?? UNCERTAINTY_METRES.administrative;
+  return Math.max(3, Math.min(uncertainty / mpp, 48));
+};
+
+/**
+ * Build the stack of strokes that renders the uncertainty band, widest first.
+ *
+ * The widest stroke always spans the full band, so dropping to fewer rings
+ * (which we do when there is a lot of land on screen) makes the fade coarser
+ * but never makes the stated uncertainty look smaller than it is.
+ */
 export const buildFuzzRings = (
   accuracy: EdgeAccuracy,
   latitude: number,
   zoom: number,
-  rings = 5
+  rings = 3
 ): FuzzRing[] => {
-  const mpp = metresPerPixel(latitude, zoom);
-  const uncertainty = UNCERTAINTY_METRES[accuracy] ?? UNCERTAINTY_METRES.administrative;
+  const bandPx = bandWidthPx(accuracy, latitude, zoom);
+  const count = Math.max(1, Math.round(rings));
 
-  // Total band width in pixels, clamped so it stays legible without
-  // swallowing the map when zoomed far out.
-  const rawWidth = uncertainty / mpp;
-  const bandPx = Math.max(3, Math.min(rawWidth, 48));
+  // One stroke plus the CSS blur still reads as a fade, just a softer one.
+  if (count === 1) return [{ weight: bandPx, opacity: 0.22 }];
 
   const out: FuzzRing[] = [];
-  for (let i = 0; i < rings; i += 1) {
-    const t = (i + 1) / rings;
+  for (let i = 0; i < count; i += 1) {
+    const t = i / (count - 1); // 0 = outermost and widest, 1 = innermost core
     out.push({
-      weight: bandPx * (1 - t) + bandPx * 0.15,
-      opacity: 0.06 + 0.16 * t
+      weight: bandPx * (1 - 0.85 * t),
+      opacity: 0.1 + 0.15 * t
     });
   }
-  return out.sort((a, b) => b.weight - a.weight);
+  return out;
 };
+
+/**
+ * How many strokes to spend per polygon.
+ *
+ * Every ring is another path the renderer has to stroke, so the budget shrinks
+ * as the number of polygons on screen grows. This is the difference between a
+ * map that redraws in a frame and one that hitches for a second.
+ */
+export const ringBudget = (featureCount: number): number => {
+  if (featureCount > 700) return 2;
+  if (featureCount > 300) return 3;
+  return 4;
+};
+
+/**
+ * Blur radius that smooths the discrete strokes into a continuous gradient.
+ *
+ * Scaled to the band so a wide band doesn't end up looking like a hard edge,
+ * but capped: blur too hard and the band spreads until it reads as a vague
+ * glow rather than a stated margin of error.
+ */
+export const edgeBlurPx = (widestBandPx: number): number =>
+  Math.max(1.5, Math.min(widestBandPx * 0.18, 4));
 
 /** True when the band is too thin to be worth stacking strokes for. */
 export const shouldSimplify = (
@@ -80,34 +131,3 @@ export const uncertaintyCaution = (accuracy: EdgeAccuracy): string => {
   return `Edges are approximate to roughly ±${m} m (±${ft} ft). The faded band is the uncertainty zone — inside it, you may be on either side of the real boundary.`;
 };
 
-export const FUZZ_FILTER_ID = 'wandrlust-edge-fuzz';
-
-/** Gaussian blur turns the discrete rings into a continuous gradient. */
-export const ensureFuzzFilter = (blurPx = 2.5): void => {
-  if (typeof document === 'undefined') return;
-  if (document.getElementById(FUZZ_FILTER_ID)) return;
-
-  const svgNs = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(svgNs, 'svg');
-  svg.setAttribute('width', '0');
-  svg.setAttribute('height', '0');
-  svg.style.position = 'absolute';
-  svg.style.pointerEvents = 'none';
-
-  const defs = document.createElementNS(svgNs, 'defs');
-  const filter = document.createElementNS(svgNs, 'filter');
-  filter.setAttribute('id', FUZZ_FILTER_ID);
-  filter.setAttribute('x', '-50%');
-  filter.setAttribute('y', '-50%');
-  filter.setAttribute('width', '200%');
-  filter.setAttribute('height', '200%');
-
-  const blur = document.createElementNS(svgNs, 'feGaussianBlur');
-  blur.setAttribute('in', 'SourceGraphic');
-  blur.setAttribute('stdDeviation', String(blurPx));
-
-  filter.appendChild(blur);
-  defs.appendChild(filter);
-  svg.appendChild(defs);
-  document.body.appendChild(svg);
-};

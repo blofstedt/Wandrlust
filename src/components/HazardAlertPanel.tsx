@@ -8,7 +8,10 @@ import {
 } from '../services/weatherService';
 import type { PointHazard } from '../services/dataService';
 
-const FAMILY_ICON: Record<HazardFamily, React.ComponentType<{ className?: string }>> = {
+const FAMILY_ICON: Record<
+  HazardFamily,
+  React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+> = {
   fire: Flame, flood: Waves, storm: CloudLightning,
   winter: Snowflake, heat: Thermometer, wind: Wind, other: Info
 };

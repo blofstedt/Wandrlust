@@ -36,6 +36,10 @@
  * can have.
  */
 import type { Express, Request, Response } from 'express';
+import { gzip } from 'zlib';
+import { promisify } from 'util';
+
+const gzipAsync = promisify(gzip);
 
 interface BoundarySource {
   id: string;
@@ -158,8 +162,19 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
   }
 ];
 
-/** Per-source ceiling. Hitting it means the viewport is showing partial data. */
-const RECORD_LIMIT = 250;
+/**
+ * Per-source ceiling. Hitting it means the viewport is showing partial data.
+ *
+ * Scaled down for wide viewports: five sources each returning 250 polygons is
+ * over a thousand shapes for the browser to draw, and at that zoom most of them
+ * are a few pixels across. The response says when it truncated, and the map
+ * tells the user to zoom in, so nothing is being claimed that isn't true.
+ */
+const recordLimitForSpan = (span: number): number => {
+  if (span > 6) return 120;
+  if (span > 2) return 200;
+  return 250;
+};
 
 const overlaps = (
   a: { minLat: number; minLon: number; maxLat: number; maxLon: number },
@@ -167,10 +182,26 @@ const overlaps = (
 ): boolean =>
   !(a.maxLat < b.minLat || a.minLat > b.maxLat || a.maxLon < b.minLon || a.minLon > b.maxLon);
 
-// Small in-memory cache. Viewports are rounded so panning reuses entries.
-const boundaryCache = new Map<string, { at: number; body: unknown }>();
-const CACHE_TTL_MS = 10 * 60 * 1000;
-const CACHE_MAX_ENTRIES = 200;
+// Assembled responses, gzipped once and reused. Short-lived: this only exists
+// to absorb bursts, since the per-source cache below does the real work.
+const boundaryCache = new Map<string, { at: number; json: string; gzipped?: Buffer }>();
+const CACHE_TTL_MS = 60 * 1000;
+const CACHE_MAX_ENTRIES = 60;
+
+/**
+ * Per-source cache, and the reason panning stopped being painful.
+ *
+ * The client snaps its requests to a grid, so a short pan asks for the exact
+ * same box and lands here instead of on five government ArcGIS services that
+ * take seconds each. Entries are served immediately and refreshed in the
+ * background — land management boundaries do not change minute to minute, so
+ * showing a slightly old polygon while a fresh one loads costs nothing, and
+ * waiting for the network costs the user the whole interaction.
+ */
+const sourceCache = new Map<string, { at: number; result: SourceResult }>();
+const inFlight = new Map<string, Promise<SourceResult>>();
+const SOURCE_TTL_MS = 30 * 60 * 1000;
+const SOURCE_CACHE_MAX = 600;
 
 interface SourceResult {
   features: any[];
@@ -182,7 +213,8 @@ interface SourceResult {
 const queryBoundarySource = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
-  simplifyDegrees: number
+  simplifyDegrees: number,
+  recordLimit: number
 ): Promise<SourceResult> => {
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
 
@@ -197,12 +229,14 @@ const queryBoundarySource = async (
     outSR: '4326',
     geometryPrecision: '5',
     maxAllowableOffset: String(simplifyDegrees),
-    resultRecordCount: String(RECORD_LIMIT),
+    resultRecordCount: String(recordLimit),
     f: 'geojson'
   });
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 9000);
+  // One unresponsive service used to hold the whole response for nine seconds.
+  // It is reported as unavailable rather than waited on.
+  const timer = setTimeout(() => controller.abort(), 6000);
 
   try {
     const response = await fetch(`${source.url}?${params.toString()}`, {
@@ -247,13 +281,106 @@ const queryBoundarySource = async (
     const truncated =
       data?.exceededTransferLimit === true ||
       data?.properties?.exceededTransferLimit === true ||
-      features.length >= RECORD_LIMIT;
+      features.length >= recordLimit;
 
     return { features, ok: true, truncated };
   } catch {
     return { features: [], ok: false, truncated: false };
   } finally {
     clearTimeout(timer);
+  }
+};
+
+/** Runs the query once per key, sharing one in-flight promise among callers. */
+const runQuery = (
+  key: string,
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  recordLimit: number,
+  stale?: SourceResult
+): Promise<SourceResult> => {
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+
+  const promise = queryBoundarySource(source, bbox, simplifyDegrees, recordLimit)
+    .then((result) => {
+      if (!result.ok) {
+        // A failure is never cached. Caching one would hide real public land
+        // for the whole TTL because a government service blipped, and an
+        // empty map that looks confident is the worst thing this app can do.
+        return stale ?? result;
+      }
+
+      if (sourceCache.size >= SOURCE_CACHE_MAX) {
+        const oldest = sourceCache.keys().next().value;
+        if (oldest) sourceCache.delete(oldest);
+      }
+      sourceCache.set(key, { at: Date.now(), result });
+      return result;
+    })
+    .catch(() => stale ?? { features: [], ok: false, truncated: false })
+    .finally(() => { inFlight.delete(key); });
+
+  inFlight.set(key, promise);
+  return promise;
+};
+
+const cachedQuery = (
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  recordLimit: number
+): Promise<SourceResult> => {
+  const box = [bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon]
+    .map((n) => n.toFixed(4))
+    .join(',');
+  const key = `${source.id}|${box}|${recordLimit}`;
+
+  const hit = sourceCache.get(key);
+  if (hit && Date.now() - hit.at < SOURCE_TTL_MS) return Promise.resolve(hit.result);
+
+  const refresh = runQuery(key, source, bbox, simplifyDegrees, recordLimit, hit?.result);
+
+  // Something cached but past its TTL: answer now, refresh behind the scenes.
+  if (hit) {
+    void refresh.catch(() => { /* runQuery already swallows failures */ });
+    return Promise.resolve(hit.result);
+  }
+  return refresh;
+};
+
+/**
+ * Send JSON gzipped when the client will take it.
+ *
+ * Boundary payloads are long runs of coordinate digits and repeated property
+ * names — they compress by roughly ten to one, which on a phone tethered to a
+ * weak signal is the difference between a second and ten.
+ */
+const sendJson = async (
+  req: Request,
+  res: Response,
+  json: string,
+  precompressed?: Buffer
+): Promise<Buffer | undefined> => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.setHeader('Vary', 'Accept-Encoding');
+
+  const acceptsGzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
+  if (!acceptsGzip || json.length < 2048) {
+    res.send(json);
+    return undefined;
+  }
+
+  try {
+    const buffer = precompressed ?? (await gzipAsync(json));
+    res.setHeader('Content-Encoding', 'gzip');
+    res.end(buffer);
+    return buffer;
+  } catch {
+    res.send(json);
+    return undefined;
   }
 };
 
@@ -283,16 +410,24 @@ export const registerBoundaryRoutes = (app: Express): void => {
 
     const bbox = { minLat, minLon, maxLat, maxLon };
     // Generalise geometry more aggressively when zoomed out.
-    const simplifyDegrees = Math.max(0.0001, Math.max(spanLat, spanLon) / 800);
+    const span = Math.max(spanLat, spanLon);
+    const simplifyDegrees = Math.max(0.0001, span / 800);
+    const recordLimit = recordLimitForSpan(span);
 
-    const cacheKey = [minLat, minLon, maxLat, maxLon].map((n) => n.toFixed(2)).join(',');
+    // Four decimals, not two: the client snaps its requests to a grid, so an
+    // exact key still hits on a pan. Rounding to two decimals used to merge
+    // genuinely different viewports into one cache entry.
+    const cacheKey = [minLat, minLon, maxLat, maxLon].map((n) => n.toFixed(4)).join(',');
     const cached = boundaryCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < CACHE_TTL_MS) return res.json(cached.body);
+    if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+      await sendJson(req, res, cached.json, cached.gzipped);
+      return;
+    }
 
     const results = await Promise.all(
       BOUNDARY_SOURCES.map(async (source) => ({
         source,
-        ...(await queryBoundarySource(source, bbox, simplifyDegrees))
+        ...(await cachedQuery(source, bbox, simplifyDegrees, recordLimit))
       }))
     );
 
@@ -324,12 +459,13 @@ export const registerBoundaryRoutes = (app: Express): void => {
       }
     };
 
+    const json = JSON.stringify(body);
+    const gzipped = await sendJson(req, res, json);
+
     if (boundaryCache.size >= CACHE_MAX_ENTRIES) {
       const oldest = boundaryCache.keys().next().value;
       if (oldest) boundaryCache.delete(oldest);
     }
-    boundaryCache.set(cacheKey, { at: Date.now(), body });
-
-    return res.json(body);
+    boundaryCache.set(cacheKey, { at: Date.now(), json, gzipped });
   });
 };
