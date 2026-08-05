@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Compass, Search, MapPin, Map as MapIcon, List, Bookmark, Plug, Unplug,
-  Download, PlusCircle, BookOpen, X, Smartphone, Monitor, Crosshair,
+  Download, PlusCircle, BookOpen, X, Crosshair,
   Users, Activity, Home, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
 } from 'lucide-react';
 import type { AppView, FilterState, GeocodedLocation } from '../types';
@@ -30,8 +30,6 @@ interface NavbarProps {
   onOpenReport: () => void;
   nearbyCount?: number;
   activeFilterCount?: number;
-  isMobileFrame: boolean;
-  setIsMobileFrame: (val: boolean) => void;
   savedCount: number;
 }
 
@@ -51,7 +49,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLocateUser, isLocating, isOfflineMode, setIsOfflineMode, onOpenOfflineManager,
   onOpenAddModal, onOpenGuideModal, onOpenFilterDrawer, onOpenAuth, onOpenPresence,
   onOpenScout, onOpenHost, onOpenSettings, onOpenReport, nearbyCount = 0,
-  activeFilterCount = 0, isMobileFrame, setIsMobileFrame, savedCount
+  activeFilterCount = 0, savedCount
 }) => {
   const [query, setQuery] = useState(filterState.searchQuery ?? '');
   const [suggestions, setSuggestions] = useState<GeocodedLocation[]>([]);
@@ -301,19 +299,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               )}
             </button>
           ))}
-
-          <button
-            onClick={() => setIsMobileFrame(!isMobileFrame)}
-            className={`p-2 rounded-xl border ${
-              isMobileFrame
-                ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50'
-                : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'
-            }`}
-            title={isMobileFrame ? 'Switch to full screen' : 'Preview as a phone app'}
-            aria-label={isMobileFrame ? 'Switch to full screen' : 'Preview as a phone app'}
-          >
-            {isMobileFrame ? <Monitor className="w-4 h-4" /> : <Smartphone className="w-4 h-4" />}
-          </button>
 
           <UserMenu onOpenAuth={onOpenAuth} />
         </div>

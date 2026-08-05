@@ -5,7 +5,7 @@ import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
-import { Crosshair, Eye, Layers, Loader2, Shield } from 'lucide-react';
+import { ChevronDown, Crosshair, Eye, Layers, Loader2, Shield } from 'lucide-react';
 
 import type { Campsite, LandType, MapTileLayer } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
@@ -134,14 +134,13 @@ interface MapComponentProps {
   userLocation: [number, number] | null;
   isOfflineMode: boolean;
   onOpenDetailModal: (site: Campsite) => void;
-  onVisibleCampsitesChange?: (visibleSites: Campsite[]) => void;
   onLocateUser?: () => void;
   isLocating?: boolean;
 }
 
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation,
-  isOfflineMode, onOpenDetailModal, onVisibleCampsitesChange, onLocateUser,
+  isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -159,13 +158,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const renderedZoomRef = useRef<number>(0);
   const collectionRef = useRef<BoundaryCollection>(EMPTY_BOUNDARIES);
   const boundaryRendererRef = useRef<L.Canvas | null>(null);
-  const visibleIdsRef = useRef<string>('');
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
   const [showCrownLand, setShowCrownLand] = useState(true);
   const [crownLandAvailable, setCrownLandAvailable] = useState(false);
   const [showLayerMenu, setShowLayerMenu] = useState(false);
+  // Collapsed by default: the map matters more than the key to it.
+  const [showLegend, setShowLegend] = useState(false);
   const [showBoundaries, setShowBoundaries] = useState(true);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
@@ -217,8 +217,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       } catch { /* not attached yet */ }
     }, 200);
 
+    /**
+     * Watch the container itself, not the window.
+     *
+     * Leaflet caches the map's pixel size and only re-measures on a window
+     * resize. On a phone the container changes size without the window ever
+     * resizing — the address bar slides away, the keyboard opens, the device
+     * rotates — and a Leaflet holding a stale size draws its tiles at an
+     * offset from where the map actually is, which is exactly the "map is
+     * sliding off the screen" symptom.
+     */
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      // Coalesce to one measurement per frame; a resize fires in bursts.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        try {
+          map.invalidateSize({ animate: false });
+          applyMinZoom();
+        } catch { /* detached */ }
+      });
+    });
+    observer.observe(containerRef.current);
+
     return () => {
       clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      observer.disconnect();
       map.off('resize', applyMinZoom);
       try { map.remove(); } catch { /* already gone */ }
       mapRef.current = null;
@@ -629,39 +654,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady, showBoundaries, isOfflineMode]);
 
   /* ------------------------------------------------------------------ */
-  /* Which campsites are on screen                                       */
-  /* ------------------------------------------------------------------ */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady || !onVisibleCampsitesChange) return;
-
-    const report = () => {
-      try {
-        const bounds = map.getBounds();
-        const inView = campsites.filter((site) =>
-          bounds.contains([site.latitude, site.longitude])
-        );
-
-        // Most pans don't change which pins are on screen. Reporting anyway
-        // re-renders the whole app — including the list behind the map — for
-        // nothing, so only speak up when the set actually changed.
-        const signature = inView.map((site) => site.id).join(',');
-        if (signature === visibleIdsRef.current) return;
-        visibleIdsRef.current = signature;
-
-        onVisibleCampsitesChange(inView);
-      } catch { /* map not laid out yet */ }
-    };
-
-    // The ids alone can't tell us a site's own details changed, so a new
-    // campsite list always reports once even if the same pins are on screen.
-    visibleIdsRef.current = '';
-    report();
-    map.on('moveend zoomend', report);
-    return () => { map.off('moveend zoomend', report); };
-  }, [campsites, isMapReady, onVisibleCampsitesChange]);
-
-  /* ------------------------------------------------------------------ */
   /* Markers                                                             */
   /* ------------------------------------------------------------------ */
   // Rebuilt only when the campsite list changes. Selection is handled
@@ -772,80 +764,141 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
   const statusText = useCallback((): string => {
     if (!showBoundaries) return 'Land boundaries hidden';
-    if (zoomTooFar) return 'Zoom in to load land boundaries';
-    if (isLoadingBoundaries) return 'Loading public land boundaries…';
-    if (boundaries.features.length > 0) return `${boundaries.features.length} land parcels in view`;
+    if (zoomTooFar) return 'Zoom in for land boundaries';
+    if (isLoadingBoundaries) return 'Loading boundaries…';
+    // "edges approximate" rides along with the count so the caveat is on
+    // screen even when the legend below is collapsed.
+    if (boundaries.features.length > 0) {
+      return `${boundaries.features.length} parcels · edges approximate`;
+    }
     return 'No mapped public land in view';
   }, [showBoundaries, zoomTooFar, isLoadingBoundaries, boundaries.features.length]);
 
+  /** Only worth expanding when there is a per-source breakdown to show. */
+  const hasLegend = !isOfflineMode && showBoundaries && boundaries.features.length > 0;
+
   return (
-    <div className="relative w-full h-full min-h-[400px] bg-slate-950 overflow-hidden" ref={containerRef}>
-      {/* Status + legend */}
-      <div className="absolute top-3 left-3 z-[400] flex flex-col gap-1">
+    <div className="relative w-full h-full bg-slate-950 overflow-hidden" ref={containerRef}>
+      {/*
+        Status + legend.
+
+        This is one collapsed chip by default. It used to be a permanently
+        expanded panel listing every source plus a paragraph about edge
+        accuracy, which on a phone covered most of the map it was describing —
+        a legend that hides the thing it explains.
+
+        What it must never do is drop the caveat. The collapsed chip always
+        carries "edges approximate", the faded band is drawn on the map itself,
+        and the full explanation is one tap away and repeated in every parcel's
+        popup. The detail is quieter, not absent.
+      */}
+      {/*
+        z-index sits above every Leaflet pane, not level with them.
+
+        Leaflet's own panes top out at 400 and its controls at 800. These
+        overlays used to be 400 too, which was a tie that DOM order settled in
+        the map's favour. That was survivable while the boundary layer was SVG,
+        because Leaflet marks its SVG overlay `pointer-events: none` — but a
+        canvas renderer listens for clicks across the whole map surface to do
+        its own hit-testing, so once boundaries moved to canvas it swallowed
+        every tap meant for these buttons.
+      */}
+      <div className="absolute top-3 left-3 z-[1000] flex flex-col gap-1 max-w-[min(16rem,calc(100%-5rem))]">
         {isOfflineMode ? (
           <div className="bg-amber-500 text-slate-950 px-3 py-1.5 rounded-xl font-bold text-xs shadow-xl flex items-center gap-2 border border-amber-300">
             <span className="w-2 h-2 rounded-full bg-slate-950 animate-ping" />
-            Offline — showing your saved maps and spots
+            Offline — saved maps and spots
           </div>
         ) : (
-          <div className="bg-slate-900/90 backdrop-blur-md text-slate-200 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xl flex items-center gap-2 border border-slate-700/80 anim-in-down">
-            {isLoadingBoundaries ? (
-              <Loader2 className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
-            ) : (
-              <Shield className={`w-3.5 h-3.5 ${boundaries.features.length > 0 ? 'text-emerald-400' : 'text-slate-500'}`} />
-            )}
-            <span>{statusText()}</span>
-          </div>
-        )}
-
-        {!isOfflineMode && showBoundaries && boundaries.features.length > 0 && (
-          <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-xl px-3 py-2 shadow-xl anim-in-up">
-            {boundaries.meta.sources
-              .filter((source) => source.featureCount > 0)
-              .map((source) => {
-                const style = BOUNDARY_STYLES[source.confidence];
-                return (
-                  <div key={source.id} className="flex items-center gap-2 py-0.5">
-                    <span
-                      className="w-3 h-3 rounded-sm border shrink-0"
-                      style={{ backgroundColor: style.fillColor, borderColor: style.color }}
-                    />
-                    {/* Name the source, not its confidence tier. Several
-                        sources share a tier, so the tier label would show
-                        Alberta Crown Land as "Federal land (BLM / USFS)". */}
-                    <span className="text-[10px] text-slate-300 font-semibold">{source.label}</span>
-                    <span className="text-[10px] text-slate-500">({source.featureCount})</span>
-                  </div>
-                );
-              })}
-
-            <div className="mt-1.5 pt-1.5 border-t border-slate-700/60 max-w-[210px]">
-              <div className="flex items-center gap-2 mb-1">
-                <span
-                  className="w-3 h-3 rounded-sm shrink-0"
-                  style={{ background: 'linear-gradient(90deg, rgba(148,163,184,0.05), rgba(148,163,184,0.45))' }}
+          <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-xl shadow-xl anim-in-down overflow-hidden">
+            <button
+              type="button"
+              onClick={() => hasLegend && setShowLegend((open) => !open)}
+              // Nothing to open when there are no parcels to break down.
+              className={`w-full px-3 py-1.5 flex items-center gap-2 text-left text-xs font-semibold text-slate-200 ${
+                hasLegend ? 'hover:bg-slate-800/60' : 'cursor-default'
+              }`}
+              aria-expanded={hasLegend ? showLegend : undefined}
+              disabled={!hasLegend}
+            >
+              {isLoadingBoundaries ? (
+                <Loader2 className="w-3.5 h-3.5 text-emerald-400 animate-spin shrink-0" />
+              ) : (
+                <Shield
+                  className={`w-3.5 h-3.5 shrink-0 ${
+                    boundaries.features.length > 0 ? 'text-emerald-400' : 'text-slate-500'
+                  }`}
                 />
-                <span className="text-[10px] text-slate-400 font-semibold">Uncertainty band</span>
+              )}
+              <span className="min-w-0 truncate">{statusText()}</span>
+              {hasLegend && (
+                <ChevronDown
+                  className={`w-3.5 h-3.5 ml-auto shrink-0 text-slate-400 transition-moook ${
+                    showLegend ? 'rotate-180' : ''
+                  }`}
+                />
+              )}
+            </button>
+
+            {hasLegend && showLegend && (
+              <div className="px-3 pb-2 pt-0.5 border-t border-slate-700/60 anim-in-down">
+                {boundaries.meta.sources
+                  .filter((source) => source.featureCount > 0)
+                  .map((source) => {
+                    const style = BOUNDARY_STYLES[source.confidence];
+                    return (
+                      <div key={source.id} className="flex items-center gap-2 py-0.5">
+                        <span
+                          className="w-3 h-3 rounded-sm border shrink-0"
+                          style={{ backgroundColor: style.fillColor, borderColor: style.color }}
+                        />
+                        {/* Name the source, not its confidence tier. Several
+                            sources share a tier, so the tier label would show
+                            Alberta Crown Land as "Federal land (BLM / USFS)". */}
+                        <span className="text-[10px] text-slate-300 font-semibold truncate">
+                          {source.label}
+                        </span>
+                        <span className="text-[10px] text-slate-500 ml-auto">
+                          {source.featureCount}
+                        </span>
+                      </div>
+                    );
+                  })}
+
+                <div className="mt-1.5 pt-1.5 border-t border-slate-700/60">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className="w-3 h-3 rounded-sm shrink-0"
+                      style={{
+                        background:
+                          'linear-gradient(90deg, rgba(148,163,184,0.05), rgba(148,163,184,0.45))'
+                      }}
+                    />
+                    <span className="text-[10px] text-slate-400 font-semibold">
+                      Uncertainty band
+                    </span>
+                  </div>
+                  <p className="text-[9px] text-slate-500 leading-tight">
+                    Edges are drawn as a fade, not a line, because no source here is
+                    survey-grade. Inside the fade you may be on either side of the real
+                    boundary. Not permission to camp.
+                  </p>
+                </div>
               </div>
-              <p className="text-[9px] text-slate-500 leading-tight">
-                Edges are drawn as a fade, not a line, because no source here is
-                survey-grade. Inside the fade you may be on either side of the real
-                boundary. Not permission to camp.
-              </p>
-            </div>
+            )}
           </div>
         )}
 
         {!isWithinCoverage(center[0], center[1]) && (
-          <div className="bg-slate-800/95 backdrop-blur-md border border-slate-600 text-slate-300 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xl flex items-center gap-2 max-w-[260px] anim-in-up">
-            <Eye className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span>Outside coverage. Wandrlust currently supports {COVERAGE_LABEL}.</span>
+          <div className="bg-slate-800/95 backdrop-blur-md border border-slate-600 text-slate-300 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
+            <Eye className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+            <span>Outside coverage. Wandrlust supports {COVERAGE_LABEL}.</span>
           </div>
         )}
       </div>
 
       {/* Layer controls */}
-      <div className="absolute top-3 right-3 z-[400] flex flex-col items-end gap-2">
+      <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-2">
         <button
           type="button"
           onClick={() => setShowLayerMenu((open) => !open)}
