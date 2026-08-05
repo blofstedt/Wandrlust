@@ -44,6 +44,28 @@ const TILE_URLS: Record<MapTileLayer, { url: string; attribution: string; label:
   }
 };
 
+/**
+ * The hard edge of the map.
+ *
+ * Web Mercator can't represent latitude beyond about ±85.05°, and without an
+ * explicit bound Leaflet tiles the world infinitely sideways. That's what
+ * produced three side-by-side copies of Earth: the tile layer repeated, but
+ * the grey coverage mask is a single polygon, so it only landed on the middle
+ * copy while the others sat there unmasked.
+ */
+const WORLD_BOUNDS = L.latLngBounds([-85.05, -180], [85.05, 180]);
+
+/**
+ * Smallest zoom at which the world still fills the viewport width.
+ *
+ * Hard-coding a number breaks somewhere: too high and phones can't zoom out
+ * far enough, too low and an ultrawide monitor shows empty gutters either side
+ * of the map. The world is 256px across at zoom 0 and doubles each level, so
+ * solve for it from the actual container width instead of guessing.
+ */
+const worldFillZoom = (widthPx: number): number =>
+  Math.max(1, Math.ceil(Math.log2(Math.max(widthPx, 1) / 256)));
+
 const LAND_TYPE_COLOR: Record<LandType, string> = {
   blm: '#F59E0B',
   usfs: '#10B981',
@@ -126,21 +148,48 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
-      center, zoom, zoomControl: false, attributionControl: false
+      center,
+      zoom,
+      zoomControl: false,
+      attributionControl: false,
+      // One Earth, not three. `maxBounds` with full viscosity stops the user
+      // dragging past the edge of the world into empty space.
+      worldCopyJump: false,
+      maxBounds: WORLD_BOUNDS,
+      maxBoundsViscosity: 1.0
     });
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     L.control.attribution({ position: 'bottomleft', prefix: false }).addTo(map);
+
+    /**
+     * Keep the minimum zoom tied to the container width.
+     *
+     * Recomputed on resize so rotating a phone or dragging a window narrower
+     * can't strand the user at a zoom level that's now below the minimum.
+     */
+    const applyMinZoom = () => {
+      const next = worldFillZoom(map.getSize().x);
+      map.setMinZoom(next);
+      if (map.getZoom() < next) map.setZoom(next);
+    };
+    applyMinZoom();
+    map.on('resize', applyMinZoom);
 
     mapRef.current = map;
     setIsMapReady(true);
 
     // The container is often still being laid out on first paint.
     const timer = setTimeout(() => {
-      try { map.invalidateSize(); } catch { /* not attached yet */ }
+      try {
+        map.invalidateSize();
+        // Size is only trustworthy after layout settles, so recompute here too.
+        applyMinZoom();
+      } catch { /* not attached yet */ }
     }, 200);
 
     return () => {
       clearTimeout(timer);
+      map.off('resize', applyMinZoom);
       try { map.remove(); } catch { /* already gone */ }
       mapRef.current = null;
       markersRef.current.clear();
@@ -184,10 +233,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           return tile;
         }
       });
-      layer = new OfflineTileLayer('', { maxZoom: 19, attribution: 'Offline tile cache' });
+      // noWrap + bounds: draw the world exactly once. Without these the layer
+      // repeats horizontally and the coverage mask only covers one copy.
+      layer = new OfflineTileLayer('', {
+        maxZoom: 19,
+        noWrap: true,
+        bounds: WORLD_BOUNDS,
+        attribution: 'Offline tile cache'
+      });
     } else {
       const config = TILE_URLS[activeTileLayer];
-      layer = L.tileLayer(config.url, { maxZoom: 19, attribution: config.attribution });
+      layer = L.tileLayer(config.url, {
+        maxZoom: 19,
+        noWrap: true,
+        bounds: WORLD_BOUNDS,
+        attribution: config.attribution
+      });
     }
 
     layer.addTo(map);
@@ -256,7 +317,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const toLatLng = (ring: [number, number][]) =>
       ring.map(([lon, lat]) => [lat, lon] as [number, number]);
 
-    // A world-sized polygon with the supported region punched out of it.
+    // A world-sized polygon with the supported region punched out of it. Now
+    // that the tile layer no longer repeats, this covers everything outside
+    // coverage exactly once.
     const mask = L.polygon([toLatLng(WORLD_RING), toLatLng(COVERAGE_OUTLINE)], {
       pane: 'coveragePane', interactive: false, stroke: true,
       color: '#475569', weight: 1, fillColor: '#0F172A', fillOpacity: 0.72
@@ -544,6 +607,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapReady) return;
+    // Leaflet clamps to minZoom and maxBounds internally, so a request to fly
+    // somewhere outside the world simply lands at the nearest valid view.
     try {
       map.flyTo(center, zoom, { duration: 1.2 });
     } catch {
@@ -591,7 +656,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                       className="w-3 h-3 rounded-sm border shrink-0"
                       style={{ backgroundColor: style.fillColor, borderColor: style.color }}
                     />
-                    <span className="text-[10px] text-slate-300 font-semibold">{style.label}</span>
+                    {/* Name the source, not its confidence tier. Several
+                        sources share a tier, so the tier label would show
+                        Alberta Crown Land as "Federal land (BLM / USFS)". */}
+                    <span className="text-[10px] text-slate-300 font-semibold">{source.label}</span>
                     <span className="text-[10px] text-slate-500">({source.featureCount})</span>
                   </div>
                 );
