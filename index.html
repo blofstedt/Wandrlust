@@ -7,6 +7,20 @@
     <meta name="theme-color" content="#0f172a" />
     <meta name="color-scheme" content="dark" />
     <title>Wandrlust - Public Land & Dispersed Camping Explorer</title>
+
+    <!-- Installable app. iOS ignores the manifest's icons and display mode
+         entirely, so the apple-* tags below are not duplication — without them
+         an iPhone home-screen install opens in a Safari chrome with a blank
+         icon, and Web Push (which on iOS requires the app be installed) never
+         becomes available. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Wandrlust" />
+    <meta name="application-name" content="Wandrlust" />
     <!-- Leaflet's stylesheet is bundled (see MapComponent.tsx), not fetched from
          a CDN. It used to come from unpkg, which put a render-blocking request
          to a third party in front of every cold load of the map — and if that
