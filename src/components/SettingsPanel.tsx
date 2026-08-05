@@ -6,14 +6,55 @@ import {
 import { fetchSettings, saveSettings, UserSettings } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { PushSettings } from './PushSettings';
+import type { LegalDocKind } from '../types';
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   onRequireAuth: () => void;
   center?: [number, number];
-  onOpenLegal?: (kind: 'privacy_policy' | 'terms_of_service' | 'safety_disclaimer') => void;
+  onOpenLegal?: (kind: LegalDocKind) => void;
 }
+
+interface ToggleProps {
+  label: string;
+  description?: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+  icon?: React.ComponentType<{ className?: string }>;
+}
+
+/**
+ * Defined at module scope on purpose.
+ *
+ * This used to be declared inside SettingsPanel's body, which made it a brand
+ * new component type on every render — React unmounted and remounted every
+ * checkbox each time a setting changed, losing focus and replaying the tick
+ * animation. Hoisting it fixes both.
+ */
+const Toggle: React.FC<ToggleProps> = ({ label, description, value, onChange, icon: Icon }) => (
+  <label className="flex items-start gap-3 p-2.5 rounded-xl hover:bg-slate-800/50 cursor-pointer transition-moook">
+    {Icon && <Icon className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />}
+    <span className="flex-1 min-w-0">
+      <span className="block text-xs font-semibold text-slate-200">{label}</span>
+      {description && (
+        <span className="block text-[10px] text-slate-500 leading-snug mt-0.5">{description}</span>
+      )}
+    </span>
+    <input
+      type="checkbox"
+      checked={value}
+      onChange={(e) => onChange(e.target.checked)}
+      className="accent-emerald-500 w-4 h-4 shrink-0 mt-0.5"
+    />
+  </label>
+);
+
+const LEGAL_LINKS: [LegalDocKind, string][] = [
+  ['privacy_policy', 'Privacy Policy'],
+  ['terms_of_service', 'Terms of Service'],
+  ['safety_disclaimer', 'Safety Disclaimer']
+];
 
 /**
  * Settings.
@@ -32,8 +73,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    if (isOpen && user) fetchSettings().then(setSettings);
+    if (!isOpen || !user) return;
+    let cancelled = false;
+    fetchSettings().then((s) => { if (!cancelled) setSettings(s); });
+    return () => { cancelled = true; };
   }, [isOpen, user]);
+
+  useEffect(() => {
+    if (!saved) return;
+    const timer = setTimeout(() => setSaved(false), 1500);
+    return () => clearTimeout(timer);
+  }, [saved]);
 
   const patch = async (changes: Partial<UserSettings>) => {
     if (!settings) return;
@@ -42,54 +92,52 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     await saveSettings(changes);
     setBusy(false);
     setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
   };
 
   if (!isOpen) return null;
 
-  const Toggle: React.FC<{
-    label: string; description?: string; value: boolean;
-    onChange: (v: boolean) => void;
-    icon?: React.ComponentType<{ className?: string }>;
-  }> = ({ label, description, value, onChange, icon: Icon }) => (
-    <label className="flex items-start gap-3 p-2.5 rounded-xl hover:bg-slate-800/50 cursor-pointer transition-moook">
-      {Icon && <Icon className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />}
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-semibold text-slate-200">{label}</p>
-        {description && <p className="text-[10px] text-slate-500 leading-snug mt-0.5">{description}</p>}
-      </div>
-      <input
-        type="checkbox"
-        checked={value}
-        onChange={(e) => onChange(e.target.checked)}
-        className="accent-emerald-500 w-4 h-4 shrink-0 mt-0.5"
-      />
-    </label>
-  );
-
   return (
-    <div className="fixed inset-0 z-[1800] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 anim-backdrop">
-      <div className="w-full sm:max-w-md bg-slate-900 border-t sm:border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl max-h-[88vh] flex flex-col anim-sheet-up sm:anim-expand">
-        <div className="flex items-center justify-between p-4 border-b border-slate-800 shrink-0">
+    <div
+      className="fixed inset-0 z-[1800] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 anim-backdrop"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        className="w-full sm:max-w-md bg-slate-900 border-t sm:border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl max-h-[88vh] flex flex-col anim-sheet-up sm:anim-expand"
+      >
+        <header className="flex items-center justify-between p-4 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-slate-300" />
             <h2 className="text-sm font-bold text-slate-100">Settings</h2>
             {busy && <Loader2 className="w-3 h-3 animate-spin text-slate-500" />}
             {saved && <Check className="w-3 h-3 text-emerald-400 anim-pop" />}
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-200 text-sm font-bold px-2" aria-label="Close">✕</button>
-        </div>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-200 text-sm font-bold px-2"
+            aria-label="Close settings"
+          >
+            ✕
+          </button>
+        </header>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scroll-soft">
           {!user ? (
             <div className="text-center py-6">
               <p className="text-xs text-slate-400 mb-3">Sign in to save your preferences.</p>
-              <button onClick={onRequireAuth} className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-bold text-xs">
+              <button
+                onClick={onRequireAuth}
+                className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-bold text-xs"
+              >
                 Sign in
               </button>
             </div>
           ) : !settings ? (
-            <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-slate-500" /></div>
+            <div className="flex justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
+            </div>
           ) : (
             <>
               <section>
@@ -103,26 +151,46 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
                   Safety alerts
                 </h3>
-                <Toggle icon={Flame} label="Fire alerts"
+                <Toggle
+                  icon={Flame}
+                  label="Fire alerts"
                   description="Red flag warnings, fire weather watches, and agency fire bans."
-                  value={settings.notify_fire_alerts} onChange={(v) => patch({ notify_fire_alerts: v })} />
-                <Toggle icon={Waves} label="Flood alerts"
+                  value={settings.notify_fire_alerts}
+                  onChange={(v) => patch({ notify_fire_alerts: v })}
+                />
+                <Toggle
+                  icon={Waves}
+                  label="Flood alerts"
                   description="Flash flood and flood warnings near you."
-                  value={settings.notify_flood_alerts} onChange={(v) => patch({ notify_flood_alerts: v })} />
-                <Toggle icon={CloudLightning} label="Storm alerts"
+                  value={settings.notify_flood_alerts}
+                  onChange={(v) => patch({ notify_flood_alerts: v })}
+                />
+                <Toggle
+                  icon={CloudLightning}
+                  label="Storm alerts"
                   description="Severe thunderstorm, tornado and winter storm warnings."
-                  value={settings.notify_storm_alerts} onChange={(v) => patch({ notify_storm_alerts: v })} />
-                <Toggle icon={Bell} label="Zone heat alerts"
+                  value={settings.notify_storm_alerts}
+                  onChange={(v) => patch({ notify_storm_alerts: v })}
+                />
+                <Toggle
+                  icon={Bell}
+                  label="Zone heat alerts"
                   description="When several campers report problems in an area you're heading to."
-                  value={settings.notify_zone_heat} onChange={(v) => patch({ notify_zone_heat: v })} />
+                  value={settings.notify_zone_heat}
+                  onChange={(v) => patch({ notify_zone_heat: v })}
+                />
 
                 <div className="px-2.5 pt-2">
                   <div className="flex justify-between text-[10px] text-slate-400 mb-1">
-                    <span>Alert radius</span>
+                    <label htmlFor="alert-radius">Alert radius</label>
                     <span className="font-bold text-slate-200">{settings.alert_radius_km} km</span>
                   </div>
                   <input
-                    type="range" min={10} max={500} step={10}
+                    id="alert-radius"
+                    type="range"
+                    min={10}
+                    max={500}
+                    step={10}
                     value={settings.alert_radius_km}
                     onChange={(e) => patch({ alert_radius_km: Number(e.target.value) })}
                     className="w-full accent-emerald-500"
@@ -131,30 +199,44 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </section>
 
               <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">Privacy</h3>
-                <Toggle icon={Eye} label="Share my position by default"
-                  description="Off means Ghost mode. You can still share per-session."
-                  value={settings.share_presence} onChange={(v) => patch({ share_presence: v })} />
-                <Toggle icon={Shield} label="Contribute road data"
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                  Privacy
+                </h3>
+                <Toggle
+                  icon={Eye}
+                  label="Share my position by default"
+                  description="Off means Ghost mode. You can still share per session."
+                  value={settings.share_presence}
+                  onChange={(v) => patch({ share_presence: v })}
+                />
+                <Toggle
+                  icon={Shield}
+                  label="Contribute road data"
                   description="Uploads anonymised road-surface readings while Scout Mode runs."
-                  value={settings.share_telemetry} onChange={(v) => patch({ share_telemetry: v })} />
+                  value={settings.share_telemetry}
+                  onChange={(v) => patch({ share_telemetry: v })}
+                />
               </section>
 
               <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">Display</h3>
-                <Toggle icon={Ruler} label="Metric units"
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                  Display
+                </h3>
+                <Toggle
+                  icon={Ruler}
+                  label="Metric units"
                   description="Kilometres and Celsius. Off for miles and Fahrenheit."
-                  value={settings.use_metric} onChange={(v) => patch({ use_metric: v })} />
+                  value={settings.use_metric}
+                  onChange={(v) => patch({ use_metric: v })}
+                />
               </section>
 
               {onOpenLegal && (
                 <section>
-                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">Legal</h3>
-                  {([
-                    ['privacy_policy', 'Privacy Policy'],
-                    ['terms_of_service', 'Terms of Service'],
-                    ['safety_disclaimer', 'Safety Disclaimer']
-                  ] as const).map(([kind, label]) => (
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                    Legal
+                  </h3>
+                  {LEGAL_LINKS.map(([kind, label]) => (
                     <button
                       key={kind}
                       onClick={() => onOpenLegal(kind)}
@@ -168,7 +250,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </section>
               )}
 
-              {/* Support — firewalled here, buys nothing in-app */}
               <section className="pt-2 border-t border-slate-800">
                 <div className="p-3 rounded-xl bg-slate-800/40 border border-slate-700/60">
                   <div className="flex items-center gap-2 mb-1.5">

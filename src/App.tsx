@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Campsite, FilterState, GeocodedLocation, CamperReview, RoadAccess } from './types';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import type { Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind } from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
 import { fetchOverpassCampsites } from './services/overpass';
 import {
@@ -8,7 +8,6 @@ import {
   getCustomCampsites,
   addCustomCampsite
 } from './services/offlineStorage';
-
 import { Navbar } from './components/Navbar';
 import { MapComponent } from './components/MapComponent';
 import { CampsiteCard } from './components/CampsiteCard';
@@ -26,48 +25,46 @@ import { HostPanel } from './components/HostPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
-import { ErrorBoundary } from './components/ui/Feedback';
+import { ErrorBoundary, EmptyState } from './components/ui/Feedback';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
+import {
+  createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
+  ROAD_ACCESS_RANK, countActiveFilters
+} from './config/filters';
+import { distanceMiles } from './utils/geo';
 import { updateAlertLocation } from './services/pushService';
 import type { NearbyCamper } from './services/dataService';
+import { Search, Bookmark, Tent, MapPinOff, SlidersHorizontal } from 'lucide-react';
 
-import {
-  Compass,
-  MapPin,
-  List,
-  Sparkles,
-  Bookmark,
-  WifiOff,
-  Search,
-  SlidersHorizontal,
-  RefreshCw,
-  PlusCircle,
-  Tent
-} from 'lucide-react';
+/** Calgary, AB — the app's home coordinates. */
+const HOME_CENTER: [number, number] = [51.0447, -114.0719];
+const HOME_LABEL = 'Calgary, AB';
 
 export default function App() {
-  // Navigation & View States
-  const [activeView, setActiveView] = useState<'map' | 'list' | 'saved'>('map');
+  // Navigation & view
+  const [activeView, setActiveView] = useState<AppView>('map');
   const [isMobileFrame, setIsMobileFrame] = useState(false);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
 
-  // Map & Location States (Default: Calgary, AB)
-  const [center, setCenter] = useState<[number, number]>([51.0447, -114.0719]);
+  // Map & location
+  const [center, setCenter] = useState<[number, number]>(HOME_CENTER);
   const [zoom, setZoom] = useState(10);
-  const [currentLocationName, setCurrentLocationName] = useState('Calgary, AB');
+  const [currentLocationName, setCurrentLocationName] = useState(HOME_LABEL);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [isLocating, setIsLocating] = useState(false);
 
-  // Data States
+  // Data
   const [campsites, setCampsites] = useState<Campsite[]>(CURATED_CAMPSITES);
   const [savedSites, setSavedSites] = useState<Campsite[]>([]);
   const [selectedCampsite, setSelectedCampsite] = useState<Campsite | null>(null);
   const [detailModalSite, setDetailModalSite] = useState<Campsite | null>(null);
-  const [isSearchingAi, setIsSearchingAi] = useState(false);
+  const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
+  const [isSearchingSites, setIsSearchingSites] = useState(false);
   const [outOfCoverageNotice, setOutOfCoverageNotice] = useState<string | null>(null);
   const [visibleMapCampsites, setVisibleMapCampsites] = useState<Campsite[]>([]);
+  const [nearbyCampers, setNearbyCampers] = useState<NearbyCamper[]>([]);
 
-  // Modal Visibility States
+  // Panels & modals
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isPresenceOpen, setIsPresenceOpen] = useState(false);
@@ -75,144 +72,89 @@ export default function App() {
   const [isHostOpen, setIsHostOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
-  const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
-  const [nearbyCampers, setNearbyCampers] = useState<NearbyCamper[]>([]);
-  const [legalDoc, setLegalDoc] = useState<
-    'privacy_policy' | 'terms_of_service' | 'safety_disclaimer' | null
-  >(null);
   const [isOfflineManagerOpen, setIsOfflineManagerOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+  const [legalDoc, setLegalDoc] = useState<LegalDocKind | null>(null);
 
-  // Filter State
-  const [filterState, setFilterState] = useState<FilterState>({
-    searchQuery: 'Calgary, AB',
-    landTypes: ['blm', 'usfs', 'state_forest', 'dispersed', 'crown_land'],
-    waterOnly: false,
-    toiletOnly: false,
-    cellSignalOnly: false,
-    petFriendlyOnly: false,
-    rigLengthMinFt: 0,
-    roadAccessMax: 'all',
-    maxDistanceMiles: 500,
-    sortBy: 'distance'
-  });
+  const [filterState, setFilterState] = useState<FilterState>(() =>
+    createDefaultFilters(HOME_LABEL)
+  );
 
-  // Load Saved & Custom Campsites on Mount
+  // Restore saved and user-submitted sites on first load.
   useEffect(() => {
-    const loadStoredData = async () => {
-      const saved = await getSavedCampsites();
-      setSavedSites(saved);
+    let cancelled = false;
 
-      const custom = await getCustomCampsites();
+    (async () => {
+      const [saved, custom] = await Promise.all([
+        getSavedCampsites(),
+        getCustomCampsites()
+      ]);
+      if (cancelled) return;
+
+      setSavedSites(saved);
       if (custom.length > 0) {
         setCampsites((prev) => {
           const ids = new Set(prev.map((s) => s.id));
-          const newCustom = custom.filter((c) => !ids.has(c.id));
-          return [...prev, ...newCustom];
+          return [...prev, ...custom.filter((c) => !ids.has(c.id))];
         });
       }
-    };
-    loadStoredData();
+    })();
+
+    return () => { cancelled = true; };
   }, []);
 
-  // Distance helper (Haversine formula in miles)
-  const calculateDistanceMiles = (
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number
-  ): number => {
-    const R = 3958.8; // Radius of earth in miles
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
+  const handleSelectLocation = useCallback(
+    async (loc: GeocodedLocation) => {
+      const label = loc.displayName.split(',')[0];
+      setCenter([loc.lat, loc.lon]);
+      setZoom(11);
+      setCurrentLocationName(label);
 
-  // Handle Location Selection
-  const handleSelectLocation = async (loc: GeocodedLocation) => {
-    const newCenter: [number, number] = [loc.lat, loc.lon];
-    setCenter(newCenter);
-    setZoom(11);
-    setCurrentLocationName(loc.displayName.split(',')[0]);
-
-    // Outside the supported region we still move the map (so the user can see
-    // where they searched) but we skip every data query.
-    if (!isWithinCoverage(loc.lat, loc.lon)) {
-      setOutOfCoverageNotice(loc.displayName.split(',')[0]);
-      return;
-    }
-    setOutOfCoverageNotice(null);
-
-    // Keep the push matcher's idea of where we are roughly current.
-    updateAlertLocation(loc.lat, loc.lon);
-
-    // Skip network queries if offline mode is active
-    if (isOfflineMode) return;
-
-    // Fetch live OSM Overpass campsites around this location
-    setIsSearchingAi(true);
-    try {
-      const liveOsmSites = await fetchOverpassCampsites(loc.lat, loc.lon, filterState.maxDistanceMiles);
-
-      // Attempt AI search via backend Gemini API proxy if server is active
-      let aiSpots: Campsite[] = [];
-      try {
-        const aiRes = await fetch('/api/camping-ai', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            locationName: loc.displayName.split(',')[0],
-            lat: loc.lat,
-            lon: loc.lon
-          })
-        });
-        if (aiRes.ok) {
-          const aiData = await aiRes.json();
-          if (aiData.spots && Array.isArray(aiData.spots)) {
-            aiSpots = aiData.spots;
-          }
-        }
-      } catch (e) {
-        console.warn('AI camping endpoint unavailable:', e);
+      // Outside the supported region we still move the map, so the user can see
+      // where they searched, but every data query is skipped.
+      if (!isWithinCoverage(loc.lat, loc.lon)) {
+        setOutOfCoverageNotice(label);
+        return;
       }
+      setOutOfCoverageNotice(null);
 
-      // Merge new sites with existing curated list
-      setCampsites((prev) => {
-        const existingIds = new Set(prev.map((s) => s.id));
-        const filteredLive = liveOsmSites.filter((s) => !existingIds.has(s.id));
-        const filteredAi = aiSpots.filter((s) => !existingIds.has(s.id));
-        return [...prev, ...filteredLive, ...filteredAi];
-      });
-    } catch (err) {
-      console.warn('Location query error:', err);
-    } finally {
-      setIsSearchingAi(false);
-    }
-  };
+      // Keep the alert matcher's idea of where we are roughly current.
+      updateAlertLocation(loc.lat, loc.lon);
 
-  // Locate User via Browser Geolocation with Calgary AB default fallback
-  const handleLocateUser = () => {
+      if (isOfflineMode) return;
+
+      setIsSearchingSites(true);
+      try {
+        const liveSites = await fetchOverpassCampsites(
+          loc.lat, loc.lon, filterState.maxDistanceMiles
+        );
+        setCampsites((prev) => {
+          const existing = new Set(prev.map((s) => s.id));
+          const fresh = liveSites.filter((s) => !existing.has(s.id));
+          return fresh.length > 0 ? [...prev, ...fresh] : prev;
+        });
+      } catch (err) {
+        console.warn('Campsite lookup failed:', err);
+      } finally {
+        setIsSearchingSites(false);
+      }
+    },
+    [isOfflineMode, filterState.maxDistanceMiles]
+  );
+
+  const handleLocateUser = useCallback(() => {
     setIsLocating(true);
 
-    const applyCoords = (lat: number, lon: number, locationLabel: string) => {
-      const coords: [number, number] = [lat, lon];
-      setUserLocation(coords);
-      setCenter(coords);
+    const apply = (lat: number, lon: number, label: string) => {
+      setUserLocation([lat, lon]);
+      setCenter([lat, lon]);
       setZoom(12);
-      setCurrentLocationName(locationLabel);
+      setCurrentLocationName(label);
       setIsLocating(false);
-
       handleSelectLocation({
-        displayName: locationLabel,
-        city: locationLabel.split(',')[0],
+        displayName: label,
+        city: label.split(',')[0],
         stateProvince: '',
         country: '',
         lat,
@@ -220,169 +162,174 @@ export default function App() {
       });
     };
 
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          applyCoords(pos.coords.latitude, pos.coords.longitude, 'My Current Position');
-        },
-        async (err) => {
-          console.warn('Geolocation direct lookup failed or denied:', err);
-          // Fallback to Calgary, AB default when iframe/browser geolocation fails
-          applyCoords(51.0447, -114.0719, 'Calgary, AB');
-        },
-        { enableHighAccuracy: true, timeout: 8000 }
-      );
-    } else {
-      applyCoords(51.0447, -114.0719, 'Calgary, AB');
+    if (!('geolocation' in navigator)) {
+      apply(HOME_CENTER[0], HOME_CENTER[1], HOME_LABEL);
+      return;
     }
-  };
 
-  // Toggle Save Campsite
-  const handleToggleSave = async (site: Campsite, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+    navigator.geolocation.getCurrentPosition(
+      (pos) => apply(pos.coords.latitude, pos.coords.longitude, 'My current position'),
+      (err) => {
+        // Denied, or blocked inside an iframe. Fall back home rather than
+        // leaving the user staring at a spinner.
+        console.warn('Geolocation unavailable:', err.message);
+        apply(HOME_CENTER[0], HOME_CENTER[1], HOME_LABEL);
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }, [handleSelectLocation]);
+
+  // Stable identity: MapComponent rebuilds its marker cluster whenever this
+  // changes, so an inline arrow here would rebuild every pin on every render.
+  const handleSelectMapCampsite = useCallback((site: Campsite) => {
+    setSelectedCampsite(site);
+    setCenter([site.latitude, site.longitude]);
+  }, []);
+
+  const handleToggleSave = useCallback(async (site: Campsite, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     await toggleSaveCampsite(site);
-    const updatedSaved = await getSavedCampsites();
-    setSavedSites(updatedSaved);
-  };
+    setSavedSites(await getSavedCampsites());
+  }, []);
 
-  // Add Custom Campsite
-  const handleAddCustomSite = async (site: Campsite) => {
+  const handleAddCustomSite = useCallback(async (site: Campsite) => {
     await addCustomCampsite(site);
     setCampsites((prev) => [site, ...prev]);
     setSelectedCampsite(site);
     setCenter([site.latitude, site.longitude]);
-  };
+  }, []);
 
-  // Add Review
-  const handleAddReview = (siteId: string, review: CamperReview) => {
-    setCampsites((prev) =>
-      prev.map((site) => {
-        if (site.id === siteId) {
-          const updatedReviews = [review, ...site.reviews];
-          const newAvgRating = parseFloat(
-            (
-              updatedReviews.reduce((acc, r) => acc + r.rating, 0) / updatedReviews.length
-            ).toFixed(1)
-          );
-          return {
-            ...site,
-            reviews: updatedReviews,
-            rating: newAvgRating,
-            reviewCount: updatedReviews.length
-          };
-        }
-        return site;
-      })
-    );
-    if (detailModalSite && detailModalSite.id === siteId) {
-      setDetailModalSite((prev) =>
-        prev
-          ? {
-              ...prev,
-              reviews: [review, ...prev.reviews],
-              reviewCount: prev.reviewCount + 1
-            }
-          : null
-      );
-    }
-  };
-
-  // Apply every active filter, then sort.
-  const filteredCampsites = useMemo(() => {
-    // Ordered loosest -> strictest so we can compare against the user's ceiling.
-    const roadAccessRank: Record<RoadAccess, number> = {
-      paved: 0, gravel: 1, high_clearance: 2, '4x4_only': 3
+  const handleAddReview = useCallback((siteId: string, review: CamperReview) => {
+    const applyReview = (site: Campsite): Campsite => {
+      const reviews = [review, ...site.reviews];
+      const average = reviews.reduce((acc, r) => acc + r.rating, 0) / reviews.length;
+      return {
+        ...site,
+        reviews,
+        rating: Number(average.toFixed(1)),
+        reviewCount: reviews.length
+      };
     };
 
-    const matches = campsites.filter((site) => {
-      const distance = calculateDistanceMiles(center[0], center[1], site.latitude, site.longitude);
-      if (distance > filterState.maxDistanceMiles) return false;
+    setCampsites((prev) => prev.map((s) => (s.id === siteId ? applyReview(s) : s)));
+    setDetailModalSite((prev) => (prev && prev.id === siteId ? applyReview(prev) : prev));
+  }, []);
 
+  /**
+   * Filter and sort in one pass.
+   *
+   * Distance is computed once per site and carried through, rather than being
+   * recalculated inside both the filter predicate and the sort comparator
+   * (which ran Haversine O(n log n) extra times on every keystroke).
+   */
+  const filteredCampsites = useMemo(() => {
+    const [lat, lon] = center;
+
+    const withDistance = campsites.map((site) => ({
+      site,
+      distance: distanceMiles(lat, lon, site.latitude, site.longitude)
+    }));
+
+    const matches = withDistance.filter(({ site, distance }) => {
+      if (distance > filterState.maxDistanceMiles) return false;
       if (filterState.landTypes.length > 0 && !filterState.landTypes.includes(site.landType)) {
         return false;
       }
 
       const { amenities } = site;
-
       if (filterState.waterOnly && amenities.water === 'none') return false;
       if (filterState.toiletOnly && amenities.toilet === 'none') return false;
       if (filterState.petFriendlyOnly && !amenities.petFriendly) return false;
 
       if (filterState.cellSignalOnly) {
-        const bestSignal = Math.max(
+        const best = Math.max(
           amenities.cellSignal.verizon, amenities.cellSignal.att, amenities.cellSignal.tmobile
         );
-        if (bestSignal < 2) return false;
+        if (best < 2) return false;
       }
 
-      if (filterState.rigLengthMinFt > 0 &&
-          (amenities.maxRvLengthFeet ?? 0) < filterState.rigLengthMinFt) {
+      if (
+        filterState.rigLengthMinFt > 0 &&
+        (amenities.maxRvLengthFeet ?? 0) < filterState.rigLengthMinFt
+      ) {
         return false;
       }
 
       if (filterState.roadAccessMax !== 'all') {
-        const ceiling = roadAccessRank[filterState.roadAccessMax];
-        if (roadAccessRank[amenities.roadAccess] > ceiling) return false;
+        if (ROAD_ACCESS_RANK[amenities.roadAccess] > ROAD_ACCESS_RANK[filterState.roadAccessMax]) {
+          return false;
+        }
       }
 
       return true;
     });
 
-    return matches.sort((a, b) => {
+    matches.sort((a, b) => {
       switch (filterState.sortBy) {
-        case 'rating': return b.rating - a.rating;
-        case 'name': return a.name.localeCompare(b.name);
-        case 'stay_limit': return b.amenities.stayLimitDays - a.amenities.stayLimitDays;
+        case 'rating': return b.site.rating - a.site.rating;
+        case 'name': return a.site.name.localeCompare(b.site.name);
+        case 'stay_limit':
+          return b.site.amenities.stayLimitDays - a.site.amenities.stayLimitDays;
         case 'distance':
-        default: {
-          const distA = calculateDistanceMiles(center[0], center[1], a.latitude, a.longitude);
-          const distB = calculateDistanceMiles(center[0], center[1], b.latitude, b.longitude);
-          return distA - distB;
-        }
+        default: return a.distance - b.distance;
       }
     });
+
+    return matches;
   }, [campsites, center, filterState]);
 
-  // Number of filters deviating from defaults, shown as a badge.
-  const activeFilterCount = useMemo(() => {
-    let count = 0;
-    if (filterState.landTypes.length < 5) count += 1;
-    if (filterState.waterOnly) count += 1;
-    if (filterState.toiletOnly) count += 1;
-    if (filterState.cellSignalOnly) count += 1;
-    if (filterState.petFriendlyOnly) count += 1;
-    if (filterState.rigLengthMinFt > 0) count += 1;
-    if (filterState.roadAccessMax !== 'all') count += 1;
-    if (filterState.maxDistanceMiles !== 500) count += 1;
-    return count;
-  }, [filterState]);
+  const distanceById = useMemo(() => {
+    const map = new Map<string, number>();
+    filteredCampsites.forEach(({ site, distance }) => map.set(site.id, distance));
+    return map;
+  }, [filteredCampsites]);
 
-  const resetFilters = () =>
-    setFilterState((prev) => ({
+  const visibleSites = useMemo(
+    () => filteredCampsites.map((entry) => entry.site),
+    [filteredCampsites]
+  );
+
+  const activeFilterCount = useMemo(() => countActiveFilters(filterState), [filterState]);
+
+  const resetFilters = useCallback(
+    () => setFilterState((prev) => ({
       ...prev,
-      landTypes: ['blm', 'usfs', 'state_forest', 'dispersed', 'crown_land'],
-      waterOnly: false, toiletOnly: false, cellSignalOnly: false, petFriendlyOnly: false,
-      rigLengthMinFt: 0, roadAccessMax: 'all', maxDistanceMiles: 500, sortBy: 'distance'
-    }));
+      ...DEFAULT_FILTERS,
+      landTypes: [...ALL_LAND_TYPES]
+    })),
+    []
+  );
 
-  const savedIdsSet = useMemo(() => new Set(savedSites.map((s) => s.id)), [savedSites]);
+  const savedIds = useMemo(() => new Set(savedSites.map((s) => s.id)), [savedSites]);
+
+  const renderCard = (site: Campsite) => (
+    <CampsiteCard
+      key={site.id}
+      campsite={site}
+      isSelected={selectedCampsite?.id === site.id}
+      isSaved={savedIds.has(site.id)}
+      onSelect={setSelectedCampsite}
+      onToggleSave={handleToggleSave}
+      onOpenDetail={setDetailModalSite}
+      distanceMiles={distanceById.get(site.id)}
+    />
+  );
 
   return (
-    <div className={`${isMobileFrame ? 'min-h-screen' : 'h-screen'} bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]`}>
-      {/* React Native Frame Wrapper (provides optional mobile app UI frame) */}
+    <div
+      className={`${isMobileFrame ? 'min-h-screen' : 'h-screen'} bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]`}
+    >
       <ReactNativeFrame
         isMobileFrame={isMobileFrame}
         activeTab={activeView}
-        onTabChange={(view) => setActiveView(view)}
+        onTabChange={setActiveView}
         savedCount={savedSites.length}
       >
-        {/* Navigation Bar */}
         <Navbar
           activeView={activeView}
           setActiveView={setActiveView}
           filterState={filterState}
           setFilterState={setFilterState}
-          currentLocationName={currentLocationName}
           onSelectLocation={handleSelectLocation}
           onLocateUser={handleLocateUser}
           isLocating={isLocating}
@@ -405,196 +352,150 @@ export default function App() {
           savedCount={savedSites.length}
         />
 
-        {/* Main Content View Switcher */}
         <main id="main" className="flex-1 relative flex flex-col overflow-hidden">
-          {/* View 1: MAP VIEW */}
+          {/* ---------------------------------------------------------- MAP */}
           {activeView === 'map' && (
             <div className="relative w-full h-full flex flex-col overflow-hidden">
-              {/* Map Canvas */}
               <div className="flex-1 relative min-h-[300px]">
                 <ErrorBoundary fallbackLabel="The map failed to load">
-                <MapComponent
-                  campsites={filteredCampsites}
-                  selectedCampsite={selectedCampsite}
-                  onSelectCampsite={(site) => {
-                    setSelectedCampsite(site);
-                    setCenter([site.latitude, site.longitude]);
-                  }}
-                  center={center}
-                  zoom={zoom}
-                  userLocation={userLocation}
-                  isOfflineMode={isOfflineMode}
-                  onOpenDetailModal={(site) => setSheetSite(site)}
-                  onVisibleCampsitesChange={setVisibleMapCampsites}
-                  onLocateUser={handleLocateUser}
-                  isLocating={isLocating}
-                />
+                  <MapComponent
+                    campsites={visibleSites}
+                    selectedCampsite={selectedCampsite}
+                    onSelectCampsite={handleSelectMapCampsite}
+                    center={center}
+                    zoom={zoom}
+                    userLocation={userLocation}
+                    isOfflineMode={isOfflineMode}
+                    onOpenDetailModal={setSheetSite}
+                    onVisibleCampsitesChange={setVisibleMapCampsites}
+                    onLocateUser={handleLocateUser}
+                    isLocating={isLocating}
+                  />
                 </ErrorBoundary>
 
-                {/* AI & Live Data Loading Banner with Darting Looking Glass */}
-                {isSearchingAi && (
-                  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5">
+                {isSearchingSites && (
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
                     <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
-                    <span>Exploring public lands...</span>
+                    <span>Exploring public lands…</span>
+                  </div>
+                )}
+
+                {outOfCoverageNotice && (
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-[11px] flex items-start gap-2 anim-in-up">
+                    <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>{outOfCoverageNotice}</strong> is outside our coverage.
+                      Wandrlust currently supports {COVERAGE_LABEL}, so campsite and
+                      boundary data is unavailable here.
+                    </span>
                   </div>
                 )}
               </div>
 
-              {/* Bottom Cards Slider for Map Mode */}
+              {/* Horizontal card strip for whatever is on screen right now */}
               <div className="bg-slate-900/95 border-t border-slate-800 p-3 z-30 backdrop-blur-md">
                 <div className="max-w-7xl mx-auto flex items-center justify-between mb-2 px-1">
                   <div className="text-xs text-slate-300 font-semibold flex items-center gap-2">
                     <Tent className="w-4 h-4 text-emerald-400" />
                     <span>
-                      Showing {visibleMapCampsites.length} location{visibleMapCampsites.length === 1 ? '' : 's'} on active map
+                      {visibleMapCampsites.length} location
+                      {visibleMapCampsites.length === 1 ? '' : 's'} in view
                     </span>
                   </div>
                   <button
                     onClick={() => setActiveView('list')}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 font-bold flex items-center gap-1"
+                    className="text-xs text-emerald-400 hover:text-emerald-300 font-bold"
                   >
-                    Switch to Full List ({filteredCampsites.length})
+                    See all {visibleSites.length}
                   </button>
                 </div>
 
-                {/* Horizontal Scrollable Cards */}
-                <div className="flex gap-3 overflow-x-auto pb-2 pt-1 no-scrollbar">
+                <div className="flex gap-3 overflow-x-auto pb-2 pt-1 scroll-soft">
                   {visibleMapCampsites.length === 0 ? (
-                    <div className="text-xs text-slate-400 py-3 px-2 italic">
-                      No campsites visible in this current map area. Pan or zoom out to discover locations.
-                    </div>
+                    <p className="text-xs text-slate-400 py-3 px-2 italic">
+                      No campsites in this part of the map. Pan or zoom out to find some.
+                    </p>
                   ) : (
-                    visibleMapCampsites.map((site, i) => {
-                      const dist = calculateDistanceMiles(center[0], center[1], site.latitude, site.longitude);
-                      return (
-                        <div key={site.id} className="w-72 shrink-0">
-                          <CampsiteCard
-                            campsite={site}
-                            isSelected={selectedCampsite?.id === site.id}
-                            isSaved={savedIdsSet.has(site.id)}
-                            onSelect={(s) => {
-                              setSelectedCampsite(s);
-                              setCenter([s.latitude, s.longitude]);
-                            }}
-                            onToggleSave={handleToggleSave}
-                            onOpenDetail={(s) => setSheetSite(s)}
-                            distanceMiles={dist}
-                          />
-                        </div>
-                      );
-                    })
+                    visibleMapCampsites.map((site) => (
+                      <div key={site.id} className="w-72 shrink-0">
+                        {renderCard(site)}
+                      </div>
+                    ))
                   )}
                 </div>
               </div>
             </div>
           )}
 
-          {/* View 2: LIST VIEW */}
+          {/* --------------------------------------------------------- LIST */}
           {activeView === 'list' && (
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                 <div>
                   <h2 className="font-['Outfit'] font-bold text-xl text-slate-100">
-                    Dispersed Campsites near {currentLocationName}
+                    Dispersed campsites near {currentLocationName}
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Showing {filteredCampsites.length} BLM, USFS, and Public Land locations within {filterState.maxDistanceMiles} miles
+                    {visibleSites.length} public land site
+                    {visibleSites.length === 1 ? '' : 's'} within{' '}
+                    {filterState.maxDistanceMiles} miles
                   </p>
                 </div>
+                <button
+                  onClick={() => setIsFilterOpen(true)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-400" />
+                  Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+                </button>
               </div>
 
-              {filteredCampsites.length === 0 ? (
-                <div className="py-16 text-center space-y-3 bg-slate-900/60 rounded-3xl border border-slate-800 p-8">
-                  <WifiOff className="w-12 h-12 text-slate-600 mx-auto" />
-                  <h3 className="font-bold text-lg text-slate-200">No Campsites Match Your Filters</h3>
-                  <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Try expanding your search radius, selecting more land types, or clearing amenity constraints.
-                  </p>
-                  <button
-                    onClick={() =>
-                      setFilterState((prev) => ({
-                        ...prev,
-                        maxDistanceMiles: 100,
-                        landTypes: ['blm', 'usfs', 'state_forest', 'dispersed', 'crown_land'],
-                        waterOnly: false,
-                        toiletOnly: false
-                      }))
-                    }
-                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
-                  >
-                    Expand Search to 100 Miles
-                  </button>
-                </div>
+              {visibleSites.length === 0 ? (
+                <EmptyState
+                  icon={SlidersHorizontal}
+                  title="Nothing matches those filters"
+                  description="Try widening the search radius, allowing more land types, or clearing the amenity requirements."
+                  action={{ label: 'Reset filters', onClick: resetFilters }}
+                />
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {filteredCampsites.map((site, i) => {
-                    const dist = calculateDistanceMiles(center[0], center[1], site.latitude, site.longitude);
-                    return (
-                      <CampsiteCard
-                        key={site.id}
-                        campsite={site}
-                        isSelected={selectedCampsite?.id === site.id}
-                        isSaved={savedIdsSet.has(site.id)}
-                        onSelect={(s) => setSelectedCampsite(s)}
-                        onToggleSave={handleToggleSave}
-                        onOpenDetail={(s) => setSheetSite(s)}
-                        distanceMiles={dist}
-                      />
-                    );
-                  })}
+                  {visibleSites.map(renderCard)}
                 </div>
               )}
             </div>
           )}
 
-          {/* View 3: SAVED OFFLINE VIEW */}
+          {/* -------------------------------------------------------- SAVED */}
           {activeView === 'saved' && (
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                 <div>
                   <h2 className="font-['Outfit'] font-bold text-xl text-slate-100 flex items-center gap-2">
                     <Bookmark className="w-5 h-5 text-amber-400" />
-                    Saved Offline Campsites ({savedSites.length})
+                    Saved offline ({savedSites.length})
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Locations stored locally for offline wilderness navigation without cell service
+                    Stored on this device, so they work with no cell service
                   </p>
                 </div>
                 <button
                   onClick={() => setIsOfflineManagerOpen(true)}
                   className="px-3 py-1.5 rounded-xl bg-teal-600/30 text-teal-300 border border-teal-500/40 text-xs font-semibold"
                 >
-                  Manage Map Packages
+                  Manage map packs
                 </button>
               </div>
 
               {savedSites.length === 0 ? (
-                <div className="py-16 text-center space-y-3 bg-slate-900/60 rounded-3xl border border-slate-800 p-8">
-                  <Bookmark className="w-12 h-12 text-slate-600 mx-auto" />
-                  <h3 className="font-bold text-lg text-slate-200">No Saved Campsites Yet</h3>
-                  <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Click the bookmark icon on any campsite card to save full details, coordinates, and images to your device for offline trip access.
-                  </p>
-                  <button
-                    onClick={() => setActiveView('map')}
-                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
-                  >
-                    Explore Free Campsites Map
-                  </button>
-                </div>
+                <EmptyState
+                  icon={Bookmark}
+                  title="No saved campsites yet"
+                  description="Tap the bookmark on any campsite to keep its details, coordinates and photos on your device for the trip."
+                  action={{ label: 'Explore the map', onClick: () => setActiveView('map') }}
+                />
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {savedSites.map((site, i) => (
-                    <CampsiteCard
-                      key={site.id}
-                      campsite={site}
-                      isSelected={selectedCampsite?.id === site.id}
-                      isSaved={true}
-                      onSelect={(s) => setSelectedCampsite(s)}
-                      onToggleSave={handleToggleSave}
-                      onOpenDetail={(s) => setSheetSite(s)}
-                    />
-                  ))}
+                  {savedSites.map(renderCard)}
                 </div>
               )}
             </div>
@@ -602,11 +503,11 @@ export default function App() {
         </main>
       </ReactNativeFrame>
 
-      {/* Modals & Slide-overs */}
+      {/* ------------------------------------------------ Modals & panels */}
       {detailModalSite && (
         <CampsiteDetailModal
           campsite={detailModalSite}
-          isSaved={savedIdsSet.has(detailModalSite.id)}
+          isSaved={savedIds.has(detailModalSite.id)}
           onClose={() => setDetailModalSite(null)}
           onToggleSave={handleToggleSave}
           onAddReview={handleAddReview}
@@ -618,7 +519,7 @@ export default function App() {
         onClose={() => setIsOfflineManagerOpen(false)}
         currentLocationName={currentLocationName}
         center={center}
-        campsitesInView={filteredCampsites}
+        campsitesInView={visibleSites}
         isOfflineMode={isOfflineMode}
         setIsOfflineMode={setIsOfflineMode}
       />
@@ -638,16 +539,16 @@ export default function App() {
         filterState={filterState}
         setFilterState={setFilterState}
         onReset={resetFilters}
-        totalResultsCount={filteredCampsites.length}
+        totalResultsCount={visibleSites.length}
       />
 
       <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
 
       <CampsiteBottomSheet
         campsite={sheetSite}
-        isSaved={sheetSite ? savedIdsSet.has(sheetSite.id) : false}
+        isSaved={sheetSite ? savedIds.has(sheetSite.id) : false}
         onClose={() => setSheetSite(null)}
-        onToggleSave={(site) => handleToggleSave(site)}
+        onToggleSave={handleToggleSave}
         onRequireAuth={() => setIsAuthOpen(true)}
       />
 
@@ -693,5 +594,3 @@ export default function App() {
     </div>
   );
 }
-
-

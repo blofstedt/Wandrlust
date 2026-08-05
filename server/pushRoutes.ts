@@ -1,14 +1,15 @@
 /**
  * Web Push delivery.
  *
+ *   GET  /api/push/status        is push configured on this deployment
  *   POST /api/push/resubscribe   service worker renewed a rotated subscription
  *   POST /api/push/test          send yourself one (auth required)
- *   POST /api/push/dispatch      fan out queued alerts (service_role only)
+ *   POST /api/push/dispatch      fan out queued alerts (shared secret required)
  *
  * Requires `web-push` and VAPID keys:
  *
  *   npm install web-push
- *   npx tsx scripts/generateVapidKeys.ts
+ *   npm run vapid
  *
  * DESIGN NOTE
  *
@@ -21,16 +22,6 @@
 import type { Express, Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-let webpush: any = null;
-try {
-  // Optional dependency: the app runs fine without push configured.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  webpush = require('web-push');
-} catch {
-  webpush = null;
-}
-
 const VAPID_PUBLIC = process.env.VITE_VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:alerts@example.com';
@@ -38,16 +29,43 @@ const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:alerts@example.com';
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const pushConfigured = Boolean(webpush && VAPID_PUBLIC && VAPID_PRIVATE);
-
-if (pushConfigured) {
-  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
-}
-
 const admin =
   SUPABASE_URL && SERVICE_KEY
     ? createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } })
     : null;
+
+/**
+ * `web-push` is optional — the app runs fine without push configured.
+ *
+ * This used to be a bare `require('web-push')`. The project is ESM
+ * ("type": "module"), so `require` is not defined, the try/catch swallowed the
+ * ReferenceError, and push silently never worked even when the package WAS
+ * installed. A dynamic import works in both dev (tsx) and the bundled build.
+ */
+let webpush: any = null;
+let loading: Promise<void> | null = null;
+
+const loadWebPush = async (): Promise<void> => {
+  if (webpush || !VAPID_PUBLIC || !VAPID_PRIVATE) return;
+  if (!loading) {
+    loading = (async () => {
+      try {
+        const mod: any = await import('web-push');
+        webpush = mod?.default ?? mod;
+        webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
+      } catch {
+        webpush = null;
+        console.warn('Push disabled: `npm install web-push` to enable notifications.');
+      }
+    })();
+  }
+  await loading;
+};
+
+const isPushReady = async (): Promise<boolean> => {
+  await loadWebPush();
+  return Boolean(webpush && VAPID_PUBLIC && VAPID_PRIVATE);
+};
 
 export interface PushPayload {
   title: string;
@@ -63,11 +81,14 @@ export interface PushPayload {
 
 interface SubscriptionRow {
   id: number;
+  user_id?: string;
   endpoint: string;
   p256dh: string;
   auth: string;
   failure_count: number;
 }
+
+const SUBSCRIPTION_COLUMNS = 'id, user_id, endpoint, p256dh, auth, failure_count';
 
 /**
  * Send to one subscription.
@@ -79,14 +100,11 @@ const sendOne = async (
   sub: SubscriptionRow,
   payload: PushPayload
 ): Promise<{ ok: boolean; gone: boolean; error?: string }> => {
-  if (!pushConfigured) return { ok: false, gone: false, error: 'push not configured' };
+  if (!(await isPushReady())) return { ok: false, gone: false, error: 'push not configured' };
 
   try {
     await webpush.sendNotification(
-      {
-        endpoint: sub.endpoint,
-        keys: { p256dh: sub.p256dh, auth: sub.auth }
-      },
+      { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
       JSON.stringify(payload),
       { TTL: 3600, urgency: payload.family === 'fire' ? 'high' : 'normal' }
     );
@@ -130,9 +148,10 @@ const markSubscriptionResult = async (
 };
 
 export const registerPushRoutes = (app: Express): void => {
-  app.get('/api/push/status', (_req: Request, res: Response) => {
+  app.get('/api/push/status', async (_req: Request, res: Response) => {
+    const configured = await isPushReady();
     res.json({
-      configured: pushConfigured,
+      configured,
       hasWebPushLib: Boolean(webpush),
       hasKeys: Boolean(VAPID_PUBLIC && VAPID_PRIVATE),
       publicKey: VAPID_PUBLIC ?? null
@@ -144,11 +163,11 @@ export const registerPushRoutes = (app: Express): void => {
     if (!admin) return res.status(503).json({ error: 'database not configured' });
 
     const { oldEndpoint, subscription } = req.body ?? {};
-    if (!subscription?.endpoint || !subscription?.keys?.p256dh) {
+    if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
       return res.status(400).json({ error: 'invalid subscription' });
     }
 
-    // Carry the user across from the old row; the SW has no session.
+    // Carry the user across from the old row; the service worker has no session.
     let userId: string | null = null;
     if (oldEndpoint) {
       const { data } = await admin
@@ -157,7 +176,10 @@ export const registerPushRoutes = (app: Express): void => {
         .eq('endpoint', oldEndpoint)
         .maybeSingle();
       userId = data?.user_id ?? null;
-      await admin.from('push_subscriptions').delete().eq('endpoint', oldEndpoint);
+
+      // Only drop the old row once we know who it belonged to, otherwise a
+      // failed lookup orphans the subscription entirely.
+      if (userId) await admin.from('push_subscriptions').delete().eq('endpoint', oldEndpoint);
     }
 
     if (!userId) return res.status(202).json({ ok: false, reason: 'unknown previous endpoint' });
@@ -179,7 +201,7 @@ export const registerPushRoutes = (app: Express): void => {
 
   /** Send a test notification to the caller's own devices. */
   app.post('/api/push/test', async (req: Request, res: Response) => {
-    if (!pushConfigured) return res.status(503).json({ error: 'push not configured' });
+    if (!(await isPushReady())) return res.status(503).json({ error: 'push not configured' });
     if (!admin) return res.status(503).json({ error: 'database not configured' });
 
     const token = (req.headers.authorization ?? '').replace(/^Bearer /i, '');
@@ -190,12 +212,10 @@ export const registerPushRoutes = (app: Express): void => {
 
     const { data: subs } = await admin
       .from('push_subscriptions')
-      .select('id, endpoint, p256dh, auth, failure_count')
+      .select(SUBSCRIPTION_COLUMNS)
       .eq('user_id', userData.user.id);
 
-    if (!subs || subs.length === 0) {
-      return res.status(404).json({ error: 'no registered devices' });
-    }
+    if (!subs || subs.length === 0) return res.status(404).json({ error: 'no registered devices' });
 
     let sent = 0;
     for (const sub of subs as SubscriptionRow[]) {
@@ -215,12 +235,11 @@ export const registerPushRoutes = (app: Express): void => {
   /**
    * Drain the notification queue.
    *
-   * Call from a scheduler (pg_cron via HTTP, GitHub Action, Render cron…)
-   * every few minutes. Protected by a shared secret, since it can send to
-   * every user.
+   * Call from a scheduler every few minutes. Protected by a shared secret,
+   * since it can send to every user.
    */
   app.post('/api/push/dispatch', async (req: Request, res: Response) => {
-    if (!pushConfigured) return res.status(503).json({ error: 'push not configured' });
+    if (!(await isPushReady())) return res.status(503).json({ error: 'push not configured' });
     if (!admin) return res.status(503).json({ error: 'database not configured' });
 
     const secret = req.headers['x-dispatch-secret'];
@@ -239,29 +258,43 @@ export const registerPushRoutes = (app: Express): void => {
       .order('created_at', { ascending: true })
       .limit(batchSize);
 
-    if (!queued || queued.length === 0) {
-      return res.json({ ok: true, processed: 0, sent: 0 });
-    }
+    if (!queued || queued.length === 0) return res.json({ ok: true, processed: 0, sent: 0 });
 
+    // One query for every device in the batch, instead of one query per queued
+    // notification. A 200-item batch went from 200 round trips to 1.
+    const userIds = Array.from(new Set((queued as any[]).map((item) => item.user_id)));
+    const { data: allSubs } = await admin
+      .from('push_subscriptions')
+      .select(SUBSCRIPTION_COLUMNS)
+      .in('user_id', userIds);
+
+    const subsByUser = new Map<string, SubscriptionRow[]>();
+    (allSubs as SubscriptionRow[] | null)?.forEach((sub) => {
+      if (!sub.user_id) return;
+      const list = subsByUser.get(sub.user_id) ?? [];
+      list.push(sub);
+      subsByUser.set(sub.user_id, list);
+    });
+
+    const now = new Date().toISOString();
     let sent = 0;
     let failed = 0;
+    let skipped = 0;
 
     for (const item of queued as any[]) {
-      const { data: subs } = await admin
-        .from('push_subscriptions')
-        .select('id, endpoint, p256dh, auth, failure_count')
-        .eq('user_id', item.user_id);
+      const subs = subsByUser.get(item.user_id) ?? [];
 
-      if (!subs || subs.length === 0) {
+      if (subs.length === 0) {
         await admin
           .from('notification_queue')
-          .update({ status: 'skipped', processed_at: new Date().toISOString(), note: 'no devices' })
+          .update({ status: 'skipped', processed_at: now, note: 'no devices' })
           .eq('id', item.id);
+        skipped += 1;
         continue;
       }
 
       let anySent = false;
-      for (const sub of subs as SubscriptionRow[]) {
+      for (const sub of subs) {
         const result = await sendOne(sub, {
           title: item.title,
           body: item.body,
@@ -278,16 +311,13 @@ export const registerPushRoutes = (app: Express): void => {
 
       await admin
         .from('notification_queue')
-        .update({
-          status: anySent ? 'sent' : 'failed',
-          processed_at: new Date().toISOString()
-        })
+        .update({ status: anySent ? 'sent' : 'failed', processed_at: now })
         .eq('id', item.id);
 
       if (anySent) sent += 1;
       else failed += 1;
     }
 
-    return res.json({ ok: true, processed: queued.length, sent, failed });
+    return res.json({ ok: true, processed: queued.length, sent, failed, skipped });
   });
 };

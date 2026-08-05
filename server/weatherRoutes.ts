@@ -13,6 +13,7 @@
  * coordinate never changes.
  */
 import type { Express, Request, Response } from 'express';
+import { classifyHazard, normaliseSeverity, normaliseUrgency } from '../shared/hazards';
 
 const NWS_BASE = 'https://api.weather.gov';
 const ECCC_ALERTS = 'https://api.weather.gc.ca/collections/weather-alerts/items';
@@ -21,9 +22,13 @@ const ECCC_ALERTS = 'https://api.weather.gc.ca/collections/weather-alerts/items'
 const UA = process.env.NWS_USER_AGENT ?? 'wandrlust-app (contact: set NWS_USER_AGENT in .env)';
 const jsonHeaders = { 'User-Agent': UA, Accept: 'application/geo+json' };
 
+const POINT_TTL_MS = 24 * 60 * 60 * 1000;
+const FORECAST_TTL_MS = 10 * 60 * 1000;
+const ALERTS_TTL_MS = 5 * 60 * 1000;
+const MAX_ENTRIES = 500;
+
 interface CacheEntry { at: number; body: unknown; }
 const cache = new Map<string, CacheEntry>();
-const MAX_ENTRIES = 500;
 
 const cached = <T>(key: string, ttlMs: number): T | null => {
   const hit = cache.get(key);
@@ -41,44 +46,18 @@ const store = (key: string, body: unknown): void => {
 };
 
 const getJson = async (url: string, timeoutMs = 9000): Promise<any | null> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(url, { headers: jsonHeaders, signal: controller.signal });
-    clearTimeout(timer);
     if (!res.ok) return null;
     return await res.json();
   } catch {
     return null;
+  } finally {
+    // Was leaking a pending timer on every successful request.
+    clearTimeout(timer);
   }
-};
-
-type HazardFamily = 'fire' | 'flood' | 'storm' | 'winter' | 'heat' | 'wind' | 'other';
-
-/**
- * Fire is checked FIRST because "Fire Weather Watch" would otherwise fall
- * through to another family, and getting fire wrong is the most dangerous
- * failure here.
- */
-const classifyHazard = (eventName: string): HazardFamily => {
-  const e = (eventName ?? '').toLowerCase();
-  if (/red flag|fire weather|wildfire|fire danger|burn ban|extreme fire/.test(e)) return 'fire';
-  if (/flood|flash flood|hydrologic|dam break|seiche|storm surge/.test(e)) return 'flood';
-  if (/tornado|thunderstorm|hurricane|tropical|typhoon|severe weather|squall|waterspout/.test(e)) return 'storm';
-  if (/snow|blizzard|ice|freez|winter|frost|sleet|avalanche|cold|chill/.test(e)) return 'winter';
-  if (/heat|hot/.test(e)) return 'heat';
-  if (/wind|gale|dust/.test(e)) return 'wind';
-  return 'other';
-};
-
-const normaliseSeverity = (raw: string | undefined): string => {
-  const s = (raw ?? '').toLowerCase();
-  return ['extreme', 'severe', 'moderate', 'minor'].includes(s) ? s : 'unknown';
-};
-
-const normaliseUrgency = (raw: string | undefined): string => {
-  const u = (raw ?? '').toLowerCase();
-  return ['immediate', 'expected', 'future', 'past'].includes(u) ? u : 'unknown';
 };
 
 const nwsAlertToHazard = (feature: any) => {
@@ -102,11 +81,36 @@ const nwsAlertToHazard = (feature: any) => {
   };
 };
 
+const ecccAlertToHazard = (feature: any) => {
+  const p = feature?.properties ?? {};
+  const event = p.alert_type ?? p.headline ?? 'Weather alert';
+  // ECCC encodes urgency in the alert "type": warning > watch > advisory.
+  const kind = String(p.alert_type ?? '').toLowerCase();
+  const severity = kind.includes('warning') ? 'severe' : kind.includes('watch') ? 'moderate' : 'minor';
+
+  return {
+    id: String(p.identifier ?? feature?.id ?? `${event}-${p.effective ?? ''}`),
+    family: classifyHazard(`${event} ${p.headline ?? ''}`),
+    event,
+    headline: p.headline ?? event,
+    description: p.descrip_en ?? p.description ?? '',
+    instruction: p.instruction_en ?? null,
+    severity,
+    urgency: 'expected',
+    certainty: null,
+    areaDescription: p.area ?? p.location ?? '',
+    sender: 'Environment and Climate Change Canada',
+    effective: p.effective ?? null,
+    expires: p.expires ?? null,
+    source: 'eccc' as const
+  };
+};
+
 const fetchNwsPoint = async (lat: number, lon: number) => {
   const key = `nws:point:${lat.toFixed(3)},${lon.toFixed(3)}`;
-  // Grid assignment is stable; cache for a day.
-  const hit = cached<any>(key, 24 * 60 * 60 * 1000);
+  const hit = cached<any>(key, POINT_TTL_MS);
   if (hit) return hit;
+
   const data = await getJson(`${NWS_BASE}/points/${lat.toFixed(4)},${lon.toFixed(4)}`);
   if (data) store(key, data);
   return data;
@@ -139,32 +143,7 @@ const fetchNwsWeather = async (lat: number, lon: number) => {
     : [];
 
   const hazards = Array.isArray(alerts?.features) ? alerts.features.map(nwsAlertToHazard) : [];
-  return { periods, alerts: hazards, timezone, source: 'nws' as const };
-};
-
-const ecccAlertToHazard = (feature: any) => {
-  const p = feature?.properties ?? {};
-  const event = p.alert_type ?? p.headline ?? 'Weather alert';
-  // ECCC encodes urgency in the alert "type": warning > watch > advisory.
-  const kind = String(p.alert_type ?? '').toLowerCase();
-  const severity = kind.includes('warning') ? 'severe' : kind.includes('watch') ? 'moderate' : 'minor';
-
-  return {
-    id: String(p.identifier ?? feature?.id ?? `${event}-${p.effective ?? ''}`),
-    family: classifyHazard(`${event} ${p.headline ?? ''}`),
-    event,
-    headline: p.headline ?? event,
-    description: p.descrip_en ?? p.description ?? '',
-    instruction: p.instruction_en ?? null,
-    severity,
-    urgency: 'expected',
-    certainty: null,
-    areaDescription: p.area ?? p.location ?? '',
-    sender: 'Environment and Climate Change Canada',
-    effective: p.effective ?? null,
-    expires: p.expires ?? null,
-    source: 'eccc' as const
-  };
+  return { periods, alerts: hazards, timezone };
 };
 
 const fetchEcccAlerts = async (lat: number, lon: number, spanDeg = 1.0) => {
@@ -172,6 +151,7 @@ const fetchEcccAlerts = async (lat: number, lon: number, spanDeg = 1.0) => {
     (lon - spanDeg).toFixed(3), (lat - spanDeg).toFixed(3),
     (lon + spanDeg).toFixed(3), (lat + spanDeg).toFixed(3)
   ].join(',');
+
   const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=50&f=json`);
   return Array.isArray(data?.features) ? data.features.map(ecccAlertToHazard) : [];
 };
@@ -180,20 +160,22 @@ const fetchEcccAlerts = async (lat: number, lon: number, spanDeg = 1.0) => {
 const looksUS = (lat: number, lon: number): boolean =>
   lat >= 24.4 && lat <= 49.5 && lon >= -125.1 && lon <= -66.8;
 
+const readCoords = (req: Request, keys: string[]): number[] | null => {
+  const values = keys.map((k) => parseFloat(req.query[k] as string));
+  return values.some((n) => Number.isNaN(n)) ? null : values;
+};
+
 export const registerWeatherRoutes = (app: Express): void => {
   app.get('/api/weather', async (req: Request, res: Response) => {
-    const lat = parseFloat(req.query.lat as string);
-    const lon = parseFloat(req.query.lon as string);
-
-    if (Number.isNaN(lat) || Number.isNaN(lon)) {
-      return res.status(400).json({ error: 'lat and lon are required numbers' });
-    }
+    const coords = readCoords(req, ['lat', 'lon']);
+    if (!coords) return res.status(400).json({ error: 'lat and lon are required numbers' });
+    const [lat, lon] = coords;
 
     const key = `weather:${lat.toFixed(3)},${lon.toFixed(3)}`;
-    const hit = cached<any>(key, 10 * 60 * 1000);
+    const hit = cached<any>(key, FORECAST_TTL_MS);
     if (hit) return res.json(hit);
 
-    let payload: any;
+    let payload: Record<string, unknown>;
 
     if (looksUS(lat, lon)) {
       const nws = await fetchNwsWeather(lat, lon);
@@ -205,9 +187,9 @@ export const registerWeatherRoutes = (app: Express): void => {
         source: nws.periods.length > 0 || nws.alerts.length > 0 ? 'nws' : 'none'
       };
     } else {
-      // Canada: ECCC publishes alerts openly; point forecasts are not
-      // available through the same OGC endpoint, so we return alerts only
-      // and say so rather than inventing a forecast.
+      // Canada: ECCC publishes alerts openly, but point forecasts are not
+      // available through the same OGC endpoint. We return alerts only and say
+      // so, rather than inventing a forecast.
       const alerts = await fetchEcccAlerts(lat, lon);
       payload = {
         updatedAt: new Date().toISOString(),
@@ -216,8 +198,8 @@ export const registerWeatherRoutes = (app: Express): void => {
         alerts,
         source: alerts.length > 0 ? 'eccc' : 'none',
         note:
-          'Environment Canada alerts shown. Point forecasts are not available ' +
-          'from the open ECCC endpoint; see weather.gc.ca for full forecasts.'
+          'Environment Canada alerts shown. Point forecasts are not available from ' +
+          'the open ECCC endpoint; see weather.gc.ca for full forecasts.'
       };
     }
 
@@ -226,17 +208,12 @@ export const registerWeatherRoutes = (app: Express): void => {
   });
 
   app.get('/api/weather/alerts', async (req: Request, res: Response) => {
-    const minLat = parseFloat(req.query.minLat as string);
-    const minLon = parseFloat(req.query.minLon as string);
-    const maxLat = parseFloat(req.query.maxLat as string);
-    const maxLon = parseFloat(req.query.maxLon as string);
+    const coords = readCoords(req, ['minLat', 'minLon', 'maxLat', 'maxLon']);
+    if (!coords) return res.status(400).json({ error: 'minLat, minLon, maxLat, maxLon required' });
+    const [minLat, minLon, maxLat, maxLon] = coords;
 
-    if ([minLat, minLon, maxLat, maxLon].some((n) => Number.isNaN(n))) {
-      return res.status(400).json({ error: 'minLat, minLon, maxLat, maxLon required' });
-    }
-
-    const key = `alerts:${[minLat, minLon, maxLat, maxLon].map((n) => n.toFixed(1)).join(',')}`;
-    const hit = cached<any>(key, 5 * 60 * 1000);
+    const key = `alerts:${coords.map((n) => n.toFixed(1)).join(',')}`;
+    const hit = cached<any>(key, ALERTS_TTL_MS);
     if (hit) return res.json(hit);
 
     const centreLat = (minLat + maxLat) / 2;

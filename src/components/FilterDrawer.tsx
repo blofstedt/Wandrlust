@@ -1,6 +1,9 @@
-import React from 'react';
-import { FilterState, LandType, RoadAccess } from '../types';
+import React, { useEffect } from 'react';
 import { SlidersHorizontal, X, Check, RefreshCw } from 'lucide-react';
+import type { FilterState, LandType, RoadAccess } from '../types';
+import {
+  DISTANCE_MIN_MILES, DISTANCE_MAX_MILES, ROAD_ACCESS_LABEL
+} from '../config/filters';
 
 interface FilterDrawerProps {
   isOpen: boolean;
@@ -11,112 +14,142 @@ interface FilterDrawerProps {
   totalResultsCount: number;
 }
 
+const LAND_TYPE_OPTIONS: { id: LandType; label: string; desc: string }[] = [
+  { id: 'blm', label: 'BLM land', desc: 'Bureau of Land Management' },
+  { id: 'usfs', label: 'National forest', desc: 'USFS dispersed' },
+  { id: 'state_forest', label: 'State lands', desc: 'State recreation' },
+  { id: 'crown_land', label: 'Crown land', desc: 'Canadian public land' },
+  { id: 'dispersed', label: 'Other free spots', desc: 'Community reported' }
+];
+
+const AMENITY_OPTIONS: { key: keyof FilterState; label: string }[] = [
+  { key: 'cellSignalOnly', label: '📶 Cell signal (2+ bars)' },
+  { key: 'waterOnly', label: '💧 Water on site' },
+  { key: 'toiletOnly', label: '🚻 Toilet on site' },
+  { key: 'petFriendlyOnly', label: '🐶 Pet friendly' }
+];
+
 export const FilterDrawer: React.FC<FilterDrawerProps> = ({
-  isOpen,
-  onClose,
-  filterState,
-  setFilterState,
-  onReset,
-  totalResultsCount
+  isOpen, onClose, filterState, setFilterState, onReset, totalResultsCount
 }) => {
+  // Escape closes the drawer, matching every other panel in the app.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
-  const toggleLandType = (type: LandType) => {
-    setFilterState((prev) => {
-      const exists = prev.landTypes.includes(type);
-      if (exists) {
-        return { ...prev, landTypes: prev.landTypes.filter((t) => t !== type) };
-      } else {
-        return { ...prev, landTypes: [...prev.landTypes, type] };
-      }
-    });
-  };
+  const toggleLandType = (type: LandType) =>
+    setFilterState((prev) => ({
+      ...prev,
+      landTypes: prev.landTypes.includes(type)
+        ? prev.landTypes.filter((t) => t !== type)
+        : [...prev.landTypes, type]
+    }));
 
   return (
-    <div className="fixed inset-0 z-[2500] bg-slate-950/70 backdrop-blur-sm flex justify-end">
-      <div className="w-full max-w-md bg-slate-900 border-l border-slate-700 h-full overflow-y-auto p-5 text-slate-100 flex flex-col justify-between shadow-2xl animate-in slide-in-from-right duration-300">
+    <div
+      className="fixed inset-0 z-[2500] bg-slate-950/70 backdrop-blur-sm flex justify-end anim-backdrop"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Filter campsites"
+        className="w-full max-w-md bg-slate-900 border-l border-slate-700 h-full overflow-y-auto p-5 text-slate-100 flex flex-col justify-between shadow-2xl scroll-soft anim-in-right"
+      >
         <div>
-          {/* Header */}
           <div className="flex items-center justify-between pb-4 border-b border-slate-800">
             <div className="flex items-center gap-2">
               <SlidersHorizontal className="w-5 h-5 text-emerald-400" />
-              <h2 className="font-['Outfit'] font-bold text-lg">Filter Campsites</h2>
+              <h2 className="font-['Outfit'] font-bold text-lg">Filter campsites</h2>
             </div>
             <button
               onClick={onClose}
               className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white border border-slate-700"
+              aria-label="Close filters"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
           <div className="py-5 space-y-6 text-xs">
-            {/* Sort By */}
+            {/* Sort */}
             <div>
-              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
-                Sort Results By
+              <label
+                htmlFor="filter-sort"
+                className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2"
+              >
+                Sort results by
               </label>
               <select
+                id="filter-sort"
                 value={filterState.sortBy}
                 onChange={(e) =>
                   setFilterState((prev) => ({ ...prev, sortBy: e.target.value as FilterState['sortBy'] }))
                 }
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               >
-                <option value="distance">Nearest Distance</option>
-                <option value="rating">Highest Rating</option>
-                <option value="stay_limit">Longest Stay Limit</option>
-                <option value="name">Alphabetical</option>
+                <option value="distance">Nearest first</option>
+                <option value="rating">Highest rated</option>
+                <option value="stay_limit">Longest stay limit</option>
+                <option value="name">A–Z</option>
               </select>
             </div>
 
-            {/* Land Type Filter */}
+            {/* Land type */}
             <div>
-              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
-                Land Ownership & Designation
-              </label>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
+                Land ownership
+              </span>
               <div className="grid grid-cols-2 gap-2">
-                {[
-                  { id: 'blm', label: 'BLM Land', desc: 'Bureau of Land Management' },
-                  { id: 'usfs', label: 'National Forest', desc: 'USFS Dispersed' },
-                  { id: 'state_forest', label: 'State Lands', desc: 'State Recreation' },
-                  { id: 'crown_land', label: 'Crown Land', desc: 'Canada Public Land' }
-                ].map((item) => {
-                  const isChecked = filterState.landTypes.includes(item.id as LandType);
+                {LAND_TYPE_OPTIONS.map((item, i) => {
+                  const checked = filterState.landTypes.includes(item.id);
                   return (
                     <button
                       key={item.id}
                       type="button"
-                      onClick={() => toggleLandType(item.id as LandType)}
-                      className={`p-2.5 rounded-xl border text-left transition-all ${
-                        isChecked
+                      data-stagger={Math.min(i, 8)}
+                      aria-pressed={checked}
+                      onClick={() => toggleLandType(item.id)}
+                      className={`p-2.5 rounded-xl border text-left anim-in-up ${
+                        checked
                           ? 'bg-emerald-950/70 border-emerald-500/80 text-emerald-200'
                           : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
                       }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold">{item.label}</span>
-                        {isChecked && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                      </div>
-                      <div className="text-[10px] text-slate-400 mt-0.5">{item.desc}</div>
+                      <span className="flex items-center justify-between font-bold">
+                        {item.label}
+                        {checked && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+                      </span>
+                      <span className="block text-[10px] text-slate-400 mt-0.5">{item.desc}</span>
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            {/* Radius Filter */}
+            {/* Radius */}
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Search Radius (Miles)
+                <label
+                  htmlFor="filter-radius"
+                  className="text-[11px] font-bold text-slate-400 uppercase tracking-wider"
+                >
+                  Search radius
                 </label>
-                <span className="font-bold text-emerald-400">{filterState.maxDistanceMiles} miles</span>
+                <span className="font-bold text-emerald-400">
+                  {filterState.maxDistanceMiles} miles
+                </span>
               </div>
               <input
+                id="filter-radius"
                 type="range"
-                min={5}
-                max={150}
+                min={DISTANCE_MIN_MILES}
+                max={DISTANCE_MAX_MILES}
                 step={5}
                 value={filterState.maxDistanceMiles}
                 onChange={(e) =>
@@ -126,62 +159,74 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
               />
             </div>
 
-            {/* Amenity Switches */}
+            {/* Road access */}
             <div>
-              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
-                Required Amenities
+              <label
+                htmlFor="filter-road"
+                className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2"
+              >
+                Roughest road you'll drive
               </label>
+              <select
+                id="filter-road"
+                value={filterState.roadAccessMax}
+                onChange={(e) =>
+                  setFilterState((prev) => ({
+                    ...prev,
+                    roadAccessMax: e.target.value as RoadAccess | 'all'
+                  }))
+                }
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                {(['all', 'paved', 'gravel', 'high_clearance', '4x4_only'] as const).map((id) => (
+                  <option key={id} value={id}>{ROAD_ACCESS_LABEL[id]}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-500 mt-1">
+                Hides sites whose access road is rougher than this.
+              </p>
+            </div>
+
+            {/* Amenities */}
+            <div>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
+                Must have
+              </span>
               <div className="space-y-2">
-                <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 cursor-pointer">
-                  <span>📶 Verified Cell Signal (2+ Bars)</span>
-                  <input
-                    type="checkbox"
-                    checked={filterState.cellSignalOnly}
-                    onChange={(e) => setFilterState((prev) => ({ ...prev, cellSignalOnly: e.target.checked }))}
-                    className="accent-emerald-500 w-4 h-4"
-                  />
-                </label>
-                <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 cursor-pointer">
-                  <span>💧 On-site Water (Potable or Stream)</span>
-                  <input
-                    type="checkbox"
-                    checked={filterState.waterOnly}
-                    onChange={(e) => setFilterState((prev) => ({ ...prev, waterOnly: e.target.checked }))}
-                    className="accent-emerald-500 w-4 h-4"
-                  />
-                </label>
-                <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 cursor-pointer">
-                  <span>🚻 Toilet On-Site (Vault / Pack-Out)</span>
-                  <input
-                    type="checkbox"
-                    checked={filterState.toiletOnly}
-                    onChange={(e) => setFilterState((prev) => ({ ...prev, toiletOnly: e.target.checked }))}
-                    className="accent-emerald-500 w-4 h-4"
-                  />
-                </label>
-                <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 cursor-pointer">
-                  <span>🐶 Dog / Pet Friendly</span>
-                  <input
-                    type="checkbox"
-                    checked={filterState.petFriendlyOnly}
-                    onChange={(e) => setFilterState((prev) => ({ ...prev, petFriendlyOnly: e.target.checked }))}
-                    className="accent-emerald-500 w-4 h-4"
-                  />
-                </label>
+                {AMENITY_OPTIONS.map(({ key, label }) => (
+                  <label
+                    key={key}
+                    className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 cursor-pointer hover:border-slate-700"
+                  >
+                    <span>{label}</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(filterState[key])}
+                      onChange={(e) =>
+                        setFilterState((prev) => ({ ...prev, [key]: e.target.checked }))
+                      }
+                      className="accent-emerald-500 w-4 h-4"
+                    />
+                  </label>
+                ))}
               </div>
             </div>
 
-            {/* Minimum RV Length */}
+            {/* Rig length */}
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Minimum RV / Rig Clearance
+                <label
+                  htmlFor="filter-rig"
+                  className="text-[11px] font-bold text-slate-400 uppercase tracking-wider"
+                >
+                  Minimum rig space
                 </label>
                 <span className="font-bold text-amber-400">
-                  {filterState.rigLengthMinFt > 0 ? `${filterState.rigLengthMinFt}ft+ Rig` : 'Any Rig Size'}
+                  {filterState.rigLengthMinFt > 0 ? `${filterState.rigLengthMinFt} ft+` : 'Any size'}
                 </span>
               </div>
               <input
+                id="filter-rig"
                 type="range"
                 min={0}
                 max={45}
@@ -196,25 +241,22 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
           </div>
         </div>
 
-        {/* Footer Actions */}
         <div className="pt-4 border-t border-slate-800 flex items-center justify-between gap-3">
           <button
             onClick={onReset}
             className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center gap-1 border border-slate-700"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            Reset All
+            Reset
           </button>
           <button
             onClick={onClose}
-            className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs text-center shadow-lg shadow-emerald-950"
+            className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-950"
           >
-            Show {totalResultsCount} Matching Sites
+            Show {totalResultsCount} site{totalResultsCount === 1 ? '' : 's'}
           </button>
         </div>
       </div>
     </div>
   );
 };
-
-

@@ -1,10 +1,9 @@
 export type LandType = 'blm' | 'usfs' | 'state_forest' | 'dispersed' | 'crown_land';
-
 export type RoadAccess = 'paved' | 'gravel' | 'high_clearance' | '4x4_only';
-
 export type ToiletType = 'none' | 'vault' | 'flush' | 'pack_out';
-
 export type WaterType = 'none' | 'potable' | 'natural_stream' | 'seasonal_creek';
+export type ShadeType = 'full' | 'partial' | 'none';
+export type CampsiteSource = 'verified' | 'overpass' | 'user_submitted';
 
 export interface CellSignal {
   verizon: number; // 0 to 5 bars
@@ -21,7 +20,7 @@ export interface CampsiteAmenities {
   fireRing: boolean;
   petFriendly: boolean;
   trashService: boolean;
-  shade: 'full' | 'partial' | 'none';
+  shade: ShadeType;
   stayLimitDays: number;
   isFree: boolean;
   permitRequired: boolean;
@@ -39,10 +38,9 @@ export interface CamperReview {
 export interface Campsite {
   id: string;
   name: string;
-  /** Optional: verified against an authoritative boundary dataset. */
-  isCrownLand?: boolean;
   landType: LandType;
-  landManager: string; // e.g., "Bureau of Land Management", "US Forest Service", "Bridger-Teton NF"
+  /** e.g. "Bureau of Land Management", "Bridger-Teton NF" */
+  landManager: string;
   latitude: number;
   longitude: number;
   elevationFt?: number;
@@ -56,10 +54,12 @@ export interface Campsite {
   amenities: CampsiteAmenities;
   images: string[];
   reviews: CamperReview[];
-  rating: number; // average rating
+  rating: number; // average
   reviewCount: number;
-  source: 'verified' | 'overpass' | 'user_submitted' | 'gemini_discovered';
+  source: CampsiteSource;
   savedOffline?: boolean;
+  /** Live occupancy, when the server has reported one. */
+  capacityStatus?: 'empty' | 'light' | 'busy' | 'full' | 'unknown';
 }
 
 export interface GeocodedLocation {
@@ -69,7 +69,8 @@ export interface GeocodedLocation {
   country: string;
   lat: number;
   lon: number;
-  boundingBox?: [number, number, number, number]; // [south, north, west, east]
+  /** [south, north, west, east] */
+  boundingBox?: [number, number, number, number];
 }
 
 export interface FilterState {
@@ -103,6 +104,8 @@ export interface OfflineRegion {
   campsiteCount: number;
 }
 
-export type MapTileLayer = 'topo' | 'satellite' | 'street' | 'public_lands';
+export type MapTileLayer = 'topo' | 'satellite' | 'street';
 
+export type AppView = 'map' | 'list' | 'saved';
 
+export type LegalDocKind = 'privacy_policy' | 'terms_of_service' | 'safety_disclaimer';

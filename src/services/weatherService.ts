@@ -8,14 +8,16 @@
  * Both are proxied through our own server so we can set the User-Agent NWS
  * asks for, cache responses, and avoid per-origin CORS differences.
  *
- * Alerts are the safety-critical part. We classify every alert into a hazard
- * family so the map can colour and prioritise them, and we NEVER downgrade a
- * severity we don't recognise — unknown maps to the more cautious value.
+ * The classifier itself lives in `shared/hazards.ts` — it is used identically
+ * on the server, and two copies of a safety-critical regex is how they drift.
  */
+import {
+  classifyHazard, SEVERITY_RANK,
+  type HazardFamily, type AlertSeverity, type AlertUrgency
+} from '../../shared/hazards';
 
-export type HazardFamily = 'fire' | 'flood' | 'storm' | 'winter' | 'heat' | 'wind' | 'other';
-export type AlertSeverity = 'extreme' | 'severe' | 'moderate' | 'minor' | 'unknown';
-export type AlertUrgency = 'immediate' | 'expected' | 'future' | 'past' | 'unknown';
+export type { HazardFamily, AlertSeverity, AlertUrgency };
+export { classifyHazard };
 
 export interface HazardAlert {
   id: string;
@@ -65,30 +67,6 @@ export const EMPTY_WEATHER: WeatherSnapshot = {
   source: 'none'
 };
 
-/* ------------------------------------------------------------------ */
-/* Hazard classification                                               */
-/* ------------------------------------------------------------------ */
-
-/**
- * Map an NWS/ECCC event name onto a hazard family.
- *
- * Order matters: fire is checked FIRST because "Fire Weather Watch" would
- * otherwise fall through to another family, and getting fire wrong is the
- * most dangerous failure here.
- */
-export const classifyHazard = (eventName: string): HazardFamily => {
-  const e = (eventName ?? '').toLowerCase();
-
-  if (/red flag|fire weather|wildfire|fire danger|burn ban|extreme fire/.test(e)) return 'fire';
-  if (/flood|flash flood|hydrologic|dam break|seiche|storm surge/.test(e)) return 'flood';
-  if (/tornado|thunderstorm|hurricane|tropical|typhoon|severe weather|squall|waterspout/.test(e))
-    return 'storm';
-  if (/snow|blizzard|ice|freez|winter|frost|sleet|avalanche|cold|chill/.test(e)) return 'winter';
-  if (/heat|hot/.test(e)) return 'heat';
-  if (/wind|gale|dust/.test(e)) return 'wind';
-  return 'other';
-};
-
 export const HAZARD_STYLE: Record<
   HazardFamily,
   { label: string; color: string; bg: string; border: string; icon: string }
@@ -100,10 +78,6 @@ export const HAZARD_STYLE: Record<
   heat: { label: 'Heat', color: '#EF4444', bg: 'bg-red-950/60', border: 'border-red-600/60', icon: '🌡️' },
   wind: { label: 'Wind', color: '#94A3B8', bg: 'bg-slate-800/60', border: 'border-slate-600/60', icon: '💨' },
   other: { label: 'Advisory', color: '#64748B', bg: 'bg-slate-800/60', border: 'border-slate-600/60', icon: 'ℹ️' }
-};
-
-const SEVERITY_RANK: Record<AlertSeverity, number> = {
-  extreme: 4, severe: 3, moderate: 2, minor: 1, unknown: 0
 };
 
 /** Highest severity first, then soonest expiry. */
@@ -126,6 +100,7 @@ export const isActionable = (alert: HazardAlert): boolean =>
 
 const cache = new Map<string, { at: number; data: WeatherSnapshot }>();
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 60;
 
 /** Never throws: on failure returns an empty snapshot with a note. */
 export const fetchWeather = async (
@@ -145,6 +120,12 @@ export const fetchWeather = async (
     if (!res.ok) return { ...EMPTY_WEATHER, note: `Weather unavailable (${res.status})` };
 
     const data = (await res.json()) as WeatherSnapshot;
+
+    // Bounded: a long trip planning session used to grow this map forever.
+    if (cache.size >= CACHE_MAX_ENTRIES) {
+      const oldest = cache.keys().next().value;
+      if (oldest) cache.delete(oldest);
+    }
     cache.set(key, { at: Date.now(), data });
     return data;
   } catch {
@@ -164,8 +145,10 @@ export const fetchAreaAlerts = async (
       maxLat: bbox.maxLat.toFixed(4),
       maxLon: bbox.maxLon.toFixed(4)
     });
+
     const res = await fetch(`/api/weather/alerts?${params}`, { signal });
     if (!res.ok) return [];
+
     const data = await res.json();
     return Array.isArray(data?.alerts) ? sortAlerts(data.alerts) : [];
   } catch {

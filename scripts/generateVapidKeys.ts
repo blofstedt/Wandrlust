@@ -1,7 +1,7 @@
 /**
  * Generate a VAPID keypair for Web Push.
  *
- *   npx tsx scripts/generateVapidKeys.ts
+ *   npm run vapid
  *
  * VAPID (Voluntary Application Server Identification) is how a push service
  * verifies that the server sending a notification is the one the browser
@@ -10,14 +10,12 @@
  *
  * Uses node:crypto directly so this works before `web-push` is installed.
  */
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 
 const b64url = (buf: Buffer): string =>
   buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 
-const { publicKey, privateKey } = generateKeyPairSync('ec', {
-  namedCurve: 'prime256v1'
-});
+const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 
 // The last 65 bytes of the SPKI DER encoding are the uncompressed EC point.
 const pubDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
@@ -32,6 +30,10 @@ if (pub.length !== 65 || priv.length !== 32) {
   process.exit(1);
 }
 
+// randomBytes rather than the global Web Crypto, which is only guaranteed on
+// newer Node versions and made this script fail on older ones.
+const dispatchSecret = b64url(randomBytes(24));
+
 console.log(`
 VAPID keypair generated.
 
@@ -40,7 +42,7 @@ Add to .env:
 VITE_VAPID_PUBLIC_KEY=${b64url(pub)}
 VAPID_PRIVATE_KEY=${b64url(priv)}
 VAPID_SUBJECT=mailto:you@yourdomain.com
-PUSH_DISPATCH_SECRET=${b64url(Buffer.from(crypto.getRandomValues(new Uint8Array(24))))}
+PUSH_DISPATCH_SECRET=${dispatchSecret}
 ------------------------------------------------------------
 
 The PUBLIC key ships in the client bundle — that is expected.
