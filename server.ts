@@ -55,11 +55,51 @@ const startServer = async (): Promise<void> => {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath, { maxAge: '1h', index: false }));
+
+    /**
+     * Cache lifetimes, which the app's ability to update depends on.
+     *
+     * A blanket one-hour max-age used to apply to everything here, including
+     * sw.js. A service worker the browser refuses to re-fetch for an hour is
+     * an app that can't tell anyone a new version exists — so the worker and
+     * the HTML document are explicitly revalidated every time, while the
+     * content-hashed bundles are cached hard because their names change
+     * whenever their contents do.
+     *
+     * Vercel applies the equivalent rules from vercel.json in production;
+     * these keep a self-hosted `npm start` behaving the same way.
+     */
+    app.use(
+      express.static(distPath, {
+        index: false,
+        setHeaders: (res, filePath) => {
+          const name = path.basename(filePath);
+
+          if (name === 'sw.js') {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Service-Worker-Allowed', '/');
+            return;
+          }
+          if (name === 'manifest.webmanifest') {
+            res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+            res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+            return;
+          }
+          if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            return;
+          }
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+        }
+      })
+    );
 
     // SPA fallback. Must also serve /auth/callback so the OAuth redirect
     // reaches the client and the PKCE exchange can complete.
     app.get('*', (_req, res) => {
+      // Never cached: this document is what points at the current bundle, so
+      // a stale copy pins the user to an old build.
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

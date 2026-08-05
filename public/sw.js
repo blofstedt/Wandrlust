@@ -2,25 +2,175 @@
 /**
  * Wandrlust service worker.
  *
- * Handles Web Push delivery and notification interaction. Deliberately does
- * NOT do offline asset caching — the app already manages its own offline map
- * tiles in IndexedDB, and a second, competing cache layer is a reliable way
- * to ship stale JavaScript to users.
+ * Two jobs: Web Push delivery, and making the app installable and launchable
+ * without a signal.
  *
- * Lifecycle note: `skipWaiting` + `clients.claim` means a new worker takes
- * over immediately rather than waiting for every tab to close. For a safety
- * app that matters — you don't want someone receiving fire alerts from a
- * three-versions-old worker.
+ * ---------------------------------------------------------------------------
+ * WHY THERE IS NOW A CACHE HERE, WHEN THERE DELIBERATELY WASN'T
+ * ---------------------------------------------------------------------------
+ * This worker used to refuse to cache anything, on the grounds that a second
+ * cache layer is a reliable way to ship stale JavaScript. That risk is real,
+ * but it comes from one specific mistake: serving a cached HTML document, or
+ * caching JS at a URL whose contents can change. Neither happens here.
+ *
+ *   - The HTML document is always fetched network-first. A new deploy is
+ *     picked up on the next load, every time. The cache is only ever the
+ *     fallback for when the network genuinely isn't there.
+ *   - Everything under /assets/ is content-hashed by Vite. A changed file is
+ *     a different filename, so a cached asset can never be a stale version of
+ *     a current one — it is either current or unreferenced.
+ *
+ * The reason this is worth doing at all: the app's headline feature is
+ * offline maps for places with no cell service, but those tiles live in
+ * IndexedDB behind the app shell. With nothing cached, opening the app with
+ * no signal got you a browser error page and no way to reach the maps you'd
+ * already downloaded. The tiles were only reachable if you'd left the tab
+ * open before losing signal.
+ *
+ * WHAT IS DELIBERATELY NOT CACHED:
+ *   - /api/* — boundary, weather and alert data. Stale hazard information is
+ *     worse than none. These must fail honestly so the UI can say so.
+ *   - Anything cross-origin, especially map tiles. The app has its own
+ *     explicit offline-region download, and a silent second tile cache would
+ *     make coverage look better than the app knows it to be.
+ *
+ * Lifecycle: a new worker installs and then WAITS rather than taking over
+ * mid-session, so a running page can't end up half-updated. The app notices
+ * the waiting worker and offers to apply it; if the user ignores that, it
+ * activates on the next cold start anyway.
  */
 
-const SW_VERSION = 'wandrlust-sw-v1';
+/**
+ * Replaced at build time (see the pwa-build-stamp plugin in vite.config.ts).
+ *
+ * This matters more than it looks: browsers only treat a worker as "new" if
+ * the bytes of this file changed. Without a per-build stamp in here, deploying
+ * new app code would never trigger an update notification.
+ */
+const BUILD_ID = '__BUILD_ID__';
+const PRECACHE_ASSETS = ['__PRECACHE_ASSETS__'];
+
+const CACHE_NAME = `wandrlust-shell-${BUILD_ID}`;
+
+/** The document itself, plus the things needed to render a first frame. */
+const SHELL_URLS = [
+  '/',
+  '/manifest.webmanifest',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/apple-touch-icon.png'
+];
 
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      // Unreplaced build placeholders are filtered out, so this file stays
+      // valid and harmless when served straight from public/ in development.
+      const urls = [...SHELL_URLS, ...PRECACHE_ASSETS.filter((u) => u.startsWith('/'))];
+
+      // One missing file must not fail the whole install and leave the app
+      // with no worker at all.
+      await Promise.all(
+        urls.map((url) =>
+          cache.add(new Request(url, { cache: 'reload' })).catch(() => undefined)
+        )
+      );
+    })()
+  );
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    (async () => {
+      const names = await caches.keys();
+      await Promise.all(
+        names
+          .filter((n) => n.startsWith('wandrlust-shell-') && n !== CACHE_NAME)
+          .map((n) => caches.delete(n))
+      );
+      await self.clients.claim();
+    })()
+  );
+});
+
+/** The app asks for this when the user accepts an update. */
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING' || event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Fetch                                                               */
+/* ------------------------------------------------------------------ */
+
+const isAsset = (url) => url.pathname.startsWith('/assets/');
+
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET') return;
+
+  const url = new URL(request.url);
+
+  // Someone else's server — tiles, fonts, Supabase. Not ours to cache.
+  if (url.origin !== self.location.origin) return;
+
+  // Live data. Must reach the network or fail visibly.
+  if (url.pathname.startsWith('/api/')) return;
+
+  // Content-hashed and therefore immutable: cache-first is safe here, and it
+  // is what makes a cold start offline instant rather than impossible.
+  if (isAsset(url)) {
+    event.respondWith(
+      caches.match(request).then(
+        (hit) =>
+          hit ||
+          fetch(request).then((response) => {
+            if (response.ok) {
+              const copy = response.clone();
+              caches.open(CACHE_NAME).then((c) => c.put(request, copy));
+            }
+            return response;
+          })
+      )
+    );
+    return;
+  }
+
+  // The document. Network-first, always — this is what guarantees a deploy is
+  // picked up rather than a stale shell being served forever.
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((c) => c.put('/', copy));
+          }
+          return response;
+        })
+        .catch(async () => (await caches.match('/')) || Response.error())
+    );
+    return;
+  }
+
+  // Icons, the manifest, the legal markdown. Serve what we have and refresh
+  // it quietly in the background.
+  event.respondWith(
+    caches.match(request).then((hit) => {
+      const network = fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(request, copy));
+          }
+          return response;
+        })
+        .catch(() => hit);
+      return hit || network;
+    })
+  );
 });
 
 /* ------------------------------------------------------------------ */

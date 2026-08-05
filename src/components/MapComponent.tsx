@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
@@ -9,16 +10,16 @@ import { Crosshair, Eye, Layers, Loader2, Shield } from 'lucide-react';
 import type { Campsite, LandType, MapTileLayer } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import {
-  fetchBoundaries, BOUNDARY_STYLES, EMPTY_BOUNDARIES,
-  BoundaryCollection, BoundaryConfidence,
+  fetchBoundaries, requestBoxFor, boxContains, BOUNDARY_STYLES, EMPTY_BOUNDARIES,
+  BoundaryCollection, BoundaryConfidence, BoundaryFeature,
   EDGE_ACCURACY_COPY, CAMPING_BASIS_COPY, EdgeAccuracy, CampingBasisKind
 } from '../services/boundaryService';
 import {
-  buildFuzzRings, ensureFuzzFilter, FUZZ_FILTER_ID,
+  buildFuzzRings, ringBudget, edgeBlurPx,
   UNCERTAINTY_LABEL, uncertaintyCaution, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
+  BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 
@@ -43,6 +44,27 @@ const TILE_URLS: Record<MapTileLayer, { url: string; attribution: string; label:
     label: 'Street'
   }
 };
+
+/**
+ * Leaflet's GeoJSON layer forwards its options straight to the Path objects it
+ * builds, so `renderer` reaches them — but @types/leaflet doesn't declare it on
+ * GeoJSONOptions. This is that gap, not a behaviour change.
+ */
+type RenderedGeoJSONOptions = L.GeoJSONOptions & { renderer: L.Renderer };
+
+/**
+ * Shared tile options that keep the network quiet while the map is moving.
+ *
+ * By default Leaflet requests a fresh grid of tiles at every intermediate zoom
+ * level of a pinch or scroll, so a two-level zoom fires three rounds of
+ * requests and throws two of them away. Waiting for the gesture to finish means
+ * one round instead, which is most of why zooming felt like wading through mud.
+ */
+const TILE_PERFORMANCE = {
+  updateWhenZooming: false,
+  /** Extra ring of tiles held off-screen so a short pan has nothing to fetch. */
+  keepBuffer: 3
+} as const;
 
 /**
  * The hard edge of the map.
@@ -130,6 +152,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const boundaryLayerRef = useRef<L.LayerGroup | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+
+  // What boundary data we already hold, so a pan inside it costs nothing.
+  const loadedBoxRef = useRef<BoundingBox | null>(null);
+  const loadedZoomRef = useRef<number>(0);
+  const renderedZoomRef = useRef<number>(0);
+  const collectionRef = useRef<BoundaryCollection>(EMPTY_BOUNDARIES);
+  const boundaryRendererRef = useRef<L.Canvas | null>(null);
+  const visibleIdsRef = useRef<string>('');
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -236,6 +266,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // noWrap + bounds: draw the world exactly once. Without these the layer
       // repeats horizontally and the coverage mask only covers one copy.
       layer = new OfflineTileLayer('', {
+        ...TILE_PERFORMANCE,
         maxZoom: 19,
         noWrap: true,
         bounds: WORLD_BOUNDS,
@@ -244,6 +275,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     } else {
       const config = TILE_URLS[activeTileLayer];
       layer = L.tileLayer(config.url, {
+        ...TILE_PERFORMANCE,
         maxZoom: 19,
         noWrap: true,
         bounds: WORLD_BOUNDS,
@@ -341,8 +373,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       boundaryLayerRef.current = null;
     };
 
+    const forget = () => {
+      loadedBoxRef.current = null;
+      collectionRef.current = EMPTY_BOUNDARIES;
+    };
+
     if (!showBoundaries || isOfflineMode) {
       clearLayer();
+      forget();
       setBoundaries(EMPTY_BOUNDARIES);
       setZoomTooFar(false);
       return;
@@ -351,136 +389,227 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let cancelled = false;
     let controller: AbortController | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
+    let requestId = 0;
+
+    /**
+     * Boundaries draw to a canvas, not to SVG.
+     *
+     * A viewport over the Rockies can hold several hundred polygons, each with
+     * an uncertainty band on top. As SVG that is thousands of DOM nodes the
+     * browser has to lay out and repaint; on canvas it is one element the GPU
+     * moves as a unit while you pan.
+     */
+    const boundaryPane = (): HTMLElement | undefined => {
+      if (!map.getPane('boundariesPane')) {
+        map.createPane('boundariesPane');
+        const created = map.getPane('boundariesPane');
+        if (created) created.style.zIndex = '390';
+      }
+      return map.getPane('boundariesPane');
+    };
+
+    // One canvas for the life of the effect. Leaflet registers a renderer as a
+    // map layer the first time a path uses it, so minting a new one per redraw
+    // would stack up an orphaned canvas every time the map moved.
+    const boundaryRenderer = (): L.Canvas => {
+      if (!boundaryRendererRef.current) {
+        boundaryPane();
+        boundaryRendererRef.current = L.canvas({ pane: 'boundariesPane', padding: 0.3 });
+      }
+      return boundaryRendererRef.current;
+    };
+
+    const popupHtml = (properties: Record<string, any>): string => {
+      const p = properties ?? {};
+      const style = BOUNDARY_STYLES[p._confidence as BoundaryConfidence];
+      const edgeNote = p._edgeAccuracy
+        ? EDGE_ACCURACY_COPY[p._edgeAccuracy as EdgeAccuracy]
+        : 'Boundary accuracy unknown.';
+      const basisNote = p._campingBasisKind
+        ? CAMPING_BASIS_COPY[p._campingBasisKind as CampingBasisKind]
+        : 'Camping basis unknown.';
+      const uncertainty = p._edgeAccuracy
+        ? UNCERTAINTY_LABEL[p._edgeAccuracy as EdgeAccuracy]
+        : 'unknown';
+      const caution = p._edgeAccuracy
+        ? uncertaintyCaution(p._edgeAccuracy as EdgeAccuracy)
+        : 'Edge accuracy is unknown for this source. Treat the boundary as approximate.';
+
+      return `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:300px">
+           <strong style="font-size:13px">${p._name ?? 'Public land'}</strong><br/>
+           <span style="color:#334155">${p._designation ?? ''}</span><br/>
+           <span style="display:inline-block;margin-top:6px;padding:2px 6px;border-radius:6px;background:${
+             style?.fillColor ?? '#94A3B8'
+           };color:#0F172A;font-weight:700;font-size:10px">${style?.label ?? 'Public land'}</span>
+           <div style="margin-top:8px;padding-top:6px;border-top:1px solid #E2E8F0">
+             <div style="color:#475569;font-size:10px;margin-bottom:4px"><strong>Edges:</strong> ${edgeNote}</div>
+             <div style="color:#475569;font-size:10px"><strong>Camping:</strong> ${basisNote}</div>
+           </div>
+           <span style="color:#64748B;font-size:10px;display:block;margin-top:6px">Source: ${p._attribution ?? 'Unknown'}</span>
+           <div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D">
+             <div style="color:#92400E;font-size:10px;font-weight:700;margin-bottom:2px">Boundary uncertainty: ${uncertainty}</div>
+             <div style="color:#92400E;font-size:10px;line-height:1.35">${caution}</div>
+           </div>
+           <span style="color:#B45309;font-size:10px;display:block;margin-top:6px;font-weight:600">Not survey-grade, and not a legal boundary. Only a licensed survey establishes property lines.</span>
+         </div>`;
+    };
+
+    /* ---- Fuzzy edge rendering -----------------------------------------
+     * We never draw a crisp boundary line. Each polygon gets a soft fill plus
+     * a stack of translucent strokes whose total width equals the dataset's
+     * real positional uncertainty, converted from metres to pixels at the
+     * current zoom. A hard line would claim a precision none of these sources
+     * have, and the failure mode is somebody parking on private land.
+     *
+     * The strokes are batched: every polygon that shares an edge accuracy and
+     * a confidence tier shares the same band geometry, so they go into one
+     * layer per ring instead of one layer per ring per polygon. That is the
+     * difference between a couple of dozen layers and several thousand.
+     */
+    const render = (collection: BoundaryCollection) => {
+      clearLayer();
+      const pane = boundaryPane();
+      renderedZoomRef.current = map.getZoom();
+      if (collection.features.length === 0) {
+        if (pane) pane.style.filter = '';
+        return;
+      }
+
+      const centreLat = map.getCenter().lat;
+      const currentZoom = map.getZoom();
+      const rings = ringBudget(collection.features.length);
+      const renderer = boundaryRenderer();
+
+      const bands = new Map<string, { accuracy: EdgeAccuracy; color: string; features: BoundaryFeature[] }>();
+      collection.features.forEach((feature) => {
+        const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
+        // Below a few pixels the band is thinner than the line itself; the
+        // fill layer draws a hairline for those instead.
+        if (shouldSimplify(accuracy, centreLat, currentZoom)) return;
+
+        const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
+        const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
+        const key = `${accuracy}|${confidence}`;
+
+        const existing = bands.get(key);
+        if (existing) existing.features.push(feature);
+        else bands.set(key, { accuracy, color: style.color, features: [feature] });
+      });
+
+      const haloGroup = L.layerGroup([], { pane: 'boundariesPane' });
+      let widestBand = 0;
+
+      bands.forEach(({ accuracy, color, features }) => {
+        const ringSpecs = buildFuzzRings(accuracy, centreLat, currentZoom, rings);
+        widestBand = Math.max(widestBand, ringSpecs[0]?.weight ?? 0);
+
+        ringSpecs.forEach((ring) => {
+          haloGroup.addLayer(
+            L.geoJSON({ type: 'FeatureCollection', features } as any, {
+              pane: 'boundariesPane',
+              renderer,
+              interactive: false,
+              style: {
+                color, weight: ring.weight, opacity: ring.opacity,
+                fill: false, lineJoin: 'round', lineCap: 'round'
+              }
+            } as RenderedGeoJSONOptions)
+          );
+        });
+      });
+
+      const layer = L.geoJSON(collection as any, {
+        pane: 'boundariesPane',
+        renderer,
+        style: (feature: any) => {
+          const confidence: BoundaryConfidence =
+            feature?.properties?._confidence ?? 'managing_agency';
+          const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
+          const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
+          return {
+            color: style.color,
+            fillColor: style.fillColor,
+            fillOpacity: style.fillOpacity * 0.85,
+            weight: shouldSimplify(accuracy, centreLat, currentZoom) ? 1 : 0,
+            opacity: 0.5
+          };
+        },
+        // Bound lazily: building a few hundred popup strings up front cost more
+        // than drawing the polygons did, and most are never opened.
+        onEachFeature: (feature: any, lyr: L.Layer) => {
+          lyr.bindPopup(() => popupHtml(feature?.properties));
+        }
+      } as RenderedGeoJSONOptions);
+
+      // A compositor blur turns the discrete rings into a continuous gradient.
+      // This replaced an SVG filter over the whole pane, which forced a full
+      // repaint of every polygon on every frame of a pan.
+      if (pane) pane.style.filter = widestBand > 0 ? `blur(${edgeBlurPx(widestBand).toFixed(1)}px)` : '';
+
+      boundaryLayerRef.current = L.layerGroup([haloGroup, layer]).addTo(map);
+    };
+
+    const run = async () => {
+      // Mid-flight through a flyTo the viewport is somewhere between where the
+      // user was and where they asked to go. Fetching for it wastes a round
+      // trip on a view nobody will look at, so wait for the map to land.
+      if ((map as unknown as { _animatingZoom?: boolean })._animatingZoom) {
+        load();
+        return;
+      }
+
+      const currentZoom = map.getZoom();
+
+      if (currentZoom < BOUNDARY_MIN_ZOOM) {
+        setZoomTooFar(true);
+        setBoundaries(EMPTY_BOUNDARIES);
+        forget();
+        clearLayer();
+        const pane = map.getPane('boundariesPane');
+        if (pane) pane.style.filter = '';
+        return;
+      }
+      setZoomTooFar(false);
+
+      const b = map.getBounds();
+      const view: BoundingBox = {
+        minLat: b.getSouth(), minLon: b.getWest(),
+        maxLat: b.getNorth(), maxLon: b.getEast()
+      };
+
+      // Everything in view is already loaded at this detail level. Panning
+      // inside it costs nothing; only a zoom change needs a redraw, because
+      // the band's pixel width is derived from the zoom.
+      const loaded = loadedBoxRef.current;
+      if (loaded && boxContains(loaded, view) && currentZoom <= loadedZoomRef.current) {
+        if (currentZoom !== renderedZoomRef.current) render(collectionRef.current);
+        return;
+      }
+
+      const box = requestBoxFor(view, currentZoom);
+      const myId = ++requestId;
+      controller?.abort();
+      controller = new AbortController();
+      setIsLoadingBoundaries(true);
+
+      const collection = await fetchBoundaries(box, controller.signal);
+      if (cancelled || myId !== requestId) return;
+
+      setIsLoadingBoundaries(false);
+      // `null` means the request was superseded. Keep what is on screen rather
+      // than blanking the map between one viewport and the next.
+      if (!collection) return;
+
+      loadedBoxRef.current = box;
+      loadedZoomRef.current = currentZoom;
+      collectionRef.current = collection;
+      setBoundaries(collection);
+      render(collection);
+    };
 
     const load = () => {
       if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(async () => {
-        if (map.getZoom() < BOUNDARY_MIN_ZOOM) {
-          setZoomTooFar(true);
-          setBoundaries(EMPTY_BOUNDARIES);
-          clearLayer();
-          return;
-        }
-        setZoomTooFar(false);
-
-        const b = map.getBounds();
-        controller?.abort();
-        controller = new AbortController();
-        setIsLoadingBoundaries(true);
-
-        const collection = await fetchBoundaries(
-          { minLat: b.getSouth(), minLon: b.getWest(), maxLat: b.getNorth(), maxLon: b.getEast() },
-          controller.signal
-        );
-        if (cancelled) return;
-
-        setBoundaries(collection);
-        setIsLoadingBoundaries(false);
-        clearLayer();
-        if (collection.features.length === 0) return;
-
-        if (!map.getPane('boundariesPane')) {
-          map.createPane('boundariesPane');
-          const pane = map.getPane('boundariesPane');
-          if (pane) pane.style.zIndex = '390';
-        }
-
-        /* ---- Fuzzy edge rendering ---------------------------------------
-         * We never draw a crisp boundary line. Each polygon gets a soft fill
-         * plus a stack of translucent strokes whose total width equals the
-         * dataset's real positional uncertainty, converted from metres to
-         * pixels at the current zoom. A hard line would claim a precision
-         * none of these sources have, and the failure mode is somebody
-         * parking on private land.
-         */
-        ensureFuzzFilter();
-        const centreLat = map.getCenter().lat;
-        const currentZoom = map.getZoom();
-
-        const haloGroup = L.layerGroup([], { pane: 'boundariesPane' });
-
-        const layer = L.geoJSON(collection as any, {
-          pane: 'boundariesPane',
-          style: (feature: any) => {
-            const confidence: BoundaryConfidence =
-              feature?.properties?._confidence ?? 'managing_agency';
-            const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
-            const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
-            return {
-              color: style.color,
-              fillColor: style.fillColor,
-              fillOpacity: style.fillOpacity * 0.85,
-              weight: shouldSimplify(accuracy, centreLat, currentZoom) ? 1 : 0,
-              opacity: 0.5
-            };
-          },
-          onEachFeature: (feature: any, lyr: L.Layer) => {
-            const p = feature?.properties ?? {};
-            const style = BOUNDARY_STYLES[p._confidence as BoundaryConfidence];
-            const edgeNote = p._edgeAccuracy
-              ? EDGE_ACCURACY_COPY[p._edgeAccuracy as EdgeAccuracy]
-              : 'Boundary accuracy unknown.';
-            const basisNote = p._campingBasisKind
-              ? CAMPING_BASIS_COPY[p._campingBasisKind as CampingBasisKind]
-              : 'Camping basis unknown.';
-            const uncertainty = p._edgeAccuracy
-              ? UNCERTAINTY_LABEL[p._edgeAccuracy as EdgeAccuracy]
-              : 'unknown';
-            const caution = p._edgeAccuracy
-              ? uncertaintyCaution(p._edgeAccuracy as EdgeAccuracy)
-              : 'Edge accuracy is unknown for this source. Treat the boundary as approximate.';
-
-            lyr.bindPopup(
-              `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:300px">
-                 <strong style="font-size:13px">${p._name ?? 'Public land'}</strong><br/>
-                 <span style="color:#334155">${p._designation ?? ''}</span><br/>
-                 <span style="display:inline-block;margin-top:6px;padding:2px 6px;border-radius:6px;background:${
-                   style?.fillColor ?? '#94A3B8'
-                 };color:#0F172A;font-weight:700;font-size:10px">${style?.label ?? 'Public land'}</span>
-                 <div style="margin-top:8px;padding-top:6px;border-top:1px solid #E2E8F0">
-                   <div style="color:#475569;font-size:10px;margin-bottom:4px"><strong>Edges:</strong> ${edgeNote}</div>
-                   <div style="color:#475569;font-size:10px"><strong>Camping:</strong> ${basisNote}</div>
-                 </div>
-                 <span style="color:#64748B;font-size:10px;display:block;margin-top:6px">Source: ${p._attribution ?? 'Unknown'}</span>
-                 <div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D">
-                   <div style="color:#92400E;font-size:10px;font-weight:700;margin-bottom:2px">Boundary uncertainty: ${uncertainty}</div>
-                   <div style="color:#92400E;font-size:10px;line-height:1.35">${caution}</div>
-                 </div>
-                 <span style="color:#B45309;font-size:10px;display:block;margin-top:6px;font-weight:600">Not survey-grade, and not a legal boundary. Only a licensed survey establishes property lines.</span>
-               </div>`
-            );
-          }
-        });
-
-        // The feathered band: one translucent stroke per ring, stacked
-        // widest-first so the edge fades outward into nothing.
-        collection.features.forEach((feature: any) => {
-          const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
-          if (shouldSimplify(accuracy, centreLat, currentZoom)) return;
-
-          const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
-          const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
-
-          buildFuzzRings(accuracy, centreLat, currentZoom).forEach((ring) => {
-            haloGroup.addLayer(
-              L.geoJSON(feature, {
-                pane: 'boundariesPane',
-                interactive: false,
-                style: {
-                  color: style.color, weight: ring.weight, opacity: ring.opacity,
-                  fill: false, lineJoin: 'round', lineCap: 'round'
-                }
-              })
-            );
-          });
-        });
-
-        // Gaussian blur turns the discrete rings into a continuous gradient.
-        const pane = map.getPane('boundariesPane');
-        if (pane) pane.style.filter = `url(#${FUZZ_FILTER_ID})`;
-
-        boundaryLayerRef.current = L.layerGroup([haloGroup, layer]).addTo(map);
-      }, 500);
+      debounce = setTimeout(run, 220);
     };
 
     load();
@@ -491,6 +620,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       controller?.abort();
       if (debounce) clearTimeout(debounce);
       map.off('moveend zoomend', load);
+      clearLayer();
+      if (boundaryRendererRef.current) {
+        try { map.removeLayer(boundaryRendererRef.current); } catch { /* detached */ }
+        boundaryRendererRef.current = null;
+      }
     };
   }, [isMapReady, showBoundaries, isOfflineMode]);
 
@@ -504,12 +638,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const report = () => {
       try {
         const bounds = map.getBounds();
-        onVisibleCampsitesChange(
-          campsites.filter((site) => bounds.contains([site.latitude, site.longitude]))
+        const inView = campsites.filter((site) =>
+          bounds.contains([site.latitude, site.longitude])
         );
+
+        // Most pans don't change which pins are on screen. Reporting anyway
+        // re-renders the whole app — including the list behind the map — for
+        // nothing, so only speak up when the set actually changed.
+        const signature = inView.map((site) => site.id).join(',');
+        if (signature === visibleIdsRef.current) return;
+        visibleIdsRef.current = signature;
+
+        onVisibleCampsitesChange(inView);
       } catch { /* map not laid out yet */ }
     };
 
+    // The ids alone can't tell us a site's own details changed, so a new
+    // campsite list always reports once even if the same pins are on screen.
+    visibleIdsRef.current = '';
     report();
     map.on('moveend zoomend', report);
     return () => { map.off('moveend zoomend', report); };
@@ -533,6 +679,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const cluster = L.markerClusterGroup({
       showCoverageOnHover: false,
       maxClusterRadius: 40,
+      // Build the cluster tree in chunks across frames rather than in one
+      // blocking pass, so a big result set can't freeze the map while it loads.
+      chunkedLoading: true,
+      removeOutsideVisibleBounds: true,
       iconCreateFunction: (c) =>
         L.divIcon({
           html: `<div class="w-8 h-8 rounded-full bg-slate-900 border-2 border-emerald-400 flex items-center justify-center text-white font-bold text-xs shadow-xl">${c.getChildCount()}</div>`,
@@ -542,16 +692,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         })
     });
 
-    campsites.forEach((site) => {
+    const markers = campsites.map((site) => {
       const marker = L.marker([site.latitude, site.longitude], {
         icon: buildMarkerIcon(site, selectedIdRef.current === site.id),
         title: site.name
       });
       marker.on('click', () => onSelectCampsite(site));
       marker.on('dblclick', () => onOpenDetailModal(site));
-      cluster.addLayer(marker);
       markersRef.current.set(site.id, marker);
+      return marker;
     });
+
+    // One bulk insert. Adding markers one at a time re-clusters the whole
+    // group on every single one.
+    cluster.addLayers(markers);
 
     map.addLayer(cluster);
     clusterRef.current = cluster;
