@@ -5,15 +5,18 @@
   "type": "module",
   "description": "Find free dispersed camping on public land, with offline maps and safety alerts.",
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
   },
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build:client": "vite build",
     "start": "NODE_ENV=production node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
+    "icons": "node scripts/generateIcons.mjs",
+    "validate": "node scripts/validateData.mjs",
     "seed": "tsx scripts/seedSupabase.ts",
     "seed:sites": "tsx scripts/seedSupabase.ts --sites",
     "seed:lands": "tsx scripts/seedSupabase.ts --lands",
@@ -45,6 +48,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.4.2",
     "esbuild": "^0.25.0",
+    "sharp": "^0.34.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.23.5",
     "typescript": "~5.8.2",
