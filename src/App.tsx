@@ -15,7 +15,6 @@ import { CampsiteDetailModal } from './components/CampsiteDetailModal';
 import { OfflineManagerModal } from './components/OfflineManagerModal';
 import { AddCampsiteModal } from './components/AddCampsiteModal';
 import { CampingGuideModal } from './components/CampingGuideModal';
-import { ReactNativeFrame } from './components/ReactNativeFrame';
 import { FilterDrawer } from './components/FilterDrawer';
 import { AuthModal } from './components/AuthModal';
 import { CampsiteBottomSheet } from './components/CampsiteBottomSheet';
@@ -34,7 +33,7 @@ import {
 import { distanceMiles } from './utils/geo';
 import { updateAlertLocation } from './services/pushService';
 import type { NearbyCamper } from './services/dataService';
-import { Search, Bookmark, Tent, MapPinOff, SlidersHorizontal } from 'lucide-react';
+import { Search, Bookmark, MapPinOff, SlidersHorizontal } from 'lucide-react';
 
 /** Calgary, AB — the app's home coordinates. */
 const HOME_CENTER: [number, number] = [51.0447, -114.0719];
@@ -43,7 +42,6 @@ const HOME_LABEL = 'Calgary, AB';
 export default function App() {
   // Navigation & view
   const [activeView, setActiveView] = useState<AppView>('map');
-  const [isMobileFrame, setIsMobileFrame] = useState(false);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
 
   // Map & location
@@ -61,7 +59,6 @@ export default function App() {
   const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
   const [isSearchingSites, setIsSearchingSites] = useState(false);
   const [outOfCoverageNotice, setOutOfCoverageNotice] = useState<string | null>(null);
-  const [visibleMapCampsites, setVisibleMapCampsites] = useState<Campsite[]>([]);
   const [nearbyCampers, setNearbyCampers] = useState<NearbyCamper[]>([]);
 
   // Panels & modals
@@ -316,15 +313,26 @@ export default function App() {
   );
 
   return (
+    /**
+     * Height is `100dvh`, not `100vh`.
+     *
+     * On a phone, `vh` is the viewport with the browser chrome hidden, which
+     * is taller than what you can actually see while the address bar is
+     * showing. The app was being laid out into a box bigger than the screen,
+     * so the bottom ran off and the map, sized from a stale container, drew
+     * its tiles offset from where the map actually was. `dvh` tracks the real
+     * visible height as the chrome comes and goes.
+     *
+     * The padding is for display cut-outs: index.html sets `viewport-fit=cover`
+     * so an installed app fills the whole screen, which means the notch and the
+     * home indicator are ours to avoid.
+     */
     <div
-      className={`${isMobileFrame ? 'min-h-screen' : 'h-screen'} bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]`}
+      className="h-[100dvh] bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]
+                 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]
+                 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
     >
-      <ReactNativeFrame
-        isMobileFrame={isMobileFrame}
-        activeTab={activeView}
-        onTabChange={setActiveView}
-        savedCount={savedSites.length}
-      >
+      <div className="w-full h-full flex flex-col flex-1 min-h-0">
         <Navbar
           activeView={activeView}
           setActiveView={setActiveView}
@@ -347,16 +355,16 @@ export default function App() {
           onOpenReport={() => setIsReportOpen(true)}
           nearbyCount={nearbyCampers.length}
           activeFilterCount={activeFilterCount}
-          isMobileFrame={isMobileFrame}
-          setIsMobileFrame={setIsMobileFrame}
           savedCount={savedSites.length}
         />
 
-        <main id="main" className="flex-1 relative flex flex-col overflow-hidden">
+        <main id="main" className="flex-1 relative flex flex-col overflow-hidden min-h-0">
           {/* ---------------------------------------------------------- MAP */}
           {activeView === 'map' && (
             <div className="relative w-full h-full flex flex-col overflow-hidden">
-              <div className="flex-1 relative min-h-[300px]">
+              {/* The map gets the whole area. Everything it needs to say is an
+                  overlay on top of it rather than a panel stealing height. */}
+              <div className="flex-1 relative min-h-0">
                 <ErrorBoundary fallbackLabel="The map failed to load">
                   <MapComponent
                     campsites={visibleSites}
@@ -367,7 +375,6 @@ export default function App() {
                     userLocation={userLocation}
                     isOfflineMode={isOfflineMode}
                     onOpenDetailModal={setSheetSite}
-                    onVisibleCampsitesChange={setVisibleMapCampsites}
                     onLocateUser={handleLocateUser}
                     isLocating={isLocating}
                   />
@@ -390,39 +397,6 @@ export default function App() {
                     </span>
                   </div>
                 )}
-              </div>
-
-              {/* Horizontal card strip for whatever is on screen right now */}
-              <div className="bg-slate-900/95 border-t border-slate-800 p-3 z-30 backdrop-blur-md">
-                <div className="max-w-7xl mx-auto flex items-center justify-between mb-2 px-1">
-                  <div className="text-xs text-slate-300 font-semibold flex items-center gap-2">
-                    <Tent className="w-4 h-4 text-emerald-400" />
-                    <span>
-                      {visibleMapCampsites.length} location
-                      {visibleMapCampsites.length === 1 ? '' : 's'} in view
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => setActiveView('list')}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 font-bold"
-                  >
-                    See all {visibleSites.length}
-                  </button>
-                </div>
-
-                <div className="flex gap-3 overflow-x-auto pb-2 pt-1 scroll-soft">
-                  {visibleMapCampsites.length === 0 ? (
-                    <p className="text-xs text-slate-400 py-3 px-2 italic">
-                      No campsites in this part of the map. Pan or zoom out to find some.
-                    </p>
-                  ) : (
-                    visibleMapCampsites.map((site) => (
-                      <div key={site.id} className="w-72 shrink-0">
-                        {renderCard(site)}
-                      </div>
-                    ))
-                  )}
-                </div>
               </div>
             </div>
           )}
@@ -501,7 +475,7 @@ export default function App() {
             </div>
           )}
         </main>
-      </ReactNativeFrame>
+      </div>
 
       {/* ------------------------------------------------ Modals & panels */}
       {detailModalSite && (
