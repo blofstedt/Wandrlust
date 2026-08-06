@@ -12,16 +12,16 @@ import {
 import type { Campsite, LandType, MapTileLayer } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import {
-  fetchBoundaries, requestBoxFor, boxContains, BOUNDARY_STYLES, EMPTY_BOUNDARIES,
-  BoundaryCollection, BoundaryConfidence, BoundaryFeature,
-  EDGE_ACCURACY_COPY, CAMPING_BASIS_COPY, EdgeAccuracy, CampingBasisKind
+  fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains, BOUNDARY_STYLES,
+  EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
+  BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import {
-  buildFuzzRings, ringBudget, edgeBlurPx,
-  UNCERTAINTY_LABEL, uncertaintyCaution, shouldSimplify
+  buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
   BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
+  BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
@@ -128,7 +128,15 @@ const LAND_TYPE_BADGE: Record<LandType, string> = {
   dispersed: 'SPOT'
 };
 
-/** Pin markup. Extracted so selection can swap an icon without a full rebuild. */
+/**
+ * Pin markup. Extracted so selection can swap an icon without a full rebuild.
+ *
+ * No land-type badge. Each pin used to carry a little BLM/USFS/CROWN/SPOT
+ * label, which at any realistic pin density turned the map into a wall of
+ * four-letter words with the terrain barely visible behind it. The land type is
+ * still on the pin — it is the colour, and the legend names the colours — and
+ * it is spelled out in full the moment you tap one.
+ */
 const buildMarkerIcon = (site: Campsite, isSelected: boolean): L.DivIcon =>
   L.divIcon({
     className: 'custom-campsite-marker',
@@ -140,9 +148,6 @@ const buildMarkerIcon = (site: Campsite, isSelected: boolean): L.DivIcon =>
           <svg class="w-4 h-4 text-slate-950 stroke-[2.5]" viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M19 20 12 4 5 20" /><path d="M12 4v16" /><path d="M2 20h20" />
           </svg>
-        </div>
-        <div class="absolute -top-2 -right-2 px-1 text-[9px] font-black tracking-tighter text-white bg-slate-950 rounded-full border border-slate-700 shadow">
-          ${LAND_TYPE_BADGE[site.landType]}
         </div>
       </div>`,
     iconSize: [32, 32],
@@ -207,9 +212,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   // What boundary data we already hold, so a pan inside it costs nothing.
   const loadedBoxRef = useRef<BoundingBox | null>(null);
   const loadedZoomRef = useRef<number>(0);
-  const renderedZoomRef = useRef<number>(0);
   const collectionRef = useRef<BoundaryCollection>(EMPTY_BOUNDARIES);
   const boundaryRendererRef = useRef<L.Canvas | null>(null);
+  /** Which tier is on screen, and at what settings — see `render`. */
+  const loadedDetailRef = useRef<BoundaryDetail | null>(null);
+  const overviewTierRef = useRef<number>(0);
+  const renderSignatureRef = useRef<string>('');
+  const renderedCollectionRef = useRef<BoundaryCollection | null>(null);
+  const fillLayerRef = useRef<L.GeoJSON | null>(null);
+  const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
@@ -223,6 +234,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
+  /** True while the map is showing the large-parcels-only overview. */
+  const [isOverviewTier, setIsOverviewTier] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
   const [unmappableHazards, setUnmappableHazards] = useState(0);
 
@@ -472,15 +485,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const toLatLng = (ring: [number, number][]) =>
       ring.map(([lon, lat]) => [lat, lon] as [number, number]);
 
+    /**
+     * Draw the mask once and then just move it.
+     *
+     * This shape never changes — it is the same thirty-odd coordinates for the
+     * life of the app — but as an SVG path Leaflet re-projected and re-emitted
+     * it on the end of every pan and zoom, and a world-sized path is a lot of
+     * geometry to hand the browser for a shape that hasn't moved. On a canvas
+     * with a generous padding it is rasterised once into a surface three times
+     * the size of the screen, and an ordinary pan or two just slides that
+     * surface around without redrawing anything at all.
+     *
+     * The padding is what buys that. It costs one oversized canvas of memory
+     * and removes the grey edge flickering as you scroll.
+     */
+    const renderer = L.canvas({ pane: 'coveragePane', padding: 1 });
+
     // A world-sized polygon with the supported region punched out of it. Now
     // that the tile layer no longer repeats, this covers everything outside
     // coverage exactly once.
     const mask = L.polygon([toLatLng(WORLD_RING), toLatLng(COVERAGE_OUTLINE)], {
-      pane: 'coveragePane', interactive: false, stroke: true,
-      color: '#475569', weight: 1, fillColor: '#0F172A', fillOpacity: 0.72
-    }).addTo(map);
+      pane: 'coveragePane', renderer, interactive: false, stroke: true,
+      color: '#64748B', weight: 1, fillColor: '#0F172A', fillOpacity: 0.72
+    } as L.PolylineOptions).addTo(map);
 
-    return () => { try { map.removeLayer(mask); } catch { /* detached */ } };
+    return () => {
+      try { map.removeLayer(mask); } catch { /* detached */ }
+      try { map.removeLayer(renderer); } catch { /* never attached */ }
+    };
   }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
@@ -494,10 +526,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (!boundaryLayerRef.current) return;
       try { map.removeLayer(boundaryLayerRef.current); } catch { /* detached */ }
       boundaryLayerRef.current = null;
+      fillLayerRef.current = null;
+      haloLayerRef.current = null;
+      renderSignatureRef.current = '';
+      renderedCollectionRef.current = null;
     };
 
     const forget = () => {
       loadedBoxRef.current = null;
+      loadedDetailRef.current = null;
+      overviewTierRef.current = 0;
       collectionRef.current = EMPTY_BOUNDARIES;
     };
 
@@ -506,6 +544,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       forget();
       setBoundaries(EMPTY_BOUNDARIES);
       setZoomTooFar(false);
+      setIsOverviewTier(false);
       return;
     }
 
@@ -542,21 +581,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       return boundaryRendererRef.current;
     };
 
+    /**
+     * What the land is, and what the rules are. Nothing else.
+     *
+     * This used to also carry an edge-accuracy note, a camping-basis note, the
+     * source attribution, an uncertainty band explanation and a survey
+     * disclaimer — five paragraphs of provenance wrapped around two lines
+     * anyone actually acts on. It filled a phone screen.
+     *
+     * The provenance has not been dropped, it has moved to where it belongs:
+     * the legend states "edges approximate" permanently, expands to the full
+     * uncertainty explanation, and the fuzzy band is drawn on the map itself.
+     * One short line stays here, because a popup that names a piece of land
+     * and lists rules for it reads as authoritative, and the boundary under it
+     * is not.
+     */
     const popupHtml = (properties: Record<string, any>): string => {
       const p = properties ?? {};
       const style = BOUNDARY_STYLES[p._confidence as BoundaryConfidence];
-      const edgeNote = p._edgeAccuracy
-        ? EDGE_ACCURACY_COPY[p._edgeAccuracy as EdgeAccuracy]
-        : 'Boundary accuracy unknown.';
-      const basisNote = p._campingBasisKind
-        ? CAMPING_BASIS_COPY[p._campingBasisKind as CampingBasisKind]
-        : 'Camping basis unknown.';
-      const uncertainty = p._edgeAccuracy
-        ? UNCERTAINTY_LABEL[p._edgeAccuracy as EdgeAccuracy]
-        : 'unknown';
-      const caution = p._edgeAccuracy
-        ? uncertaintyCaution(p._edgeAccuracy as EdgeAccuracy)
-        : 'Edge accuracy is unknown for this source. Treat the boundary as approximate.';
 
       /**
        * The rules the land manager sets, shown before anything else.
@@ -617,24 +659,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
              none — check with ${p._attribution ?? 'the managing agency'} before you stay.
            </div>`;
 
-      return `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:300px">
-           <strong style="font-size:13px">${p._name ?? 'Public land'}</strong><br/>
-           <span style="color:#334155">${p._designation ?? ''}</span><br/>
-           <span style="display:inline-block;margin-top:6px;padding:2px 6px;border-radius:6px;background:${
-             style?.fillColor ?? '#94A3B8'
-           };color:#0F172A;font-weight:700;font-size:10px">${style?.label ?? 'Public land'}</span>
+      return `<div style="font-family:system-ui;font-size:12px;min-width:190px;max-width:250px">
+           <strong style="font-size:13px;line-height:1.3">${p._name ?? 'Public land'}</strong>
+           <div style="margin-top:4px">
+             <span style="display:inline-block;padding:2px 6px;border-radius:6px;background:${
+               style?.fillColor ?? '#94A3B8'
+             };color:#0F172A;font-weight:700;font-size:10px">${style?.label ?? 'Public land'}</span>
+           </div>
            ${fireBan}
            ${rulesBlock}
-           <div style="margin-top:8px;padding-top:6px;border-top:1px solid #E2E8F0">
-             <div style="color:#475569;font-size:10px;margin-bottom:4px"><strong>Edges:</strong> ${edgeNote}</div>
-             <div style="color:#475569;font-size:10px"><strong>Camping:</strong> ${basisNote}</div>
+           <div style="margin-top:7px;color:#94A3B8;font-size:9px;line-height:1.35">
+             Approximate boundary — not permission to camp.
            </div>
-           <span style="color:#64748B;font-size:10px;display:block;margin-top:6px">Source: ${p._attribution ?? 'Unknown'}</span>
-           <div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D">
-             <div style="color:#92400E;font-size:10px;font-weight:700;margin-bottom:2px">Boundary uncertainty: ${uncertainty}</div>
-             <div style="color:#92400E;font-size:10px;line-height:1.35">${caution}</div>
-           </div>
-           <span style="color:#B45309;font-size:10px;display:block;margin-top:6px;font-weight:600">Not survey-grade, and not a legal boundary. Only a licensed survey establishes property lines.</span>
          </div>`;
     };
 
@@ -650,17 +686,95 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * layer per ring instead of one layer per ring per polygon. That is the
      * difference between a couple of dozen layers and several thousand.
      */
-    const render = (collection: BoundaryCollection) => {
-      clearLayer();
-      const pane = boundaryPane();
-      renderedZoomRef.current = map.getZoom();
-      if (collection.features.length === 0) {
-        if (pane) pane.style.filter = '';
-        return;
+    /**
+     * Open a parcel's rules over the parcel you tapped.
+     *
+     * Leaflet's default is to anchor a polygon popup at the click point, which
+     * on a phone puts it under your thumb and off to one side of the shape it
+     * describes — with several parcels touching, it was genuinely unclear which
+     * one had answered. Anchoring at the parcel's own centre makes it obvious.
+     *
+     * With one exception: a national forest can be four hundred kilometres
+     * across, and its centre is then nowhere near the screen. When the centre
+     * isn't in view, the tap point wins — a popup you can see beats a
+     * theoretically better-placed one you can't.
+     */
+    const bindParcelPopup = (feature: any, lyr: L.Layer) => {
+      const popup = L.popup({
+        maxWidth: 260,
+        maxHeight: 300,
+        autoPanPadding: [14, 14]
+      });
+
+      lyr.on('click', (event: L.LeafletMouseEvent) => {
+        L.DomEvent.stopPropagation(event);
+        let at = event.latlng;
+        try {
+          const centre = (lyr as L.Polygon).getCenter?.();
+          if (centre && map.getBounds().pad(-0.05).contains(centre)) at = centre;
+        } catch { /* not a closed shape — keep the tap point */ }
+
+        // Built here rather than up front: a viewport can hold several hundred
+        // parcels and almost none of them are ever opened.
+        popup.setContent(popupHtml(feature?.properties)).setLatLng(at).openOn(map);
+      });
+    };
+
+    /**
+     * Style for one parcel's fill and outline at a given zoom.
+     *
+     * Deliberately more contrast than it had. The old fill sat at 0.2 opacity
+     * behind an outline drawn at half opacity, and over satellite imagery —
+     * which is where this app spends its life — that was close to invisible in
+     * daylight on a phone. It is now a brighter stroke over a stronger fill.
+     * The edges say the same thing they always did; you can just see them.
+     */
+    const parcelStyle = (feature: any, centreLat: number, currentZoom: number, overview: boolean) => {
+      const confidence: BoundaryConfidence =
+        feature?.properties?._confidence ?? 'managing_agency';
+      const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
+
+      if (overview) {
+        // Hairline. At this zoom the band would be sub-pixel anyway, and a
+        // heavy outline turns a continent into a solid mat of colour.
+        return {
+          color: style.color,
+          fillColor: style.fillColor,
+          fillOpacity: style.fillOpacity * 0.7,
+          weight: 0.6,
+          opacity: 0.85
+        };
       }
 
-      const centreLat = map.getCenter().lat;
-      const currentZoom = map.getZoom();
+      const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
+      return {
+        color: style.color,
+        fillColor: style.fillColor,
+        fillOpacity: style.fillOpacity,
+        // Where the uncertainty band is too thin to draw, the outline stands
+        // in for it, so the parcel still has a visible edge.
+        weight: shouldSimplify(accuracy, centreLat, currentZoom) ? 1.2 : 0,
+        opacity: 0.8
+      };
+    };
+
+    /* ---- Fuzzy edge rendering -----------------------------------------
+     * We never draw a crisp boundary line. Each polygon gets a soft fill plus
+     * a stack of translucent strokes whose total width equals the dataset's
+     * real positional uncertainty, converted from metres to pixels at the
+     * current zoom. A hard line would claim a precision none of these sources
+     * have, and the failure mode is somebody parking on private land.
+     *
+     * The strokes are batched: every polygon that shares an edge accuracy and
+     * a confidence tier shares the same band geometry, so they go into one
+     * layer per ring instead of one layer per ring per polygon. That is the
+     * difference between a couple of dozen layers and several thousand.
+     */
+    const buildHalo = (
+      collection: BoundaryCollection,
+      centreLat: number,
+      currentZoom: number
+    ): { group: L.LayerGroup; widest: number } => {
       const rings = ringBudget(collection.features.length);
       const renderer = boundaryRenderer();
 
@@ -680,15 +794,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         else bands.set(key, { accuracy, color: style.color, features: [feature] });
       });
 
-      const haloGroup = L.layerGroup([], { pane: 'boundariesPane' });
-      let widestBand = 0;
+      const group = L.layerGroup([], { pane: 'boundariesPane' });
+      let widest = 0;
 
       bands.forEach(({ accuracy, color, features }) => {
         const ringSpecs = buildFuzzRings(accuracy, centreLat, currentZoom, rings);
-        widestBand = Math.max(widestBand, ringSpecs[0]?.weight ?? 0);
+        widest = Math.max(widest, ringSpecs[0]?.weight ?? 0);
 
         ringSpecs.forEach((ring) => {
-          haloGroup.addLayer(
+          group.addLayer(
             L.geoJSON({ type: 'FeatureCollection', features } as any, {
               pane: 'boundariesPane',
               renderer,
@@ -702,47 +816,104 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         });
       });
 
-      const layer = L.geoJSON(collection as any, {
+      return { group, widest };
+    };
+
+    /**
+     * Draw the boundaries — and, far more often, decide not to.
+     *
+     * THIS IS THE FIX FOR THE JANK. Every `moveend` and `zoomend` used to tear
+     * the whole layer down and rebuild it: re-parsing the GeoJSON, minting a
+     * fresh Leaflet layer for every parcel and a popup binding for each one,
+     * then throwing all of it away on the next gesture. With a few hundred
+     * parcels on screen that is the frame drop you could feel.
+     *
+     * Two things changed.
+     *
+     * First, a render signature. If the data and the drawing parameters are
+     * identical to what is already on the map, this returns immediately and
+     * nothing is touched — which is now the common case, because panning
+     * inside loaded data no longer changes either.
+     *
+     * Second, the fill and the uncertainty halo are separate layers. Only the
+     * halo's width depends on zoom, so a zoom step rebuilds the halo (a
+     * handful of batched layers) and leaves the expensive parcel layer, with
+     * all its popups, exactly where it is.
+     */
+    const render = (collection: BoundaryCollection, detail: BoundaryDetail) => {
+      const pane = boundaryPane();
+      const overview = detail === 'overview';
+      const currentZoom = map.getZoom();
+      const centreLat = map.getCenter().lat;
+
+      if (collection.features.length === 0) {
+        clearLayer();
+        if (pane) pane.style.filter = '';
+        return;
+      }
+
+      // The overview is deliberately zoom-independent: hairlines and a flat
+      // fill look the same at zoom 3 as at zoom 6, so zooming inside the
+      // overview redraws nothing at all.
+      const zoomKey = overview ? 'ov' : String(Math.round(currentZoom));
+      const signature = `${detail}|${zoomKey}|${collection.features.length}|${
+        collection.features[0]?.properties?._name ?? ''
+      }`;
+
+      // Compared against what is ON THE MAP, not against what was last
+      // fetched — those are the same object right after a fetch, and confusing
+      // them would let new data slip through the cheap zoom-only path below
+      // and never actually reach the screen.
+      const sameData = renderedCollectionRef.current === collection;
+      if (sameData && signature === renderSignatureRef.current && boundaryLayerRef.current) return;
+
+      /* -- Zoom-only change: rebuild the halo, keep the parcels ---------- */
+      if (sameData && fillLayerRef.current && boundaryLayerRef.current && !overview) {
+        const group = boundaryLayerRef.current;
+        if (haloLayerRef.current) {
+          try { group.removeLayer(haloLayerRef.current); } catch { /* gone */ }
+        }
+        const { group: halo, widest } = buildHalo(collection, centreLat, currentZoom);
+        haloLayerRef.current = halo;
+        group.addLayer(halo);
+        fillLayerRef.current.setStyle((f: any) => parcelStyle(f, centreLat, currentZoom, false));
+        if (pane) pane.style.filter = widest > 0 ? `blur(${edgeBlurPx(widest).toFixed(1)}px)` : '';
+        renderSignatureRef.current = signature;
+        renderedCollectionRef.current = collection;
+        return;
+      }
+
+      /* -- New data: full rebuild --------------------------------------- */
+      clearLayer();
+      const renderer = boundaryRenderer();
+
+      // No uncertainty band in the overview. At zoom 4 a ±200 m band is a
+      // fraction of a pixel, so it would draw as a slightly thicker line that
+      // says nothing — while costing one extra pass over every polygon.
+      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom);
+      if (halo) haloLayerRef.current = halo.group;
+
+      const fill = L.geoJSON(collection as any, {
         pane: 'boundariesPane',
         renderer,
-        style: (feature: any) => {
-          const confidence: BoundaryConfidence =
-            feature?.properties?._confidence ?? 'managing_agency';
-          const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
-          const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
-          return {
-            color: style.color,
-            fillColor: style.fillColor,
-            fillOpacity: style.fillOpacity * 0.85,
-            weight: shouldSimplify(accuracy, centreLat, currentZoom) ? 1 : 0,
-            opacity: 0.5
-          };
-        },
-        // Bound lazily: building a few hundred popup strings up front cost more
-        // than drawing the polygons did, and most are never opened.
-        onEachFeature: (feature: any, lyr: L.Layer) => {
-          /**
-           * Bounded and scrollable, with room to auto-pan into view.
-           *
-           * These popups carry the land's rules now, so a parcel with a fire
-           * ban plus a full rule list is a lot taller than the old two-line
-           * one — tall enough to render off the top of a phone screen, where
-           * the fire ban is exactly the part you'd lose.
-           */
-          lyr.bindPopup(() => popupHtml(feature?.properties), {
-            maxWidth: 300,
-            maxHeight: 320,
-            autoPanPadding: [14, 14]
-          });
-        }
+        style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview),
+        onEachFeature: bindParcelPopup
       } as RenderedGeoJSONOptions);
+      fillLayerRef.current = fill;
 
       // A compositor blur turns the discrete rings into a continuous gradient.
       // This replaced an SVG filter over the whole pane, which forced a full
       // repaint of every polygon on every frame of a pan.
-      if (pane) pane.style.filter = widestBand > 0 ? `blur(${edgeBlurPx(widestBand).toFixed(1)}px)` : '';
+      if (pane) {
+        pane.style.filter =
+          halo && halo.widest > 0 ? `blur(${edgeBlurPx(halo.widest).toFixed(1)}px)` : '';
+      }
 
-      boundaryLayerRef.current = L.layerGroup([haloGroup, layer]).addTo(map);
+      boundaryLayerRef.current = L.layerGroup(
+        halo ? [halo.group, fill] : [fill]
+      ).addTo(map);
+      renderSignatureRef.current = signature;
+      renderedCollectionRef.current = collection;
     };
 
     const run = async () => {
@@ -756,8 +927,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
       const currentZoom = map.getZoom();
 
-      if (currentZoom < BOUNDARY_MIN_ZOOM) {
+      // Below the overview floor the whole hemisphere is on screen and there
+      // is nothing legible to draw at any level of generalisation.
+      if (currentZoom < BOUNDARY_OVERVIEW_MIN_ZOOM) {
         setZoomTooFar(true);
+        setIsOverviewTier(false);
         setBoundaries(EMPTY_BOUNDARIES);
         forget();
         clearLayer();
@@ -765,7 +939,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (pane) pane.style.filter = '';
         return;
       }
+
+      /**
+       * Which tier to draw.
+       *
+       * Zooming out used to erase every boundary, so the answer to "roughly
+       * where is the public land?" was a blank continent. The overview draws
+       * the big parcels as hairlines instead — and because it is asked for on
+       * a very coarse grid and cached for the session, it is fetched once and
+       * then simply panned around.
+       */
+      const detail: BoundaryDetail = currentZoom < BOUNDARY_MIN_ZOOM ? 'overview' : 'full';
       setZoomTooFar(false);
+      setIsOverviewTier(detail === 'overview');
 
       const b = map.getBounds();
       const view: BoundingBox = {
@@ -773,22 +959,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         maxLat: b.getNorth(), maxLon: b.getEast()
       };
 
-      // Everything in view is already loaded at this detail level. Panning
-      // inside it costs nothing; only a zoom change needs a redraw, because
-      // the band's pixel width is derived from the zoom.
+      const tier = detail === 'overview' ? overviewMinAreaSqKm(currentZoom) : 0;
       const loaded = loadedBoxRef.current;
-      if (loaded && boxContains(loaded, view) && currentZoom <= loadedZoomRef.current) {
-        if (currentZoom !== renderedZoomRef.current) render(collectionRef.current);
-        return;
+      const sameTier =
+        loadedDetailRef.current === detail &&
+        (detail === 'full' || overviewTierRef.current === tier);
+
+      // Everything in view is already loaded at this detail level.
+      if (loaded && sameTier && boxContains(loaded, view)) {
+        // Panning inside loaded data needs nothing. A zoom change inside it
+        // needs the uncertainty band rewidened, which `render` does without
+        // rebuilding the parcels — and in the overview, not even that.
+        if (detail === 'full' && currentZoom > loadedZoomRef.current) {
+          // Zoomed past the detail we fetched for: go and get finer geometry.
+        } else {
+          render(collectionRef.current, detail);
+          return;
+        }
       }
 
-      const box = requestBoxFor(view, currentZoom);
+      const box = detail === 'overview'
+        ? overviewBoxFor(view, currentZoom)
+        : requestBoxFor(view, currentZoom);
       const myId = ++requestId;
       controller?.abort();
       controller = new AbortController();
       setIsLoadingBoundaries(true);
 
-      const collection = await fetchBoundaries(box, controller.signal);
+      const collection = await fetchBoundaries(box, controller.signal, detail, currentZoom);
       if (cancelled || myId !== requestId) return;
 
       setIsLoadingBoundaries(false);
@@ -798,9 +996,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
       loadedBoxRef.current = box;
       loadedZoomRef.current = currentZoom;
+      loadedDetailRef.current = detail;
+      overviewTierRef.current = tier;
       collectionRef.current = collection;
       setBoundaries(collection);
-      render(collection);
+      render(collection, detail);
     };
 
     const load = () => {
@@ -1095,13 +1295,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!showBoundaries) return 'Land boundaries hidden';
     if (zoomTooFar) return 'Zoom in for land boundaries';
     if (isLoadingBoundaries) return 'Loading boundaries…';
+    // The overview shows only the big parcels, so it has to say so. Otherwise
+    // a camper zoomed out over a region full of small BLM sections would read
+    // a near-empty map as "nothing here", which is the exact misreading this
+    // app exists to avoid.
+    if (isOverviewTier) {
+      return boundaries.features.length > 0
+        ? `${boundaries.features.length} large parcels · zoom in for the rest`
+        : 'No large parcels here · zoom in for smaller ones';
+    }
     // "edges approximate" rides along with the count so the caveat is on
     // screen even when the legend below is collapsed.
     if (boundaries.features.length > 0) {
       return `${boundaries.features.length} parcels · edges approximate`;
     }
     return 'No mapped public land in view';
-  }, [showBoundaries, zoomTooFar, isLoadingBoundaries, boundaries.features.length]);
+  }, [showBoundaries, zoomTooFar, isLoadingBoundaries, isOverviewTier, boundaries.features.length]);
 
   /** Only worth expanding when there is a per-source breakdown to show. */
   const hasLegend = !isOfflineMode && showBoundaries && boundaries.features.length > 0;
@@ -1207,10 +1416,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                       Uncertainty band
                     </span>
                   </div>
+                  {/*
+                    The numbers come from UNCERTAINTY_METRES rather than being
+                    typed here, so the figure the legend quotes can never drift
+                    away from the band actually being drawn.
+
+                    This is also where the per-parcel accuracy note went when
+                    the popups were cut back to the land's name and its rules.
+                    The caveat is stated once, permanently, instead of in every
+                    popup — but it is still stated.
+                  */}
                   <p className="text-[9px] text-slate-500 leading-tight">
                     Edges are drawn as a fade, not a line, because no source here is
-                    survey-grade. Inside the fade you may be on either side of the real
-                    boundary. Not permission to camp.
+                    survey-grade — roughly {UNCERTAINTY_LABEL.cadastral_derived} to{' '}
+                    {UNCERTAINTY_LABEL.generalised} depending on the source. Inside the
+                    fade you may be on either side of the real boundary. Not permission
+                    to camp.
                   </p>
                 </div>
               </div>
@@ -1283,20 +1504,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 className="accent-emerald-500 w-3.5 h-3.5"
               />
             </label>
-            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
-              <span>
-                Crown land tiles
-                {!crownLandAvailable && (
-                  <span className="block text-[9px] text-slate-500">needs a Mapbox token</span>
-                )}
-              </span>
-              <input
-                type="checkbox"
-                checked={showCrownLand}
-                onChange={(e) => setShowCrownLand(e.target.checked)}
-                className="accent-emerald-500 w-3.5 h-3.5"
-              />
-            </label>
+            {/* Only listed when the optional vector tileset is actually
+                configured. A toggle that explains why it can't work is a
+                developer's note sitting in a camper's map menu. */}
+            {crownLandAvailable && (
+              <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+                <span>Crown land tiles</span>
+                <input
+                  type="checkbox"
+                  checked={showCrownLand}
+                  onChange={(e) => setShowCrownLand(e.target.checked)}
+                  className="accent-emerald-500 w-3.5 h-3.5"
+                />
+              </label>
+            )}
           </div>
         )}
 
