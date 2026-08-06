@@ -61,6 +61,27 @@ export interface BoundaryFeatureProperties {
   _edgeAccuracy?: EdgeAccuracy;
   _campingBasisKind?: CampingBasisKind;
   _basis?: string;
+
+  /* ---- Rules the land manager sets for this parcel ------------------
+   * Present only when they have been recorded against the land. Every one of
+   * these comes from the agency; nothing a camper submitted ever lands here,
+   * because "somebody stayed and nobody minded" is not a regulation.
+   *
+   * Absent means nobody has recorded it, NOT that the rule doesn't exist —
+   * so the UI says "check with the manager" rather than implying no limit.
+   */
+  _stayLimitDays?: number | null;
+  _moveDistanceKm?: number | null;
+  _permitRequired?: boolean | null;
+  _permitName?: string | null;
+  _permitUrl?: string | null;
+  _campfirePolicy?: string | null;
+  _fireBanActive?: boolean | null;
+  _fireBanCheckedAt?: string | null;
+  _wastePolicy?: string | null;
+  _setbackWaterM?: number | null;
+  _leaveNoTrace?: string | null;
+  _restrictions?: string | null;
 }
 
 export interface BoundaryFeature {

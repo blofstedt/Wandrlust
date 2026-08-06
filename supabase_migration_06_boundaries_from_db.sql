@@ -24,7 +24,16 @@
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
--- Boundaries intersecting a bounding box.
+-- Boundaries intersecting a bounding box, WITH THE RULES THAT APPLY.
+--
+-- The rules matter as much as the polygon. Knowing a parcel is BLM land is
+-- only half of what a camper needs; the other half is the stay limit, whether
+-- a permit is required and where to get one, whether there is a fire ban in
+-- force right now, and how far from water they have to be. Those live in
+-- land_regulations and are joined here so the map can show them on tap.
+--
+-- Everything returned under a rules key comes from the land manager. Nothing a
+-- camper submitted ever reaches these fields.
 --
 -- Geometry is simplified server-side to `in_tolerance` degrees. The caller
 -- passes a tolerance derived from the viewport span, so a zoomed-out request
@@ -65,9 +74,20 @@ as $$
       p.edge_accuracy,
       p.camping_basis_kind,
       p.general_use_basis,
-      p.stay_limit_days,
-      p.permit_required,
-      p.permit_name,
+      -- A regulation row overrides the polygon's own defaults where it exists,
+      -- because it is the more specific and more maintainable record.
+      coalesce(r.stay_limit_days, p.stay_limit_days) as stay_limit_days,
+      coalesce(r.permit_required, p.permit_required) as permit_required,
+      coalesce(r.permit_name,     p.permit_name)     as permit_name,
+      r.permit_url,
+      r.move_distance_km,
+      r.campfire_policy,
+      coalesce(r.fire_ban_active, false) as fire_ban_active,
+      r.fire_ban_checked_at,
+      r.waste_policy,
+      r.setback_water_m,
+      r.leave_no_trace,
+      p.restrictions,
       s.label       as source_label,
       s.attribution as attribution,
       -- Clip to the requested box before simplifying: a province-sized polygon
@@ -79,6 +99,11 @@ as $$
       p.area_sq_km
     from public.public_lands p
     join public.land_sources s on s.id = p.source_id
+    -- Rules currently in force for this parcel, if anyone has recorded any.
+    left join public.land_regulations r
+      on r.land_id = p.id
+     and (r.effective_from is null or r.effective_from <= current_date)
+     and (r.effective_to   is null or r.effective_to   >= current_date)
     where p.camping_allowed
       and p.geom && (select g from box)
       and st_intersects(p.geom, (select g from box))
@@ -104,9 +129,20 @@ as $$
             '_name',             h.name,
             '_designation',      h.designation,
             '_basis',            h.general_use_basis,
+            -- The rules that apply to this specific land. Everything below is
+            -- from the land manager, never from a camper's report.
             '_stayLimitDays',    h.stay_limit_days,
+            '_moveDistanceKm',   h.move_distance_km,
             '_permitRequired',   h.permit_required,
-            '_permitName',       h.permit_name
+            '_permitName',       h.permit_name,
+            '_permitUrl',        h.permit_url,
+            '_campfirePolicy',   h.campfire_policy,
+            '_fireBanActive',    h.fire_ban_active,
+            '_fireBanCheckedAt', h.fire_ban_checked_at,
+            '_wastePolicy',      h.waste_policy,
+            '_setbackWaterM',    h.setback_water_m,
+            '_leaveNoTrace',     h.leave_no_trace,
+            '_restrictions',     h.restrictions
           )
         )
       ) filter (where h.geom is not null and not st_isempty(h.geom)),

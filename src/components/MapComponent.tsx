@@ -558,12 +558,73 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         ? uncertaintyCaution(p._edgeAccuracy as EdgeAccuracy)
         : 'Edge accuracy is unknown for this source. Treat the boundary as approximate.';
 
+      /**
+       * The rules the land manager sets, shown before anything else.
+       *
+       * This is the half a camper actually acts on: how long they may stay,
+       * whether they need a permit and where to buy it, and above all whether
+       * there is a fire ban on right now. Everything in this block comes from
+       * the agency — a camper's report never reaches these fields, because
+       * "I stayed and nobody minded" is not a regulation.
+       *
+       * A rule that has not been recorded is omitted rather than shown as
+       * absent. Silence here means nobody has entered it, never "no limit".
+       */
+      const rules: string[] = [];
+      if (p._stayLimitDays != null) {
+        rules.push(`Stay up to <strong>${p._stayLimitDays} days</strong>${
+          p._moveDistanceKm != null ? `, then move at least ${p._moveDistanceKm} km` : ''
+        }`);
+      }
+      if (p._permitRequired === true) {
+        const named = p._permitName ? `: ${p._permitName}` : '';
+        rules.push(
+          p._permitUrl
+            ? `<strong>Permit required</strong>${named} — <a href="${p._permitUrl}" target="_blank" rel="noopener noreferrer" style="color:#0369A1">get it here</a>`
+            : `<strong>Permit required</strong>${named}`
+        );
+      } else if (p._permitRequired === false) {
+        rules.push('No permit required');
+      }
+      if (p._campfirePolicy) rules.push(`Fires: ${p._campfirePolicy}`);
+      if (p._setbackWaterM != null) rules.push(`Camp at least ${p._setbackWaterM} m from water`);
+      if (p._wastePolicy) rules.push(`Waste: ${p._wastePolicy}`);
+      if (p._leaveNoTrace) rules.push(p._leaveNoTrace);
+      if (p._restrictions) rules.push(p._restrictions);
+
+      // A live ban outranks every other rule, so it gets its own red block at
+      // the top rather than a line in a list somebody might skim past.
+      const fireBan = p._fireBanActive
+        ? `<div style="margin-top:8px;padding:7px;border-radius:6px;background:#7F1D1D;border:1px solid #DC2626">
+             <div style="color:#FEE2E2;font-size:11px;font-weight:800">🔥 FIRE BAN IN EFFECT</div>
+             <div style="color:#FECACA;font-size:10px;line-height:1.35;margin-top:2px">No open fire on this land${
+               p._fireBanCheckedAt
+                 ? `. Last checked ${new Date(p._fireBanCheckedAt).toLocaleDateString()}`
+                 : ''
+             }. Confirm with the managing agency before lighting anything.</div>
+           </div>`
+        : '';
+
+      const rulesBlock = rules.length
+        ? `<div style="margin-top:8px;padding:7px;border-radius:6px;background:#F0FDF4;border:1px solid #86EFAC">
+             <div style="color:#166534;font-size:10px;font-weight:700;margin-bottom:3px">Rules for this land</div>
+             <ul style="margin:0;padding-left:14px;color:#166534;font-size:10px;line-height:1.5">${
+               rules.map((r) => `<li>${r}</li>`).join('')
+             }</ul>
+           </div>`
+        : `<div style="margin-top:8px;color:#64748B;font-size:10px;line-height:1.35">
+             No camping rules recorded for this parcel. That does not mean there are
+             none — check with ${p._attribution ?? 'the managing agency'} before you stay.
+           </div>`;
+
       return `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:300px">
            <strong style="font-size:13px">${p._name ?? 'Public land'}</strong><br/>
            <span style="color:#334155">${p._designation ?? ''}</span><br/>
            <span style="display:inline-block;margin-top:6px;padding:2px 6px;border-radius:6px;background:${
              style?.fillColor ?? '#94A3B8'
            };color:#0F172A;font-weight:700;font-size:10px">${style?.label ?? 'Public land'}</span>
+           ${fireBan}
+           ${rulesBlock}
            <div style="margin-top:8px;padding-top:6px;border-top:1px solid #E2E8F0">
              <div style="color:#475569;font-size:10px;margin-bottom:4px"><strong>Edges:</strong> ${edgeNote}</div>
              <div style="color:#475569;font-size:10px"><strong>Camping:</strong> ${basisNote}</div>
@@ -660,7 +721,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // Bound lazily: building a few hundred popup strings up front cost more
         // than drawing the polygons did, and most are never opened.
         onEachFeature: (feature: any, lyr: L.Layer) => {
-          lyr.bindPopup(() => popupHtml(feature?.properties));
+          /**
+           * Bounded and scrollable, with room to auto-pan into view.
+           *
+           * These popups carry the land's rules now, so a parcel with a fire
+           * ban plus a full rule list is a lot taller than the old two-line
+           * one — tall enough to render off the top of a phone screen, where
+           * the fire ban is exactly the part you'd lose.
+           */
+          lyr.bindPopup(() => popupHtml(feature?.properties), {
+            maxWidth: 300,
+            maxHeight: 320,
+            autoPanPadding: [14, 14]
+          });
         }
       } as RenderedGeoJSONOptions);
 
