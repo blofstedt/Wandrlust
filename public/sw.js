@@ -107,13 +107,87 @@ self.addEventListener('message', (event) => {
 
 const isAsset = (url) => url.pathname.startsWith('/assets/');
 
+/* ------------------------------------------------------------------ */
+/* Map tiles                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A bounded cache of map imagery, so panning back over ground you've already
+ * covered doesn't re-download it and flash empty.
+ *
+ * THIS IS NOT THE OFFLINE MAPS FEATURE, and it must never be mistaken for it.
+ * Offline mode reads explicitly downloaded regions out of IndexedDB through a
+ * separate tile layer and shows a blank placeholder for anything missing — it
+ * does not consult this cache at all. So nothing here can make the offline
+ * manager claim coverage the user never downloaded. This only makes the online
+ * map feel less like it is rebuilding itself constantly.
+ *
+ * Capped by entry count. Tile imagery is fetched by <img>, which makes the
+ * responses opaque — their real size is invisible to us and browsers pad them
+ * heavily against the storage quota, so an unbounded cache here would quietly
+ * eat a phone's allowance.
+ */
+const TILE_CACHE = 'wandrlust-tiles';
+const TILE_CACHE_MAX = 400;
+/** Trimming walks the whole key list, so do it occasionally, not per tile. */
+const TILE_TRIM_EVERY = 40;
+
+const TILE_HOSTS = [
+  'server.arcgisonline.com',
+  'tile.openstreetmap.org',
+  'tile.opentopomap.org',
+  'tiles.mapbox.com'
+];
+
+const isTile = (url) => TILE_HOSTS.some((host) => url.hostname.endsWith(host));
+
+let tilePutCount = 0;
+
+const trimTileCache = async () => {
+  const cache = await caches.open(TILE_CACHE);
+  const keys = await cache.keys();
+  const excess = keys.length - TILE_CACHE_MAX;
+  // Cache API preserves insertion order, so the front of the list is oldest.
+  if (excess > 0) await Promise.all(keys.slice(0, excess).map((k) => cache.delete(k)));
+};
+
+const cacheTile = async (request, response) => {
+  // An opaque response has status 0 and we cannot see whether it succeeded;
+  // anything we CAN read must have actually worked before we keep it.
+  if (response.type !== 'opaque' && !response.ok) return;
+
+  const cache = await caches.open(TILE_CACHE);
+  await cache.put(request, response);
+
+  tilePutCount += 1;
+  if (tilePutCount % TILE_TRIM_EVERY === 0) await trimTileCache();
+};
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
 
-  // Someone else's server — tiles, fonts, Supabase. Not ours to cache.
+  // Map imagery. Cache-first: a given z/x/y is the same picture every time, so
+  // a hit is always correct and always beats a round trip.
+  if (isTile(url)) {
+    event.respondWith(
+      caches.match(request).then(
+        (hit) =>
+          hit ||
+          fetch(request).then((response) => {
+            // Clone before the browser consumes the body for the <img>.
+            const copy = response.clone();
+            event.waitUntil(cacheTile(request, copy).catch(() => undefined));
+            return response;
+          })
+      )
+    );
+    return;
+  }
+
+  // Anything else on someone else's server — fonts, Supabase. Not ours.
   if (url.origin !== self.location.origin) return;
 
   // Live data. Must reach the network or fail visibly.

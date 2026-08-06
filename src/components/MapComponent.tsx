@@ -62,9 +62,28 @@ type RenderedGeoJSONOptions = L.GeoJSONOptions & { renderer: L.Renderer };
  */
 const TILE_PERFORMANCE = {
   updateWhenZooming: false,
-  /** Extra ring of tiles held off-screen so a short pan has nothing to fetch. */
-  keepBuffer: 3
+  /**
+   * Load tiles DURING a pan, not only once it stops.
+   *
+   * Leaflet defaults this to true on mobile, which means a drag shows bare
+   * background wherever you haven't been yet and only starts fetching when
+   * your finger lifts. That is the empty blue you see at the edges while
+   * scrolling. It costs more requests mid-gesture; the low-resolution
+   * underlay below covers the gap until they land.
+   */
+  updateWhenIdle: false,
+  /** Extra rings of tiles held off-screen so a short pan has nothing to fetch. */
+  keepBuffer: 4
 } as const;
+
+/**
+ * Zoom level the always-there backdrop is drawn from.
+ *
+ * Low enough that a handful of tiles cover a whole region and they stay in the
+ * browser cache; high enough that the upscaled result reads as terrain rather
+ * than coloured mush.
+ */
+const UNDERLAY_NATIVE_ZOOM = 8;
 
 /**
  * The hard edge of the map.
@@ -149,6 +168,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const underlayLayerRef = useRef<L.TileLayer | null>(null);
   const boundaryLayerRef = useRef<L.LayerGroup | null>(null);
   const selectedIdRef = useRef<string | null>(null);
 
@@ -310,6 +330,49 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     layer.addTo(map);
     tileLayerRef.current = layer;
+
+    /**
+     * A permanently-loaded, low-resolution copy of the same map, underneath.
+     *
+     * Panning into somewhere new always means waiting on tiles, and until they
+     * arrive the container's background colour shows through — the blank blue
+     * at the edges of a scroll. This layer is drawn from zoom 8 and stretched,
+     * so it is blurry, but a whole region is only a handful of images: they
+     * arrive almost immediately, stay in the browser cache, and mean there is
+     * always terrain under the sharp tiles rather than nothing.
+     *
+     * Skipped offline, where the point is to make missing tiles obvious rather
+     * than paper over them with imagery we don't have.
+     */
+    if (!isOfflineMode) {
+      if (!map.getPane('underlayPane')) {
+        map.createPane('underlayPane');
+        const pane = map.getPane('underlayPane');
+        // Below Leaflet's own tile pane, which sits at 200.
+        if (pane) { pane.style.zIndex = '150'; pane.style.pointerEvents = 'none'; }
+      }
+
+      const config = TILE_URLS[activeTileLayer];
+      underlayLayerRef.current = L.tileLayer(config.url, {
+        pane: 'underlayPane',
+        // Stop requesting past this level; Leaflet upscales what it has.
+        maxNativeZoom: UNDERLAY_NATIVE_ZOOM,
+        maxZoom: 19,
+        noWrap: true,
+        bounds: WORLD_BOUNDS,
+        updateWhenIdle: false,
+        updateWhenZooming: false,
+        keepBuffer: 2,
+        // The sharp layer above carries the attribution for both.
+        attribution: ''
+      }).addTo(map);
+    }
+
+    return () => {
+      if (!underlayLayerRef.current) return;
+      try { map.removeLayer(underlayLayerRef.current); } catch { /* detached */ }
+      underlayLayerRef.current = null;
+    };
   }, [activeTileLayer, isMapReady, isOfflineMode]);
 
   /* ------------------------------------------------------------------ */
@@ -670,18 +733,37 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const cluster = L.markerClusterGroup({
       showCoverageOnHover: false,
-      maxClusterRadius: 40,
+      /**
+       * How close two pins must be, in screen pixels, before they merge.
+       *
+       * This was 40 — barely more than the 32px width of a pin — so pins only
+       * grouped once they were already overlapping, and zooming out produced a
+       * pile of tangled markers instead of a count. 80 is the plugin's own
+       * default and groups while there is still space between them.
+       */
+      maxClusterRadius: 80,
       // Build the cluster tree in chunks across frames rather than in one
       // blocking pass, so a big result set can't freeze the map while it loads.
       chunkedLoading: true,
       removeOutsideVisibleBounds: true,
-      iconCreateFunction: (c) =>
-        L.divIcon({
-          html: `<div class="w-8 h-8 rounded-full bg-slate-900 border-2 border-emerald-400 flex items-center justify-center text-white font-bold text-xs shadow-xl">${c.getChildCount()}</div>`,
+      // Tapping a cluster that can't split any further fans its pins out.
+      spiderfyOnMaxZoom: true,
+      iconCreateFunction: (c) => {
+        // Bigger groups get a bigger badge, so density reads at a glance
+        // instead of having to compare numbers.
+        const count = c.getChildCount();
+        const size = count < 10 ? 34 : count < 100 ? 42 : 50;
+        const text = count < 100 ? 'text-xs' : 'text-[11px]';
+
+        return L.divIcon({
+          html:
+            `<div class="rounded-full bg-slate-900/95 border-2 border-emerald-400 flex items-center justify-center text-white font-bold ${text} shadow-xl" ` +
+            `style="width:${size}px;height:${size}px">${count}</div>`,
           className: 'custom-cluster-icon',
-          iconSize: [32, 32],
-          iconAnchor: [16, 16]
-        })
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2]
+        });
+      }
     });
 
     const markers = campsites.map((site) => {
