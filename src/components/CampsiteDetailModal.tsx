@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Campsite, CamperReview } from '../types';
+import { ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL } from '../utils/amenities';
 import { getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl } from '../utils/imageUtils';
 import {
   X,
@@ -287,105 +288,110 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
             </div>
           )}
 
-          {/* Cellular Connectivity Matrix */}
+          {/*
+            Cell coverage.
+
+            This panel was headed "Verified Cell Coverage" and drew a five-star
+            strength meter per carrier — from numbers nobody had ever measured.
+            Nothing in any of our sources records carrier coverage, so unless a
+            camper has reported it there is simply nothing to show.
+          */}
           <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4">
             <h4 className="font-semibold text-slate-100 text-sm mb-3 flex items-center gap-2">
               <Wifi className="w-4 h-4 text-teal-400" />
-              Verified Cell Coverage (Signal Strength)
+              Cell coverage
             </h4>
-            <div className="grid grid-cols-3 gap-3 text-center text-xs">
-              <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                <div className="font-bold text-slate-300">Verizon</div>
-                <div className="text-emerald-400 font-extrabold text-sm mt-0.5">
-                  {'★'.repeat(campsite.amenities.cellSignal.verizon)}{'☆'.repeat(5 - campsite.amenities.cellSignal.verizon)}
-                </div>
-                <div className="text-[10px] text-slate-400 mt-1">{campsite.amenities.cellSignal.verizon}/5 Bars</div>
+
+            {campsite.amenities.cellSignal ? (
+              <div className="grid grid-cols-3 gap-3 text-center text-xs">
+                {([
+                  ['Verizon', campsite.amenities.cellSignal.verizon],
+                  ['AT&T', campsite.amenities.cellSignal.att],
+                  ['T-Mobile', campsite.amenities.cellSignal.tmobile]
+                ] as const).map(([carrier, bars]) => (
+                  <div key={carrier} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                    <div className="font-bold text-slate-300">{carrier}</div>
+                    {typeof bars === 'number' ? (
+                      <>
+                        <div className="text-emerald-400 font-extrabold text-sm mt-0.5">
+                          {'★'.repeat(bars)}{'☆'.repeat(Math.max(0, 5 - bars))}
+                        </div>
+                        <div className="text-[10px] text-slate-400 mt-1">{bars}/5 bars</div>
+                      </>
+                    ) : (
+                      <div className="text-[10px] text-slate-500 mt-2 italic">{UNKNOWN_LABEL}</div>
+                    )}
+                  </div>
+                ))}
               </div>
-              <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                <div className="font-bold text-slate-300">AT&T</div>
-                <div className="text-emerald-400 font-extrabold text-sm mt-0.5">
-                  {'★'.repeat(campsite.amenities.cellSignal.att)}{'☆'.repeat(5 - campsite.amenities.cellSignal.att)}
-                </div>
-                <div className="text-[10px] text-slate-400 mt-1">{campsite.amenities.cellSignal.att}/5 Bars</div>
-              </div>
-              <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                <div className="font-bold text-slate-300">T-Mobile</div>
-                <div className="text-emerald-400 font-extrabold text-sm mt-0.5">
-                  {'★'.repeat(campsite.amenities.cellSignal.tmobile)}{'☆'.repeat(5 - campsite.amenities.cellSignal.tmobile)}
-                </div>
-                <div className="text-[10px] text-slate-400 mt-1">{campsite.amenities.cellSignal.tmobile}/5 Bars</div>
-              </div>
-            </div>
+            ) : (
+              <p className="text-xs text-slate-400 leading-relaxed">
+                No one has reported signal here. Assume you will have none, and tell
+                someone your plans before you go.
+              </p>
+            )}
           </div>
 
           {/* Amenities & Road Access Grid */}
           <div>
-            <h4 className="font-semibold text-slate-100 text-sm mb-3">Key Site Features & Amenities</h4>
+            <h4 className="font-semibold text-slate-100 text-sm mb-3">Site features</h4>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <Droplet className="w-4 h-4 text-sky-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Water Source</div>
-                  <div className="font-semibold text-slate-200 capitalize">{campsite.amenities.water.replace('_', ' ')}</div>
+              {/*
+                A tile per fact. An unknown value is dimmed and says so, rather
+                than being rendered as a confident negative — "Prohibited",
+                "No Dogs" and "Tent Only" were all previously shown for sites
+                where nobody had recorded anything at all.
+              */}
+              {([
+                { icon: Droplet, tint: 'text-sky-400', label: 'Water source',
+                  value: campsite.amenities.water && WATER_LABEL[campsite.amenities.water] },
+                { icon: Truck, tint: 'text-amber-400', label: 'Road access',
+                  value: campsite.amenities.roadAccess && ROAD_ACCESS_LABEL[campsite.amenities.roadAccess] },
+                { icon: Flame, tint: 'text-red-400', label: 'Fire ring',
+                  value: campsite.amenities.fireRing === undefined
+                    ? undefined : campsite.amenities.fireRing ? 'Present' : 'None' },
+                { icon: Dog, tint: 'text-emerald-400', label: 'Pets',
+                  value: campsite.amenities.petFriendly === undefined
+                    ? undefined : campsite.amenities.petFriendly ? 'Allowed' : 'Not allowed' },
+                { icon: Calendar, tint: 'text-teal-400', label: 'Stay limit',
+                  value: campsite.amenities.stayLimitDays !== undefined
+                    ? `${campsite.amenities.stayLimitDays} days` : undefined },
+                { icon: ShieldCheck, tint: 'text-indigo-400', label: 'Permit',
+                  value: campsite.amenities.permitRequired === undefined
+                    ? undefined : campsite.amenities.permitRequired ? 'Required' : 'Not required' },
+                { icon: Compass, tint: 'text-amber-400', label: 'Max rig length',
+                  value: campsite.amenities.maxRvLengthFeet
+                    ? `${campsite.amenities.maxRvLengthFeet} ft` : undefined },
+                { icon: Trash2, tint: 'text-rose-400', label: 'Trash',
+                  value: campsite.amenities.trashService === undefined
+                    ? undefined : campsite.amenities.trashService ? 'Bins on site' : 'Pack it out' }
+              ] as const).map(({ icon: Icon, tint, label, value }) => (
+                <div
+                  key={label}
+                  className={`p-3 rounded-xl bg-slate-950/80 border flex items-center gap-2.5 ${
+                    value ? 'border-slate-800' : 'border-slate-800/50'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 shrink-0 ${value ? tint : 'text-slate-600'}`} />
+                  <div className="min-w-0">
+                    <div className="text-slate-400 text-[10px] uppercase font-bold">{label}</div>
+                    <div
+                      className={`font-semibold truncate ${
+                        value ? 'text-slate-200' : 'text-slate-500 italic font-normal'
+                      }`}
+                    >
+                      {value ?? UNKNOWN_LABEL}
+                    </div>
+                  </div>
                 </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <Truck className="w-4 h-4 text-amber-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Road Access</div>
-                  <div className="font-semibold text-slate-200 capitalize">{campsite.amenities.roadAccess.replace('_', ' ')}</div>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <Flame className="w-4 h-4 text-red-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Fire Ring</div>
-                  <div className="font-semibold text-slate-200">{campsite.amenities.fireRing ? 'Allowed' : 'Prohibited'}</div>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <Dog className="w-4 h-4 text-emerald-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Pets</div>
-                  <div className="font-semibold text-slate-200">{campsite.amenities.petFriendly ? 'Allowed' : 'No Dogs'}</div>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <Calendar className="w-4 h-4 text-teal-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Stay Limit</div>
-                  <div className="font-semibold text-slate-200">{campsite.amenities.stayLimitDays} Days</div>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-indigo-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Permit</div>
-                  <div className="font-semibold text-slate-200">{campsite.amenities.permitRequired ? 'Required (Free)' : 'None Needed'}</div>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <Compass className="w-4 h-4 text-amber-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Max RV Rig</div>
-                  <div className="font-semibold text-slate-200">{campsite.amenities.maxRvLengthFeet ? `${campsite.amenities.maxRvLengthFeet}ft Rig` : 'Tent Only'}</div>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center gap-2.5">
-                <Trash2 className="w-4 h-4 text-rose-400 shrink-0" />
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase font-bold">Trash</div>
-                  <div className="font-semibold text-slate-200">{campsite.amenities.trashService ? 'Dumpsters' : 'Pack In / Pack Out'}</div>
-                </div>
-              </div>
+              ))}
             </div>
+
+            <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+              Anything marked “{UNKNOWN_LABEL}” has not been surveyed — it is not a
+              statement that the facility is absent. Dispersed sites rarely have any
+              of this; arrive self-sufficient.
+            </p>
           </div>
 
           {/* Camper Community Reviews */}

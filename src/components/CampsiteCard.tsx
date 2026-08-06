@@ -2,6 +2,9 @@ import React from 'react';
 import { MapPin, Star, Wifi, Droplet, Truck, Bookmark, ChevronRight, ExternalLink } from 'lucide-react';
 import type { Campsite, LandType } from '../types';
 import {
+  ROAD_ACCESS_LABEL, WATER_LABEL, bestCellSignal, knownAmenityCount
+} from '../utils/amenities';
+import {
   getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl
 } from '../utils/imageUtils';
 
@@ -26,11 +29,8 @@ interface CampsiteCardProps {
 export const CampsiteCard: React.FC<CampsiteCardProps> = ({
   campsite, isSelected, isSaved, onSelect, onToggleSave, onOpenDetail, distanceMiles
 }) => {
-  const bestSignal = Math.max(
-    campsite.amenities.cellSignal.verizon,
-    campsite.amenities.cellSignal.att,
-    campsite.amenities.cellSignal.tmobile
-  );
+  const amenities = campsite.amenities;
+  const bestSignal = bestCellSignal(amenities);
 
   return (
     <article
@@ -131,25 +131,39 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = ({
           </div>
 
           <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between flex-wrap gap-2 text-xs text-slate-300">
+            {/* Only facts. A chip appears when someone recorded the thing it
+                describes, and the row collapses to a note when nobody has. */}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 font-semibold text-[11px] border border-emerald-800/50">
-                {campsite.amenities.stayLimitDays}-day limit
-              </span>
+              {amenities.stayLimitDays !== undefined && (
+                <span className="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 font-semibold text-[11px] border border-emerald-800/50">
+                  {amenities.stayLimitDays}-day limit
+                </span>
+              )}
 
-              <span className="flex items-center gap-1 text-[11px] text-slate-400">
-                <Wifi className="w-3.5 h-3.5 text-teal-400" />
-                {bestSignal} bars
-              </span>
+              {bestSignal !== undefined && (
+                <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                  <Wifi className="w-3.5 h-3.5 text-teal-400" />
+                  {bestSignal} bars
+                </span>
+              )}
 
-              <span className="flex items-center gap-1 text-[11px] text-slate-400 capitalize">
-                <Truck className="w-3.5 h-3.5 text-amber-400" />
-                {campsite.amenities.roadAccess.replace('_', ' ')}
-              </span>
+              {amenities.roadAccess && (
+                <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                  <Truck className="w-3.5 h-3.5 text-amber-400" />
+                  {ROAD_ACCESS_LABEL[amenities.roadAccess]}
+                </span>
+              )}
 
-              {campsite.amenities.water !== 'none' && (
-                <span className="flex items-center gap-1 text-[11px] text-sky-400 capitalize">
+              {amenities.water && amenities.water !== 'none' && (
+                <span className="flex items-center gap-1 text-[11px] text-sky-400">
                   <Droplet className="w-3.5 h-3.5" />
-                  {campsite.amenities.water.replace('_', ' ')}
+                  {WATER_LABEL[amenities.water]}
+                </span>
+              )}
+
+              {knownAmenityCount(amenities) === 0 && (
+                <span className="text-[11px] text-slate-500 italic">
+                  No facilities recorded — check before you go
                 </span>
               )}
             </div>

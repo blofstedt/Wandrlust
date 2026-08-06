@@ -11,19 +11,33 @@ export interface CellSignal {
   tmobile: number;
 }
 
+/**
+ * What is known about a site's facilities — and nothing more.
+ *
+ * EVERY FIELD IS OPTIONAL, AND THAT IS THE POINT. Absent means "nobody has
+ * recorded this", which is the true state for most dispersed sites. It does
+ * not mean "no", and the UI must never render it as one.
+ *
+ * These were previously all required, so every site had to carry a value
+ * whether or not one was known. That produced a dataset where all 21 curated
+ * sites had carrier signal bars nobody had measured, an identical 14-day stay
+ * limit, and a star rating out of zero reviews. A camper deciding whether they
+ * can get a trailer down a road has no way to tell an observation from a
+ * filled-in blank, which is the failure this app exists to avoid.
+ */
 export interface CampsiteAmenities {
-  water: WaterType;
-  toilet: ToiletType;
-  roadAccess: RoadAccess;
-  cellSignal: CellSignal;
-  maxRvLengthFeet?: number; // 0 if tent only
-  fireRing: boolean;
-  petFriendly: boolean;
-  trashService: boolean;
-  shade: ShadeType;
-  stayLimitDays: number;
-  isFree: boolean;
-  permitRequired: boolean;
+  water?: WaterType;
+  toilet?: ToiletType;
+  roadAccess?: RoadAccess;
+  cellSignal?: CellSignal;
+  maxRvLengthFeet?: number;
+  fireRing?: boolean;
+  petFriendly?: boolean;
+  trashService?: boolean;
+  shade?: ShadeType;
+  stayLimitDays?: number;
+  isFree?: boolean;
+  permitRequired?: boolean;
 }
 
 export interface CamperReview {

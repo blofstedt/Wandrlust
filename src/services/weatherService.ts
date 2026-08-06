@@ -34,6 +34,17 @@ export interface HazardAlert {
   effective: string | null;
   expires: string | null;
   source: 'nws' | 'eccc';
+  /**
+   * The area the alert covers, as GeoJSON, when the feed supplied one.
+   *
+   * Frequently absent: NWS sends `geometry: null` for zone-based products and
+   * names the zones by URL instead. An alert without this cannot be drawn on
+   * the map, and is deliberately not given an invented position — it appears
+   * in the alert list only.
+   */
+  geometry?: unknown;
+  /** `[lat, lon]` centre of `geometry`. Present exactly when `geometry` is. */
+  centroid?: [number, number];
 }
 
 export interface ForecastPeriod {

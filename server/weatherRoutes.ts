@@ -60,6 +60,47 @@ const getJson = async (url: string, timeoutMs = 9000): Promise<any | null> => {
   }
 };
 
+
+/**
+ * Where an alert applies, when the feed actually says.
+ *
+ * Both feeds return a GeoJSON geometry per alert — but not always. NWS in
+ * particular sends `geometry: null` for zone-based products, naming the
+ * affected zones by URL instead. We keep the polygon when there is one and
+ * return null when there isn't.
+ *
+ * We do NOT fall back to the centre of the requested viewport, or to anything
+ * else. A fire warning drawn in the wrong valley is worse than a fire warning
+ * that only appears in the list, and this app's whole premise is not showing
+ * people things it cannot stand behind.
+ */
+const alertLocation = (feature: any): { geometry: unknown; centroid: [number, number] } | null => {
+  const geometry = feature?.geometry;
+  if (!geometry || !geometry.type || !geometry.coordinates) return null;
+
+  // Average every vertex. Alert areas are compact enough that this lands
+  // inside them for practical purposes, and it only positions the marker —
+  // the polygon itself is drawn from the real coordinates.
+  let sumLon = 0;
+  let sumLat = 0;
+  let count = 0;
+
+  const walk = (node: any): void => {
+    if (!Array.isArray(node)) return;
+    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+      sumLon += node[0];
+      sumLat += node[1];
+      count += 1;
+      return;
+    }
+    node.forEach(walk);
+  };
+  walk(geometry.coordinates);
+
+  if (count === 0) return null;
+  return { geometry, centroid: [sumLat / count, sumLon / count] };
+};
+
 const nwsAlertToHazard = (feature: any) => {
   const p = feature?.properties ?? {};
   const event = p.event ?? 'Weather alert';
@@ -77,7 +118,8 @@ const nwsAlertToHazard = (feature: any) => {
     sender: p.senderName ?? 'NWS',
     effective: p.effective ?? p.onset ?? null,
     expires: p.expires ?? p.ends ?? null,
-    source: 'nws' as const
+    source: 'nws' as const,
+    ...(alertLocation(feature) ?? {})
   };
 };
 
@@ -102,7 +144,8 @@ const ecccAlertToHazard = (feature: any) => {
     sender: 'Environment and Climate Change Canada',
     effective: p.effective ?? null,
     expires: p.expires ?? null,
-    source: 'eccc' as const
+    source: 'eccc' as const,
+    ...(alertLocation(feature) ?? {})
   };
 };
 

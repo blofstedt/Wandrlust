@@ -33,13 +33,154 @@
  * Every endpoint and field name below was verified against the live services
  * before being committed. If you change one, re-verify — a wrong field name
  * fails silently as an empty result, which is the worst failure mode this app
- * can have.
+ * can have. `npm run probe` checks all of them in one go.
+ *
+ * ---------------------------------------------------------------------------
+ * WHERE THE DATA COMES FROM NOW
+ * ---------------------------------------------------------------------------
+ *
+ * Seeded data first, live services second.
+ *
+ * `npm run seed` has always written every polygon into Supabase, and until now
+ * nothing read it — this endpoint proxied the live ArcGIS services on every
+ * single request, so seeding changed nothing the user could see, and the map
+ * was only ever as available as five government servers.
+ *
+ * A request now asks the database first. If it has boundaries for that
+ * viewport they are served from there: one query, no upstream dependency, and
+ * a response in milliseconds instead of seconds.
+ *
+ * If the database is not configured, not migrated, or simply has nothing for
+ * that area, the live proxy below answers exactly as it always did. That
+ * fallback is deliberate and load-bearing — it means this is safe to deploy
+ * before anyone has run a seed, and it means an unseeded region degrades to
+ * the old behaviour rather than to an empty map that would read as "no public
+ * land here".
  */
 import type { Express, Request, Response } from 'express';
 import { gzip } from 'zlib';
 import { promisify } from 'util';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const gzipAsync = promisify(gzip);
+
+/* -------------------------------------------------------------------------- */
+/* Seeded boundaries                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Read-only client on the public key.
+ *
+ * Boundaries are world-readable by RLS policy, so there is no reason to reach
+ * for the service role here — and a service-role client in a request path is
+ * how key leaks happen.
+ */
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON = process.env.VITE_SUPABASE_ANON_KEY;
+
+let seededClient: SupabaseClient | null | undefined;
+
+const getSeededClient = (): SupabaseClient | null => {
+  if (seededClient !== undefined) return seededClient;
+  seededClient =
+    SUPABASE_URL && SUPABASE_ANON
+      ? createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false } })
+      : null;
+  if (!seededClient) {
+    console.info('[boundaries] Supabase not configured — using live services only.');
+  }
+  return seededClient;
+};
+
+/**
+ * Suppresses the seeded lookup after the database itself proves unusable —
+ * migration not run, credentials wrong, host unreachable.
+ *
+ * Deliberately NOT triggered by an empty result. An empty result is a correct
+ * answer meaning "nothing is seeded for this bounding box", which is expected
+ * constantly while only some regions are loaded. Treating that as a failure
+ * would let one pan into unseeded Montana switch the whole seeded path off for
+ * five minutes, so a user panning back to a seeded region would silently get
+ * the slow live path instead.
+ */
+let seededOutage: { at: number } | null = null;
+const SEEDED_RECHECK_MS = 5 * 60 * 1000;
+
+interface SeededResult {
+  features: any[];
+  sources: { id: string; label: string; attribution: string; confidence: string; featureCount: number }[];
+}
+
+const fetchSeededBoundaries = async (
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  recordLimit: number
+): Promise<SeededResult | null> => {
+  const client = getSeededClient();
+  if (!client) return null;
+
+  if (seededOutage && Date.now() - seededOutage.at < SEEDED_RECHECK_MS) return null;
+
+  try {
+    const { data, error } = await client.rpc('boundaries_in_bbox', {
+      in_min_lat: bbox.minLat,
+      in_min_lon: bbox.minLon,
+      in_max_lat: bbox.maxLat,
+      in_max_lon: bbox.maxLon,
+      in_tolerance: simplifyDegrees,
+      // Ask for one more than we'll keep, so truncation can be detected.
+      in_limit: recordLimit + 1
+    });
+
+    if (error) {
+      // Most likely the migration has not been run. Say so once, clearly,
+      // rather than failing every request in silence.
+      console.warn(`[boundaries] seeded lookup unavailable: ${error.message}`);
+      seededOutage = { at: Date.now() };
+      return null;
+    }
+
+    // The database answered, so it is healthy — whatever it answered.
+    seededOutage = null;
+
+    const features = Array.isArray(data?.features) ? data.features : [];
+    // Nothing seeded for this box. Fall through to the live services for this
+    // request only; the seeded path stays enabled for everywhere else.
+    if (features.length === 0) return null;
+
+    // Count per source from the features themselves — no second round trip.
+    const counts = new Map<string, { label: string; attribution: string; confidence: string; n: number }>();
+    for (const f of features) {
+      const p = f?.properties ?? {};
+      const id = String(p._source ?? 'unknown');
+      const existing = counts.get(id);
+      if (existing) existing.n += 1;
+      else {
+        counts.set(id, {
+          label: String(p._sourceName ?? id),
+          attribution: String(p._attribution ?? ''),
+          confidence: String(p._confidence ?? 'managing_agency'),
+          n: 1
+        });
+      }
+    }
+
+    return {
+      features,
+      sources: [...counts.entries()].map(([id, v]) => ({
+        id,
+        label: v.label,
+        attribution: v.attribution,
+        confidence: v.confidence,
+        featureCount: v.n
+      }))
+    };
+  } catch (err) {
+    console.warn(`[boundaries] seeded lookup failed: ${(err as Error).message}`);
+    seededOutage = { at: Date.now() };
+    return null;
+  }
+};
 
 interface BoundarySource {
   id: string;
@@ -384,6 +525,17 @@ const sendJson = async (
   }
 };
 
+/**
+ * Said the same way whichever path answered. The seeded database and the live
+ * services carry exactly the same caveats, because it is the same data.
+ */
+const DISCLAIMER =
+  'Approximate land management boundaries. NOT survey-grade and NOT ' +
+  'parcel-level ownership records — BLM states its Surface Management ' +
+  'Agency data does not illustrate ownership boundaries. Private ' +
+  'inholdings are not shown. These polygons do not constitute ' +
+  'permission to camp. Confirm local regulations before travelling.';
+
 export const registerBoundaryRoutes = (app: Express): void => {
   app.get('/api/boundaries', async (req: Request, res: Response) => {
     const minLat = parseFloat(req.query.minLat as string);
@@ -424,6 +576,42 @@ export const registerBoundaryRoutes = (app: Express): void => {
       return;
     }
 
+    /**
+     * The database first.
+     *
+     * A seeded region answers from one indexed query. Anything else — no
+     * Supabase, no migration, or simply nothing seeded for this viewport —
+     * returns null and drops through to the live proxy below, so an unseeded
+     * deploy behaves exactly as it did before.
+     */
+    const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit);
+    if (seeded) {
+      const truncated = seeded.features.length > recordLimit;
+      const body = {
+        type: 'FeatureCollection',
+        features: seeded.features.slice(0, recordLimit),
+        meta: {
+          servedFrom: 'seeded' as const,
+          sources: seeded.sources.map((s) => ({ ...s, available: true, truncated })),
+          truncated,
+          truncationNote: truncated
+            ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
+            : undefined,
+          disclaimer: DISCLAIMER
+        }
+      };
+
+      const json = JSON.stringify(body);
+      const gzipped = await sendJson(req, res, json);
+
+      if (boundaryCache.size >= CACHE_MAX_ENTRIES) {
+        const oldest = boundaryCache.keys().next().value;
+        if (oldest) boundaryCache.delete(oldest);
+      }
+      boundaryCache.set(cacheKey, { at: Date.now(), json, gzipped });
+      return;
+    }
+
     const results = await Promise.all(
       BOUNDARY_SOURCES.map(async (source) => ({
         source,
@@ -437,6 +625,7 @@ export const registerBoundaryRoutes = (app: Express): void => {
       type: 'FeatureCollection',
       features: results.flatMap((r) => r.features),
       meta: {
+        servedFrom: 'live' as const,
         sources: results.map((r) => ({
           id: r.source.id,
           label: r.source.label,
@@ -450,12 +639,7 @@ export const registerBoundaryRoutes = (app: Express): void => {
         truncationNote: anyTruncated
           ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
           : undefined,
-        disclaimer:
-          'Approximate land management boundaries. NOT survey-grade and NOT ' +
-          'parcel-level ownership records — BLM states its Surface Management ' +
-          'Agency data does not illustrate ownership boundaries. Private ' +
-          'inholdings are not shown. These polygons do not constitute ' +
-          'permission to camp. Confirm local regulations before travelling.'
+        disclaimer: DISCLAIMER
       }
     };
 

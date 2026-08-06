@@ -5,7 +5,9 @@ import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
-import { ChevronDown, Crosshair, Eye, Layers, Loader2, Shield } from 'lucide-react';
+import {
+  AlertTriangle, ChevronDown, Crosshair, Eye, Layers, Loader2, Shield
+} from 'lucide-react';
 
 import type { Campsite, LandType, MapTileLayer } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
@@ -22,6 +24,9 @@ import {
   BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
+import {
+  fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts
+} from '../services/weatherService';
 
 /** 1x1 transparent GIF, shown where no offline tile has been cached. */
 const TRANSPARENT_PIXEL =
@@ -144,6 +149,33 @@ const buildMarkerIcon = (site: Campsite, isSelected: boolean): L.DivIcon =>
     iconAnchor: [16, 16]
   });
 
+
+/**
+ * The warning triangle drawn over an active alert area.
+ *
+ * Sized generously and given a dark outline so it stays readable over both
+ * bright snow and dark forest in satellite imagery.
+ */
+const buildHazardIcon = (alert: HazardAlert): L.DivIcon => {
+  const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
+  const urgent = alert.severity === 'extreme' || alert.severity === 'severe';
+
+  return L.divIcon({
+    className: 'hazard-alert-marker',
+    html: `
+      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}">
+        <svg viewBox="0 0 24 24" class="w-8 h-8 drop-shadow-lg" aria-hidden="true">
+          <path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A" stroke-width="1.6"
+                stroke-linejoin="round"/>
+          <path d="M12 9.2v5.1" stroke="#0F172A" stroke-width="2.1" stroke-linecap="round"/>
+          <circle cx="12" cy="17.6" r="1.15" fill="#0F172A"/>
+        </svg>
+      </div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 24]
+  });
+};
+
 interface MapComponentProps {
   campsites: Campsite[];
   selectedCampsite: Campsite | null;
@@ -178,6 +210,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const renderedZoomRef = useRef<number>(0);
   const collectionRef = useRef<BoundaryCollection>(EMPTY_BOUNDARIES);
   const boundaryRendererRef = useRef<L.Canvas | null>(null);
+  const hazardLayerRef = useRef<L.LayerGroup | null>(null);
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -190,6 +223,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
+  const [hazards, setHazards] = useState<HazardAlert[]>([]);
+  const [unmappableHazards, setUnmappableHazards] = useState(0);
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -523,12 +558,73 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         ? uncertaintyCaution(p._edgeAccuracy as EdgeAccuracy)
         : 'Edge accuracy is unknown for this source. Treat the boundary as approximate.';
 
+      /**
+       * The rules the land manager sets, shown before anything else.
+       *
+       * This is the half a camper actually acts on: how long they may stay,
+       * whether they need a permit and where to buy it, and above all whether
+       * there is a fire ban on right now. Everything in this block comes from
+       * the agency — a camper's report never reaches these fields, because
+       * "I stayed and nobody minded" is not a regulation.
+       *
+       * A rule that has not been recorded is omitted rather than shown as
+       * absent. Silence here means nobody has entered it, never "no limit".
+       */
+      const rules: string[] = [];
+      if (p._stayLimitDays != null) {
+        rules.push(`Stay up to <strong>${p._stayLimitDays} days</strong>${
+          p._moveDistanceKm != null ? `, then move at least ${p._moveDistanceKm} km` : ''
+        }`);
+      }
+      if (p._permitRequired === true) {
+        const named = p._permitName ? `: ${p._permitName}` : '';
+        rules.push(
+          p._permitUrl
+            ? `<strong>Permit required</strong>${named} — <a href="${p._permitUrl}" target="_blank" rel="noopener noreferrer" style="color:#0369A1">get it here</a>`
+            : `<strong>Permit required</strong>${named}`
+        );
+      } else if (p._permitRequired === false) {
+        rules.push('No permit required');
+      }
+      if (p._campfirePolicy) rules.push(`Fires: ${p._campfirePolicy}`);
+      if (p._setbackWaterM != null) rules.push(`Camp at least ${p._setbackWaterM} m from water`);
+      if (p._wastePolicy) rules.push(`Waste: ${p._wastePolicy}`);
+      if (p._leaveNoTrace) rules.push(p._leaveNoTrace);
+      if (p._restrictions) rules.push(p._restrictions);
+
+      // A live ban outranks every other rule, so it gets its own red block at
+      // the top rather than a line in a list somebody might skim past.
+      const fireBan = p._fireBanActive
+        ? `<div style="margin-top:8px;padding:7px;border-radius:6px;background:#7F1D1D;border:1px solid #DC2626">
+             <div style="color:#FEE2E2;font-size:11px;font-weight:800">🔥 FIRE BAN IN EFFECT</div>
+             <div style="color:#FECACA;font-size:10px;line-height:1.35;margin-top:2px">No open fire on this land${
+               p._fireBanCheckedAt
+                 ? `. Last checked ${new Date(p._fireBanCheckedAt).toLocaleDateString()}`
+                 : ''
+             }. Confirm with the managing agency before lighting anything.</div>
+           </div>`
+        : '';
+
+      const rulesBlock = rules.length
+        ? `<div style="margin-top:8px;padding:7px;border-radius:6px;background:#F0FDF4;border:1px solid #86EFAC">
+             <div style="color:#166534;font-size:10px;font-weight:700;margin-bottom:3px">Rules for this land</div>
+             <ul style="margin:0;padding-left:14px;color:#166534;font-size:10px;line-height:1.5">${
+               rules.map((r) => `<li>${r}</li>`).join('')
+             }</ul>
+           </div>`
+        : `<div style="margin-top:8px;color:#64748B;font-size:10px;line-height:1.35">
+             No camping rules recorded for this parcel. That does not mean there are
+             none — check with ${p._attribution ?? 'the managing agency'} before you stay.
+           </div>`;
+
       return `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:300px">
            <strong style="font-size:13px">${p._name ?? 'Public land'}</strong><br/>
            <span style="color:#334155">${p._designation ?? ''}</span><br/>
            <span style="display:inline-block;margin-top:6px;padding:2px 6px;border-radius:6px;background:${
              style?.fillColor ?? '#94A3B8'
            };color:#0F172A;font-weight:700;font-size:10px">${style?.label ?? 'Public land'}</span>
+           ${fireBan}
+           ${rulesBlock}
            <div style="margin-top:8px;padding-top:6px;border-top:1px solid #E2E8F0">
              <div style="color:#475569;font-size:10px;margin-bottom:4px"><strong>Edges:</strong> ${edgeNote}</div>
              <div style="color:#475569;font-size:10px"><strong>Camping:</strong> ${basisNote}</div>
@@ -625,7 +721,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // Bound lazily: building a few hundred popup strings up front cost more
         // than drawing the polygons did, and most are never opened.
         onEachFeature: (feature: any, lyr: L.Layer) => {
-          lyr.bindPopup(() => popupHtml(feature?.properties));
+          /**
+           * Bounded and scrollable, with room to auto-pan into view.
+           *
+           * These popups carry the land's rules now, so a parcel with a fire
+           * ban plus a full rule list is a lot taller than the old two-line
+           * one — tall enough to render off the top of a phone screen, where
+           * the fire ban is exactly the part you'd lose.
+           */
+          lyr.bindPopup(() => popupHtml(feature?.properties), {
+            maxWidth: 300,
+            maxHeight: 320,
+            autoPanPadding: [14, 14]
+          });
         }
       } as RenderedGeoJSONOptions);
 
@@ -715,6 +823,145 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     };
   }, [isMapReady, showBoundaries, isOfflineMode]);
+
+
+  /* ------------------------------------------------------------------ */
+  /* Fire, flood and storm alerts                                        */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Active alerts drawn as warning triangles over the area they cover.
+   *
+   * Only alerts the feed gave a geometry for can be placed. NWS sends
+   * `geometry: null` for its zone-based products, and those are counted and
+   * reported rather than dropped silently or, worse, pinned to a guessed
+   * location — a fire warning shown over the wrong valley is actively
+   * dangerous. The count of unplaceable alerts is surfaced in the status chip.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!hazardLayerRef.current) return;
+      try { map.removeLayer(hazardLayerRef.current); } catch { /* detached */ }
+      hazardLayerRef.current = null;
+    };
+
+    if (isOfflineMode) {
+      clear();
+      setHazards([]);
+      setUnmappableHazards(0);
+      return;
+    }
+
+    if (!map.getPane('hazardPane')) {
+      map.createPane('hazardPane');
+      const pane = map.getPane('hazardPane');
+      // Above campsite pins (600): a fire warning outranks a camping spot.
+      if (pane) pane.style.zIndex = '620';
+    }
+
+    let cancelled = false;
+    let controller: AbortController | null = null;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+
+    const popupHtml = (alert: HazardAlert): string => {
+      const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
+      const expires = alert.expires
+        ? `<div style="color:#64748B;font-size:10px;margin-top:6px">Until ${new Date(
+            alert.expires
+          ).toLocaleString()}</div>`
+        : '';
+      const instruction = alert.instruction
+        ? `<div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:10px;line-height:1.35">${alert.instruction}</div>`
+        : '';
+
+      return `<div style="font-family:system-ui;font-size:12px;min-width:220px;max-width:300px">
+          <span style="display:inline-block;padding:2px 6px;border-radius:6px;background:${
+            style.color
+          };color:#0F172A;font-weight:700;font-size:10px;text-transform:uppercase">${
+        style.label
+      } · ${alert.severity}</span>
+          <strong style="display:block;font-size:13px;margin-top:6px">${alert.event}</strong>
+          <div style="color:#334155;margin-top:2px">${alert.headline ?? ''}</div>
+          <div style="color:#475569;font-size:10px;margin-top:6px">${alert.areaDescription ?? ''}</div>
+          ${instruction}
+          <div style="color:#64748B;font-size:10px;margin-top:6px">Issued by ${alert.sender}</div>
+          ${expires}
+        </div>`;
+    };
+
+    const render = (alerts: HazardAlert[]) => {
+      clear();
+      const placeable = alerts.filter((a) => Array.isArray(a.centroid) && a.geometry);
+      if (placeable.length === 0) return;
+
+      const group = L.layerGroup([], { pane: 'hazardPane' });
+
+      placeable.forEach((alert) => {
+        const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
+
+        // The area itself, faint, so the triangle has visible extent.
+        group.addLayer(
+          L.geoJSON(alert.geometry as any, {
+            pane: 'hazardPane',
+            interactive: false,
+            style: {
+              color: style.color,
+              weight: 1.5,
+              opacity: 0.7,
+              fillColor: style.color,
+              fillOpacity: 0.12
+            }
+          })
+        );
+
+        const marker = L.marker(alert.centroid as [number, number], {
+          pane: 'hazardPane',
+          icon: buildHazardIcon(alert),
+          title: `${alert.event} — ${alert.areaDescription}`,
+          riseOnHover: true
+        });
+        marker.bindPopup(() => popupHtml(alert));
+        group.addLayer(marker);
+      });
+
+      hazardLayerRef.current = group.addTo(map);
+    };
+
+    const run = async () => {
+      const b = map.getBounds();
+      controller?.abort();
+      controller = new AbortController();
+
+      const alerts = await fetchAreaAlerts(
+        { minLat: b.getSouth(), minLon: b.getWest(), maxLat: b.getNorth(), maxLon: b.getEast() },
+        controller.signal
+      );
+      if (cancelled) return;
+
+      const sorted = sortAlerts(alerts);
+      setHazards(sorted);
+      setUnmappableHazards(sorted.filter((a) => !a.centroid || !a.geometry).length);
+      render(sorted);
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 600);
+    };
+
+    load();
+    map.on('moveend zoomend', load);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend zoomend', load);
+      clear();
+    };
+  }, [isMapReady, isOfflineMode]);
 
   /* ------------------------------------------------------------------ */
   /* Markers                                                             */
@@ -967,6 +1214,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   </p>
                 </div>
               </div>
+            )}
+          </div>
+        )}
+
+        {hazards.length > 0 && (
+          <div className="bg-amber-950/90 backdrop-blur-md border border-amber-600/70 rounded-xl px-3 py-1.5 shadow-xl anim-in-up">
+            <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-200">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>
+                {hazards.length} active alert{hazards.length === 1 ? '' : 's'} here
+              </span>
+            </div>
+            {/* Said out loud rather than quietly dropped: some alerts arrive
+                with no area attached, and guessing one would be worse. */}
+            {unmappableHazards > 0 && (
+              <p className="text-[9px] text-amber-300/80 leading-tight mt-0.5">
+                {unmappableHazards} not shown on the map — no area given. Open the
+                site details to read {unmappableHazards === 1 ? 'it' : 'them'}.
+              </p>
             )}
           </div>
         )}

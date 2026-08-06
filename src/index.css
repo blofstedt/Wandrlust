@@ -302,7 +302,22 @@
   box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.55);
 }
 .leaflet-popup-tip { background: rgb(248 250 252); }
-.leaflet-popup { animation: moook-expand var(--dur-base) var(--ease-moook) both; }
+/*
+ * Same trap as the markers above, and it was still here.
+ *
+ * `.leaflet-popup` is the element Leaflet positions with a transform, so
+ * animating it replaced that positioning — and `fill-mode: both` made the
+ * final keyframe stick. Every popup in the app was being drawn at the map
+ * pane's origin instead of over the thing it described: a boundary popup for a
+ * parcel in the middle of the screen rendered off the top-left corner, mostly
+ * outside the window.
+ *
+ * The content wrapper and the tip are ours to animate; the root is Leaflet's.
+ */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip-container {
+  animation: moook-expand var(--dur-base) var(--ease-moook) backwards;
+}
 
 .leaflet-control-zoom a {
   background: rgb(15 23 42) !important;
