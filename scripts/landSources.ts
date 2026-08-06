@@ -256,6 +256,87 @@ export const LAND_SOURCES: LandSourceSpec[] = [
  * Documented gaps. Surfaced in the app so the map can grey out regions where
  * absence of a polygon means "we have no data", not "no public land".
  */
+/**
+ * Researched leads that are NOT wired into the seeder.
+ *
+ * Deliberately a separate array: nothing here can be seeded by accident. These
+ * are the results of actually going looking, recorded in code so the next
+ * person starts from here instead of from a search box.
+ *
+ * THE DISTINCTION THAT DECIDES EVERY ONE OF THESE
+ *
+ * This registry already carries land on nothing more than "we know who
+ * administers it, and that agency's policy generally permits camping" — that
+ * is what BLM and Green Area are. So a provincial layer of Crown LAND is
+ * admissible on the same footing, with the province's own stated rule as the
+ * basis.
+ *
+ * What is NOT admissible is a layer of what has been done TO Crown land:
+ * dispositions, agricultural leases, wildlife management areas, conservation
+ * designations. Those are encumbrances. A grazing lease is Crown-owned and
+ * emphatically not campable, and mapping one as public land would put someone
+ * on a rancher's field.
+ *
+ * That is the line every candidate below has to be judged against, and it is
+ * why several provinces that clearly publish "Crown land" still do not appear
+ * in LAND_SOURCES.
+ */
+export const CANDIDATE_SOURCES: {
+  jurisdiction: string;
+  region: string;
+  url: string;
+  /** What it appears to be, from documentation — NOT from a live response. */
+  appearsToBe: string;
+  /** The question that decides whether it can ever be promoted. */
+  mustConfirm: string;
+}[] = [
+  {
+    jurisdiction: 'CA-SK',
+    region: 'Saskatchewan',
+    url: 'https://gis.saskatchewan.ca/arcgis/rest/services/Agriculture/CrownLand_AG/MapServer',
+    appearsToBe:
+      'Agricultural Crown land DISPOSITIONS by quarter section. Saskatchewan states a quarter is shown when it contains at least one parcel of agricultural Crown land, and that the whole quarter may not be Crown-owned.',
+    mustConfirm:
+      'Almost certainly unusable as-is: these are leased agricultural parcels, not open land. Would need a layer of Crown land OWNERSHIP with leases excluded, which does not appear to be published.'
+  },
+  {
+    jurisdiction: 'CA-SK',
+    region: 'Saskatchewan',
+    url: 'https://gis.saskatchewan.ca/arcgis/rest/services/Planning/MapServer/5',
+    appearsToBe:
+      '23 recreational SUBDIVISIONS on Crown resource land, outside provincial parks.',
+    mustConfirm:
+      'Cottage-lot subdivisions are allocated land, not general use. Not a camping layer.'
+  },
+  {
+    jurisdiction: 'CA-MB',
+    region: 'Manitoba',
+    url: 'https://ouvert.canada.ca/data/dataset/2cbe48f7-6284-7dbe-8d78-1cf5a385764f',
+    appearsToBe:
+      'Wildlife Management Areas and Special Conservation Areas — designated polygons on Crown land.',
+    mustConfirm:
+      'These are restricted designations, the opposite of general use. Manitoba policy does allow free camping on Crown land for up to 21 days unless posted, so a plain Crown land ownership layer would qualify — locate one before using anything here.'
+  },
+  {
+    jurisdiction: 'CA-QC',
+    region: 'Quebec',
+    url: 'https://www.quebec.ca/en/agriculture-environment-and-natural-resources/occupation-of-public-land/management-of-public-land',
+    appearsToBe:
+      "Terres du domaine de l'État — roughly 92% of Quebec is public land, administered by MRNF.",
+    mustConfirm:
+      'The largest prize in the country by area. No open queryable REST layer of the land itself was found; what is published is land-occupancy raster classification and villégiature planning guidance. Confirm whether Données Québec exposes a vector service.'
+  },
+  {
+    jurisdiction: 'CA-BC',
+    region: 'British Columbia',
+    url: 'https://www2.gov.bc.ca/gov/content/industry/crown-land-water/land-use-planning/spatial-data',
+    appearsToBe:
+      'BC Geographic Warehouse: ParcelMap BC (cadastral fabric), TANTALIS Crown tenures, protected areas.',
+    mustConfirm:
+      'Tenures are encumbrances and ParcelMap disclaims legal-boundary authority. Confirm whether the BCGW publishes Crown land ownership as a queryable layer rather than a download.'
+  }
+];
+
 export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: string }[] = [
   {
     jurisdiction: 'CA-BC',

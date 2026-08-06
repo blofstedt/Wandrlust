@@ -23,10 +23,11 @@
  *
  * Anything that fails here would have failed silently during a seed run.
  */
-import { LAND_SOURCES, LandSourceSpec } from './landSources.js';
+import { LAND_SOURCES, CANDIDATE_SOURCES, LandSourceSpec } from './landSources.js';
 
 const args = process.argv.slice(2);
 const ONLY = args.find((a) => a.startsWith('--source='))?.split('=')[1];
+const CANDIDATES = args.includes('--candidates');
 const TIMEOUT_MS = 25_000;
 
 export interface ProbeResult {
@@ -168,7 +169,53 @@ const format = (r: ProbeResult): string => {
   return head + detail + problems;
 };
 
+/**
+ * Report on the researched leads that are not wired into the seeder.
+ *
+ * Only asks each service what it is — layer name, geometry, feature count —
+ * because the question they actually fail on is semantic, not technical:
+ * a lease layer answers perfectly and is still the wrong data.
+ */
+const reportCandidates = async (): Promise<void> => {
+  console.log(`${CANDIDATE_SOURCES.length} researched leads, none wired into the seeder\n`);
+
+  for (const c of CANDIDATE_SOURCES) {
+    console.log(`${c.jurisdiction}  ${c.region}`);
+    console.log(`        ${c.url}`);
+    console.log(`        appears to be : ${c.appearsToBe}`);
+    console.log(`        must confirm  : ${c.mustConfirm}`);
+
+    if (/\/(MapServer|FeatureServer)(\/\d+)?\/?$/.test(c.url)) {
+      const meta = await getJson(`${c.url}?f=json`);
+      if (meta.__networkError) console.log(`        live check    : unreachable (${meta.__networkError})`);
+      else if (meta.__httpError) console.log(`        live check    : HTTP ${meta.__httpError}`);
+      else if (meta.error) console.log(`        live check    : ${meta.error?.message}`);
+      else {
+        const layers = Array.isArray(meta.layers)
+          ? meta.layers.map((l: any) => `${l.id}:${l.name}`).join(', ')
+          : null;
+        console.log(
+          `        live check    : "${meta.name ?? meta.mapName ?? 'unnamed'}"` +
+            (meta.geometryType ? ` · ${meta.geometryType}` : '') +
+            (layers ? `\n        layers        : ${layers}` : '')
+        );
+      }
+    } else {
+      console.log('        live check    : not a REST service URL — open it by hand');
+    }
+    console.log('');
+  }
+
+  console.log(
+    'A lead that answers cleanly is still not usable until someone confirms it is\n' +
+      'LAND rather than what has been done to it. A grazing lease is Crown-owned and\n' +
+      'is not somewhere anyone may camp.'
+  );
+};
+
 const main = async (): Promise<void> => {
+  if (CANDIDATES) return reportCandidates();
+
   const sources = LAND_SOURCES.filter((s) => !ONLY || s.id === ONLY);
   if (sources.length === 0) {
     console.error(`No source matches --source=${ONLY}`);
