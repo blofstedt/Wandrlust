@@ -123,3 +123,48 @@ export type MapTileLayer = 'topo' | 'satellite' | 'street';
 export type AppView = 'map' | 'list' | 'saved';
 
 export type LegalDocKind = 'privacy_policy' | 'terms_of_service' | 'safety_disclaimer';
+
+/* ------------------------------------------------------------------ *
+ * Field guide
+ *
+ * The content lives in src/data/campingGuide.ts and is rendered by
+ * CampingGuideModal. It is a summary of published agency rules, not the
+ * rules themselves — every section carries a `source` so a reader can go
+ * check the original, because regulations change and vary by district.
+ * ------------------------------------------------------------------ */
+
+export type GuideAccent = 'amber' | 'emerald' | 'cyan' | 'rose' | 'violet' | 'sky';
+
+export interface GuideLink {
+  label: string;
+  href: string;
+}
+
+/** One rule. `term` is the bolded lead-in; entries without one read as prose. */
+export interface GuideEntry {
+  term?: string;
+  text: string;
+}
+
+export interface GuideSubsection {
+  id: string;
+  title: string;
+  entries: GuideEntry[];
+  /** A muted caveat under the entries — usually "this varies, go check". */
+  caveat?: string;
+}
+
+export interface GuideSection {
+  id: string;
+  title: string;
+  summary: string;
+  /** Key into ICONS in CampingGuideModal. Keeps this file free of React. */
+  icon: string;
+  accent: GuideAccent;
+  /** Where these rules apply, e.g. "Alberta, Canada". Omit if universal. */
+  scope?: string;
+  /** Who publishes the rules this section summarises. */
+  source?: string;
+  subsections: GuideSubsection[];
+  links?: GuideLink[];
+}
