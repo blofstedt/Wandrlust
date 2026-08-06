@@ -2,9 +2,19 @@
  * Supported coverage area.
  *
  * Wandrlust currently only ships verified public-land boundary data for the
- * continental United States (lower 48) and Canada. Everything outside that
- * region is masked grey on the map and excluded from boundary/campsite
- * queries, so we never imply coverage we don't have.
+ * continental United States (lower 48) and the Canadian provinces. Everything
+ * outside that region is masked grey on the map and excluded from
+ * boundary/campsite queries, so we never imply coverage we don't have.
+ *
+ * WHY THE COVERAGE STOPS AT 60°N
+ *
+ * Yukon, the Northwest Territories and Nunavut were inside this outline and
+ * should not have been. No territorial land dataset is wired into the seeder,
+ * so the whole area north of 60° drew as "in coverage" while returning nothing
+ * — and an empty map inside the coverage line reads as "no public land here",
+ * which is the single worst thing this app can say. It is better to be honestly
+ * out of scope than dishonestly in it. The territories come back when there is
+ * real data behind them, and not before.
  *
  * IMPORTANT: the outline below is a hand-simplified cartographic approximation
  * used purely to draw a UI mask. It is NOT a legal, political, or surveyed
@@ -21,14 +31,16 @@ export interface BoundingBox {
 /** Fast rejection test before the more expensive polygon check. */
 export const COVERAGE_BBOX: BoundingBox = {
   minLat: 24.4,
-  minLon: -141.0,
-  maxLat: 83.2,
+  minLon: -139.5,
+  maxLat: 60.1,
   maxLon: -52.6
 };
 
 /**
- * Simplified outline of CONUS + Canada as [longitude, latitude] pairs.
- * Deliberately excludes Alaska, Hawaii, and Mexico.
+ * Simplified outline of CONUS + the Canadian provinces, as [lon, lat] pairs.
+ *
+ * Deliberately excludes Alaska, Hawaii, Mexico, and — as of now — Yukon, NWT
+ * and Nunavut, which is why the northern edge runs flat along 60°N.
  */
 export const COVERAGE_OUTLINE: [number, number][] = [
   [-124.8, 48.4], [-124.4, 40.4], [-120.6, 34.5], [-117.2, 32.5],
@@ -36,9 +48,10 @@ export const COVERAGE_OUTLINE: [number, number][] = [
   [-103.1, 29.0], [-101.4, 29.8], [-99.1, 26.4], [-97.1, 25.9],
   [-94.0, 29.7], [-89.0, 29.0], [-85.0, 29.7], [-82.9, 24.5], [-80.0, 25.2],
   [-81.0, 31.0], [-75.5, 35.2], [-70.0, 41.5], [-66.9, 44.8],
-  [-59.0, 46.5], [-52.6, 47.5], [-52.6, 60.0],
-  [-60.0, 83.2], [-141.0, 83.2],
-  [-141.0, 60.0], [-139.0, 60.0], [-130.0, 54.0], [-125.0, 48.4]
+  [-59.0, 46.5], [-52.6, 47.5],
+  // The 60th parallel: the southern edge of the three territories.
+  [-52.6, 60.0], [-139.0, 60.0],
+  [-130.0, 54.0], [-125.0, 48.4]
 ];
 
 /** World ring used as the outer boundary of the grey mask. */
@@ -81,7 +94,34 @@ export const clampToCoverage = (box: BoundingBox): BoundingBox => ({
   maxLon: Math.min(box.maxLon, COVERAGE_BBOX.maxLon)
 });
 
-export const COVERAGE_LABEL = 'Continental USA & Canada';
+export const COVERAGE_LABEL = 'the lower 48 & the Canadian provinces';
 
-/** Minimum zoom at which boundary polygons are fetched. */
+/** Minimum zoom at which full-detail boundary polygons are fetched. */
 export const BOUNDARY_MIN_ZOOM = 7;
+
+/**
+ * Below BOUNDARY_MIN_ZOOM the map draws an OVERVIEW instead of nothing.
+ *
+ * Zooming out used to blank every boundary, so the answer to "where is there
+ * public land near here?" was an empty continent until you had already guessed
+ * where to look. The overview shows only the big parcels, as hairlines, and —
+ * because it is fetched on a coarse grid and cached for the session — it is
+ * drawn once and then simply panned around, rather than refetched on every
+ * gesture.
+ */
+export const BOUNDARY_OVERVIEW_MIN_ZOOM = 3;
+
+/**
+ * Smallest parcel, in km², worth drawing in the overview at a given zoom.
+ *
+ * At zoom 3 a 200 km² parcel is under a pixel across: drawing it costs a
+ * network round trip and a draw call to produce a dot nobody can see or tap.
+ * The threshold relaxes as you zoom in and hands over to the full-detail layer
+ * at BOUNDARY_MIN_ZOOM.
+ */
+export const overviewMinAreaSqKm = (zoom: number): number => {
+  if (zoom <= 3) return 4000;
+  if (zoom <= 4) return 1500;
+  if (zoom <= 5) return 500;
+  return 150;
+};

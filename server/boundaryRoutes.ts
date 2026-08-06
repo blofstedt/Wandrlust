@@ -106,6 +106,20 @@ const getSeededClient = (): SupabaseClient | null => {
 let seededOutage: { at: number } | null = null;
 const SEEDED_RECHECK_MS = 5 * 60 * 1000;
 
+/**
+ * True once we have learned that this database is still on migration 06's
+ * six-argument `boundaries_in_bbox`, which has no area filter.
+ *
+ * Migration 07 adds `in_min_area_sq_km` so the zoomed-out overview can ask for
+ * only the big parcels. Sending that argument to a database that has not run 07
+ * is a hard PostgREST error, and treating it as an outage would knock the whole
+ * seeded path out for five minutes on every wide-zoom request. So: try the new
+ * signature, and if the function does not have that parameter, fall back to the
+ * old call for the rest of the process. The overview then filters by area in
+ * this file instead — more bytes over the wire, same map.
+ */
+let seededHasAreaFilter = true;
+
 interface SeededResult {
   features: any[];
   sources: { id: string; label: string; attribution: string; confidence: string; featureCount: number }[];
@@ -114,23 +128,39 @@ interface SeededResult {
 const fetchSeededBoundaries = async (
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
-  recordLimit: number
+  recordLimit: number,
+  minAreaSqKm = 0
 ): Promise<SeededResult | null> => {
   const client = getSeededClient();
   if (!client) return null;
 
   if (seededOutage && Date.now() - seededOutage.at < SEEDED_RECHECK_MS) return null;
 
-  try {
-    const { data, error } = await client.rpc('boundaries_in_bbox', {
+  const call = (withArea: boolean) =>
+    client.rpc('boundaries_in_bbox', {
       in_min_lat: bbox.minLat,
       in_min_lon: bbox.minLon,
       in_max_lat: bbox.maxLat,
       in_max_lon: bbox.maxLon,
       in_tolerance: simplifyDegrees,
       // Ask for one more than we'll keep, so truncation can be detected.
-      in_limit: recordLimit + 1
+      in_limit: recordLimit + 1,
+      ...(withArea ? { in_min_area_sq_km: minAreaSqKm } : {})
     });
+
+  try {
+    let { data, error } = await call(seededHasAreaFilter);
+
+    // PostgREST reports a signature mismatch as "could not find the function
+    // ... in the schema cache" (PGRST202). That means migration 07 is missing,
+    // not that the database is down.
+    if (error && seededHasAreaFilter && /PGRST202|schema cache|does not exist/i.test(
+      `${error.code ?? ''} ${error.message ?? ''}`
+    )) {
+      console.info('[boundaries] boundaries_in_bbox has no area filter — run migration 07 for a lighter zoomed-out overview.');
+      seededHasAreaFilter = false;
+      ({ data, error } = await call(false));
+    }
 
     if (error) {
       // Most likely the migration has not been run. Say so once, clearly,
@@ -317,6 +347,64 @@ const recordLimitForSpan = (span: number): number => {
   return 250;
 };
 
+/* -------------------------------------------------------------------------- */
+/* The zoomed-out overview                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Rough area of a GeoJSON polygon in km².
+ *
+ * Shoelace on the outer rings, scaled from degrees by the latitude of the
+ * shape. It is not a survey figure and is not shown to anyone — it exists only
+ * to answer "is this parcel big enough to be worth a pixel at zoom 4?", which
+ * it does to well within the order of magnitude that question needs.
+ */
+const approxAreaSqKm = (geometry: any): number => {
+  if (!geometry) return 0;
+
+  const ringArea = (ring: any[]): number => {
+    if (!Array.isArray(ring) || ring.length < 4) return 0;
+    let sum = 0;
+    let latSum = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+      const a = ring[j];
+      const b = ring[i];
+      if (!Array.isArray(a) || !Array.isArray(b)) return 0;
+      sum += a[0] * b[1] - b[0] * a[1];
+      latSum += b[1];
+    }
+    const meanLat = latSum / ring.length;
+    // 1° of latitude is ~111.32 km; 1° of longitude shrinks with the cosine.
+    return (Math.abs(sum) / 2) * 111.32 * 111.32 * Math.cos((meanLat * Math.PI) / 180);
+  };
+
+  if (geometry.type === 'Polygon') return ringArea(geometry.coordinates?.[0]);
+  if (geometry.type === 'MultiPolygon') {
+    return (geometry.coordinates ?? []).reduce(
+      (total: number, poly: any) => total + ringArea(poly?.[0]),
+      0
+    );
+  }
+  return 0;
+};
+
+/**
+ * Drop parcels too small to read at this zoom, largest first.
+ *
+ * Used when the caller asked for an overview and the database could not do the
+ * filtering itself (migration 07 not run) or the data came from the live ArcGIS
+ * services, which have no consistent area field to filter on.
+ */
+const largestParcels = (features: any[], minAreaSqKm: number, limit: number): any[] => {
+  if (minAreaSqKm <= 0) return features.slice(0, limit);
+  return features
+    .map((f) => ({ f, area: approxAreaSqKm(f?.geometry) }))
+    .filter((x) => x.area >= minAreaSqKm)
+    .sort((a, b) => b.area - a.area)
+    .slice(0, limit)
+    .map((x) => x.f);
+};
+
 const overlaps = (
   a: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   b: { minLat: number; minLon: number; maxLat: number; maxLon: number }
@@ -325,8 +413,16 @@ const overlaps = (
 
 // Assembled responses, gzipped once and reused. Short-lived: this only exists
 // to absorb bursts, since the per-source cache below does the real work.
-const boundaryCache = new Map<string, { at: number; json: string; gzipped?: Buffer }>();
+const boundaryCache = new Map<string, { at: number; ttl: number; json: string; gzipped?: Buffer }>();
 const CACHE_TTL_MS = 60 * 1000;
+/**
+ * Overview responses are kept far longer than detailed ones.
+ *
+ * There are only a handful of them (the client snaps wide-zoom requests to a
+ * grid measured in whole map-widths), they are expensive to assemble, and the
+ * shape of a national forest does not change over an afternoon.
+ */
+const OVERVIEW_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 60;
 
 /**
@@ -502,10 +598,11 @@ const sendJson = async (
   req: Request,
   res: Response,
   json: string,
-  precompressed?: Buffer
+  precompressed?: Buffer,
+  maxAgeSeconds = 300
 ): Promise<Buffer | undefined> => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.setHeader('Cache-Control', `public, max-age=${maxAgeSeconds}`);
   res.setHeader('Vary', 'Accept-Encoding');
 
   const acceptsGzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
@@ -549,10 +646,23 @@ export const registerBoundaryRoutes = (app: Express): void => {
       });
     }
 
+    /**
+     * Overview mode: the whole continent, only the big parcels, hairline thin.
+     *
+     * Below zoom 7 the client asks for this instead of nothing at all. It
+     * deliberately accepts a much larger viewport than the detailed path — the
+     * point is to show that there IS public land over there — and pays for it
+     * by returning far fewer, far coarser polygons.
+     */
+    const isOverview = req.query.detail === 'overview';
+    const minAreaSqKm = isOverview
+      ? Math.max(0, Number(req.query.minAreaSqKm) || 0)
+      : 0;
+
     // Refuse absurd viewports outright — these would hammer upstream services.
     const spanLat = Math.abs(maxLat - minLat);
     const spanLon = Math.abs(maxLon - minLon);
-    if (spanLat > 25 || spanLon > 40) {
+    if (spanLat > (isOverview ? 60 : 25) || spanLon > (isOverview ? 140 : 40)) {
       return res.json({
         type: 'FeatureCollection',
         features: [],
@@ -563,18 +673,34 @@ export const registerBoundaryRoutes = (app: Express): void => {
     const bbox = { minLat, minLon, maxLat, maxLon };
     // Generalise geometry more aggressively when zoomed out.
     const span = Math.max(spanLat, spanLon);
-    const simplifyDegrees = Math.max(0.0001, span / 800);
-    const recordLimit = recordLimitForSpan(span);
+    const simplifyDegrees = isOverview
+      ? Math.max(0.002, span / 400)
+      : Math.max(0.0001, span / 800);
+    const recordLimit = isOverview ? 500 : recordLimitForSpan(span);
+    const responseTtl = isOverview ? OVERVIEW_TTL_MS : CACHE_TTL_MS;
 
     // Four decimals, not two: the client snaps its requests to a grid, so an
     // exact key still hits on a pan. Rounding to two decimals used to merge
     // genuinely different viewports into one cache entry.
-    const cacheKey = [minLat, minLon, maxLat, maxLon].map((n) => n.toFixed(4)).join(',');
+    const cacheKey = [
+      [minLat, minLon, maxLat, maxLon].map((n) => n.toFixed(4)).join(','),
+      isOverview ? `ov${minAreaSqKm}` : 'full'
+    ].join('|');
     const cached = boundaryCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
-      await sendJson(req, res, cached.json, cached.gzipped);
+    if (cached && Date.now() - cached.at < cached.ttl) {
+      await sendJson(req, res, cached.json, cached.gzipped, Math.round(cached.ttl / 1000));
       return;
     }
+
+    const remember = async (body: unknown) => {
+      const json = JSON.stringify(body);
+      const gzipped = await sendJson(req, res, json, undefined, Math.round(responseTtl / 1000));
+      if (boundaryCache.size >= CACHE_MAX_ENTRIES) {
+        const oldest = boundaryCache.keys().next().value;
+        if (oldest) boundaryCache.delete(oldest);
+      }
+      boundaryCache.set(cacheKey, { at: Date.now(), ttl: responseTtl, json, gzipped });
+    };
 
     /**
      * The database first.
@@ -584,14 +710,20 @@ export const registerBoundaryRoutes = (app: Express): void => {
      * returns null and drops through to the live proxy below, so an unseeded
      * deploy behaves exactly as it did before.
      */
-    const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit);
+    const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, minAreaSqKm);
     if (seeded) {
+      // If the database did the area filtering, this is a no-op slice.
+      const kept = isOverview
+        ? largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit)
+        : seeded.features.slice(0, recordLimit);
       const truncated = seeded.features.length > recordLimit;
-      const body = {
+
+      await remember({
         type: 'FeatureCollection',
-        features: seeded.features.slice(0, recordLimit),
+        features: kept,
         meta: {
           servedFrom: 'seeded' as const,
+          detail: isOverview ? ('overview' as const) : ('full' as const),
           sources: seeded.sources.map((s) => ({ ...s, available: true, truncated })),
           truncated,
           truncationNote: truncated
@@ -599,16 +731,7 @@ export const registerBoundaryRoutes = (app: Express): void => {
             : undefined,
           disclaimer: DISCLAIMER
         }
-      };
-
-      const json = JSON.stringify(body);
-      const gzipped = await sendJson(req, res, json);
-
-      if (boundaryCache.size >= CACHE_MAX_ENTRIES) {
-        const oldest = boundaryCache.keys().next().value;
-        if (oldest) boundaryCache.delete(oldest);
-      }
-      boundaryCache.set(cacheKey, { at: Date.now(), json, gzipped });
+      });
       return;
     }
 
@@ -620,12 +743,16 @@ export const registerBoundaryRoutes = (app: Express): void => {
     );
 
     const anyTruncated = results.some((r) => r.truncated);
+    const liveFeatures = isOverview
+      ? largestParcels(results.flatMap((r) => r.features), minAreaSqKm, recordLimit)
+      : results.flatMap((r) => r.features);
 
     const body = {
       type: 'FeatureCollection',
-      features: results.flatMap((r) => r.features),
+      features: liveFeatures,
       meta: {
         servedFrom: 'live' as const,
+        detail: isOverview ? ('overview' as const) : ('full' as const),
         sources: results.map((r) => ({
           id: r.source.id,
           label: r.source.label,
@@ -643,13 +770,6 @@ export const registerBoundaryRoutes = (app: Express): void => {
       }
     };
 
-    const json = JSON.stringify(body);
-    const gzipped = await sendJson(req, res, json);
-
-    if (boundaryCache.size >= CACHE_MAX_ENTRIES) {
-      const oldest = boundaryCache.keys().next().value;
-      if (oldest) boundaryCache.delete(oldest);
-    }
-    boundaryCache.set(cacheKey, { at: Date.now(), json, gzipped });
+    await remember(body);
   });
 };

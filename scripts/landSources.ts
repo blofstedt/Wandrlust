@@ -365,7 +365,7 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'CA-NORTH',
     region: 'Yukon, Northwest Territories, Nunavut',
     reason:
-      'Territorial land administration is split between territorial and federal jurisdiction with significant Indigenous land claim settlement areas. Not modelled; misrepresenting these boundaries would be worse than showing nothing.'
+      'OUT OF COVERAGE, not merely unmapped. Territorial land administration is split between territorial and federal jurisdiction with significant Indigenous land claim settlement areas, and none of it is modelled here. The map used to draw the territories inside the coverage outline and then return nothing for them, which reads as "no public land" rather than "no data" — so the outline now stops at 60°N (see src/config/coverage.ts). The provinces get finished before the scope grows again.'
   },
   {
     jurisdiction: 'US-STATE',

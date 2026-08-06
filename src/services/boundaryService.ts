@@ -1,4 +1,6 @@
-import { BoundingBox, bboxIntersectsCoverage, clampToCoverage } from '../config/coverage';
+import {
+  BoundingBox, bboxIntersectsCoverage, clampToCoverage, overviewMinAreaSqKm
+} from '../config/coverage';
 
 /**
  * Client for the `/api/boundaries` proxy.
@@ -121,15 +123,15 @@ export const BOUNDARY_STYLES: Record<
   { color: string; fillColor: string; fillOpacity: number; label: string }
 > = {
   designated_general_use: {
-    color: '#059669', fillColor: '#10B981', fillOpacity: 0.28,
+    color: '#34D399', fillColor: '#10B981', fillOpacity: 0.4,
     label: 'Designated General Use'
   },
   managing_agency: {
-    color: '#B45309', fillColor: '#F59E0B', fillOpacity: 0.2,
+    color: '#FBBF24', fillColor: '#F59E0B', fillOpacity: 0.32,
     label: 'Federal land (BLM / USFS)'
   },
   managed_zone: {
-    color: '#0E7490', fillColor: '#06B6D4', fillOpacity: 0.2,
+    color: '#22D3EE', fillColor: '#06B6D4', fillOpacity: 0.32,
     label: 'Managed zone (PLUZ)'
   }
 };
@@ -174,6 +176,40 @@ export const boxContains = (outer: BoundingBox, inner: BoundingBox): boolean =>
   outer.minLat <= inner.minLat && outer.minLon <= inner.minLon &&
   outer.maxLat >= inner.maxLat && outer.maxLon >= inner.maxLon;
 
+/**
+ * How much boundary data to ask for.
+ *
+ *  - `full`     — everything intersecting the viewport, at viewport detail.
+ *  - `overview` — only the large parcels, heavily generalised, on a very coarse
+ *                 grid. Used below BOUNDARY_MIN_ZOOM, where the point is "there
+ *                 is public land over there", not "the edge is exactly here".
+ */
+export type BoundaryDetail = 'full' | 'overview';
+
+/**
+ * The box an overview request asks for.
+ *
+ * Snapped to a grid measured in map-widths, not in the small cells
+ * `requestBoxFor` uses. At these zooms most of a continent is on screen, so a
+ * grid that only just exceeds the viewport means two drags walk straight off
+ * the loaded data and every gesture becomes a fresh request — which is exactly
+ * the flicker this tier exists to remove.
+ *
+ * The cells are therefore several screens wide: 8° at zoom 6 up to 64° at zoom
+ * 3, where a single request covers the entire supported area. Panning around
+ * North America at zoom 3-4 makes one request for the whole session; at zoom 5-6
+ * it makes a handful, and each is reused for a long time afterwards.
+ */
+export const overviewBoxFor = (view: BoundingBox, zoom: number): BoundingBox => {
+  const cell = Math.pow(2, 9 - Math.min(Math.max(Math.round(zoom), 3), 6));
+  return {
+    minLat: Math.floor(view.minLat / cell) * cell,
+    minLon: Math.floor(view.minLon / cell) * cell,
+    maxLat: Math.ceil(view.maxLat / cell) * cell,
+    maxLon: Math.ceil(view.maxLon / cell) * cell
+  };
+};
+
 /* -------------------------------------------------------------------------- */
 /* Fetching                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -181,6 +217,16 @@ export const boxContains = (outer: BoundingBox, inner: BoundingBox): boolean =>
 /** Recently fetched viewports, so panning back somewhere is free. */
 const responseCache = new Map<string, { at: number; collection: BoundaryCollection }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/**
+ * Overview tiles are kept for the whole session.
+ *
+ * There are only a few of them, they cover a continent each, and the thing
+ * they describe — which government agency administers a million-acre block of
+ * land — does not change while somebody is looking at the map. Expiring them
+ * on the same five-minute timer as detailed viewports meant the wide-zoom
+ * borders vanished and re-fetched for no reason a camper could perceive.
+ */
+const OVERVIEW_TTL_MS = 12 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 40;
 
 /**
@@ -194,7 +240,9 @@ const CACHE_MAX_ENTRIES = 40;
  */
 export const fetchBoundaries = async (
   box: BoundingBox,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  detail: BoundaryDetail = 'full',
+  zoom = 7
 ): Promise<BoundaryCollection | null> => {
   if (!bboxIntersectsCoverage(box)) return EMPTY_BOUNDARIES;
 
@@ -205,10 +253,15 @@ export const fetchBoundaries = async (
     maxLat: clamped.maxLat.toFixed(5),
     maxLon: clamped.maxLon.toFixed(5)
   });
+  if (detail === 'overview') {
+    params.set('detail', 'overview');
+    params.set('minAreaSqKm', String(overviewMinAreaSqKm(zoom)));
+  }
   const query = params.toString();
 
+  const ttl = detail === 'overview' ? OVERVIEW_TTL_MS : CACHE_TTL_MS;
   const cached = responseCache.get(query);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.collection;
+  if (cached && Date.now() - cached.at < ttl) return cached.collection;
 
   try {
     const response = await fetch(`/api/boundaries?${query}`, { signal });
@@ -224,7 +277,10 @@ export const fetchBoundaries = async (
     };
 
     if (responseCache.size >= CACHE_MAX_ENTRIES) {
-      const oldest = responseCache.keys().next().value;
+      // Evict the oldest DETAILED viewport. Overview tiles are exempt: there
+      // are only a few, they are what makes zooming out feel instant, and
+      // evicting one costs a continent-sized refetch to save one map entry.
+      const oldest = [...responseCache.keys()].find((k) => !k.includes('detail=overview'));
       if (oldest) responseCache.delete(oldest);
     }
     responseCache.set(query, { at: Date.now(), collection });
