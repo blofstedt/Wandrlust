@@ -1,17 +1,16 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import type { TrustTier } from '../types';
 
 /**
  * Authentication and profile state.
  *
- * Everything in migrations 02–05 keys off `auth.uid()` — presence, tokens,
- * trust tiers, hosting, bookings, push. Without a session those RLS policies
- * all evaluate against null and the features are inert. This context is the
- * foundation the rest of the platform sits on.
+ * Everything in migrations 02–08 keys off `auth.uid()` — presence, points,
+ * tiers, push. Without a session those RLS policies all evaluate against null
+ * and the features are inert. This context is the foundation the rest of the
+ * platform sits on.
  */
-
-export type TrustTier = 'tourist' | 'contributor' | 'nomad';
 
 export interface Profile {
   id: string;
@@ -25,19 +24,13 @@ export interface Profile {
   check_in_count: number;
   scout_count: number;
   verify_count: number;
-  is_host: boolean;
-  /** Aggregates maintained by the booking_reviews trigger (migration 04). */
-  host_rating: number;
-  host_review_count: number;
-  guest_rating: number;
-  guest_review_count: number;
 }
 
 interface AuthContextValue {
   user: User | null;
   session: Session | null;
   profile: Profile | null;
-  tokenBalance: number;
+  pointsBalance: number;
   isLoading: boolean;
   isConfigured: boolean;
   error: string | null;
@@ -63,7 +56,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [tokenBalance, setTokenBalance] = useState(0);
+  const [pointsBalance, setPointsBalance] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -112,8 +105,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Balance is derived from the append-only ledger.
-    const { data: balance } = await supabase.rpc('token_balance', { in_user: currentUser.id });
-    setTokenBalance(typeof balance === 'number' ? balance : 0);
+    const { data: balance } = await supabase.rpc('points_balance', { in_user: currentUser.id });
+    setPointsBalance(typeof balance === 'number' ? balance : 0);
   }, []);
 
   // Bootstrap: read any existing session, then subscribe to changes.
@@ -145,7 +138,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loadProfile(newSession.user);
       } else {
         setProfile(null);
-        setTokenBalance(0);
+        setPointsBalance(0);
       }
     });
 
@@ -205,7 +198,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!supabase) return;
     await supabase.auth.signOut();
     setProfile(null);
-    setTokenBalance(0);
+    setPointsBalance(0);
   }, []);
 
   const refreshProfile = useCallback(async () => {
@@ -243,7 +236,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     user,
     session,
     profile,
-    tokenBalance,
+    pointsBalance,
     isLoading,
     isConfigured: isSupabaseConfigured,
     error,

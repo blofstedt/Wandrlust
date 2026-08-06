@@ -136,8 +136,8 @@ the notification you want at 3am. Booking updates are not.
 Email (password + magic link) and Google OAuth via Supabase Auth. Setup is a
 15-minute walkthrough in **[AUTH_SETUP.md](./AUTH_SETUP.md)**.
 
-Auth is the foundation for everything in migrations 02–05: presence, tokens,
-trust tiers, hosting and push all gate on `auth.uid()`. The app runs fine
+Auth is the foundation for everything in migrations 02–08: presence, points,
+tiers and push all gate on `auth.uid()`. The app runs fine
 unauthenticated — you get the map, search, filters, offline packs and the
 curated dataset.
 
@@ -149,7 +149,7 @@ Run the migrations **in order** in the Supabase SQL Editor:
 
 ```
 supabase_schema.sql                          -- 01 core
-supabase_migration_02_platform.sql           -- social, tokens, trust
+supabase_migration_02_platform.sql           -- social, points, trust
 supabase_migration_03_provenance.sql         -- accuracy metadata
 supabase_migration_04_reviews_and_alerts.sql -- reviews, weather, settings
 supabase_migration_05_push_and_legal.sql     -- push, legal acceptance

@@ -6,6 +6,7 @@ import {
 import { fetchSettings, saveSettings, UserSettings } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { PushSettings } from './PushSettings';
+import { AlertSourcePanel } from './AlertSourcePanel';
 import type { LegalDocKind } from '../types';
 
 interface SettingsPanelProps {
@@ -60,8 +61,8 @@ const LEGAL_LINKS: [LegalDocKind, string][] = [
  * Settings.
  *
  * Note on the support link: it lives here and ONLY here. No purchase prompts
- * anywhere else in the app, and it buys nothing — not tokens, not tiers, not
- * stealth spots. The token economy stays closed; supporting the project and
+ * anywhere else in the app, and it buys nothing — not points, not tiers, not
+ * stealth spots. The points economy stays closed; supporting the project and
  * progressing in the app are deliberately unconnected.
  */
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
@@ -124,6 +125,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </header>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scroll-soft">
+          {/* Shown whether or not anyone is signed in: a camper needs to know
+              who issues the warnings and whether we are still hearing them,
+              and that is not a per-account preference. */}
+          <section>
+            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+              Where alerts come from
+            </h3>
+            <AlertSourcePanel />
+          </section>
+
           {!user ? (
             <div className="text-center py-6">
               <p className="text-xs text-slate-400 mb-3">Sign in to save your preferences.</p>
@@ -151,6 +162,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
                   Safety alerts
                 </h3>
+
                 <Toggle
                   icon={Flame}
                   label="Fire alerts"
@@ -258,7 +270,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   </div>
                   <p className="text-[10px] text-slate-400 leading-snug mb-2.5">
                     Wandrlust is free and has no ads. If it&apos;s useful to you, you can buy
-                    the project a coffee. It buys you nothing in the app — no tokens, no
+                    the project a coffee. It buys you nothing in the app — no points, no
                     tiers, no stealth spots. Those are earned by contributing, and that
                     isn&apos;t for sale.
                   </p>

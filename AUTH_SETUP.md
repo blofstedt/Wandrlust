@@ -163,7 +163,7 @@ security comes from RLS. The key you must never expose is `service_role`.
 ## Verify
 
 1. Open <http://localhost:3000> → **Sign in** → **Continue with Google**
-2. The button becomes an avatar with a token balance
+2. The button becomes an avatar with a tier trophy and points balance
 3. Check the database:
 
 ```sql

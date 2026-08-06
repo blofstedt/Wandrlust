@@ -165,7 +165,7 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
 
           <p className="text-[10px] text-slate-500 leading-snug">
             {mode === 'hazard'
-              ? 'Reports earn tokens. If three other campers confirm yours, you get an early-reporter bonus.'
+              ? 'Reports earn points. If three other campers confirm yours, you get an early-reporter bonus.'
               : mode === 'poi'
               ? 'New POIs stay pending until five net upvotes promote them. Three consecutive downvotes prune them.'
               : 'Site reports are aggregated by area. Several independent reports in one region raise a zone alert for everyone heading there.'}

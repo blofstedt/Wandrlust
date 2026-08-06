@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Compass, Search, MapPin, Map as MapIcon, List, Bookmark, Plug, Unplug,
   Download, PlusCircle, BookOpen, X, Crosshair, MoreHorizontal,
-  Users, Activity, Home, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
+  Users, Activity, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
 } from 'lucide-react';
 import type { AppView, FilterState, GeocodedLocation } from '../types';
 import { geocodeSearch } from '../services/nominatim';
@@ -25,7 +25,6 @@ interface NavbarProps {
   onOpenAuth: () => void;
   onOpenPresence: () => void;
   onOpenScout: () => void;
-  onOpenHost: () => void;
   onOpenSettings: () => void;
   onOpenReport: () => void;
   nearbyCount?: number;
@@ -56,7 +55,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeView, setActiveView, filterState, setFilterState, onSelectLocation,
   onLocateUser, isLocating, isOfflineMode, setIsOfflineMode, onOpenOfflineManager,
   onOpenAddModal, onOpenGuideModal, onOpenFilterDrawer, onOpenAuth, onOpenPresence,
-  onOpenScout, onOpenHost, onOpenSettings, onOpenReport, nearbyCount = 0,
+  onOpenScout, onOpenSettings, onOpenReport, nearbyCount = 0,
   activeFilterCount = 0, savedCount
 }) => {
   const [query, setQuery] = useState(filterState.searchQuery ?? '');
@@ -165,7 +164,6 @@ export const Navbar: React.FC<NavbarProps> = ({
       key: 'report', label: 'Report a hazard, POI or site problem', short: 'Report',
       icon: AlertTriangle, iconClass: 'text-orange-400', onClick: onOpenReport
     },
-    { key: 'host', label: 'Host — list your property', short: 'Host', icon: Home, iconClass: 'text-emerald-400', onClick: onOpenHost },
     { key: 'settings', label: 'Settings', short: 'Settings', icon: SettingsIcon, iconClass: 'text-slate-400', onClick: onOpenSettings },
     { key: 'offline', label: 'Download offline maps', short: 'Offline maps', icon: Download, iconClass: 'text-teal-400', onClick: onOpenOfflineManager },
     { key: 'guide', label: 'Camping rules and safety', short: 'Guide', icon: BookOpen, iconClass: 'text-amber-400', onClick: onOpenGuideModal },
