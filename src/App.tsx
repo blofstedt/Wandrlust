@@ -31,6 +31,7 @@ import {
   ROAD_ACCESS_RANK, countActiveFilters
 } from './config/filters';
 import { distanceMiles } from './utils/geo';
+import { bestCellSignal } from './utils/amenities';
 import { updateAlertLocation } from './services/pushService';
 import type { NearbyCamper } from './services/dataService';
 import { Search, Bookmark, MapPinOff, SlidersHorizontal } from 'lucide-react';
@@ -233,16 +234,23 @@ export default function App() {
         return false;
       }
 
+      /**
+       * Requirements are only satisfied by a recorded fact.
+       *
+       * Every amenity is optional now, so each of these has to decide what an
+       * unknown means. It means "does not qualify": asking for a site with
+       * water and being shown one where nobody has ever checked is how someone
+       * arrives somewhere dry expecting a creek. A filter that is switched off
+       * still shows everything, so nothing is lost by being strict here.
+       */
       const { amenities } = site;
-      if (filterState.waterOnly && amenities.water === 'none') return false;
-      if (filterState.toiletOnly && amenities.toilet === 'none') return false;
-      if (filterState.petFriendlyOnly && !amenities.petFriendly) return false;
+      if (filterState.waterOnly && (!amenities.water || amenities.water === 'none')) return false;
+      if (filterState.toiletOnly && (!amenities.toilet || amenities.toilet === 'none')) return false;
+      if (filterState.petFriendlyOnly && amenities.petFriendly !== true) return false;
 
       if (filterState.cellSignalOnly) {
-        const best = Math.max(
-          amenities.cellSignal.verizon, amenities.cellSignal.att, amenities.cellSignal.tmobile
-        );
-        if (best < 2) return false;
+        const best = bestCellSignal(amenities);
+        if (best === undefined || best < 2) return false;
       }
 
       if (
@@ -253,6 +261,8 @@ export default function App() {
       }
 
       if (filterState.roadAccessMax !== 'all') {
+        // An unrecorded road could be anything, including worse than asked for.
+        if (!amenities.roadAccess) return false;
         if (ROAD_ACCESS_RANK[amenities.roadAccess] > ROAD_ACCESS_RANK[filterState.roadAccessMax]) {
           return false;
         }

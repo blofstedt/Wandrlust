@@ -84,19 +84,19 @@ export const AddCampsiteModal: React.FC<AddCampsiteModalProps> = ({
         country: ''
       },
       description: description.trim() || 'User submitted public land camping site.',
+      /**
+       * Only what the person filling in the form actually told us.
+       *
+       * This used to attach signal bars, shade and a 14-day stay limit that
+       * appear nowhere on the form — so a user reporting a site they had
+       * visited unknowingly published four facts they had never been asked
+       * about, indistinguishable from the ones they had.
+       */
       amenities: {
         water,
         toilet,
         roadAccess,
-        cellSignal: { verizon: 0, att: 0, tmobile: 0 },
-        maxRvLengthFeet: Number(maxRvLength),
-        fireRing: false,
-        petFriendly: true,
-        trashService: false,
-        shade: 'partial',
-        stayLimitDays: 14,
-        isFree: true,
-        permitRequired: false
+        maxRvLengthFeet: Number(maxRvLength) || undefined
       },
       images: imageUrl.trim() ? [imageUrl.trim()] : [],
       reviews: [],

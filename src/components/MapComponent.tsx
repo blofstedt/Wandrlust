@@ -5,7 +5,9 @@ import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
-import { ChevronDown, Crosshair, Eye, Layers, Loader2, Shield } from 'lucide-react';
+import {
+  AlertTriangle, ChevronDown, Crosshair, Eye, Layers, Loader2, Shield
+} from 'lucide-react';
 
 import type { Campsite, LandType, MapTileLayer } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
@@ -22,6 +24,9 @@ import {
   BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
+import {
+  fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts
+} from '../services/weatherService';
 
 /** 1x1 transparent GIF, shown where no offline tile has been cached. */
 const TRANSPARENT_PIXEL =
@@ -144,6 +149,33 @@ const buildMarkerIcon = (site: Campsite, isSelected: boolean): L.DivIcon =>
     iconAnchor: [16, 16]
   });
 
+
+/**
+ * The warning triangle drawn over an active alert area.
+ *
+ * Sized generously and given a dark outline so it stays readable over both
+ * bright snow and dark forest in satellite imagery.
+ */
+const buildHazardIcon = (alert: HazardAlert): L.DivIcon => {
+  const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
+  const urgent = alert.severity === 'extreme' || alert.severity === 'severe';
+
+  return L.divIcon({
+    className: 'hazard-alert-marker',
+    html: `
+      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}">
+        <svg viewBox="0 0 24 24" class="w-8 h-8 drop-shadow-lg" aria-hidden="true">
+          <path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A" stroke-width="1.6"
+                stroke-linejoin="round"/>
+          <path d="M12 9.2v5.1" stroke="#0F172A" stroke-width="2.1" stroke-linecap="round"/>
+          <circle cx="12" cy="17.6" r="1.15" fill="#0F172A"/>
+        </svg>
+      </div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 24]
+  });
+};
+
 interface MapComponentProps {
   campsites: Campsite[];
   selectedCampsite: Campsite | null;
@@ -178,6 +210,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const renderedZoomRef = useRef<number>(0);
   const collectionRef = useRef<BoundaryCollection>(EMPTY_BOUNDARIES);
   const boundaryRendererRef = useRef<L.Canvas | null>(null);
+  const hazardLayerRef = useRef<L.LayerGroup | null>(null);
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -190,6 +223,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
+  const [hazards, setHazards] = useState<HazardAlert[]>([]);
+  const [unmappableHazards, setUnmappableHazards] = useState(0);
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -716,6 +751,145 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
   }, [isMapReady, showBoundaries, isOfflineMode]);
 
+
+  /* ------------------------------------------------------------------ */
+  /* Fire, flood and storm alerts                                        */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Active alerts drawn as warning triangles over the area they cover.
+   *
+   * Only alerts the feed gave a geometry for can be placed. NWS sends
+   * `geometry: null` for its zone-based products, and those are counted and
+   * reported rather than dropped silently or, worse, pinned to a guessed
+   * location — a fire warning shown over the wrong valley is actively
+   * dangerous. The count of unplaceable alerts is surfaced in the status chip.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!hazardLayerRef.current) return;
+      try { map.removeLayer(hazardLayerRef.current); } catch { /* detached */ }
+      hazardLayerRef.current = null;
+    };
+
+    if (isOfflineMode) {
+      clear();
+      setHazards([]);
+      setUnmappableHazards(0);
+      return;
+    }
+
+    if (!map.getPane('hazardPane')) {
+      map.createPane('hazardPane');
+      const pane = map.getPane('hazardPane');
+      // Above campsite pins (600): a fire warning outranks a camping spot.
+      if (pane) pane.style.zIndex = '620';
+    }
+
+    let cancelled = false;
+    let controller: AbortController | null = null;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+
+    const popupHtml = (alert: HazardAlert): string => {
+      const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
+      const expires = alert.expires
+        ? `<div style="color:#64748B;font-size:10px;margin-top:6px">Until ${new Date(
+            alert.expires
+          ).toLocaleString()}</div>`
+        : '';
+      const instruction = alert.instruction
+        ? `<div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:10px;line-height:1.35">${alert.instruction}</div>`
+        : '';
+
+      return `<div style="font-family:system-ui;font-size:12px;min-width:220px;max-width:300px">
+          <span style="display:inline-block;padding:2px 6px;border-radius:6px;background:${
+            style.color
+          };color:#0F172A;font-weight:700;font-size:10px;text-transform:uppercase">${
+        style.label
+      } · ${alert.severity}</span>
+          <strong style="display:block;font-size:13px;margin-top:6px">${alert.event}</strong>
+          <div style="color:#334155;margin-top:2px">${alert.headline ?? ''}</div>
+          <div style="color:#475569;font-size:10px;margin-top:6px">${alert.areaDescription ?? ''}</div>
+          ${instruction}
+          <div style="color:#64748B;font-size:10px;margin-top:6px">Issued by ${alert.sender}</div>
+          ${expires}
+        </div>`;
+    };
+
+    const render = (alerts: HazardAlert[]) => {
+      clear();
+      const placeable = alerts.filter((a) => Array.isArray(a.centroid) && a.geometry);
+      if (placeable.length === 0) return;
+
+      const group = L.layerGroup([], { pane: 'hazardPane' });
+
+      placeable.forEach((alert) => {
+        const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
+
+        // The area itself, faint, so the triangle has visible extent.
+        group.addLayer(
+          L.geoJSON(alert.geometry as any, {
+            pane: 'hazardPane',
+            interactive: false,
+            style: {
+              color: style.color,
+              weight: 1.5,
+              opacity: 0.7,
+              fillColor: style.color,
+              fillOpacity: 0.12
+            }
+          })
+        );
+
+        const marker = L.marker(alert.centroid as [number, number], {
+          pane: 'hazardPane',
+          icon: buildHazardIcon(alert),
+          title: `${alert.event} — ${alert.areaDescription}`,
+          riseOnHover: true
+        });
+        marker.bindPopup(() => popupHtml(alert));
+        group.addLayer(marker);
+      });
+
+      hazardLayerRef.current = group.addTo(map);
+    };
+
+    const run = async () => {
+      const b = map.getBounds();
+      controller?.abort();
+      controller = new AbortController();
+
+      const alerts = await fetchAreaAlerts(
+        { minLat: b.getSouth(), minLon: b.getWest(), maxLat: b.getNorth(), maxLon: b.getEast() },
+        controller.signal
+      );
+      if (cancelled) return;
+
+      const sorted = sortAlerts(alerts);
+      setHazards(sorted);
+      setUnmappableHazards(sorted.filter((a) => !a.centroid || !a.geometry).length);
+      render(sorted);
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 600);
+    };
+
+    load();
+    map.on('moveend zoomend', load);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend zoomend', load);
+      clear();
+    };
+  }, [isMapReady, isOfflineMode]);
+
   /* ------------------------------------------------------------------ */
   /* Markers                                                             */
   /* ------------------------------------------------------------------ */
@@ -967,6 +1141,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   </p>
                 </div>
               </div>
+            )}
+          </div>
+        )}
+
+        {hazards.length > 0 && (
+          <div className="bg-amber-950/90 backdrop-blur-md border border-amber-600/70 rounded-xl px-3 py-1.5 shadow-xl anim-in-up">
+            <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-200">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>
+                {hazards.length} active alert{hazards.length === 1 ? '' : 's'} here
+              </span>
+            </div>
+            {/* Said out loud rather than quietly dropped: some alerts arrive
+                with no area attached, and guessing one would be worse. */}
+            {unmappableHazards > 0 && (
+              <p className="text-[9px] text-amber-300/80 leading-tight mt-0.5">
+                {unmappableHazards} not shown on the map — no area given. Open the
+                site details to read {unmappableHazards === 1 ? 'it' : 'them'}.
+              </p>
             )}
           </div>
         )}

@@ -6,6 +6,9 @@ import {
 } from 'lucide-react';
 import type { Campsite } from '../types';
 import {
+  ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL, bestCellSignal
+} from '../utils/amenities';
+import {
   getCampsiteDisplayImage, getCloseSatelliteImageUrl,
   getStreetViewUrl, getDirectionsUrl
 } from '../utils/imageUtils';
@@ -98,11 +101,8 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
 
   const heightClass = snap === 'peek' ? 'h-[26vh]' : snap === 'half' ? 'h-[58vh]' : 'h-[92vh]';
 
-  const bestSignal = Math.max(
-    campsite.amenities.cellSignal.verizon,
-    campsite.amenities.cellSignal.att,
-    campsite.amenities.cellSignal.tmobile
-  );
+  const amenities = campsite.amenities;
+  const bestSignal = bestCellSignal(amenities);
 
   return (
     <div
@@ -171,8 +171,12 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
               <Star className="w-3 h-3 text-amber-400" />
               {campsite.rating > 0 ? campsite.rating.toFixed(1) : '—'}
             </span>
-            <span className="flex items-center gap-1"><Signal className="w-3 h-3" />{bestSignal} bars</span>
-            <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{campsite.amenities.stayLimitDays}d</span>
+            {bestSignal !== undefined && (
+              <span className="flex items-center gap-1"><Signal className="w-3 h-3" />{bestSignal} bars</span>
+            )}
+            {amenities.stayLimitDays !== undefined && (
+              <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{amenities.stayLimitDays}d</span>
+            )}
             {weather.periods.length > 0 && (
               <span className="flex items-center gap-1 text-sky-300">
                 <ThermometerSun className="w-3 h-3" />
@@ -293,10 +297,17 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
               </h3>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { icon: Droplet, label: 'Water', value: campsite.amenities.water.replace('_', ' ') },
-                  { icon: Navigation, label: 'Road', value: campsite.amenities.roadAccess.replace('_', ' ') },
-                  { icon: Flame, label: 'Fires', value: campsite.amenities.fireRing ? 'Ring present' : 'None' },
-                  { icon: Dog, label: 'Pets', value: campsite.amenities.petFriendly ? 'Allowed' : 'No' }
+                  // Unknown reads as unknown, never as an absence.
+                  { icon: Droplet, label: 'Water',
+                    value: amenities.water ? WATER_LABEL[amenities.water] : UNKNOWN_LABEL },
+                  { icon: Navigation, label: 'Road',
+                    value: amenities.roadAccess ? ROAD_ACCESS_LABEL[amenities.roadAccess] : UNKNOWN_LABEL },
+                  { icon: Flame, label: 'Fires',
+                    value: amenities.fireRing === undefined
+                      ? UNKNOWN_LABEL : amenities.fireRing ? 'Ring present' : 'None' },
+                  { icon: Dog, label: 'Pets',
+                    value: amenities.petFriendly === undefined
+                      ? UNKNOWN_LABEL : amenities.petFriendly ? 'Allowed' : 'Not allowed' }
                 ].map(({ icon: Icon, label, value }, i) => (
                   <div
                     key={label}

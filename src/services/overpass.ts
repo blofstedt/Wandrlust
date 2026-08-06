@@ -51,7 +51,15 @@ const inferLandType = (tags: Record<string, string>): LandType => {
   return 'dispersed';
 };
 
-const inferRoadAccess = (tags: Record<string, string>): RoadAccess => {
+/**
+ * Road access, ONLY where OpenStreetMap actually says something.
+ *
+ * This used to fall through to 'gravel' whenever a site had no surface or
+ * smoothness tag — which is most of them. Every unsurveyed track in the
+ * dataset was therefore presented to the user as a known gravel road.
+ * Returning undefined lets the UI say nothing instead.
+ */
+const inferRoadAccess = (tags: Record<string, string>): RoadAccess | undefined => {
   const surface = (tags.surface ?? '').toLowerCase();
   const smoothness = (tags.smoothness ?? '').toLowerCase();
 
@@ -59,11 +67,25 @@ const inferRoadAccess = (tags: Record<string, string>): RoadAccess => {
   if (smoothness.includes('bad')) return 'high_clearance';
   if (surface.includes('asphalt') || surface.includes('paved') || surface.includes('concrete'))
     return 'paved';
-  return 'gravel';
+  if (surface.includes('gravel') || surface.includes('dirt') || surface.includes('unpaved'))
+    return 'gravel';
+  return undefined;
 };
 
 const yesish = (value?: string): boolean =>
   value === 'yes' || value === 'designated' || value === 'permissive';
+
+/**
+ * A tag that is present and negative means no; a tag that is absent means
+ * nobody has said. Collapsing those two into `false` is how "not surveyed"
+ * became "no toilet".
+ */
+const triState = (value?: string): boolean | undefined => {
+  if (value === undefined) return undefined;
+  if (yesish(value)) return true;
+  if (value === 'no' || value === 'none') return false;
+  return undefined;
+};
 
 const toCampsite = (element: OverpassElement): Campsite | null => {
   const lat = element.lat ?? element.center?.lat;
@@ -72,7 +94,9 @@ const toCampsite = (element: OverpassElement): Campsite | null => {
 
   const tags = element.tags ?? {};
   const landType = inferLandType(tags);
-  const isFree = tags.fee === 'no' || tags.fee === undefined;
+  // An absent `fee` tag means nobody recorded whether there is one, not that
+  // the site is free.
+  const isFree = tags.fee === undefined ? undefined : tags.fee === 'no';
 
   return {
     id: `osm-${element.type}-${element.id}`,
@@ -91,19 +115,27 @@ const toCampsite = (element: OverpassElement): Campsite | null => {
       tags.description ||
       tags.note ||
       'Community-reported campsite sourced live from OpenStreetMap. Verify access and regulations before travelling.',
+    /**
+     * Only what OpenStreetMap was actually tagged with.
+     *
+     * Everything here used to have a fallback, so an untagged node arrived
+     * carrying "no water, no toilet, gravel road, partial shade, 14-day limit,
+     * 0 bars on every carrier" — none of it surveyed, all of it indistinguishable
+     * from a real observation. Cell signal is gone entirely: OSM does not
+     * record carrier coverage, so there was never anything to report.
+     */
     amenities: {
-      water: yesish(tags.drinking_water) ? 'potable' : 'none',
-      toilet: yesish(tags.toilets) ? 'vault' : 'none',
+      water: triState(tags.drinking_water) ? 'potable' : undefined,
+      toilet: triState(tags.toilets) ? 'vault' : undefined,
       roadAccess: inferRoadAccess(tags),
-      cellSignal: { verizon: 0, att: 0, tmobile: 0 },
-      maxRvLengthFeet: tags.caravans === 'yes' ? 30 : 0,
-      fireRing: yesish(tags.openfire) || yesish(tags.fireplace),
-      petFriendly: tags.dog !== 'no',
-      trashService: yesish(tags.waste_disposal),
-      shade: 'partial',
-      stayLimitDays: tags.maxstay ? parseInt(tags.maxstay, 10) || 14 : 14,
+      maxRvLengthFeet: tags.maxlength ? parseInt(tags.maxlength, 10) || undefined : undefined,
+      fireRing: triState(tags.openfire) ?? triState(tags.fireplace),
+      petFriendly: triState(tags.dog),
+      trashService: triState(tags.waste_disposal),
+      stayLimitDays: tags.maxstay ? parseInt(tags.maxstay, 10) || undefined : undefined,
       isFree,
-      permitRequired: tags.permit === 'yes' || tags.access === 'permit'
+      permitRequired:
+        tags.permit === 'yes' || tags.access === 'permit' ? true : undefined
     },
     images: [],
     reviews: [],

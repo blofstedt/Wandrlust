@@ -1,6 +1,6 @@
 import { Campsite } from '../types';
 
-export const CURATED_CAMPSITES: Campsite[] = [
+export const CURATED_CAMPSITES: Campsite[] =  [
   {
     "id": "waiparous-ghost-pluz",
     "name": "Waiparous Creek Crown Land Dispersed (Ghost PLUZ)",
@@ -17,26 +17,12 @@ export const CURATED_CAMPSITES: Campsite[] = [
     },
     "description": "100% legal Alberta Crown Land dispersed camping within the Ghost Public Land Use Zone (PLUZ). Pristine mountain river valley surrounded by dense lodgepole pine. Requires Alberta Public Land Camping Pass ($30/yr or $20/3-day). Free off-grid boondocking.",
     "amenities": {
-      "water": "natural_stream",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 3,
-        "tmobile": 2
-      },
-      "maxRvLengthFeet": 35,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "full",
-      "stayLimitDays": 14,
       "isFree": true,
       "permitRequired": true
     },
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -55,27 +41,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "40 km SW of Calgary via Highway 22 & Highway 66"
     },
     "description": "Legal Crown Land dispersed camping zone nestled along McLean Creek in the Kananaskis Foothills. Popular for off-grid overland rigs, truck campers, and tenters. Gorgeous pine forest with creek access.",
-    "amenities": {
-      "water": "natural_stream",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 3,
-        "att": 3,
-        "tmobile": 2
-      },
-      "maxRvLengthFeet": 30,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "full",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": true
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.8,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -94,27 +63,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Highway 11 (David Thompson Hwy) along the shores of Abraham Lake"
     },
     "description": "World-famous turquoise glacier reservoir surrounded by dramatic Rocky Mountain peaks. 100% legal Crown Land dispersed camping along designated lake shore pull-offs and forest clearings.",
-    "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "paved",
-      "cellSignal": {
-        "verizon": 3,
-        "att": 4,
-        "tmobile": 3
-      },
-      "maxRvLengthFeet": 40,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": true
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -133,27 +85,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Secondary Hwy 520 west into the Porcupine Hills PLUZ ridge"
     },
     "description": "Rolling pine ridge slopes and open meadows in the Southern Alberta Foothills. Panoramic high-elevation prairie views extending all the way to the Rocky Mountain Front Range.",
-    "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 4,
-        "att": 4,
-        "tmobile": 3
-      },
-      "maxRvLengthFeet": 30,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": true
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.7,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -172,27 +107,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Off US-191, 12 miles north of Moab near Arches National Park"
     },
     "description": "Vast, iconic BLM dispersed camping zone with stunning views of the La Sal Mountains and red rock bluffs. Easy access off dirt road. Extremely popular among vanlifers and overlanders.",
-    "amenities": {
-      "water": "none",
-      "toilet": "pack_out",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 4,
-        "att": 4,
-        "tmobile": 3
-      },
-      "maxRvLengthFeet": 40,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "none",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.8,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -211,27 +129,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "East of Grand Teton National Park off Antelope Flats Road"
     },
     "description": "Direct, unobstructed panoramic views of the Teton Mountain Range across the valley. Dispersed campsites scattered along FS Road 30340 up the mountain slope.",
-    "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "high_clearance",
-      "cellSignal": {
-        "verizon": 3,
-        "att": 2,
-        "tmobile": 1
-      },
-      "maxRvLengthFeet": 25,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -251,26 +152,11 @@ export const CURATED_CAMPSITES: Campsite[] = [
     },
     "description": "Surreal rounded rock formations set directly below 14,505ft Mt. Whitney. Famous film location turned world-class free public land campsite.",
     "amenities": {
-      "water": "none",
-      "toilet": "pack_out",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 4,
-        "att": 4,
-        "tmobile": 4
-      },
-      "maxRvLengthFeet": 30,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "none",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": true
+      "isFree": true
     },
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -289,27 +175,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Forest Road 231 atop the Mogollon Rim looking down into Sedona canyons"
     },
     "description": "Perched on high red cliffs overlooking Sedona red rocks. One of the most breathtaking cliffside camp spots in the Southwest.",
-    "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "high_clearance",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 1,
-        "tmobile": 0
-      },
-      "maxRvLengthFeet": 20,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "full",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.8,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -329,26 +198,11 @@ export const CURATED_CAMPSITES: Campsite[] = [
     },
     "description": "Expansive open desert BLM land with hard-packed gravel, perfect for RV nomads, boondockers, and desert lovers. Free 14-day stay.",
     "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 5,
-        "att": 5,
-        "tmobile": 5
-      },
-      "maxRvLengthFeet": 45,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "none",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
+      "isFree": true
     },
     "images": [],
     "reviews": [],
-    "rating": 4.6,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -368,26 +222,11 @@ export const CURATED_CAMPSITES: Campsite[] = [
     },
     "description": "Surrounded by wild alpine flowers, aspen groves, and towering 12,000ft peaks. Designated free dispersed campsites in paradise.",
     "amenities": {
-      "water": "natural_stream",
-      "toilet": "vault",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 3,
-        "tmobile": 1
-      },
-      "maxRvLengthFeet": 24,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
+      "isFree": true
     },
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -406,27 +245,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Forest Road 212, north rim of Badlands National Park"
     },
     "description": "Camp right on the edge of the dramatic Badlands canyon formation on National Grassland territory. Sweeping sunset views, roaming bison, and dark night skies.",
-    "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 4,
-        "att": 4,
-        "tmobile": 3
-      },
-      "maxRvLengthFeet": 40,
-      "fireRing": false,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "none",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.7,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -445,27 +267,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Hyalite Canyon Road, south of Hyalite Reservoir"
     },
     "description": "Pine-forested creek-side campsites tucked in the Gallatin Range. Close to hiking trails, waterfalls, and alpine fishing.",
-    "amenities": {
-      "water": "natural_stream",
-      "toilet": "vault",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 1,
-        "att": 0,
-        "tmobile": 0
-      },
-      "maxRvLengthFeet": 28,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": true,
-      "shade": "full",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.8,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -485,26 +290,11 @@ export const CURATED_CAMPSITES: Campsite[] = [
     },
     "description": "Turquoise glacial lake surrounded by Canadian Rocky summits. Free crown land camping along shoreline inlets and forestry roads.",
     "amenities": {
-      "water": "natural_stream",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 2,
-        "tmobile": 1
-      },
-      "maxRvLengthFeet": 35,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": true
+      "isFree": true
     },
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -523,27 +313,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Forest Road 626 off Highway 75 facing the Sawtooth Range"
     },
     "description": "Classic Idaho mountain meadow camping directly across from the jagged Sawtooth Mountain peaks. Pure mountain air and natural hot springs nearby.",
-    "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 3,
-        "att": 3,
-        "tmobile": 2
-      },
-      "maxRvLengthFeet": 30,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -562,27 +335,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "17-mile unpaved loop road off US-163 near Moki Dugway"
     },
     "description": "Mini Monument Valley with massive isolated sandstone spires and buttresses on public land. Park anywhere at designated pulloffs.",
-    "amenities": {
-      "water": "none",
-      "toilet": "pack_out",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 2,
-        "tmobile": 1
-      },
-      "maxRvLengthFeet": 28,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "none",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -601,27 +357,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Forest Road 4604 west of Bend city limits"
     },
     "description": "Ponderosa pine forests just minutes from Bend mountain bike trails and breweries. Great base camp for exploring Central Oregon Cascades.",
-    "amenities": {
-      "water": "none",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 4,
-        "att": 4,
-        "tmobile": 4
-      },
-      "maxRvLengthFeet": 35,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "full",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.7,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -640,27 +379,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Black Rock Playa perimeter roads off Highway 34"
     },
     "description": "Surreal, vast ancient lakebed playa and desert canyon solitude. Infinite horizon views, hot springs, and unexcelled dark night skies on public land.",
-    "amenities": {
-      "water": "none",
-      "toilet": "pack_out",
-      "roadAccess": "high_clearance",
-      "cellSignal": {
-        "verizon": 1,
-        "att": 1,
-        "tmobile": 0
-      },
-      "maxRvLengthFeet": 40,
-      "fireRing": false,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "none",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.8,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -679,27 +401,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Buckhorn Draw Road in the San Rafael Swell"
     },
     "description": "Camp directly on the precipice of Utah's \"Little Grand Canyon\". Jaw-dropping 1,000ft drop-offs into the San Rafael River gorge below.",
-    "amenities": {
-      "water": "none",
-      "toilet": "vault",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 2,
-        "tmobile": 1
-      },
-      "maxRvLengthFeet": 32,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -718,27 +423,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "FS Road 2630 near Trillium Lake and Salmon River"
     },
     "description": "Nestled beneath towering Douglas fir trees with views of snow-capped Mt. Hood. Mountain stream access and cool Pacific Northwest shade.",
-    "amenities": {
-      "water": "natural_stream",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 3,
-        "att": 3,
-        "tmobile": 2
-      },
-      "maxRvLengthFeet": 26,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "full",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.7,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -757,27 +445,10 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "FS Road 88 off Highway 89 in Hope Valley"
     },
     "description": "High Sierra alpine meadows surrounded by granite peaks and trembling aspen groves south of Lake Tahoe. Dispersed pullouts along forest track.",
-    "amenities": {
-      "water": "natural_stream",
-      "toilet": "none",
-      "roadAccess": "high_clearance",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 2,
-        "tmobile": 1
-      },
-      "maxRvLengthFeet": 24,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "partial",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": true
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.8,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   },
@@ -796,29 +467,11 @@ export const CURATED_CAMPSITES: Campsite[] = [
       "description": "Forest Road 2880 along the Dungeness River"
     },
     "description": "Moss-draped old growth hemlock and cedar forest right beside roaring clear glacial river. Base camp for Olympic National Park wilderness trails.",
-    "amenities": {
-      "water": "natural_stream",
-      "toilet": "none",
-      "roadAccess": "gravel",
-      "cellSignal": {
-        "verizon": 2,
-        "att": 1,
-        "tmobile": 1
-      },
-      "maxRvLengthFeet": 28,
-      "fireRing": true,
-      "petFriendly": true,
-      "trashService": false,
-      "shade": "full",
-      "stayLimitDays": 14,
-      "isFree": true,
-      "permitRequired": false
-    },
+    "amenities": {},
     "images": [],
     "reviews": [],
-    "rating": 4.9,
+    "rating": 0,
     "reviewCount": 0,
     "source": "verified"
   }
 ];
-
