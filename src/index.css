@@ -265,19 +265,35 @@
 
 .leaflet-container { background: #0f172a; font-family: inherit; }
 
-/* Markers drop in with the pin animation. */
-.custom-campsite-marker { animation: pin-drop var(--dur-panel) var(--ease-moook) both; }
+/*
+ * Marker animations belong on the INNER element, never on the marker root.
+ *
+ * Leaflet positions a marker by writing `transform: translate3d(x, y, 0)` onto
+ * its root element. A CSS animation on that same element animates the same
+ * property — and animations beat inline styles — so animating the root
+ * replaced Leaflet's positioning outright. `animation-fill-mode: both` then
+ * made the last keyframe stick permanently, leaving every pin pinned to the
+ * map pane's origin instead of its coordinates, sliding with the pane as you
+ * panned rather than staying put on the ground.
+ *
+ * `backwards` rather than `both`: we still want the pre-animation state during
+ * any stagger delay, but nothing left applied afterwards, so the hover and
+ * selected-pin transforms below are free to take over.
+ */
+.custom-campsite-marker > div {
+  animation: pin-drop var(--dur-panel) var(--ease-moook) backwards;
+}
+.custom-cluster-icon > div,
+.camper-presence-marker > div {
+  animation: moook-expand var(--dur-base) var(--ease-moook) backwards;
+}
 
 .custom-campsite-marker > div,
-.camper-presence-marker > div {
+.camper-presence-marker > div,
+.custom-cluster-icon > div {
   transition: transform var(--dur-base) var(--ease-moook);
 }
 .custom-campsite-marker:hover > div { transform: scale(1.12); }
-
-.camper-presence-marker { animation: moook-expand var(--dur-base) var(--ease-moook) both; }
-
-.custom-cluster-icon { animation: moook-expand var(--dur-base) var(--ease-moook) both; }
-.custom-cluster-icon > div { transition: transform var(--dur-base) var(--ease-moook); }
 .custom-cluster-icon:hover > div { transform: scale(1.1); }
 
 .leaflet-popup-content-wrapper {
