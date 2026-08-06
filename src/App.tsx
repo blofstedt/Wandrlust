@@ -20,7 +20,6 @@ import { AuthModal } from './components/AuthModal';
 import { CampsiteBottomSheet } from './components/CampsiteBottomSheet';
 import { PresencePanel } from './components/PresencePanel';
 import { ScoutModePanel } from './components/ScoutModePanel';
-import { HostPanel } from './components/HostPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
@@ -67,7 +66,6 @@ export default function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isPresenceOpen, setIsPresenceOpen] = useState(false);
   const [isScoutOpen, setIsScoutOpen] = useState(false);
-  const [isHostOpen, setIsHostOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isOfflineManagerOpen, setIsOfflineManagerOpen] = useState(false);
@@ -360,7 +358,6 @@ export default function App() {
           onOpenAuth={() => setIsAuthOpen(true)}
           onOpenPresence={() => setIsPresenceOpen(true)}
           onOpenScout={() => setIsScoutOpen(true)}
-          onOpenHost={() => setIsHostOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenReport={() => setIsReportOpen(true)}
           nearbyCount={nearbyCampers.length}
@@ -547,13 +544,6 @@ export default function App() {
       <ScoutModePanel
         isOpen={isScoutOpen}
         onClose={() => setIsScoutOpen(false)}
-        onRequireAuth={() => setIsAuthOpen(true)}
-      />
-
-      <HostPanel
-        isOpen={isHostOpen}
-        onClose={() => setIsHostOpen(false)}
-        defaultCenter={center}
         onRequireAuth={() => setIsAuthOpen(true)}
       />
 

@@ -94,7 +94,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               <h2 className="text-base font-bold text-slate-100">
                 {mode === 'signup' ? 'Create your account' : 'Sign in to Wandrlust'}
               </h2>
-              <p className="text-[11px] text-slate-400">Save spots, check in, and earn tokens</p>
+              <p className="text-[11px] text-slate-400">Save spots, check in, and earn points</p>
             </div>
           </div>
           <button

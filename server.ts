@@ -6,6 +6,7 @@ import { createServer as createViteServer } from 'vite';
 import { registerBoundaryRoutes } from './server/boundaryRoutes';
 import { registerWeatherRoutes } from './server/weatherRoutes';
 import { registerPushRoutes } from './server/pushRoutes';
+import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 
 /**
  * One process serves both the API and the client.
@@ -40,6 +41,10 @@ const startServer = async (): Promise<void> => {
 
   // Web Push delivery.
   registerPushRoutes(app);
+
+  // The connection to the issuing agencies: polls NWS and Environment
+  // Canada, stores what they publish, and lets the SQL matcher push it.
+  registerAlertRoutes(app);
 
   // Unknown API routes must return JSON, not the SPA's index.html — otherwise
   // a typo in a fetch URL shows up in the client as "unexpected token <".
@@ -112,6 +117,8 @@ const startServer = async (): Promise<void> => {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Wandrlust running on http://0.0.0.0:${PORT}`);
+    // Poll the agencies on a timer so pushed warnings need no external cron.
+    startAlertIngest(`http://127.0.0.1:${PORT}`);
   });
 };
 

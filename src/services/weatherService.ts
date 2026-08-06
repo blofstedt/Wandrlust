@@ -167,6 +167,52 @@ export const fetchAreaAlerts = async (
   }
 };
 
+/* ------------------------------------------------------------------ *
+ * The connection to the issuing agencies
+ * ------------------------------------------------------------------ */
+
+export interface AlertAuthority {
+  id: string;
+  name: string;
+  scope: string;
+  covers: string;
+  url: string;
+}
+
+export interface AlertFeedStatus {
+  /** False when this deployment has no service-role key — nothing is pushed. */
+  configured: boolean;
+  pushDispatchConfigured: boolean;
+  intervalMinutes: number;
+  authorities: AlertAuthority[];
+  activeAlerts: number | null;
+  lastRun: {
+    finishedAt: string;
+    ok: boolean;
+    feeds: Record<string, { state: 'ok' | 'unreachable' | 'skipped'; received: number }>;
+    error: string | null;
+  } | null;
+}
+
+/**
+ * Whether the official alert feed is actually connected.
+ *
+ * Returns null when the endpoint cannot be reached, which the UI must show as
+ * "unknown" rather than "fine" — a silent alert pipeline is the failure mode
+ * that matters most here.
+ */
+export const fetchAlertFeedStatus = async (
+  signal?: AbortSignal
+): Promise<AlertFeedStatus | null> => {
+  try {
+    const res = await fetch('/api/alerts/status', { signal });
+    if (!res.ok) return null;
+    return (await res.json()) as AlertFeedStatus;
+  } catch {
+    return null;
+  }
+};
+
 /** Compact "what's it like on arrival" string for cards and sheets. */
 export const summarise = (snapshot: WeatherSnapshot): string => {
   if (snapshot.periods.length === 0) return 'No forecast available';

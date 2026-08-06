@@ -54,8 +54,8 @@ question shouldn't rewrite components.
 | Anything reading or writing the database | `src/services/dataService.ts` **first** — it is the only door into Supabase | components |
 | Offline maps / saved sites | `src/services/offlineStorage.ts`, `src/components/OfflineManagerModal.tsx` | server |
 | Animation, look and feel | `src/utils/animation.ts`, `src/index.css`, `src/components/ui/Sheet.tsx`, `src/components/ui/Feedback.tsx` | services |
-| Camper presence, hosting, reporting | `src/components/PresencePanel.tsx`, `HostPanel.tsx`, `ReportPanel.tsx`, `ScoutModePanel.tsx` + `dataService.ts` | map |
-| Database schema, tables, policies | `supabase_schema.sql` then `supabase_migration_02…05` **in order** | all of `src/` |
+| Camper presence, reporting | `src/components/PresencePanel.tsx`, `ReportPanel.tsx`, `ScoutModePanel.tsx` + `dataService.ts` | map |
+| Database schema, tables, policies | `supabase_schema.sql` then `supabase_migration_02…08` **in order** | all of `src/` |
 | Loading boundary data | `scripts/seedSupabase.ts`, `scripts/landSources.ts`, `scripts/arcgisTiledFetch.ts` | all of `src/` |
 | Legal text | `public/legal/*.md` (the live copies) | code |
 
@@ -77,7 +77,7 @@ src/
   services/                All I/O. Nothing here throws into a render.
   utils/                   animation, geo maths, fuzzy edges, image URLs
   components/              UI. ui/Sheet.tsx and ui/Feedback.tsx are the primitives.
-  contexts/AuthContext.tsx Session, profile, token balance
+  contexts/AuthContext.tsx Session, profile, points balance
   data/curatedCampsites.ts The bundled dataset the app falls back to
 public/
   sw.js                    Service worker — push only, no asset caching
@@ -99,7 +99,7 @@ public/
    animation must still collapse under `prefers-reduced-motion`.
 5. **Never put the `service_role` key anywhere in `src/`.** The anon key is
    public by design; security lives in Row Level Security.
-6. **Money and tokens are server-side only.** Never write to `token_ledger`
+6. **Points are server-side only.** Never write to `points_ledger`
    directly — go through the SQL functions.
 7. **Add types to `src/types.ts`**, not inline in a component.
 8. **Run `npm run lint`** (a TypeScript typecheck) before saying you're done.
@@ -129,7 +129,7 @@ npm run vapid    # generate push notification keys
   the rest. Absence of a polygon means "no data", never "no public land".
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
-- **Migrations must run in order,** 01 through 05. `supabase_schema.sql` is
+- **Migrations must run in order,** 01 through 08. `supabase_schema.sql` is
   destructive — it drops and recreates.
 - **There are no automated tests.** Verify changes by reasoning through them and
   by running `npm run lint`. Be careful.
@@ -142,4 +142,4 @@ npm run vapid    # generate push notification keys
 - **No smooth easing.** The motion is Pebble's frame-based "moook" curve on
   purpose — mechanical, with an overshoot that settles. That's the personality.
 - **No purchase prompts outside Settings.** The support link buys nothing in the
-  app. Tokens are earned, never sold.
+  app. Points are earned, never sold.

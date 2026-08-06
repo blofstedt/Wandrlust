@@ -6,7 +6,7 @@
  *    offline. Nothing here throws into a render path.
  *  - Reads go through RPCs where the server does the geometry work, rather
  *    than pulling rows and filtering in the browser.
- *  - Writes that touch the economy (tokens, unlocks) go through SECURITY
+ *  - Writes that touch the economy (points, unlocks) go through SECURITY
  *    DEFINER functions, never direct table writes.
  */
 import { supabase } from '../lib/supabase';
@@ -45,63 +45,6 @@ export interface Rig {
   is_4wd: boolean;
   has_trailer: boolean;
   is_primary: boolean;
-}
-
-export interface HostListing {
-  id: string;
-  host_id: string;
-  title: string;
-  description: string | null;
-  latitude?: number;
-  longitude?: number;
-  approx_only: boolean;
-  token_price: number;
-  max_nights: number;
-  max_rig_length_cm: number | null;
-  max_rigs: number;
-  has_water: boolean;
-  has_toilet: boolean;
-  has_shower: boolean;
-  has_power: boolean;
-  has_dump_station: boolean;
-  has_wifi: boolean;
-  allows_fires: boolean;
-  allows_pets: boolean;
-  allows_generators: boolean;
-  is_pull_through: boolean;
-  surface_type: string | null;
-  quiet_hours: string | null;
-  arrival_notes: string | null;
-  photos: string[];
-  is_active: boolean;
-}
-
-export interface Booking {
-  id: string;
-  listing_id: string;
-  guest_id: string;
-  host_id: string;
-  starts_on: string;
-  ends_on: string;
-  token_cost: number;
-  status: 'requested' | 'confirmed' | 'cancelled' | 'completed' | 'no_show';
-  guest_reviewed: boolean;
-  host_reviewed: boolean;
-}
-
-export interface BookingReview {
-  id: string;
-  booking_id: string;
-  author_id: string;
-  subject_id: string;
-  direction: 'guest_to_host' | 'host_to_guest';
-  rating: number;
-  comment: string;
-  accuracy_rating: number | null;
-  cleanliness_rating: number | null;
-  access_rating: number | null;
-  is_visible: boolean;
-  created_at: string;
 }
 
 export interface PoiRecord {
@@ -175,7 +118,6 @@ export interface UserSettings {
   notify_storm_alerts: boolean;
   notify_zone_heat: boolean;
   notify_hazards_nearby: boolean;
-  notify_booking_updates: boolean;
   alert_radius_km: number;
   share_presence: boolean;
   share_telemetry: boolean;
@@ -344,7 +286,7 @@ export const saveRig = async (rig: Partial<Rig>): Promise<Result<Rig>> => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Check-ins & tokens                                                  */
+/* Check-ins & points                                                  */
 /* ------------------------------------------------------------------ */
 
 export const checkIn = async (
@@ -386,10 +328,10 @@ export const checkOut = async (
   return error ? failure(error.message) : success(true, 'Checked out');
 };
 
-export const fetchTokenLedger = async (limit = 50) => {
+export const fetchPointsLedger = async (limit = 50) => {
   if (!supabase) return [];
   const { data, error } = await supabase
-    .from('token_ledger')
+    .from('points_ledger')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -397,148 +339,9 @@ export const fetchTokenLedger = async (limit = 50) => {
   return ok(data, []);
 };
 
-export const fetchTokenRules = async () => {
+export const fetchPointsRules = async () => {
   if (!supabase) return [];
-  const { data, error } = await supabase.from('token_rules').select('*');
-  if (error) return [];
-  return ok(data, []);
-};
-
-/* ------------------------------------------------------------------ */
-/* Hosting                                                             */
-/* ------------------------------------------------------------------ */
-
-export const fetchHostListings = async (): Promise<HostListing[]> => {
-  if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('host_listings')
-    .select('*')
-    .eq('is_active', true)
-    .limit(200);
-  if (error) return [];
-  return ok(data, []);
-};
-
-export const fetchMyListings = async (): Promise<HostListing[]> => {
-  if (!supabase) return [];
-  const { data, error } = await supabase.from('host_listings').select('*');
-  if (error) return [];
-  return ok(data, []);
-};
-
-export const saveListing = async (
-  listing: Partial<HostListing> & { latitude: number; longitude: number }
-): Promise<Result<HostListing>> => {
-  if (!supabase) return failure('Not connected');
-  const uid = await currentUserId();
-  if (!uid) return failure('Sign in to list your property');
-
-  const { latitude, longitude, ...rest } = listing;
-  const payload = {
-    ...rest,
-    host_id: uid,
-    geom: `SRID=4326;POINT(${longitude} ${latitude})`
-  };
-
-  const { data, error } = listing.id
-    ? await supabase.from('host_listings').update(payload).eq('id', listing.id).select().single()
-    : await supabase.from('host_listings').insert(payload).select().single();
-
-  if (error) return failure(error.message);
-
-  // Mark the profile as a host so the UI can surface host tools.
-  await supabase.from('profiles').update({ is_host: true }).eq('id', uid);
-  return success(data as HostListing, 'Listing saved');
-};
-
-export const requestBooking = async (
-  listingId: string,
-  hostId: string,
-  startsOn: string,
-  endsOn: string,
-  tokenCost: number
-): Promise<Result<Booking>> => {
-  if (!supabase) return failure('Not connected');
-  const uid = await currentUserId();
-  if (!uid) return failure('Sign in to book');
-
-  const { data, error } = await supabase
-    .from('bookings')
-    .insert({
-      listing_id: listingId,
-      guest_id: uid,
-      host_id: hostId,
-      starts_on: startsOn,
-      ends_on: endsOn,
-      token_cost: tokenCost
-    })
-    .select()
-    .single();
-
-  return error ? failure(error.message) : success(data as Booking, 'Booking requested');
-};
-
-export const fetchMyBookings = async (): Promise<Booking[]> => {
-  if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('bookings')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (error) return [];
-  return ok(data, []);
-};
-
-export const updateBookingStatus = async (
-  bookingId: string,
-  status: Booking['status']
-): Promise<Result<boolean>> => {
-  if (!supabase) return failure('Not connected');
-  const { error } = await supabase.from('bookings').update({ status }).eq('id', bookingId);
-  return error ? failure(error.message) : success(true, `Booking ${status}`);
-};
-
-/**
- * Submit a review. Double-blind: it stays hidden until the other party files
- * theirs, so nobody can retaliate against a review they've read.
- */
-export const submitBookingReview = async (review: {
-  bookingId: string;
-  subjectId: string;
-  direction: 'guest_to_host' | 'host_to_guest';
-  rating: number;
-  comment: string;
-  accuracy?: number;
-  cleanliness?: number;
-  access?: number;
-}): Promise<Result<boolean>> => {
-  if (!supabase) return failure('Not connected');
-  const uid = await currentUserId();
-  if (!uid) return failure('Sign in to leave a review');
-
-  const { error } = await supabase.from('booking_reviews').insert({
-    booking_id: review.bookingId,
-    author_id: uid,
-    subject_id: review.subjectId,
-    direction: review.direction,
-    rating: review.rating,
-    comment: review.comment,
-    accuracy_rating: review.accuracy ?? null,
-    cleanliness_rating: review.cleanliness ?? null,
-    access_rating: review.access ?? null
-  });
-
-  if (error) return failure(error.message);
-  return success(true, 'Review submitted. It stays hidden until the other party reviews too.');
-};
-
-export const fetchReviewsFor = async (userId: string): Promise<BookingReview[]> => {
-  if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('booking_reviews')
-    .select('*')
-    .eq('subject_id', userId)
-    .eq('is_visible', true)
-    .order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('points_rules').select('*');
   if (error) return [];
   return ok(data, []);
 };
@@ -729,7 +532,7 @@ export const uploadTelemetryBatch = async (batch: {
     dash_mounted: batch.dashMounted
   });
 
-  // The DB trigger decides acceptance and pays tokens; a rejected batch is
+  // The DB trigger decides acceptance and pays points; a rejected batch is
   // still stored so the filter can be retuned later without losing data.
   return error ? failure(error.message) : success(true, 'Road data uploaded');
 };

@@ -4,23 +4,17 @@
  *   GET /api/weather?lat=&lon=            forecast + alerts for a point
  *   GET /api/weather/alerts?minLat=...    active alerts for a viewport
  *
- * Sources are free government APIs with no keys:
- *   US      api.weather.gov   (NWS asks for a contact string in User-Agent)
- *   Canada  api.weather.gc.ca (ECCC GeoMet, OGC API Features)
+ * The feeds themselves, and the parsers that read them, live in
+ * server/alertSources.ts — the background ingest needs the same ones.
  *
  * NWS is a two-step lookup: /points/{lat},{lon} returns the grid endpoint,
  * which then returns the forecast. We cache both, since grid assignment for a
  * coordinate never changes.
  */
 import type { Express, Request, Response } from 'express';
-import { classifyHazard, normaliseSeverity, normaliseUrgency } from '../shared/hazards';
-
-const NWS_BASE = 'https://api.weather.gov';
-const ECCC_ALERTS = 'https://api.weather.gc.ca/collections/weather-alerts/items';
-
-// NWS requests a contact string. Falls back to a generic identifier.
-const UA = process.env.NWS_USER_AGENT ?? 'wandrlust-app (contact: set NWS_USER_AGENT in .env)';
-const jsonHeaders = { 'User-Agent': UA, Accept: 'application/geo+json' };
+import {
+  NWS_BASE, getJson, nwsAlertToHazard, fetchNwsAlertsAtPoint, fetchEcccAlerts, looksUS
+} from './alertSources';
 
 const POINT_TTL_MS = 24 * 60 * 60 * 1000;
 const FORECAST_TTL_MS = 10 * 60 * 1000;
@@ -45,110 +39,6 @@ const store = (key: string, body: unknown): void => {
   cache.set(key, { at: Date.now(), body });
 };
 
-const getJson = async (url: string, timeoutMs = 9000): Promise<any | null> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { headers: jsonHeaders, signal: controller.signal });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  } finally {
-    // Was leaking a pending timer on every successful request.
-    clearTimeout(timer);
-  }
-};
-
-
-/**
- * Where an alert applies, when the feed actually says.
- *
- * Both feeds return a GeoJSON geometry per alert — but not always. NWS in
- * particular sends `geometry: null` for zone-based products, naming the
- * affected zones by URL instead. We keep the polygon when there is one and
- * return null when there isn't.
- *
- * We do NOT fall back to the centre of the requested viewport, or to anything
- * else. A fire warning drawn in the wrong valley is worse than a fire warning
- * that only appears in the list, and this app's whole premise is not showing
- * people things it cannot stand behind.
- */
-const alertLocation = (feature: any): { geometry: unknown; centroid: [number, number] } | null => {
-  const geometry = feature?.geometry;
-  if (!geometry || !geometry.type || !geometry.coordinates) return null;
-
-  // Average every vertex. Alert areas are compact enough that this lands
-  // inside them for practical purposes, and it only positions the marker —
-  // the polygon itself is drawn from the real coordinates.
-  let sumLon = 0;
-  let sumLat = 0;
-  let count = 0;
-
-  const walk = (node: any): void => {
-    if (!Array.isArray(node)) return;
-    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
-      sumLon += node[0];
-      sumLat += node[1];
-      count += 1;
-      return;
-    }
-    node.forEach(walk);
-  };
-  walk(geometry.coordinates);
-
-  if (count === 0) return null;
-  return { geometry, centroid: [sumLat / count, sumLon / count] };
-};
-
-const nwsAlertToHazard = (feature: any) => {
-  const p = feature?.properties ?? {};
-  const event = p.event ?? 'Weather alert';
-  return {
-    id: String(p.id ?? feature?.id ?? `${event}-${p.effective ?? ''}`),
-    family: classifyHazard(event),
-    event,
-    headline: p.headline ?? event,
-    description: p.description ?? '',
-    instruction: p.instruction ?? null,
-    severity: normaliseSeverity(p.severity),
-    urgency: normaliseUrgency(p.urgency),
-    certainty: p.certainty ?? null,
-    areaDescription: p.areaDesc ?? '',
-    sender: p.senderName ?? 'NWS',
-    effective: p.effective ?? p.onset ?? null,
-    expires: p.expires ?? p.ends ?? null,
-    source: 'nws' as const,
-    ...(alertLocation(feature) ?? {})
-  };
-};
-
-const ecccAlertToHazard = (feature: any) => {
-  const p = feature?.properties ?? {};
-  const event = p.alert_type ?? p.headline ?? 'Weather alert';
-  // ECCC encodes urgency in the alert "type": warning > watch > advisory.
-  const kind = String(p.alert_type ?? '').toLowerCase();
-  const severity = kind.includes('warning') ? 'severe' : kind.includes('watch') ? 'moderate' : 'minor';
-
-  return {
-    id: String(p.identifier ?? feature?.id ?? `${event}-${p.effective ?? ''}`),
-    family: classifyHazard(`${event} ${p.headline ?? ''}`),
-    event,
-    headline: p.headline ?? event,
-    description: p.descrip_en ?? p.description ?? '',
-    instruction: p.instruction_en ?? null,
-    severity,
-    urgency: 'expected',
-    certainty: null,
-    areaDescription: p.area ?? p.location ?? '',
-    sender: 'Environment and Climate Change Canada',
-    effective: p.effective ?? null,
-    expires: p.expires ?? null,
-    source: 'eccc' as const,
-    ...(alertLocation(feature) ?? {})
-  };
-};
-
 const fetchNwsPoint = async (lat: number, lon: number) => {
   const key = `nws:point:${lat.toFixed(3)},${lon.toFixed(3)}`;
   const hit = cached<any>(key, POINT_TTL_MS);
@@ -164,9 +54,9 @@ const fetchNwsWeather = async (lat: number, lon: number) => {
   const forecastUrl = point?.properties?.forecast;
   const timezone = point?.properties?.timeZone ?? null;
 
-  const [forecast, alerts] = await Promise.all([
+  const [forecast, hazards] = await Promise.all([
     forecastUrl ? getJson(forecastUrl) : Promise.resolve(null),
-    getJson(`${NWS_BASE}/alerts/active?point=${lat.toFixed(4)},${lon.toFixed(4)}`)
+    fetchNwsAlertsAtPoint(lat, lon)
   ]);
 
   const periods = Array.isArray(forecast?.properties?.periods)
@@ -185,23 +75,8 @@ const fetchNwsWeather = async (lat: number, lon: number) => {
       }))
     : [];
 
-  const hazards = Array.isArray(alerts?.features) ? alerts.features.map(nwsAlertToHazard) : [];
   return { periods, alerts: hazards, timezone };
 };
-
-const fetchEcccAlerts = async (lat: number, lon: number, spanDeg = 1.0) => {
-  const bbox = [
-    (lon - spanDeg).toFixed(3), (lat - spanDeg).toFixed(3),
-    (lon + spanDeg).toFixed(3), (lat + spanDeg).toFixed(3)
-  ].join(',');
-
-  const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=50&f=json`);
-  return Array.isArray(data?.features) ? data.features.map(ecccAlertToHazard) : [];
-};
-
-/** Rough test for "is this coordinate in the contiguous US". */
-const looksUS = (lat: number, lon: number): boolean =>
-  lat >= 24.4 && lat <= 49.5 && lon >= -125.1 && lon <= -66.8;
 
 const readCoords = (req: Request, keys: string[]): number[] | null => {
   const values = keys.map((k) => parseFloat(req.query[k] as string));

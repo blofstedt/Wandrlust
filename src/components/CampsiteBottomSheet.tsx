@@ -226,7 +226,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 </p>
               )}
               <p className="text-[9px] text-slate-500 mt-1">
-                Checking in earns tokens and keeps capacity current for everyone else.
+                Checking in earns points and keeps capacity current for everyone else.
               </p>
             </section>
 

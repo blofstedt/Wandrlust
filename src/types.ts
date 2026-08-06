@@ -125,6 +125,33 @@ export type AppView = 'map' | 'list' | 'saved';
 export type LegalDocKind = 'privacy_policy' | 'terms_of_service' | 'safety_disclaimer';
 
 /* ------------------------------------------------------------------ *
+ * Points and tiers
+ *
+ * Points are earned, never sold. The reward for earning them is the tier
+ * they move you into — see src/config/tiers.ts for the ladder itself.
+ * ------------------------------------------------------------------ */
+
+export type TrustTier = 'tourist' | 'camper' | 'scout' | 'trailblazer' | 'nomad';
+
+export interface TierDefinition {
+  id: TrustTier;
+  /** 1–5, ascending. Mirrors tier_rank() in SQL. */
+  rank: number;
+  label: string;
+  /** Trust score at which this tier begins. */
+  minScore: number;
+  blurb: string;
+  /** Trophy fill. */
+  color: string;
+  /** Second stop for the shine, and the gradient's end on the top tier. */
+  colorSoft: string;
+  /** Tailwind classes for the tier chip. Full strings — Tailwind scans text. */
+  ring: string;
+  /** The top tier gets a two-colour trophy instead of a metal. */
+  isAurora?: boolean;
+}
+
+/* ------------------------------------------------------------------ *
  * Field guide
  *
  * The content lives in src/data/campingGuide.ts and is rendered by

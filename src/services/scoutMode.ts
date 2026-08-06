@@ -17,7 +17,7 @@
  *      variance, so one slammed door isn't recorded as a pothole.
  *
  * Failed batches are still uploaded with `dash_mounted: false` so the server
- * records them without paying tokens, letting thresholds be retuned later.
+ * records them without paying points, letting thresholds be retuned later.
  */
 
 export interface MotionSample {

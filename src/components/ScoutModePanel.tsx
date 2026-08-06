@@ -14,7 +14,7 @@ interface ScoutModePanelProps {
  * Scout Mode — passive road-surface mapping.
  *
  * Runs the accelerometer in the background while you drive and uploads
- * one-minute batches. Tokens are paid server-side, and only for batches that
+ * one-minute batches. Points are paid server-side, and only for batches that
  * pass the dash-mount and speed gates — otherwise the dataset fills up with
  * people picking their phone off the passenger seat.
  */
@@ -102,7 +102,7 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
           <p className="text-[11px] text-slate-400 leading-snug">
             Maps road surfaces automatically while you drive, using your phone&apos;s motion
             sensors. Mount the phone, start a session, and forget about it — you earn
-            tokens for roads nobody has mapped yet.
+            points for roads nobody has mapped yet.
           </p>
 
           {!supported && (
@@ -209,11 +209,11 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
             <div className="flex items-center gap-1.5">
               <Coins className="w-3 h-3 text-amber-400" />
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                How tokens work here
+                How points work here
               </span>
             </div>
             <p className="text-[10px] text-slate-400 leading-snug">
-              5 tokens per accepted batch, up to 6 a day. Batches only count when the phone
+              5 points per accepted batch, up to 6 a day. Batches only count when the phone
               is mounted, you&apos;re moving above 5 km/h, and the segment is at least 200 m.
               Rejected batches are still stored so the filter can be improved — they just
               don&apos;t pay.
