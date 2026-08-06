@@ -17,6 +17,7 @@
     "lint": "tsc --noEmit",
     "icons": "node scripts/generateIcons.mjs",
     "validate": "node scripts/validateData.mjs",
+    "probe": "tsx scripts/probeLandSources.ts",
     "seed": "tsx scripts/seedSupabase.ts",
     "seed:sites": "tsx scripts/seedSupabase.ts --sites",
     "seed:lands": "tsx scripts/seedSupabase.ts --lands",

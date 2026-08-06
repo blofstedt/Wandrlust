@@ -145,6 +145,21 @@ export const LAND_SOURCES: LandSourceSpec[] = [
   /* ================= CANADA =================
    * There is no national Crown land layer. Each province publishes
    * separately, and several publish nothing usable. See COVERAGE_GAPS.
+   *
+   * ON "GENERAL USE", because it comes up every time someone looks at this:
+   *
+   * "General Use Area" is a designation in ONE dataset — Ontario's Crown Land
+   * Use Policy Atlas. It is not a Canadian concept, and no other province
+   * publishes an equivalent. Elsewhere the choice is between a layer of ALL
+   * Crown land (which includes leases, dispositions, protected areas and
+   * closures, so presenting it as campable would overstate it badly) or
+   * nothing at all.
+   *
+   * crownlandmap.ca is the usual counter-example offered. It aggregates the
+   * same provincial open data this registry does, and its own About page says
+   * it "does not have data for all provinces yet" and that it "is not an
+   * official source of information". It is not a shortcut to national
+   * coverage, because national coverage does not currently exist to be had.
    */
   {
     id: 'ontario_clupa_general_use',
@@ -171,6 +186,43 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     permit: () => ({ required: false, name: 'Non-residents require a Crown Land Camping Permit' }),
     notes:
       'The ONLY source in this registry with a literal general-use designation. Ontario states CLUPA is "not to be used as a source of protected areas, crown land or private land boundaries."'
+  },
+  {
+    /**
+     * Alberta's actual campable Crown land, and by far the largest single
+     * area in this registry — roughly 339,000 km², about 60% of the province.
+     *
+     * This was already configured and verified in server/boundaryRoutes.ts,
+     * where the live map has been drawing it, but it was never added here — so
+     * a full seed produced an Alberta consisting only of the handful of
+     * management zones below. GWA_CODE 'GLC_G' is the Green Area; the White
+     * Area is deliberately excluded, being the settled southern portion of the
+     * province and largely private freehold.
+     */
+    id: 'alberta_green_area',
+    label: 'Alberta Crown Land (Green Area)',
+    attribution: 'Government of Alberta',
+    licence: 'Open Government Licence – Alberta',
+    jurisdiction: 'CA-AB',
+    url: 'https://geospatial.alberta.ca/titan/rest/services/boundary/asrd_administrative_area/MapServer/1/query',
+    where: "GWA_CODE = 'GLC_G'",
+    outFields: 'OBJECTID,GWA_NAME,GWA_CODE',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 1000,
+    bbox: [-120.1, 48.9, -109.9, 60.1],
+    externalId: (p) => String(p.OBJECTID ?? p.GWA_NAME ?? 'green-area'),
+    name: () => 'Crown Land (Green Area)',
+    designation: () => 'Alberta public land — Green Area',
+    campingBasis: () =>
+      'Green Area Crown land. Random camping is generally permitted under provincial policy, ' +
+      'but this is inferred from that policy rather than from any designation in the data. ' +
+      'A Public Lands Camping Pass is required in the Eastern Slopes, and individual areas are closed.',
+    stayLimitDays: () => 14,
+    permit: () => ({ required: true, name: 'Alberta Public Lands Camping Pass (Eastern Slopes)' }),
+    notes:
+      'Endpoint and GWA_CODE filter carried over from server/boundaryRoutes.ts, where both were verified against the live service. Campability is a policy inference, not a designation — Alberta publishes no general-use layer.'
   },
   {
     id: 'alberta_pluz',
