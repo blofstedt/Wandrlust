@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import type { Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind } from './types';
+import type {
+  Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
+  DestinationLand, MapDestination, CellCoverage
+} from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
 import { fetchOverpassCampsites } from './services/overpass';
 import {
@@ -23,6 +26,9 @@ import { ScoutModePanel } from './components/ScoutModePanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
+import { DestinationSheet } from './components/DestinationSheet';
+import { NavigationPanel } from './components/NavigationPanel';
+import { HazardReportCard } from './components/HazardReportCard';
 import { ErrorBoundary, EmptyState } from './components/ui/Feedback';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
 import {
@@ -32,7 +38,14 @@ import {
 import { distanceMiles } from './utils/geo';
 import { bestCellSignal } from './utils/amenities';
 import { updateAlertLocation } from './services/pushService';
-import type { NearbyCamper } from './services/dataService';
+import {
+  fetchFriendIds, fetchMyRigs, fetchNearbyCampers,
+  type HazardRecord, type NearbyCamper, type Rig
+} from './services/dataService';
+import { calculateRoute, type RouteResult } from './services/routingService';
+import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/weatherService';
+import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
+import { useAuth } from './contexts/AuthContext';
 import { Search, Bookmark, MapPinOff, SlidersHorizontal } from 'lucide-react';
 
 /** Calgary, AB — the app's home coordinates. */
@@ -40,6 +53,10 @@ const HOME_CENTER: [number, number] = [51.0447, -114.0719];
 const HOME_LABEL = 'Calgary, AB';
 
 export default function App() {
+  // Who's signed in. Drives the rig lookup and the friends list — both are
+  // inert without a session, which is the correct behaviour, not a bug.
+  const { user } = useAuth();
+
   // Navigation & view
   const [activeView, setActiveView] = useState<AppView>('map');
   const [isOfflineMode, setIsOfflineMode] = useState(false);
@@ -60,6 +77,25 @@ export default function App() {
   const [isSearchingSites, setIsSearchingSites] = useState(false);
   const [outOfCoverageNotice, setOutOfCoverageNotice] = useState<string | null>(null);
   const [nearbyCampers, setNearbyCampers] = useState<NearbyCamper[]>([]);
+
+  /* ---------------------------------------------- Destination & routing */
+  // Where the user wants to go: a pin they dropped, or a spot they tapped.
+  const [destination, setDestination] = useState<MapDestination | null>(null);
+  const [route, setRoute] = useState<RouteResult | null>(null);
+  const [isRouting, setIsRouting] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [selectedReport, setSelectedReport] = useState<HazardRecord | null>(null);
+
+  // Only used while navigating: who else is out there, and whose names we may
+  // draw. Everyone not in this set is shown without one.
+  const [friendIds, setFriendIds] = useState<Set<string>>(() => new Set());
+  const [primaryRig, setPrimaryRig] = useState<Rig | null>(null);
+
+  // Conditions at the destination, kept here so the navigation HUD can read
+  // the same values the destination sheet showed before the user set off.
+  const [destWeather, setDestWeather] = useState<WeatherSnapshot>(EMPTY_WEATHER);
+  const [destCoverage, setDestCoverage] = useState<CellCoverage>(UNKNOWN_COVERAGE);
+  const [isLoadingConditions, setIsLoadingConditions] = useState(false);
 
   // Panels & modals
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -179,8 +215,185 @@ export default function App() {
   // changes, so an inline arrow here would rebuild every pin on every render.
   const handleSelectMapCampsite = useCallback((site: Campsite) => {
     setSelectedCampsite(site);
-    setCenter([site.latitude, site.longitude]);
+    setSelectedReport(null);
+    // A tapped pin becomes the destination, exactly like a dropped one. The
+    // map draws no extra marker for it — the pin it already has lights up.
+    setDestination({ latitude: site.latitude, longitude: site.longitude, campsite: site });
+    /**
+     * Deliberately does NOT recentre any more.
+     *
+     * It used to fly the map to the pin, which was already a little rude — you
+     * tapped something you could see, so moving it was never necessary. It
+     * became a bug once routes existed: with no geolocation the drive is
+     * measured from `center`, so recentring on the destination made the origin
+     * and the destination the same point and every route came back 0 km.
+     */
   }, []);
+
+  /* ------------------------------------------------------------------ */
+  /* Picking somewhere to go                                             */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * A tap on bare map. One pin at a time — tapping again moves it.
+   *
+   * Deliberately does not recentre. The user is looking at a specific patch of
+   * ground and sliding it out from under their thumb to put it in the middle
+   * of the screen is the opposite of helpful.
+   */
+  const handleDropDestination = useCallback(
+    (lat: number, lon: number, land?: DestinationLand) => {
+      setSelectedCampsite(null);
+      setSelectedReport(null);
+      setDestination({ latitude: lat, longitude: lon, land });
+    },
+    []
+  );
+
+  const handleClearDestination = useCallback(() => {
+    setDestination(null);
+    setSelectedCampsite(null);
+    setRoute(null);
+  }, []);
+
+  /**
+   * Where a drive is measured from.
+   *
+   * The user's real position when we have one, otherwise wherever they last
+   * searched — `center` only moves on a search or a locate, never on a pan or
+   * a pin tap, so it is a stable "where I'm working from" rather than a live
+   * viewport reading.
+   *
+   * The label names it either way, because "4h 20m" measured from a town you
+   * looked up rather than the seat you're sitting in is a different number and
+   * the user has to be able to tell which they're reading.
+   */
+  const origin: [number, number] = userLocation ?? center;
+  const originLabel = userLocation ? 'your location' : currentLocationName;
+
+  /**
+   * Work out the drive as soon as somewhere is picked.
+   *
+   * Done here rather than on the Navigate button because the arrival forecast
+   * needs a travel time to be worth anything, and the whole reason to show it
+   * is to decide whether to set off at all.
+   */
+  useEffect(() => {
+    if (!destination) { setRoute(null); return; }
+    /**
+     * The route is frozen once you set off.
+     *
+     * Not a shortcut — it is the behaviour the HUD promises out loud ("it will
+     * not re-route if you leave it"), and without this it would be a lie: the
+     * origin moves every time your position updates, so the route would
+     * silently redraw and re-frame the map underneath a driver. One route,
+     * worked out before you leave, until you stop navigating.
+     */
+    if (isNavigating) return;
+
+    let cancelled = false;
+    setIsRouting(true);
+    setRoute(null);
+
+    calculateRoute({
+      from: origin,
+      to: [destination.latitude, destination.longitude],
+      rig: primaryRig
+    }).then((result) => {
+      if (cancelled) return;
+      setRoute(result);
+      setIsRouting(false);
+    });
+
+    return () => { cancelled = true; };
+    // `origin` is a fresh array each render, so it is spread into primitives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destination, origin[0], origin[1], primaryRig, isNavigating]);
+
+  /**
+   * Conditions at the destination, fetched once and shared.
+   *
+   * Both the destination sheet and the navigation HUD want these, and lifting
+   * them here means one request rather than each component fetching its own.
+   */
+  useEffect(() => {
+    if (!destination) {
+      setDestWeather(EMPTY_WEATHER);
+      setDestCoverage(UNKNOWN_COVERAGE);
+      setIsLoadingConditions(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    const { latitude, longitude } = destination;
+    setIsLoadingConditions(true);
+
+    // Settled, not all — one failing must not hide the other, and neither of
+    // these services rejects in the first place.
+    Promise.allSettled([
+      fetchWeather(latitude, longitude, controller.signal).then((w) => {
+        if (!cancelled) setDestWeather(w);
+      }),
+      fetchCellCoverage(latitude, longitude, controller.signal).then((c) => {
+        if (!cancelled) setDestCoverage(c);
+      })
+    ]).then(() => { if (!cancelled) setIsLoadingConditions(false); });
+
+    return () => { cancelled = true; controller.abort(); };
+  }, [destination]);
+
+  const handleStartNavigation = useCallback(() => {
+    if (!destination || !route?.ok) return;
+    setIsNavigating(true);
+  }, [destination, route]);
+
+  const handleExitNavigation = useCallback(() => setIsNavigating(false), []);
+
+  /**
+   * While navigating, keep the social layer current.
+   *
+   * Only while navigating. Presence rows expire in four hours and polling for
+   * them when nobody is looking is a request a phone on a mountain road cannot
+   * spare. Both calls return empty without Supabase or without a session, so
+   * the layer simply never appears rather than erroring.
+   */
+  useEffect(() => {
+    if (!isNavigating) return;
+    let cancelled = false;
+
+    const refresh = async () => {
+      const list = await fetchNearbyCampers(origin[0], origin[1], 80);
+      if (!cancelled) setNearbyCampers(list);
+    };
+
+    // Friends are only knowable with a session. Signed out, this stays empty
+    // and every camper on the map is drawn without a name — which is the safe
+    // direction for that default to fail in.
+    if (user) fetchFriendIds().then((ids) => { if (!cancelled) setFriendIds(ids); });
+    refresh();
+    const timer = setInterval(refresh, 60_000);
+
+    return () => { cancelled = true; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNavigating, origin[0], origin[1], user]);
+
+  /**
+   * Your rig, so the route can be checked against its dimensions.
+   *
+   * Keyed on the session rather than run once on mount: Supabase restores a
+   * session asynchronously, so a mount-time read fires before there is a user
+   * and comes back empty, and the route would then be planned as though you
+   * were driving a car for the rest of the session.
+   */
+  useEffect(() => {
+    if (!user) { setPrimaryRig(null); return; }
+    let cancelled = false;
+    fetchMyRigs().then((rigs) => {
+      if (!cancelled) setPrimaryRig(rigs.find((r) => r.is_primary) ?? rigs[0] ?? null);
+    });
+    return () => { cancelled = true; };
+  }, [user]);
 
   const handleToggleSave = useCallback(async (site: Campsite, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -192,6 +405,12 @@ export default function App() {
     await addCustomCampsite(site);
     setCampsites((prev) => [site, ...prev]);
     setSelectedCampsite(site);
+    // Selecting a pin and having it be the destination are the same state
+    // everywhere else, so a newly added spot has to set both — otherwise the
+    // pin draws highlighted with no panel beneath it explaining why.
+    setDestination({ latitude: site.latitude, longitude: site.longitude, campsite: site });
+    // Unlike tapping an existing pin, this one IS worth flying to: the user
+    // typed coordinates and has no idea yet where they landed.
     setCenter([site.latitude, site.longitude]);
   }, []);
 
@@ -384,8 +603,31 @@ export default function App() {
                     onOpenDetailModal={setSheetSite}
                     onLocateUser={handleLocateUser}
                     isLocating={isLocating}
+                    destination={destination}
+                    onDropDestination={handleDropDestination}
+                    onSelectHazardReport={setSelectedReport}
+                    route={route}
+                    isNavigating={isNavigating}
+                    nearbyCampers={nearbyCampers}
+                    friendIds={friendIds}
                   />
                 </ErrorBoundary>
+
+                {/* The HUD replaces the destination sheet once you set off. */}
+                {isNavigating && destination && route?.ok && (
+                  <NavigationPanel
+                    destination={destination}
+                    route={route}
+                    weather={destWeather}
+                    coverage={destCoverage}
+                    camperCount={nearbyCampers.length}
+                    friendCount={
+                      nearbyCampers.filter((c) => friendIds.has(c.user_id)).length
+                    }
+                    onExit={handleExitNavigation}
+                    onRecentre={handleLocateUser}
+                  />
+                )}
 
                 {isSearchingSites && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
@@ -530,6 +772,34 @@ export default function App() {
         isSaved={sheetSite ? savedIds.has(sheetSite.id) : false}
         onClose={() => setSheetSite(null)}
         onToggleSave={handleToggleSave}
+        onRequireAuth={() => setIsAuthOpen(true)}
+      />
+
+      {/*
+        One panel at a time along the bottom edge. The full detail sheet and
+        the navigation HUD both outrank the destination sheet, and a hazard
+        report card outranks everything because you tapped it most recently.
+      */}
+      {activeView === 'map' && !isNavigating && !sheetSite && !selectedReport && (
+        <DestinationSheet
+          destination={destination}
+          route={route}
+          isRouting={isRouting}
+          originLabel={originLabel}
+          weather={destWeather}
+          coverage={destCoverage}
+          isLoadingConditions={isLoadingConditions}
+          onClose={handleClearDestination}
+          onNavigate={handleStartNavigation}
+          onOpenDetail={
+            destination?.campsite ? () => setSheetSite(destination.campsite!) : undefined
+          }
+        />
+      )}
+
+      <HazardReportCard
+        record={selectedReport}
+        onClose={() => setSelectedReport(null)}
         onRequireAuth={() => setIsAuthOpen(true)}
       />
 

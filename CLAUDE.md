@@ -46,6 +46,9 @@ question shouldn't rewrite components.
 | If the task is about… | Open these | Ignore |
 | --- | --- | --- |
 | The map, pins, boundaries, layers | `src/components/MapComponent.tsx`, `src/services/boundaryService.ts`, `src/utils/fuzzyBoundary.ts`, `src/config/coverage.ts` | everything server-side |
+| Picking a destination, navigation mode | `src/components/DestinationSheet.tsx`, `NavigationPanel.tsx`, `TripConditions.tsx`, `src/services/routingService.ts` | boundaries |
+| Cell signal by carrier | `src/services/cellCoverageService.ts`, `server/cellRoutes.ts` | everything else |
+| Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
 | Search, filters, view switching | `src/App.tsx`, `src/components/Navbar.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
 | A campsite's detail view | `src/components/CampsiteBottomSheet.tsx` (map pin), `src/components/CampsiteDetailModal.tsx` (list card), `src/components/CampsiteCard.tsx` | map internals |
 | Weather / fire / flood / storm | `src/services/weatherService.ts`, `src/components/HazardAlertPanel.tsx`, `server/weatherRoutes.ts`, `shared/hazards.ts` | everything else |
@@ -55,7 +58,7 @@ question shouldn't rewrite components.
 | Offline maps / saved sites | `src/services/offlineStorage.ts`, `src/components/OfflineManagerModal.tsx` | server |
 | Animation, look and feel | `src/utils/animation.ts`, `src/index.css`, `src/components/ui/Sheet.tsx`, `src/components/ui/Feedback.tsx` | services |
 | Camper presence, reporting | `src/components/PresencePanel.tsx`, `ReportPanel.tsx`, `ScoutModePanel.tsx` + `dataService.ts` | map |
-| Database schema, tables, policies | `supabase_schema.sql` then `supabase_migration_02…08` **in order** | all of `src/` |
+| Database schema, tables, policies | `supabase_schema.sql` then `supabase_migration_02…09` **in order** | all of `src/` |
 | Loading boundary data | `scripts/seedSupabase.ts`, `scripts/landSources.ts`, `scripts/arcgisTiledFetch.ts` | all of `src/` |
 | Legal text | `public/legal/*.md` (the live copies) | code |
 
@@ -129,7 +132,7 @@ npm run vapid    # generate push notification keys
   the rest. Absence of a polygon means "no data", never "no public land".
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
-- **Migrations must run in order,** 01 through 08. `supabase_schema.sql` is
+- **Migrations must run in order,** 01 through 09. `supabase_schema.sql` is
   destructive — it drops and recreates.
 - **There are no automated tests.** Verify changes by reasoning through them and
   by running `npm run lint`. Be careful.

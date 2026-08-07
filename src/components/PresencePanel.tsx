@@ -5,22 +5,10 @@ import {
   NearbyCamper, PresenceStatus, VisibilityMode, RigType
 } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
+// Shared with the map, which draws the same avatars on the navigation layer.
+import { RIG_AVATAR, UNKNOWN_RIG_EMOJI } from '../config/rigs';
 
-/** Rig avatars. Emoji keeps this dependency-free and renders everywhere. */
-export const RIG_AVATAR: Record<RigType, { emoji: string; label: string }> = {
-  tent: { emoji: '⛺', label: 'Tent' },
-  car: { emoji: '🚗', label: 'Car' },
-  suv: { emoji: '🚙', label: 'SUV' },
-  van: { emoji: '🚐', label: 'Van' },
-  truck_camper: { emoji: '🛻', label: 'Truck camper' },
-  travel_trailer: { emoji: '🚚', label: 'Travel trailer' },
-  fifth_wheel: { emoji: '🚛', label: 'Fifth wheel' },
-  class_a: { emoji: '🚌', label: 'Class A' },
-  class_b: { emoji: '🚐', label: 'Class B' },
-  class_c: { emoji: '🚍', label: 'Class C' },
-  skoolie: { emoji: '🚌', label: 'Skoolie' },
-  overland_rig: { emoji: '🛞', label: 'Overland rig' }
-};
+export { RIG_AVATAR };
 
 const STATUS_STYLE: Record<PresenceStatus, { label: string; className: string }> = {
   in_transit: { label: 'On the move', className: 'bg-sky-600/20 text-sky-300 border-sky-500/40' },
@@ -223,7 +211,7 @@ export const PresencePanel: React.FC<PresencePanelProps> = ({
                     data-stagger={Math.min(i, 8)}
                     className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-800/50 border border-slate-700 anim-in-up"
                   >
-                    <span className="text-lg leading-none">{c.rig_type ? RIG_AVATAR[c.rig_type].emoji : '📍'}</span>
+                    <span className="text-lg leading-none">{c.rig_type ? RIG_AVATAR[c.rig_type].emoji : UNKNOWN_RIG_EMOJI}</span>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-semibold text-slate-200 truncate">{c.handle}</p>
                       {c.note && <p className="text-[10px] text-slate-400 truncate">{c.note}</p>}

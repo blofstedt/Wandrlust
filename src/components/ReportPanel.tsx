@@ -2,17 +2,18 @@ import React, { useState } from 'react';
 import { AlertTriangle, Loader2, Check, MapPin } from 'lucide-react';
 import { reportHazard, submitPoi, reportBurnedSite } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
+import { HAZARD_REPORT_KINDS, hazardReportStyle } from '../config/hazardReports';
 
 type Mode = 'hazard' | 'poi' | 'burn';
 
-const HAZARD_KINDS = [
-  { id: 'washout', label: 'Washout' }, { id: 'debris', label: 'Debris' },
-  { id: 'deep_mud', label: 'Deep mud' }, { id: 'snow_drift', label: 'Snow drift' },
-  { id: 'downed_tree', label: 'Downed tree' }, { id: 'low_clearance', label: 'Low clearance' },
-  { id: 'weak_bridge', label: 'Weak bridge' }, { id: 'flooding', label: 'Flooding' },
-  { id: 'fire_activity', label: 'Fire activity' }, { id: 'wildlife', label: 'Wildlife' },
-  { id: 'enforcement_activity', label: 'Enforcement' }, { id: 'other', label: 'Other' }
-];
+/**
+ * Built from the same table the map draws, so the icon you see beside a kind
+ * here is the icon your report will wear once it's on the map.
+ */
+const HAZARD_KINDS = HAZARD_REPORT_KINDS.map((id) => ({
+  id,
+  label: `${hazardReportStyle(id).emoji} ${hazardReportStyle(id).label}`
+}));
 
 const POI_KINDS = [
   { id: 'potable_water', label: 'Potable water' }, { id: 'dump_station', label: 'Dump station' },

@@ -84,7 +84,8 @@ app.get('/api/health', (_req, res) => {
     features: {
       boundaries: !loadErrors.boundaries,
       weather: !loadErrors.weather,
-      push: !loadErrors.push
+      push: !loadErrors.push,
+      cellCoverage: !loadErrors.cellCoverage
     },
     errors: Object.keys(loadErrors).length > 0 ? loadErrors : undefined,
     env: {
@@ -130,6 +131,14 @@ await safeRegister(
   'weather',
   () => import('../server/weatherRoutes.js'),
   'registerWeatherRoutes'
+);
+
+// Cell coverage: an OpenCellID proxy. Loads with or without a key — without
+// one it answers "not configured", which is a valid answer the UI renders.
+await safeRegister(
+  'cellCoverage',
+  () => import('../server/cellRoutes.js'),
+  'registerCellRoutes'
 );
 
 // Push: needs VAPID keys and the Supabase service role key. Most likely to

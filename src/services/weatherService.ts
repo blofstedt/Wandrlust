@@ -219,3 +219,80 @@ export const summarise = (snapshot: WeatherSnapshot): string => {
   const now = snapshot.periods[0];
   return `${now.shortForecast}, ${now.temperature}°${now.temperatureUnit}`;
 };
+
+/* ------------------------------------------------------------------ *
+ * What it will be like when you get there
+ * ------------------------------------------------------------------ */
+
+export interface ArrivalForecast {
+  /** When we think you arrive, given the route's driving time. */
+  arrivesAt: Date;
+  /** The forecast period covering that moment, or null if none reaches it. */
+  period: ForecastPeriod | null;
+  /** True when arrival falls inside the first period — i.e. it's basically now. */
+  isNow: boolean;
+  /**
+   * Why there is no period, when there isn't one. Either the forecast doesn't
+   * reach that far out, or there is no forecast at all.
+   */
+  note?: string;
+}
+
+/**
+ * Match a driving time against the forecast timeline.
+ *
+ * NWS publishes twelve-hour day/night periods and Environment Canada
+ * something similar, so a three-hour drive usually lands inside the period
+ * you are already in — which is worth saying out loud rather than dressing a
+ * present-tense forecast up as a prediction. `isNow` is what lets the UI make
+ * that distinction.
+ *
+ * A period is treated as running until the next one starts, and the last
+ * period until the forecast simply ends. Beyond that we say we don't know,
+ * because a multi-day drive is past the point where any of this is a forecast.
+ */
+export const forecastOnArrival = (
+  snapshot: WeatherSnapshot,
+  travelMinutes: number
+): ArrivalForecast => {
+  const arrivesAt = new Date(Date.now() + Math.max(0, travelMinutes) * 60_000);
+
+  if (snapshot.periods.length === 0) {
+    return { arrivesAt, period: null, isNow: false, note: 'No forecast available here' };
+  }
+
+  const at = arrivesAt.getTime();
+  const starts = snapshot.periods.map((p) => new Date(p.startTime).getTime());
+
+  for (let i = 0; i < snapshot.periods.length; i += 1) {
+    const start = starts[i];
+    const end = i + 1 < starts.length ? starts[i + 1] : Number.POSITIVE_INFINITY;
+    if (Number.isNaN(start)) continue;
+
+    // Before the first period means we arrive sooner than the forecast's own
+    // clock, which happens when the feed is a few minutes stale.
+    if (at < start && i === 0) {
+      return { arrivesAt, period: snapshot.periods[0], isNow: true };
+    }
+    if (at >= start && at < end) {
+      // The last period has no end, so anything past its start would match it
+      // forever. Cap it at a day out and admit we don't know beyond that.
+      if (end === Number.POSITIVE_INFINITY && at - start > 24 * 60 * 60_000) {
+        return {
+          arrivesAt,
+          period: null,
+          isNow: false,
+          note: 'That is further out than the forecast goes'
+        };
+      }
+      return { arrivesAt, period: snapshot.periods[i], isNow: i === 0 };
+    }
+  }
+
+  return {
+    arrivesAt,
+    period: null,
+    isNow: false,
+    note: 'That is further out than the forecast goes'
+  };
+};

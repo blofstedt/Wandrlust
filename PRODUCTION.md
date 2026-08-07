@@ -37,13 +37,14 @@ and users silently stop receiving alerts while everything *looks* fine.
 
 | Item | Why |
 | --- | --- |
-| Supabase project + migrations 01–05 | Everything account-bound |
+| Supabase project + migrations 01–09 | Everything account-bound; 09 adds the map's hazard-report read |
 | Google OAuth credentials | See `AUTH_SETUP.md` |
 | `npm run seed` | Boundary data is empty until you run it |
 | `npm run vapid` + `web-push` | Push delivery |
 | `NWS_USER_AGENT` | NWS asks for a contact string |
 | Custom SMTP in Supabase | Built-in sender is rate-limited to near-uselessness |
 | `VITE_ORS_API_KEY` | Otherwise routing ignores rig dimensions |
+| `OPENCELLID_API_KEY` | Otherwise the cell signal panel says it has no data |
 
 ---
 

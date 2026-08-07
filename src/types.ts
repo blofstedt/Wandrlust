@@ -122,6 +122,79 @@ export type MapTileLayer = 'topo' | 'satellite' | 'street';
 
 export type AppView = 'map' | 'list' | 'saved';
 
+/* ------------------------------------------------------------------ *
+ * Cell coverage
+ *
+ * An APPROXIMATION, and typed so it cannot pretend otherwise. `bars` is
+ * optional on every carrier because "nobody has data for T-Mobile here" and
+ * "T-Mobile has no signal here" are different facts and a camper deciding
+ * whether they can call for help must not have them merged.
+ *
+ * `basis` is the sentence shown under the bars saying how the number was
+ * arrived at. Nothing renders coverage without it.
+ * ------------------------------------------------------------------ */
+
+export type CarrierId = 'verizon' | 'att' | 'tmobile' | 'rogers' | 'telus' | 'bell';
+
+export interface CarrierCoverage {
+  carrier: CarrierId;
+  label: string;
+  /** 0–5, approximated from the source below. Absent means "no data". */
+  bars?: number;
+  /** Straight-line km to the nearest recorded tower, when that is the basis. */
+  nearestTowerKm?: number;
+  /** How many towers the source knows about within the search radius. */
+  towerCount?: number;
+}
+
+export interface CellCoverage {
+  ok: boolean;
+  /** Who publishes the underlying data, named so a camper can judge it. */
+  source: string;
+  /** One sentence on how `bars` was derived. Always rendered with the bars. */
+  basis: string;
+  carriers: CarrierCoverage[];
+  /** Why there is nothing to show, when `ok` is false. */
+  note?: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Destinations and navigation
+ * ------------------------------------------------------------------ */
+
+/**
+ * What the boundary layer knows about the land under a tapped point.
+ *
+ * Populated from the polygon already loaded in the browser — no extra request
+ * — and absent whenever no parcel covers the point, which means "no data
+ * here", never "not public land".
+ */
+export interface DestinationLand {
+  name: string;
+  designation: string;
+  attribution?: string;
+  stayLimitDays?: number;
+  permitRequired?: boolean;
+  permitName?: string;
+  permitUrl?: string;
+  fireBanActive?: boolean;
+  campfirePolicy?: string;
+}
+
+/**
+ * Somewhere the user has picked on the map.
+ *
+ * Either a point they tapped (`campsite` absent) or a pin they selected. Both
+ * can be navigated to, and both get the same conditions treatment.
+ */
+export interface MapDestination {
+  latitude: number;
+  longitude: number;
+  /** Set when the destination is an existing pin rather than a dropped one. */
+  campsite?: Campsite;
+  land?: DestinationLand;
+}
+
 export type LegalDocKind = 'privacy_policy' | 'terms_of_service' | 'safety_disclaimer';
 
 /* ------------------------------------------------------------------ *
