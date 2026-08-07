@@ -27,7 +27,6 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { DestinationSheet } from './components/DestinationSheet';
-import { NavigationPanel } from './components/NavigationPanel';
 import { HazardReportCard } from './components/HazardReportCard';
 import { ErrorBoundary, EmptyState } from './components/ui/Feedback';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
@@ -35,11 +34,12 @@ import {
   createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
   ROAD_ACCESS_RANK, countActiveFilters
 } from './config/filters';
-import { distanceMiles, bearingDegrees } from './utils/geo';
+import { distanceMiles } from './utils/geo';
 import { bestCellSignal } from './utils/amenities';
+import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
-  fetchFriendIds, fetchMyRigs, fetchNearbyCampers,
+  fetchMyRigs,
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
 import { calculateRoute, type RouteResult } from './services/routingService';
@@ -83,27 +83,20 @@ export default function App() {
   const [destination, setDestination] = useState<MapDestination | null>(null);
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [isRouting, setIsRouting] = useState(false);
-  const [isNavigating, setIsNavigating] = useState(false);
   const [selectedReport, setSelectedReport] = useState<HazardRecord | null>(null);
-  /** Direction of travel, degrees from north. Null until we're actually moving. */
-  const [heading, setHeading] = useState<number | null>(null);
-  /** Whether the camera is locked behind the vehicle. Only the user changes it. */
-  const [isFollowing, setIsFollowing] = useState(true);
-  /**
-   * Whether we currently have a live position.
-   *
-   * Separate from `isFollowing` on purpose — see the watch below. False means
-   * the camper on screen is the last place we knew about, which the HUD says.
-   */
-  const [hasPositionFix, setHasPositionFix] = useState(true);
 
-  // Only used while navigating: who else is out there, and whose names we may
-  // draw. Everyone not in this set is shown without one.
-  const [friendIds, setFriendIds] = useState<Set<string>>(() => new Set());
+  /**
+   * The rig, which exists only to make the route warnings specific to it.
+   *
+   * The app no longer drives you anywhere — the drive is handed to Apple or
+   * Google Maps — but it still works out the route, because that is where the
+   * numbers a camper actually needs come from: how long the drive is, what the
+   * weather will be doing when you land, how far short of the spot the road
+   * gives out, and whether your rig fits down what's left.
+   */
   const [primaryRig, setPrimaryRig] = useState<Rig | null>(null);
 
-  // Conditions at the destination, kept here so the navigation HUD can read
-  // the same values the destination sheet showed before the user set off.
+  // Conditions at the destination, shared by every panel that asks about it.
   const [destWeather, setDestWeather] = useState<WeatherSnapshot>(EMPTY_WEATHER);
   const [destCoverage, setDestCoverage] = useState<CellCoverage>(UNKNOWN_COVERAGE);
   const [isLoadingConditions, setIsLoadingConditions] = useState(false);
@@ -294,22 +287,15 @@ export default function App() {
   /**
    * Work out the drive as soon as somewhere is picked.
    *
-   * Done here rather than on the Navigate button because the arrival forecast
-   * needs a travel time to be worth anything, and the whole reason to show it
-   * is to decide whether to set off at all.
+   * The app does not drive you there — that is handed off to the maps app on
+   * the phone, which is also what puts it on CarPlay or Android Auto. The route
+   * is still worked out here because it answers the questions that decide
+   * whether to go at all: how far, how long, what the weather will be doing on
+   * arrival, how much of the last stretch has no road in the data, and whether
+   * your rig fits down it.
    */
   useEffect(() => {
     if (!destination) { setRoute(null); return; }
-    /**
-     * The route is frozen once you set off.
-     *
-     * Not a shortcut — it is the behaviour the HUD promises out loud ("it will
-     * not re-route if you leave it"), and without this it would be a lie: the
-     * origin moves every time your position updates, so the route would
-     * silently redraw and re-frame the map underneath a driver. One route,
-     * worked out before you leave, until you stop navigating.
-     */
-    if (isNavigating) return;
 
     let cancelled = false;
     setIsRouting(true);
@@ -328,13 +314,13 @@ export default function App() {
     return () => { cancelled = true; };
     // `origin` is a fresh array each render, so it is spread into primitives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destination, origin[0], origin[1], primaryRig, isNavigating]);
+  }, [destination, origin[0], origin[1], primaryRig]);
 
   /**
    * Conditions at the destination, fetched once and shared.
    *
-   * Both the destination sheet and the navigation HUD want these, and lifting
-   * them here means one request rather than each component fetching its own.
+   * Lifted here rather than fetched per panel, so the destination sheet and the
+   * campsite sheet make one request between them rather than one each.
    */
   useEffect(() => {
     if (!destination) {
@@ -363,124 +349,23 @@ export default function App() {
     return () => { cancelled = true; controller.abort(); };
   }, [destination]);
 
-  const handleStartNavigation = useCallback(() => {
-    if (!destination || !route?.ok) return;
-    setIsNavigating(true);
-    setIsFollowing(true);
-    setHasPositionFix(true);
-  }, [destination, route]);
-
-  const handleExitNavigation = useCallback(() => {
-    setIsNavigating(false);
-    setHeading(null);
-  }, []);
-
   /**
-   * Follow the vehicle while navigating.
+   * Hand the drive to the phone's own maps app.
    *
-   * A one-shot `getCurrentPosition` is fine for "where am I", and useless for
-   * driving: the camper would sit frozen at the point you set off from while
-   * the road went past. This watches until navigation ends, and it is stopped
-   * the moment it does — a GPS watch left running is one of the fastest ways
-   * to flatten a phone, which on a forest road is a safety problem.
+   * This is the whole of "navigation" now, and deliberately so. Wandrlust used
+   * to have a chase camera, a rotating map and a heads-up display, none of
+   * which added up to turn-by-turn — there were never any maneuver
+   * instructions, voice, or re-routing. Apple Maps and Google Maps do all of
+   * that properly and, crucially, are already on CarPlay and Android Auto. One
+   * link puts the drive on the car's screen with no native code on our side.
    *
-   * HEADING, in order of preference:
-   *   1. What the device reports, but only while actually moving. A stationary
-   *      phone reports garbage headings, and a map that spins while you sit at
-   *      a trailhead is worse than one that doesn't turn at all.
-   *   2. The bearing between this fix and the last one, once you've moved far
-   *      enough that the difference isn't GPS noise.
-   *   3. Whatever it was before. Never null once we've had one — losing the
-   *      heading mid-corner would snap the map back to north-up.
+   * What the app keeps is the part those two get wrong: the last few miles.
+   * See `src/utils/handoff.ts`.
    */
-  useEffect(() => {
-    if (!isNavigating || !('geolocation' in navigator)) return;
-
-    let previous: { lat: number; lon: number } | null = null;
-
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const { latitude, longitude, heading: reported, speed } = pos.coords;
-        setUserLocation([latitude, longitude]);
-        setHasPositionFix(true);
-
-        const moving = typeof speed === 'number' && speed > 1.4; // ~5 km/h
-        if (moving && typeof reported === 'number' && !Number.isNaN(reported)) {
-          setHeading(reported);
-        } else if (previous) {
-          const movedM = distanceMiles(previous.lat, previous.lon, latitude, longitude) * 1609.34;
-          // 12 m clears typical GPS jitter without needing a long baseline.
-          if (movedM > 12) {
-            setHeading(bearingDegrees(previous.lat, previous.lon, latitude, longitude));
-          }
-        }
-
-        previous = { lat: latitude, lon: longitude };
-      },
-      (err) => {
-        /**
-         * A DROPPED FIX MUST NOT UNLOCK THE CAMERA.
-         *
-         * This used to set `isFollowing` false, which meant the first time the
-         * GPS hiccuped — under tree cover, in a canyon, between switchbacks,
-         * which is to say constantly on the roads this app is for — the camera
-         * silently stopped following and never resumed. The user got a map
-         * frozen at wherever they happened to be, with no explanation.
-         *
-         * Following is a user preference, so only the user gets to turn it
-         * off. A lost fix is a separate, temporary condition: it is named on
-         * screen, and it clears itself the moment a position comes back.
-         */
-        console.warn('Navigation position unavailable:', err.message);
-        setHasPositionFix(false);
-      },
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
-    );
-
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [isNavigating]);
-
-  /**
-   * A starting heading, before the first two fixes arrive.
-   *
-   * Without this the map sits north-up for the first stretch of the drive and
-   * only swings round once you've moved twelve metres, which reads as broken.
-   * The route's own opening direction is the right guess.
-   */
-  useEffect(() => {
-    if (!isNavigating || heading != null) return;
-    const line = route?.geometry;
-    if (!line || line.length < 2) return;
-    setHeading(bearingDegrees(line[0][0], line[0][1], line[1][0], line[1][1]));
-  }, [isNavigating, heading, route]);
-
-  /**
-   * While navigating, keep the social layer current.
-   *
-   * Only while navigating. Presence rows expire in four hours and polling for
-   * them when nobody is looking is a request a phone on a mountain road cannot
-   * spare. Both calls return empty without Supabase or without a session, so
-   * the layer simply never appears rather than erroring.
-   */
-  useEffect(() => {
-    if (!isNavigating) return;
-    let cancelled = false;
-
-    const refresh = async () => {
-      const list = await fetchNearbyCampers(origin[0], origin[1], 80);
-      if (!cancelled) setNearbyCampers(list);
-    };
-
-    // Friends are only knowable with a session. Signed out, this stays empty
-    // and every camper on the map is drawn without a name — which is the safe
-    // direction for that default to fail in.
-    if (user) fetchFriendIds().then((ids) => { if (!cancelled) setFriendIds(ids); });
-    refresh();
-    const timer = setInterval(refresh, 60_000);
-
-    return () => { cancelled = true; clearInterval(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNavigating, origin[0], origin[1], user]);
+  const handleOpenDirections = useCallback(() => {
+    if (!destination) return;
+    openDirections(destination.latitude, destination.longitude);
+  }, [destination]);
 
   /**
    * Your rig, so the route can be checked against its dimensions.
@@ -711,36 +596,8 @@ export default function App() {
                     onDropDestination={handleDropDestination}
                     onSelectHazardReport={setSelectedReport}
                     bottomCoverFraction={sheetCoverFraction}
-                    route={route}
-                    isNavigating={isNavigating}
-                    heading={heading}
-                    isFollowing={isFollowing}
-                    onFollowChange={setIsFollowing}
-                    nearbyCampers={nearbyCampers}
-                    friendIds={friendIds}
                   />
                 </ErrorBoundary>
-
-                {/* The HUD replaces the destination sheet once you set off. */}
-                {isNavigating && destination && route?.ok && (
-                  <NavigationPanel
-                    destination={destination}
-                    route={route}
-                    weather={destWeather}
-                    coverage={destCoverage}
-                    camperCount={nearbyCampers.length}
-                    friendCount={
-                      nearbyCampers.filter((c) => friendIds.has(c.user_id)).length
-                    }
-                    onExit={handleExitNavigation}
-                    // Re-lock the camera rather than re-running geolocation:
-                    // the watch is already feeding positions, so all this has
-                    // to do is stop ignoring them.
-                    onRecentre={() => setIsFollowing(true)}
-                    isFollowing={isFollowing}
-                    hasPositionFix={hasPositionFix}
-                  />
-                )}
 
                 {isSearchingSites && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
@@ -889,11 +746,11 @@ export default function App() {
       />
 
       {/*
-        One panel at a time along the bottom edge. The full detail sheet and
-        the navigation HUD both outrank the destination sheet, and a hazard
-        report card outranks everything because you tapped it most recently.
+        One panel at a time along the bottom edge. The full detail sheet
+        outranks the destination sheet, and a hazard report card outranks
+        everything because you tapped it most recently.
       */}
-      {activeView === 'map' && !isNavigating && !sheetSite && !selectedReport && (
+      {activeView === 'map' && !sheetSite && !selectedReport && (
         <DestinationSheet
           destination={destination}
           route={route}
@@ -903,7 +760,7 @@ export default function App() {
           coverage={destCoverage}
           isLoadingConditions={isLoadingConditions}
           onClose={handleClearDestination}
-          onNavigate={handleStartNavigation}
+          onOpenDirections={handleOpenDirections}
           onOpenDetail={
             destination?.campsite ? () => setSheetSite(destination.campsite!) : undefined
           }

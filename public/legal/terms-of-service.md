@@ -20,9 +20,16 @@ decisions, never to replace your own judgement.**
 
 ## 1. What Wandrlust is
 
-A planning and navigation aid for dispersed camping and overlanding. It shows
-approximate public land boundaries, community-reported campsites, weather and
-hazard alerts, and lets campers share information with each other.
+A trip-planning aid for dispersed camping and overlanding. It shows approximate
+public land boundaries, community-reported campsites, weather and hazard alerts,
+and lets campers share information with each other.
+
+Wandrlust does not drive you anywhere. When you ask for directions it hands the
+coordinates to your phone's own maps app — Apple Maps or Google Maps — and
+everything from that point on is theirs, including whatever they show on
+CarPlay or Android Auto. Those apps do not know what Wandrlust knows about the
+last few miles: whether the road it routed you down is maintained, passable in
+your rig, or a road at all.
 
 ## 2. What Wandrlust is not
 

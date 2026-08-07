@@ -9,9 +9,9 @@ import {
   ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL, bestCellSignal
 } from '../utils/amenities';
 import {
-  getCampsiteDisplayImage, getCloseSatelliteImageUrl,
-  getStreetViewUrl, getDirectionsUrl
+  getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl
 } from '../utils/imageUtils';
+import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import { fetchWeather, WeatherSnapshot, EMPTY_WEATHER, summarise } from '../services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from '../services/cellCoverageService';
 import type { CellCoverage } from '../types';
@@ -394,6 +394,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="btn px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"
+                title={`Open in ${directionsAppName()}`}
               >
                 <Navigation className="w-3.5 h-3.5" />
                 Directions
