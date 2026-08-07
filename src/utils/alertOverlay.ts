@@ -222,10 +222,21 @@ const walkRings = (geometry: Geometry, onRing: (ring: [number, number][]) => voi
  * MultiLineString.
  */
 export const dissolveSegments = (
-  features: { geometry: Geometry }[]
+  features: { geometry: Geometry }[],
+  /**
+   * Vertices are snapped to this grid (degrees) before edges are compared, so
+   * two same-type parcels separated by a RAZOR-THIN gap — close but not exactly
+   * touching — still cancel their near-parallel inner edges and merge into one
+   * shape. Larger than the ~1 m default because a thin sliver of "nothing"
+   * between two Crown-land blocks of the same designation is not a real border,
+   * and drawing it is the mesh of lines this exists to remove. The kept outer
+   * edges keep their ORIGINAL coordinates, so only the grouping is affected,
+   * not the drawn outline's shape.
+   */
+  snap = 1e-5
 ): [number, number][][] => {
   const counts = new Map<string, { seg: [number, number][]; n: number }>();
-  const round = (v: number) => Math.round(v * 1e5) / 1e5;
+  const round = (v: number) => Math.round(v / snap) * snap;
   features.forEach((f) =>
     walkRings(f.geometry, (ring) => {
       for (let i = 1; i < ring.length; i += 1) {
@@ -427,6 +438,49 @@ export const cloudMarkerHtml = (badge: AlertBadge, reduced = false): string =>
     reduced,
     glyph: WARNING_EMOJI[badge]
   });
+
+/**
+ * The glyph tiled across a DIFFUSE warning's cloud.
+ *
+ * A thermometer for heat (the redesign asks for it by name), a puff for smoke,
+ * a snowflake for cold, gust lines for wind. All stroked in the family colour,
+ * so they read the same as the legend chip.
+ */
+const DIFFUSE_GLYPH: Record<'heat' | 'smoke' | 'winter' | 'wind', string> = {
+  heat:
+    '<path d="M6.6 9.6V4.4a1.4 1.4 0 0 1 2.8 0v5.2a2.6 2.6 0 1 1-2.8 0z"/>' +
+    '<path d="M8 6.2v3.6"/>',
+  smoke:
+    '<path d="M3.6 12.4h6.8M4.4 9.9h7M3.9 7.4h6.4"/>' +
+    '<path d="M6 5.2c.6-1 2.2-1 2.7.3"/>',
+  winter: '<path d="M8 1v14M2 5l12 6M14 5 2 11"/>',
+  wind: '<path d="M2 6h8a2 2 0 1 0-2-2M2 10h11a2 2 0 1 1-2 2"/>'
+};
+
+/**
+ * A tiling <pattern> of the family glyph, to repeat over a diffuse cloud.
+ *
+ * Returned as an SVG string for injection into a renderer's <defs>; the caller
+ * points a polygon's fill at `url(#id)`. Low opacity so it reads as a texture
+ * over the tinted cloud rather than a stamp. Static — the drift lives in the
+ * cloud's own soft edge, not in the icons, which should stay legible.
+ */
+export const warningGlyphPattern = (
+  badge: 'heat' | 'smoke' | 'winter' | 'wind'
+): { id: string; def: string } => {
+  const color = BADGE_COLOR[badge];
+  const glyph = DIFFUSE_GLYPH[badge];
+  const id = `wl-glyph-${badge}`;
+  const cell = 48;
+  const scale = 1.6;
+  const off = (cell - 16 * scale) / 2;
+  const def =
+    `<pattern id="${id}" patternUnits="userSpaceOnUse" width="${cell}" height="${cell}">` +
+    `<g opacity="0.55" transform="translate(${off},${off}) scale(${scale})" ` +
+    `fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" ` +
+    `stroke-linejoin="round">${glyph}</g></pattern>`;
+  return { id, def };
+};
 
 /**
  * A crisp, tappable pin for a PRECISE hazard (fire, flood, storm).

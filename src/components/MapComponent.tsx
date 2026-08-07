@@ -27,7 +27,7 @@ import {
 } from '../utils/fuzzyBoundary';
 import {
   AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, alertBadge,
-  cloudMarkerHtml, hazardCloudHtml, preciseMarkerHtml, isDiffuse,
+  hazardCloudHtml, preciseMarkerHtml, isDiffuse, warningGlyphPattern,
   WARNING_EMOJI, WARNING_LABEL,
   dissolveKey, dissolveSegments
 } from '../utils/alertOverlay';
@@ -430,6 +430,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
   const cellLayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
+  const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
 
   /**
@@ -930,7 +931,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // Drop the seams shared by two parcels in the same group, so abutting
         // Crown/BLM/PLUZ land draws as one outline instead of a web of internal
         // lines. What survives is the true outer edge of the merged shape.
-        const segments = dissolveSegments(features);
+        // ~30 m snap: merges same-type parcels split only by a razor-thin gap, so
+        // adjacent Crown/BLM/PLUZ land of one designation reads as a single shape.
+        const segments = dissolveSegments(features, 3e-4);
         if (segments.length === 0) return;
         const line = { type: 'MultiLineString', coordinates: segments } as any;
 
@@ -1613,7 +1616,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!map.getPane('warningPane')) {
       map.createPane('warningPane');
       const wpane = map.getPane('warningPane');
-      if (wpane) { wpane.style.zIndex = '460'; wpane.style.pointerEvents = 'none'; }
+      if (wpane) {
+        wpane.style.zIndex = '460';
+        wpane.style.pointerEvents = 'none';
+        // The soft edge. Blurring the whole pane feathers the cloud's outline
+        // AND smears over the hairline seams between an alert's forecast-region
+        // sub-polygons, so the red area reads as ONE cloud rather than a grid of
+        // parcels. The thermometer glyphs live in their own un-blurred pane so
+        // they stay crisp.
+        wpane.style.filter = 'blur(6px)';
+      }
+    }
+    // The tiled family glyph (thermometer / smoke / snowflake …) over each cloud.
+    // Separate, un-blurred pane so the icons stay legible while the fill beneath
+    // them is soft-edged.
+    if (!map.getPane('warningGlyphPane')) {
+      map.createPane('warningGlyphPane');
+      const gpane = map.getPane('warningGlyphPane');
+      if (gpane) { gpane.style.zIndex = '461'; gpane.style.pointerEvents = 'none'; }
     }
     if (!map.getPane('warningIconPane')) {
       map.createPane('warningIconPane');
@@ -1621,14 +1641,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (ipane) ipane.style.zIndex = '616';
     }
 
-    // One SVG renderer for the life of the effect, shared by every area fill.
-    // SVG rather than the boundary canvas so the fills compose cleanly with the
-    // animated cloud markers layered over them.
+    // One SVG renderer for the cloud fills, one for the glyph tiles. SVG rather
+    // than the boundary canvas because only SVG can carry the pattern fill the
+    // repeating glyph needs.
     if (!warningRendererRef.current) {
       warningRendererRef.current = L.svg({ pane: 'warningPane', padding: 0.3 });
     }
-    // Non-null: just created above if it was missing.
+    if (!warningGlyphRendererRef.current) {
+      warningGlyphRendererRef.current = L.svg({ pane: 'warningGlyphPane', padding: 0.3 });
+    }
+    // Non-null: just created above if missing.
     const warningRenderer = warningRendererRef.current!;
+    const glyphRenderer = warningGlyphRendererRef.current!;
 
     let cancelled = false;
     let controller: AbortController | null = null;
@@ -1649,11 +1673,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      */
     const render = (alerts: HazardAlert[]) => {
       clear();
-      const reduced = prefersReducedMotion();
       const placeable = alerts.filter((a) => Array.isArray(a.centroid) && a.geometry);
 
       const group = L.layerGroup([]);
       const present = new Set<AlertBadge>();
+      // Diffuse glyph layers, wired to their patterns once the paths exist.
+      const glyphTargets: { geo: L.GeoJSON; badge: 'heat' | 'smoke' | 'winter' | 'wind' }[] = [];
 
       placeable.forEach((alert) => {
         const badge = alertBadge(alert);
@@ -1662,30 +1687,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         const color = BADGE_COLOR[badge];
 
         if (isDiffuse(badge)) {
-          // The affected area, tinted so the cloud has visible extent.
+          // ONE red (or grey / cyan) cloud over the whole warned area. No stroke,
+          // so the internal seams between the alert's forecast-region polygons
+          // never draw; the pane's blur feathers the outer edge and hides any
+          // hairline sliver between them — the area reads as a single cloud.
           group.addLayer(
             L.geoJSON(alert.geometry as any, {
               pane: 'warningPane',
               renderer: warningRenderer,
               interactive: false,
-              style: { color, weight: 1, opacity: 0.45, fillColor: color, fillOpacity: 0.14 }
+              style: { stroke: false, fill: true, fillColor: color, fillOpacity: 0.3 }
             } as RenderedGeoJSONOptions)
           );
-          // The animated cloud at the centroid — squiggles for smoke, shimmer
-          // for heat, zig-zags for cold. Non-interactive, no popup.
-          group.addLayer(
-            L.marker(alert.centroid as [number, number], {
-              pane: 'warningPane',
-              icon: L.divIcon({
-                className: 'weather-warning-cloud',
-                html: cloudMarkerHtml(badge, reduced),
-                iconSize: [72, 64],
-                iconAnchor: [36, 44]
-              }),
-              interactive: false,
-              keyboard: false
-            })
-          );
+          // The same area, filled with the tiled family glyph — thermometers for
+          // heat — in the crisp glyph pane above the blur. Wired to its pattern
+          // in <defs> below.
+          const glyphGeo = L.geoJSON(alert.geometry as any, {
+            pane: 'warningGlyphPane',
+            renderer: glyphRenderer,
+            interactive: false,
+            style: { stroke: false, fill: true, fillOpacity: 1 }
+          } as RenderedGeoJSONOptions);
+          group.addLayer(glyphGeo);
+          glyphTargets.push({ geo: glyphGeo, badge: badge as 'heat' | 'smoke' | 'winter' | 'wind' });
         } else {
           // A faint hint of the area, so the icon has context, and the tappable
           // icon itself in the interactive pane above.
@@ -1714,6 +1738,42 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       });
 
       hazardLayerRef.current = group.addTo(map);
+
+      // Leaflet's style API has no pattern option, so each glyph pattern is
+      // defined in the glyph renderer's <defs> and the cloud's glyph path is
+      // pointed at it. Defs are rebuilt every render, so nothing accumulates.
+      const gsvg = (glyphRenderer as unknown as { _container?: SVGSVGElement })._container;
+      if (gsvg && glyphTargets.length) {
+        let defs = gsvg.querySelector('defs');
+        if (!defs) {
+          defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+          gsvg.insertBefore(defs, gsvg.firstChild);
+        }
+        defs.innerHTML = '';
+        const injected = new Set<string>();
+        for (const { badge } of glyphTargets) {
+          const pattern = warningGlyphPattern(badge);
+          if (injected.has(pattern.id)) continue;
+          injected.add(pattern.id);
+          const parsed = new DOMParser()
+            .parseFromString(
+              `<svg xmlns="http://www.w3.org/2000/svg">${pattern.def}</svg>`,
+              'image/svg+xml'
+            )
+            .documentElement.firstElementChild;
+          if (parsed) defs.appendChild(document.importNode(parsed, true));
+        }
+        for (const { geo, badge } of glyphTargets) {
+          const pattern = warningGlyphPattern(badge);
+          geo.eachLayer((sub) => {
+            const el = (sub as unknown as { _path?: SVGPathElement })._path;
+            if (!el) return;
+            el.setAttribute('fill', `url(#${pattern.id})`);
+            el.setAttribute('fill-opacity', '1');
+            el.setAttribute('stroke', 'none');
+          });
+        }
+      }
 
       // Legend order: the diffuse cloud families first (they need the legend to
       // be understood at all), then the precise icons.
@@ -1753,6 +1813,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (debounce) clearTimeout(debounce);
       map.off('moveend zoomend', load);
       clear();
+      // Drop the SVG renderers too, so a remount does not stack a second one.
+      if (warningRendererRef.current) {
+        try { map.removeLayer(warningRendererRef.current); } catch { /* detached */ }
+        warningRendererRef.current = null;
+      }
+      if (warningGlyphRendererRef.current) {
+        try { map.removeLayer(warningGlyphRendererRef.current); } catch { /* detached */ }
+        warningGlyphRendererRef.current = null;
+      }
     };
   }, [isMapReady, isOfflineMode]);
 
