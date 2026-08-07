@@ -4,11 +4,6 @@ import { ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL } from '../utils/amenitie
 import { getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl } from '../utils/imageUtils';
 import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import {
-  fetchCampsiteReviews, submitCampsiteReview, fetchCampsiteRating
-} from '../services/dataService';
-import { useAuth } from '../contexts/AuthContext';
-import { ReportContentSheet } from './ReportContentSheet';
-import {
   X,
   MapPin,
   Star,

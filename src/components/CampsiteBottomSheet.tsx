@@ -12,8 +12,6 @@ import {
   getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl
 } from '../utils/imageUtils';
 import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
-import { SubmissionChip } from './SubmissionChip';
-import { ReportContentSheet } from './ReportContentSheet';
 import { fetchWeather, WeatherSnapshot, EMPTY_WEATHER, summarise } from '../services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from '../services/cellCoverageService';
 import type { CellCoverage } from '../types';
