@@ -61,12 +61,28 @@ export interface ForecastPeriod {
   icon: string | null;
 }
 
+/**
+ * How finely the forecast is sliced.
+ *
+ * Matters because the arrival forecast is only meaningfully different from the
+ * current one at hourly resolution — a twelve-hour block swallows most drives
+ * whole — and the UI has to be able to say which it is looking at rather than
+ * implying an hour-by-hour prediction it does not have.
+ */
+export type ForecastResolution = 'hourly' | 'twelve_hour';
+
 export interface WeatherSnapshot {
   updatedAt: string;
   timezone: string | null;
   periods: ForecastPeriod[];
   alerts: HazardAlert[];
-  source: 'nws' | 'eccc' | 'none';
+  /**
+   * Where the FORECAST came from. Alerts always come from NWS or Environment
+   * Canada regardless of this value — a model interpolation never gets to
+   * carry a warning.
+   */
+  source: 'nws' | 'eccc' | 'open-meteo' | 'none';
+  resolution?: ForecastResolution;
   note?: string;
 }
 
@@ -76,6 +92,14 @@ export const EMPTY_WEATHER: WeatherSnapshot = {
   periods: [],
   alerts: [],
   source: 'none'
+};
+
+/** Named so the UI can credit the forecast without a lookup table inline. */
+export const SOURCE_LABEL: Record<WeatherSnapshot['source'], string> = {
+  nws: 'US National Weather Service',
+  eccc: 'Environment Canada',
+  'open-meteo': 'Open-Meteo (Environment Canada model data in Canada)',
+  none: 'no source'
 };
 
 export const HAZARD_STYLE: Record<

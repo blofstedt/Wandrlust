@@ -122,9 +122,22 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
                   {route.distanceKm} km
                 </span>
                 <span>
-                  ~{Math.floor(route.durationMin / 60)}h {route.durationMin % 60}m from{' '}
-                  {originLabel}
+                  ~{route.durationMin >= 60
+                    ? `${Math.floor(route.durationMin / 60)}h ${route.durationMin % 60}m`
+                    : `${route.durationMin}m`}{' '}
+                  from {originLabel}
                 </span>
+                {/* The shortfall belongs beside the drive time, not buried in
+                    the warning list — it changes whether the trip is even on. */}
+                {route.gapToDestinationKm > 0.15 && (
+                  <span className="text-amber-300 font-semibold">
+                    · last{' '}
+                    {route.gapToDestinationKm < 1
+                      ? `${Math.round(route.gapToDestinationKm * 1000)} m`
+                      : `${route.gapToDestinationKm.toFixed(1)} km`}{' '}
+                    unrouted
+                  </span>
+                )}
               </>
             ) : (
               <span className="italic">{route?.message ?? 'No route worked out yet'}</span>

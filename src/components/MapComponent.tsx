@@ -13,7 +13,7 @@ import type {
   Campsite, DestinationLand, MapDestination, MapTileLayer
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
-import { pointInGeometry } from '../utils/geo';
+import { pointInGeometry, destinationPoint, unwrapBearing } from '../utils/geo';
 import { hazardReportStyle, reportStanding } from '../config/hazardReports';
 import { RIG_AVATAR, UNKNOWN_RIG_EMOJI } from '../config/rigs';
 import { fetchHazardsNear, HazardRecord, NearbyCamper } from '../services/dataService';
@@ -96,6 +96,31 @@ const TILE_PERFORMANCE = {
  * than coloured mush.
  */
 const UNDERLAY_NATIVE_ZOOM = 8;
+
+/**
+ * How close the chase camera sits while navigating.
+ *
+ * Close enough that individual spur roads are distinguishable — which is the
+ * decision a camper is actually making on the last few kilometres — without
+ * being so close that a junction arrives with no warning.
+ */
+const NAVIGATION_ZOOM = 15;
+
+/**
+ * Where the vehicle sits on screen, as a fraction of viewport height from the
+ * top. 0.5 would be dead centre; 0.64 is a bit below it.
+ *
+ * Expressed as a screen POSITION rather than as a forward offset on purpose.
+ * The offset version was wrong the first time — it read as "distance from the
+ * bottom" and put the camper underneath the navigation panel, where it could
+ * not be seen at all. This way the number means exactly what it looks like,
+ * and the conversion to a forward distance happens once, below.
+ *
+ * 0.60 leaves most of the screen showing the road ahead while staying clear of
+ * the HUD — which grows when there's a warning to show, so the clearance has to
+ * hold for the tallest version of it, not the shortest.
+ */
+const CAMERA_VEHICLE_SCREEN_FRACTION = 0.60;
 
 /**
  * The hard edge of the map.
@@ -356,6 +381,16 @@ interface MapComponentProps {
   /** The route being followed, or null when not navigating. */
   route: RouteResult | null;
   isNavigating: boolean;
+  /** Direction of travel in degrees from north, or null when not moving. */
+  heading?: number | null;
+  /**
+   * Whether the camera is locked behind the vehicle.
+   *
+   * Turned off the moment the user drags the map — they wanted to look at
+   * something — and turned back on by the recentre button.
+   */
+  isFollowing?: boolean;
+  onFollowChange?: (following: boolean) => void;
   /** Other campers to draw while navigating. */
   nearbyCampers?: NearbyCamper[];
   /** Whose names may be shown. Everyone else stays unnamed. */
@@ -367,9 +402,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
   destination, onDropDestination, onSelectHazardReport,
-  route, isNavigating, nearbyCampers = [], friendIds
+  route, isNavigating, heading = null, isFollowing = true, onFollowChange,
+  nearbyCampers = [], friendIds
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
@@ -411,6 +448,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   reportTapRef.current = onSelectHazardReport;
   const navigatingRef = useRef(isNavigating);
   navigatingRef.current = isNavigating;
+  const followRef = useRef(isFollowing);
+  followRef.current = isFollowing;
+  /** True once the chase camera has set its own zoom for this trip. */
+  const navZoomAppliedRef = useRef(false);
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -429,6 +470,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [unmappableHazards, setUnmappableHazards] = useState(0);
   /** Camper-filed reports currently on screen — counted in the status chip. */
   const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
+  /**
+   * How far the map is turned, in degrees, unwrapped.
+   *
+   * Unwrapped means it keeps counting past 360 instead of resetting — see the
+   * chase-camera effect for why that matters to a CSS transform.
+   */
+  const [mapBearing, setMapBearing] = useState(0);
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -447,8 +495,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       maxBounds: WORLD_BOUNDS,
       maxBoundsViscosity: 1.0
     });
-    L.control.zoom({ position: 'bottomright' }).addTo(map);
-    L.control.attribution({ position: 'bottomleft', prefix: false }).addTo(map);
+    /**
+     * NO LEAFLET CONTROLS. Zoom and attribution are React, below.
+     *
+     * Leaflet renders its controls inside the map container, and in navigation
+     * mode that container is rotated to point the way you're driving. The
+     * controls would rotate with it — a zoom button at 40° in the wrong corner,
+     * attribution reading up the side of the screen. Rendering them as siblings
+     * of the rotating element keeps every piece of chrome upright and where the
+     * user left it.
+     *
+     * The attribution is still on screen at all times; Esri and OpenStreetMap
+     * both require that, and the React version below is not dismissible.
+     */
 
     /**
      * Keep the minimum zoom tied to the container width.
@@ -1308,17 +1367,43 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       })
     );
 
+    /**
+     * The last stretch the router couldn't do, drawn as what it is.
+     *
+     * When the route ends short of the pin — which on dispersed sites is the
+     * norm, because the spur is an unmapped two-track — a solid line straight
+     * to the destination would be a lie in the most dangerous direction: it
+     * would look like a road. So it is dashed, amber, and thinner than the
+     * route, and the sheet and HUD both spell out in words how far it is and
+     * why it isn't routed.
+     */
+    if (destination && route.gapToDestinationKm > 0.15) {
+      const end = route.geometry[route.geometry.length - 1];
+      group.addLayer(
+        L.polyline(
+          [end, [destination.latitude, destination.longitude]],
+          {
+            pane: 'routePane', interactive: false,
+            color: '#F59E0B', weight: 3, opacity: 0.9,
+            dashArray: '2 9', lineCap: 'round'
+          }
+        )
+      );
+    }
+
     routeLayerRef.current = group.addTo(map);
 
     /**
-     * Frame the whole drive when you set off.
+     * Frame the whole drive — but only when nothing else owns the view.
      *
-     * Without this the map sits wherever it was when you tapped Navigate,
-     * which after a tap near the edge of the screen can be a view containing
-     * neither end of the route. The bottom padding is generous because the HUD
-     * covers the lower third of the screen and a route framed underneath it is
-     * a route you cannot see.
+     * With the chase camera engaged, which is the normal case the moment you
+     * tap Navigate, this would zoom out to the whole route and then get
+     * immediately overridden on the next GPS fix: a visible lurch for no
+     * information. It earns its place only when following is off, where the
+     * user has deliberately stepped back to look at the trip as a whole.
      */
+    if (followRef.current) return clear;
+
     try {
       map.fitBounds(L.latLngBounds(route.geometry), {
         paddingTopLeft: [36, 36],
@@ -1331,7 +1416,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // `route.geometry` identity is what actually matters; a new RouteResult
     // object with the same line should not re-frame the map underneath someone.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route?.geometry, isNavigating, isMapReady]);
+  }, [route?.geometry, isNavigating, isMapReady, destination]);
 
   /**
    * Everyone else on the road.
@@ -1646,6 +1731,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           html: `
             <div class="relative flex items-center justify-center">
               <span class="absolute w-14 h-14 rounded-full bg-emerald-400/20 anim-pulse"></span>
+              <!--
+                The forward cone.
+
+                The camper itself is drawn side-on and held upright so it stays
+                readable, which means it can't also point anywhere. The cone
+                does that job: the map is turned so travel is up the screen, and
+                because this whole icon is counter-rotated back to upright, the
+                cone reliably points where the vehicle is going.
+              -->
+              <span class="absolute bottom-7">
+                <svg viewBox="0 0 40 34" class="w-12 h-10" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="wl-cone" x1="0" y1="1" x2="0" y2="0">
+                      <stop offset="0%" stop-color="#34D399" stop-opacity="0.95"/>
+                      <stop offset="100%" stop-color="#34D399" stop-opacity="0"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M20 34 L2 4 A22 22 0 0 1 38 4 Z" fill="url(#wl-cone)"/>
+                </svg>
+              </span>
               <span class="relative flex items-center justify-center w-11 h-11 rounded-full bg-slate-900 border-2 border-emerald-400 shadow-xl">
                 ${SELF_CAMPER_SVG}
               </span>
@@ -1676,6 +1781,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapReady) return;
+    // While the chase camera has the wheel, a search-driven recentre would
+    // yank the view off the vehicle mid-corner.
+    if (isNavigating && isFollowing) return;
     // Leaflet clamps to minZoom and maxBounds internally, so a request to fly
     // somewhere outside the world simply lands at the nearest valid view.
     try {
@@ -1683,7 +1791,137 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     } catch {
       try { map.setView(center, zoom); } catch { /* not ready */ }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [center, zoom, isMapReady]);
+
+  /* ------------------------------------------------------------------ */
+  /* The chase camera                                                    */
+  /* ------------------------------------------------------------------ */
+  /**
+   * The stage has to grow before it can rotate, and Leaflet has to be told.
+   *
+   * Leaflet caches the container's pixel size. Changing it from 100% to 152%
+   * without `invalidateSize` leaves it drawing tiles for the old box, offset
+   * from where the map actually is — the same class of bug the ResizeObserver
+   * on mount exists to prevent.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+    const t = setTimeout(() => {
+      try { map.invalidateSize({ animate: false }); } catch { /* detached */ }
+    }, 60);
+    return () => clearTimeout(t);
+  }, [isNavigating, isMapReady]);
+
+  /**
+   * Dragging the map means "let me look at something", so following stops.
+   *
+   * Only a genuine drag. Zooming keeps the lock, because pinching to see
+   * further up the road is not the same as wanting to leave the vehicle.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady || !isNavigating) return;
+
+    const release = () => onFollowChange?.(false);
+    map.on('dragstart', release);
+    return () => { map.off('dragstart', release); };
+  }, [isMapReady, isNavigating, onFollowChange]);
+
+  /**
+   * Put the vehicle low in the frame with the road ahead filling the screen.
+   *
+   * The map is centred not on the vehicle but on a point projected forward
+   * along the heading. At the default zoom that lands the camper about a third
+   * of the way up from the bottom, which is the framing every driver already
+   * knows from a car's built-in navigation — you see where you're going, not
+   * where you've been.
+   *
+   * The forward offset is computed from the real metres-per-pixel at this
+   * latitude and zoom, so the framing holds whether you're in Arizona or the
+   * Yukon and whether you're zoomed to a town or a switchback.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+    if (!isNavigating || !isFollowing || !userLocation) return;
+
+    const [lat, lon] = userLocation;
+
+    /**
+     * Snap to the navigation zoom once, then leave the zoom alone.
+     *
+     * Forcing it on every position update — which `Math.max(getZoom(), ...)`
+     * effectively did — meant a user who zoomed out to see the next junction
+     * got dragged back in on the next GPS fix, about once a second. Now the
+     * close-in view is the starting point, not a floor.
+     */
+    let zoomLevel = map.getZoom();
+    if (!navZoomAppliedRef.current) {
+      zoomLevel = NAVIGATION_ZOOM;
+      navZoomAppliedRef.current = true;
+    }
+
+    // Web Mercator ground resolution: 156543.03 m/px at the equator, halved
+    // per zoom level, narrowed by latitude.
+    const metresPerPixel =
+      (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoomLevel;
+    // Moving the map centre forward by d pixels pushes the vehicle d pixels
+    // DOWN the screen, so the lead is the gap between where we want the
+    // vehicle and the centre of the viewport.
+    const leadPx = map.getSize().y * (CAMERA_VEHICLE_SCREEN_FRACTION - 0.5);
+    const forwardKm = (leadPx * metresPerPixel) / 1000;
+
+    const target = heading == null
+      ? ([lat, lon] as [number, number])
+      : destinationPoint(lat, lon, heading, forwardKm);
+
+    /**
+     * NEVER FORCE `animate: true` ON A LONG JUMP.
+     *
+     * This is the bug that made the camper vanish. Leaflet guards its animated
+     * pan with `if (options.animate !== true && !this.getSize().contains(offset))
+     * return false` — the guard exists precisely to refuse animating a pan
+     * longer than a screen, and its own source comments that doing so makes
+     * Chrome put tiles and markers in the wrong place. Passing `animate: true`
+     * short-circuits that guard. The first camera call after tapping Navigate
+     * is a jump of thousands of pixels, so it took the forbidden path, left the
+     * map pane transform and every marker's layer point disagreeing by about
+     * 4000 px, and put the vehicle marker somewhere off the top of the world.
+     *
+     * So: smooth for the small corrections a GPS fix produces, and an instant
+     * cut for anything bigger. Which is also what it should look like — you do
+     * not want the camera sliding across a province.
+     */
+    try {
+      const jumpPx = map.latLngToContainerPoint(target).distanceTo(
+        map.getSize().divideBy(2)
+      );
+      const smooth = zoomLevel === map.getZoom() && jumpPx < map.getSize().y * 0.75;
+
+      map.setView(target, zoomLevel, smooth
+        ? { animate: true, duration: 0.9 }
+        : { animate: false });
+    } catch { /* not ready */ }
+  }, [userLocation, heading, isNavigating, isFollowing, isMapReady]);
+
+  /**
+   * Turn the ground under the vehicle so travel is always up the screen.
+   *
+   * `unwrapBearing` keeps the number climbing past 360 rather than wrapping,
+   * because CSS animates through whatever value it is given: a wrap from 359°
+   * to 1° would spin the whole map backwards through a full turn.
+   *
+   * Snapping back to zero when navigation ends is deliberate and immediate —
+   * north-up is the only orientation a map you are reading rather than driving
+   * should ever be in.
+   */
+  useEffect(() => {
+    if (!isNavigating) { setMapBearing(0); navZoomAppliedRef.current = false; return; }
+    if (heading == null) return;
+    setMapBearing((previous) => unwrapBearing(previous, heading));
+  }, [heading, isNavigating]);
 
   const statusText = useCallback((): string => {
     if (!showBoundaries) return 'Land boundaries hidden';
@@ -1710,7 +1948,40 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const hasLegend = !isOfflineMode && showBoundaries && boundaries.features.length > 0;
 
   return (
-    <div className="relative w-full h-full bg-slate-950 overflow-hidden" ref={containerRef}>
+    <div className="relative w-full h-full bg-slate-950 overflow-hidden">
+      {/*
+        The rotating stage.
+
+        Leaflet lives in here, and in navigation mode this element is rotated so
+        the direction of travel points up the screen. Two things make that work:
+
+        1. IT IS OVERSIZED WHILE NAVIGATING. A square rotated 45° needs √2 times
+           its width to still cover the viewport, so the stage grows to 152% and
+           is inset by a quarter on each side. Without it the corners of the
+           screen would show bare background as the map turned. It goes back to
+           exactly 100% the moment you stop, because 2.3× the tiles is not a
+           cost to pay while somebody is browsing.
+
+        2. EVERYTHING ELSE IS ITS SIBLING. All the chrome below sits outside
+           this element, so none of it rotates.
+
+        `--map-counter-rotate` is read by src/index.css to hold marker icons and
+        their labels upright while the ground turns underneath them.
+      */}
+      <div
+        ref={stageRef}
+        className={`map-stage absolute ${isNavigating ? '-inset-[26%]' : 'inset-0'}`}
+        style={{
+          transform: `rotate(${-mapBearing}deg)`,
+          // Matches the heading smoothing interval, so the turn is continuous
+          // rather than a series of visible steps. Collapses under
+          // prefers-reduced-motion via the rule in index.css.
+          transition: isNavigating ? 'transform 900ms linear' : 'none',
+          ['--map-counter-rotate' as string]: `${mapBearing}deg`
+        }}
+      >
+        <div ref={containerRef} className="w-full h-full" />
+      </div>
       {/*
         Status + legend.
 
@@ -1950,6 +2221,52 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </button>
         )}
       </div>
+
+      {/*
+        Zoom, in React rather than Leaflet.
+
+        Leaflet's own control would live inside the rotating stage and end up
+        somewhere diagonal the moment navigation starts. Hidden while
+        navigating anyway — the chase camera owns the zoom, and a driver has
+        the HUD.
+      */}
+      {!isNavigating && (
+        <div className="absolute bottom-6 right-3 z-[1000] flex flex-col rounded-xl overflow-hidden border border-slate-700/80 shadow-xl">
+          <button
+            type="button"
+            onClick={() => mapRef.current?.zoomIn()}
+            className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none"
+            aria-label="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={() => mapRef.current?.zoomOut()}
+            className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none border-t border-slate-700/80"
+            aria-label="Zoom out"
+          >
+            −
+          </button>
+        </div>
+      )}
+
+      {/*
+        Attribution. Required by Esri and OpenStreetMap, so it is never
+        dismissible and never hidden — including in navigation mode.
+
+        `dangerouslySetInnerHTML` is safe here in the strict sense that these
+        strings are constants defined at the top of this file; no user or API
+        content reaches it.
+      */}
+      <div
+        className="absolute bottom-0 left-0 z-[1000] px-1.5 py-0.5 bg-slate-950/70 text-[9px] text-slate-400 rounded-tr-md pointer-events-none max-w-[70%] truncate"
+        dangerouslySetInnerHTML={{
+          __html: isOfflineMode
+            ? 'Offline tile cache'
+            : TILE_URLS[activeTileLayer].attribution
+        }}
+      />
 
       {/*
         The one instruction on the map.

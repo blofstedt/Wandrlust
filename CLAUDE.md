@@ -46,7 +46,7 @@ question shouldn't rewrite components.
 | If the task is about… | Open these | Ignore |
 | --- | --- | --- |
 | The map, pins, boundaries, layers | `src/components/MapComponent.tsx`, `src/services/boundaryService.ts`, `src/utils/fuzzyBoundary.ts`, `src/config/coverage.ts` | everything server-side |
-| Picking a destination, navigation mode | `src/components/DestinationSheet.tsx`, `NavigationPanel.tsx`, `TripConditions.tsx`, `src/services/routingService.ts` | boundaries |
+| Picking a destination, navigation mode | `src/components/DestinationSheet.tsx`, `NavigationPanel.tsx`, `TripConditions.tsx`, `src/services/routingService.ts`, `server/routeRoutes.ts` | boundaries |
 | Cell signal by carrier | `src/services/cellCoverageService.ts`, `server/cellRoutes.ts` | everything else |
 | Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
 | Search, filters, view switching | `src/App.tsx`, `src/components/Navbar.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
@@ -70,6 +70,9 @@ shared/hazards.ts          Alert classification shared by client and server
 server/
   boundaryRoutes.ts        /api/boundaries — 3 government ArcGIS services, cached
   weatherRoutes.ts         /api/weather + /api/weather/alerts (NWS + Env. Canada)
+  openMeteo.ts             Hourly forecast for Canada and NWS gaps
+  routeRoutes.ts           /api/route — ORS, then Valhalla, then OSRM
+  cellRoutes.ts            /api/cell-coverage — tower-distance estimate
   pushRoutes.ts            /api/push/* — Web Push delivery and queue dispatch
 src/
   App.tsx                  State, filtering, which view is showing

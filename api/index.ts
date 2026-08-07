@@ -85,7 +85,8 @@ app.get('/api/health', (_req, res) => {
       boundaries: !loadErrors.boundaries,
       weather: !loadErrors.weather,
       push: !loadErrors.push,
-      cellCoverage: !loadErrors.cellCoverage
+      cellCoverage: !loadErrors.cellCoverage,
+      routing: !loadErrors.routing
     },
     errors: Object.keys(loadErrors).length > 0 ? loadErrors : undefined,
     env: {
@@ -139,6 +140,14 @@ await safeRegister(
   'cellCoverage',
   () => import('../server/cellRoutes.js'),
   'registerCellRoutes'
+);
+
+// Routing: proxies OpenRouteService / Valhalla / OSRM. No key required — the
+// Valhalla rung is what lets a route reach a forest road.
+await safeRegister(
+  'routing',
+  () => import('../server/routeRoutes.js'),
+  'registerRouteRoutes'
 );
 
 // Push: needs VAPID keys and the Supabase service role key. Most likely to
