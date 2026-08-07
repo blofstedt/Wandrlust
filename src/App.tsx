@@ -35,7 +35,7 @@ import {
   createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
   ROAD_ACCESS_RANK, countActiveFilters
 } from './config/filters';
-import { distanceMiles } from './utils/geo';
+import { distanceMiles, bearingDegrees } from './utils/geo';
 import { bestCellSignal } from './utils/amenities';
 import { updateAlertLocation } from './services/pushService';
 import {
@@ -85,6 +85,17 @@ export default function App() {
   const [isRouting, setIsRouting] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
   const [selectedReport, setSelectedReport] = useState<HazardRecord | null>(null);
+  /** Direction of travel, degrees from north. Null until we're actually moving. */
+  const [heading, setHeading] = useState<number | null>(null);
+  /** Whether the camera is locked behind the vehicle. Only the user changes it. */
+  const [isFollowing, setIsFollowing] = useState(true);
+  /**
+   * Whether we currently have a live position.
+   *
+   * Separate from `isFollowing` on purpose — see the watch below. False means
+   * the camper on screen is the last place we knew about, which the HUD says.
+   */
+  const [hasPositionFix, setHasPositionFix] = useState(true);
 
   // Only used while navigating: who else is out there, and whose names we may
   // draw. Everyone not in this set is shown without one.
@@ -346,9 +357,93 @@ export default function App() {
   const handleStartNavigation = useCallback(() => {
     if (!destination || !route?.ok) return;
     setIsNavigating(true);
+    setIsFollowing(true);
+    setHasPositionFix(true);
   }, [destination, route]);
 
-  const handleExitNavigation = useCallback(() => setIsNavigating(false), []);
+  const handleExitNavigation = useCallback(() => {
+    setIsNavigating(false);
+    setHeading(null);
+  }, []);
+
+  /**
+   * Follow the vehicle while navigating.
+   *
+   * A one-shot `getCurrentPosition` is fine for "where am I", and useless for
+   * driving: the camper would sit frozen at the point you set off from while
+   * the road went past. This watches until navigation ends, and it is stopped
+   * the moment it does — a GPS watch left running is one of the fastest ways
+   * to flatten a phone, which on a forest road is a safety problem.
+   *
+   * HEADING, in order of preference:
+   *   1. What the device reports, but only while actually moving. A stationary
+   *      phone reports garbage headings, and a map that spins while you sit at
+   *      a trailhead is worse than one that doesn't turn at all.
+   *   2. The bearing between this fix and the last one, once you've moved far
+   *      enough that the difference isn't GPS noise.
+   *   3. Whatever it was before. Never null once we've had one — losing the
+   *      heading mid-corner would snap the map back to north-up.
+   */
+  useEffect(() => {
+    if (!isNavigating || !('geolocation' in navigator)) return;
+
+    let previous: { lat: number; lon: number } | null = null;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude, heading: reported, speed } = pos.coords;
+        setUserLocation([latitude, longitude]);
+        setHasPositionFix(true);
+
+        const moving = typeof speed === 'number' && speed > 1.4; // ~5 km/h
+        if (moving && typeof reported === 'number' && !Number.isNaN(reported)) {
+          setHeading(reported);
+        } else if (previous) {
+          const movedM = distanceMiles(previous.lat, previous.lon, latitude, longitude) * 1609.34;
+          // 12 m clears typical GPS jitter without needing a long baseline.
+          if (movedM > 12) {
+            setHeading(bearingDegrees(previous.lat, previous.lon, latitude, longitude));
+          }
+        }
+
+        previous = { lat: latitude, lon: longitude };
+      },
+      (err) => {
+        /**
+         * A DROPPED FIX MUST NOT UNLOCK THE CAMERA.
+         *
+         * This used to set `isFollowing` false, which meant the first time the
+         * GPS hiccuped — under tree cover, in a canyon, between switchbacks,
+         * which is to say constantly on the roads this app is for — the camera
+         * silently stopped following and never resumed. The user got a map
+         * frozen at wherever they happened to be, with no explanation.
+         *
+         * Following is a user preference, so only the user gets to turn it
+         * off. A lost fix is a separate, temporary condition: it is named on
+         * screen, and it clears itself the moment a position comes back.
+         */
+        console.warn('Navigation position unavailable:', err.message);
+        setHasPositionFix(false);
+      },
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [isNavigating]);
+
+  /**
+   * A starting heading, before the first two fixes arrive.
+   *
+   * Without this the map sits north-up for the first stretch of the drive and
+   * only swings round once you've moved twelve metres, which reads as broken.
+   * The route's own opening direction is the right guess.
+   */
+  useEffect(() => {
+    if (!isNavigating || heading != null) return;
+    const line = route?.geometry;
+    if (!line || line.length < 2) return;
+    setHeading(bearingDegrees(line[0][0], line[0][1], line[1][0], line[1][1]));
+  }, [isNavigating, heading, route]);
 
   /**
    * While navigating, keep the social layer current.
@@ -608,6 +703,9 @@ export default function App() {
                     onSelectHazardReport={setSelectedReport}
                     route={route}
                     isNavigating={isNavigating}
+                    heading={heading}
+                    isFollowing={isFollowing}
+                    onFollowChange={setIsFollowing}
                     nearbyCampers={nearbyCampers}
                     friendIds={friendIds}
                   />
@@ -625,7 +723,12 @@ export default function App() {
                       nearbyCampers.filter((c) => friendIds.has(c.user_id)).length
                     }
                     onExit={handleExitNavigation}
-                    onRecentre={handleLocateUser}
+                    // Re-lock the camera rather than re-running geolocation:
+                    // the watch is already feeding positions, so all this has
+                    // to do is stop ignoring them.
+                    onRecentre={() => setIsFollowing(true)}
+                    isFollowing={isFollowing}
+                    hasPositionFix={hasPositionFix}
                   />
                 )}
 
