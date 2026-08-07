@@ -1,4 +1,5 @@
 import React from 'react';
+import { SubmissionChip } from './SubmissionChip';
 import { MapPin, Star, Wifi, Droplet, Truck, Bookmark, ChevronRight, ExternalLink } from 'lucide-react';
 import type { Campsite, LandType } from '../types';
 import {
@@ -94,6 +95,12 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = ({
                 <h3 className="font-['Outfit'] font-bold text-base sm:text-lg text-slate-100 group-hover:text-emerald-300 transition-colors line-clamp-1">
                   {campsite.name}
                 </h3>
+                {/* Only the author sees this, and only while the spot is not
+                    yet shared. See SubmissionChip. */}
+                <SubmissionChip
+                  state={campsite.submissionState}
+                  submittedByMe={campsite.submittedByMe}
+                />
                 <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5 flex-wrap">
                   <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                   <span className="truncate">

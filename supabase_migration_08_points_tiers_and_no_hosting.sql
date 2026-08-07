@@ -169,6 +169,46 @@ end;
 $$;
 
 -- =====================================================================
+--  2b. PREFLIGHT — objects from migration 02 section 7
+--
+--  Section 7 of migration 02 ("TRUST TIERS & STEALTH SITES") did not land on
+--  at least one live database: `campsites.min_tier` was missing, which took
+--  this migration down with 42703 when it tried to retype the column.
+--  Everything before that section was present, so the break is section 7
+--  onward — the campsites columns, the stealth_unlocks table, and the
+--  functions that read them.
+--
+--  Rather than assume, create whatever is absent. Every statement here is a
+--  no-op on a database where 02 ran in full, so this is safe either way.
+--  These use the CURRENT trust_tier type; the swap below retypes them.
+-- =====================================================================
+
+alter table public.campsites
+  add column if not exists is_stealth          boolean not null default false,
+  add column if not exists min_tier            public.trust_tier not null default 'tourist',
+  add column if not exists submitted_by        uuid references public.profiles(id) on delete set null,
+  add column if not exists capacity_status     public.capacity_status not null default 'unknown',
+  add column if not exists capacity_updated_at timestamptz;
+
+create index if not exists campsites_stealth_idx
+  on public.campsites (is_stealth, min_tier);
+
+create table if not exists public.stealth_unlocks (
+  user_id     uuid not null references public.profiles(id) on delete cascade,
+  campsite_id text not null references public.campsites(id) on delete cascade,
+  unlocked_at timestamptz not null default now(),
+  primary key (user_id, campsite_id)
+);
+
+alter table public.stealth_unlocks enable row level security;
+
+drop policy if exists "read: own unlocks" on public.stealth_unlocks;
+create policy "read: own unlocks" on public.stealth_unlocks
+  for select using (user_id = auth.uid());
+
+grant select on public.stealth_unlocks to authenticated;
+
+-- =====================================================================
 --  3. FIVE TIERS
 --
 --  tourist -> camper -> scout -> trailblazer -> nomad

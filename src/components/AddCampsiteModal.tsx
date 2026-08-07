@@ -1,11 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { PlusCircle, X, Check, AlertTriangle } from 'lucide-react';
+import { PlusCircle, X, Check, AlertTriangle, Loader2 } from 'lucide-react';
 import type { Campsite, LandType, RoadAccess, ToiletType, WaterType } from '../types';
+import { newUserCampsiteId } from '../utils/campsiteId';
 
 interface AddCampsiteModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (site: Campsite) => void;
+  /**
+   * Saves the spot and tries to share it.
+   *
+   * Async because the share is a network write and the form must not close
+   * before it resolves — a modal that vanishes while the request is in flight
+   * gives the user no way to know whether it worked.
+   */
+  onAdd: (site: Campsite) => Promise<void> | void;
   defaultCenter: [number, number];
 }
 
@@ -30,6 +38,7 @@ export const AddCampsiteModal: React.FC<AddCampsiteModalProps> = ({
   const [maxRvLength, setMaxRvLength] = useState(30);
   const [imageUrl, setImageUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Seed the coordinates from wherever the map is each time it opens — the
   // form used to keep whatever the centre was on first mount.
@@ -49,7 +58,7 @@ export const AddCampsiteModal: React.FC<AddCampsiteModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -71,8 +80,9 @@ export const AddCampsiteModal: React.FC<AddCampsiteModalProps> = ({
       return;
     }
 
-    onAdd({
-      id: `custom-${Date.now()}`,
+    setIsSaving(true);
+    await onAdd({
+      id: newUserCampsiteId(),
       name: name.trim(),
       landType,
       landManager: landManager.trim(),
@@ -107,6 +117,7 @@ export const AddCampsiteModal: React.FC<AddCampsiteModalProps> = ({
       reviewCount: 0,
       source: 'user_submitted'
     });
+    setIsSaving(false);
 
     setName('');
     setCity('');
@@ -303,11 +314,24 @@ export const AddCampsiteModal: React.FC<AddCampsiteModalProps> = ({
 
           <button
             type="submit"
-            className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950"
+            disabled={isSaving}
+            className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 disabled:opacity-60 disabled:hover:bg-emerald-600"
           >
-            <Check className="w-4 h-4" />
-            Add this spot
+            {isSaving
+              ? <Loader2 className="w-4 h-4 animate-spin" />
+              : <Check className="w-4 h-4" />}
+            {isSaving ? 'Saving…' : 'Add this spot'}
           </button>
+          {/*
+            Said before they commit, not after. A spot added while signed out
+            is genuinely only on this device — the insert policy requires a
+            session — and finding that out afterwards feels like the app lost
+            it.
+          */}
+          <p className="text-[10px] text-slate-500 leading-snug text-center">
+            Saved to this device straight away. Signed in, it also goes to the
+            review queue so other campers can eventually see it.
+          </p>
         </form>
       </div>
     </div>
