@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X, Navigation, Loader2, ShieldCheck, Flame, Copy, Check, Eye,
   ChevronUp, TriangleAlert, MapPin
@@ -46,21 +46,80 @@ interface DestinationSheetProps {
   onNavigate: () => void;
   /** Only offered for a real campsite; a bare point has no detail page. */
   onOpenDetail?: () => void;
+  /**
+   * How much of the screen this panel is covering, 0–1.
+   *
+   * Reported upward so the map can move the pin into the strip that is still
+   * visible. Without it the panel opens directly over the spot you just
+   * tapped, and the first thing the app does after you pick somewhere is hide
+   * it from you.
+   */
+  onCoverageFractionChange?: (fraction: number) => void;
 }
+
+/**
+ * How tall the panel is at each snap, as a fraction of the viewport.
+ *
+ * Kept as numbers rather than only as Tailwind classes because the map needs
+ * the same figure to work out where the pin should sit, and a class string it
+ * would have to parse is how the two drift apart.
+ */
+const SNAP_FRACTION: Record<'peek' | 'half' | 'full', number> = {
+  peek: 0.24,
+  half: 0.58,
+  /**
+   * Was 0.92, which left a four-line sliver of map — too little to put a pin
+   * in and read it. 0.82 still shows the whole panel's content on a phone and
+   * leaves a strip the map can actually use.
+   */
+  full: 0.82
+};
 
 export const DestinationSheet: React.FC<DestinationSheetProps> = ({
   destination, route, isRouting, originLabel, weather, coverage,
-  isLoadingConditions, onClose, onNavigate, onOpenDetail
+  isLoadingConditions, onClose, onNavigate, onOpenDetail,
+  onCoverageFractionChange
 }) => {
   const [snap, setSnap] = useState<'peek' | 'half' | 'full'>('half');
   const [copied, setCopied] = useState(false);
 
+  const open = Boolean(destination);
+  const fraction = open ? SNAP_FRACTION[snap] : 0;
+
+  /**
+   * Tell the map how much room it has left, whenever that changes.
+   *
+   * From an effect rather than inline, so the parent is never asked to
+   * re-render during this one's render.
+   */
+  useEffect(() => {
+    onCoverageFractionChange?.(fraction);
+  }, [fraction, onCoverageFractionChange]);
+
+  /**
+   * Hand the map back its whole viewport when this panel goes away.
+   *
+   * App unmounts this outright when a campsite sheet or a hazard card takes
+   * over the bottom edge, so the effect above never gets to report the panel
+   * shrinking to nothing. Without this the map would keep parking pins around
+   * a panel that is no longer there.
+   *
+   * Kept behind a ref and a mount-only effect on purpose: reporting zero in
+   * the cleanup of the effect above would fire on every resize too, and the
+   * map would jump to centre and back on each snap.
+   */
+  const reportRef = useRef(onCoverageFractionChange);
+  reportRef.current = onCoverageFractionChange;
+  useEffect(() => () => reportRef.current?.(0), []);
+
+  // Hooks first, then the early return — the panel closing must not change how
+  // many hooks this component runs.
   if (!destination) return null;
 
   const site = destination.campsite;
   const land = destination.land;
   const coords = `${destination.latitude.toFixed(5)}, ${destination.longitude.toFixed(5)}`;
-  const heightClass = snap === 'peek' ? 'h-[24vh]' : snap === 'half' ? 'h-[58vh]' : 'h-[92vh]';
+  const heightClass = snap === 'peek' ? 'h-[24vh]' : snap === 'half' ? 'h-[58vh]' : 'h-[82vh]';
 
   return (
     <div
@@ -268,9 +327,6 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
                     </div>
                   ))}
                 </div>
-                <p className="text-[9px] text-slate-500 mt-1.5">
-                  Route from {route.provider}.
-                </p>
               </section>
             )}
 

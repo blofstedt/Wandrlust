@@ -136,15 +136,65 @@ export type AppView = 'map' | 'list' | 'saved';
 
 export type CarrierId = 'verizon' | 'att' | 'tmobile' | 'rogers' | 'telus' | 'bell';
 
+/** The word a camper reads. Bars are the drawing; this is the answer. */
+export type SignalStrength = 'strong' | 'good' | 'weak' | 'none';
+
+/**
+ * Which generation the nearest transmitter serves.
+ *
+ * Absent whenever nobody recorded it, which is most masts. It is never
+ * inferred from the carrier or the era — an untagged mast gets no label.
+ */
+export type CellTechnology = '5G' | '4G LTE' | '3G' | '2G';
+
+/**
+ * One transmitter, positioned.
+ *
+ * `carrier` is absent when the register did not say whose it is — the common
+ * case for a surveyed OpenStreetMap mast. Such a tower is real, is drawn on
+ * the map, and still answers "is there anything up here at all", but it is
+ * never allowed to fill in a named carrier's row.
+ */
+export interface CellTower {
+  latitude: number;
+  longitude: number;
+  carrier?: CarrierId;
+  /** Whatever the register called the operator, when it named one. */
+  operator?: string;
+  technology?: CellTechnology;
+  /** Straight-line km from the point that was asked about. */
+  distanceKm: number;
+  source: 'osm' | 'opencellid';
+}
+
 export interface CarrierCoverage {
   carrier: CarrierId;
   label: string;
   /** 0–5, approximated from the source below. Absent means "no data". */
   bars?: number;
+  /** The same estimate in words. Present exactly when `bars` is. */
+  strength?: SignalStrength;
+  /** The nearest tower's generation, when the register recorded one. */
+  technology?: CellTechnology;
   /** Straight-line km to the nearest recorded tower, when that is the basis. */
   nearestTowerKm?: number;
   /** How many towers the source knows about within the search radius. */
   towerCount?: number;
+}
+
+/**
+ * The answer for a camper who does not care whose tower it is.
+ *
+ * Built from every transmitter found, attributed or not, because "can I call
+ * for help from here" is the question that actually decides a trip and most
+ * surveyed masts name no operator.
+ */
+export interface OverallCoverage {
+  strength: SignalStrength;
+  bars: number;
+  technology?: CellTechnology;
+  nearestTowerKm: number;
+  towerCount: number;
 }
 
 export interface CellCoverage {
@@ -154,6 +204,10 @@ export interface CellCoverage {
   /** One sentence on how `bars` was derived. Always rendered with the bars. */
   basis: string;
   carriers: CarrierCoverage[];
+  /** Any-network verdict, absent when no transmitter was found at all. */
+  overall?: OverallCoverage;
+  /** The transmitters behind the estimate, nearest first. */
+  towers?: CellTower[];
   /** Why there is nothing to show, when `ok` is false. */
   note?: string;
 }

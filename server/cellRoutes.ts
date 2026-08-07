@@ -1,98 +1,51 @@
 /**
- * Cell coverage approximation.
+ * Cell coverage.
  *
- *   GET /api/cell-coverage?lat=&lon=
+ *   GET /api/cell-coverage?lat=&lon=          what signal to expect at a point
+ *   GET /api/cell-towers?minLat=&minLon=…     transmitters in a viewport
  *
  * ---------------------------------------------------------------------------
  * READ THIS BEFORE YOU CHANGE ANYTHING HERE
  * ---------------------------------------------------------------------------
  *
- * THIS IS NOT A COVERAGE MAP. It is a distance-to-nearest-tower estimate, and
- * the difference matters enough that it is repeated in the response body, in
- * the client service, and on screen under every set of bars we draw.
+ * Where the numbers come from, and what they are not, is documented once in
+ * `server/cellSources.ts`. The short version, because it governs everything
+ * below: this is built from where transmitters ARE, not from a coverage map.
+ * It ignores terrain, and terrain is what decides signal in the mountains.
  *
- * The carriers' own coverage maps are marketing material and are not published
- * as queryable data. The FCC's National Broadband Map holds carrier-filed
- * coverage polygons but serves them through a licensed, tokened API that this
- * project does not have access to. What IS openly available is OpenCellID: a
- * crowd-sourced register of cell tower positions, keyed by MCC/MNC so towers
- * can be attributed to a carrier.
+ * THE CHANGE THAT MATTERS HERE: this used to answer "not configured" and
+ * nothing else unless a deployment held an OpenCellID key, which almost none
+ * do. The panel was therefore blank for every real user. OpenStreetMap's mast
+ * register needs no key, so the keyless path now returns real transmitters
+ * rather than an apology, and OpenCellID — when a key IS set — adds the two
+ * things OSM cannot reliably give: which carrier owns a tower, and whether it
+ * is 5G or LTE.
  *
- * From tower positions you can derive roughly how far the nearest transmitter
- * is. That is genuinely useful in the backcountry — "the nearest Verizon tower
- * is 38 km away" tells a camper something real — and it is emphatically not a
- * signal measurement:
- *
- *   - It ignores terrain. A tower 4 km away behind a ridge gives you nothing;
- *     one 30 km away across a flat valley may give you three bars. In the
- *     mountains, which is where this app is used, terrain dominates.
- *   - It ignores the tower's power, band, sector orientation and backhaul.
- *   - OpenCellID's density varies enormously. Somewhere nobody has driven
- *     through with a scanning app looks identical to somewhere with no towers.
- *
- * So: a missing carrier is reported as MISSING, never as zero bars. Zero bars
- * is a claim; absent data is not. Anyone rendering this must keep that split.
- *
- * With no OPENCELLID_API_KEY set, this returns ok:false and a note saying so.
- * That is the correct behaviour — the app must work with no keys at all, and a
- * fabricated estimate would be worse than an honest blank.
+ * What is still true: a carrier nobody has data for is reported MISSING, never
+ * as zero bars. Absent data is not a measurement of nothing.
  */
 import type { Express, Request, Response } from 'express';
-
-/* ------------------------------------------------------------------ */
-/* Carriers                                                            */
-/* ------------------------------------------------------------------ */
-
-interface CarrierNetwork {
-  id: string;
-  label: string;
-  mcc: number;
-  /** A carrier may run several network codes after its mergers. */
-  mncs: number[];
-  country: 'us' | 'ca';
-}
+// `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
+import {
+  CARRIERS, distanceKm, barsForKm, strengthForBars, bestTechnology,
+  fetchOsmMastsNear, fetchOsmMastsInBbox, fetchOpenCellIdFor,
+  type CellTower, type CellTechnology, type SignalStrength
+} from './cellSources.js';
+import { looksUS } from './alertSources.js';
 
 /**
- * MCC/MNC per carrier.
+ * How far out to look, in km.
  *
- * US codes are the primary post-merger networks; T-Mobile carries Sprint's
- * 310/120 because the Sprint network was folded into it and OpenCellID still
- * holds towers filed under the old code.
+ * Past this the answer is "nothing near you" regardless of the exact number,
+ * and it keeps a single Overpass query cheap enough to run on every tap.
  */
-const CARRIERS: CarrierNetwork[] = [
-  { id: 'verizon', label: 'Verizon', mcc: 311, mncs: [480, 280], country: 'us' },
-  { id: 'att', label: 'AT&T', mcc: 310, mncs: [410, 150], country: 'us' },
-  { id: 'tmobile', label: 'T-Mobile', mcc: 310, mncs: [260, 120], country: 'us' },
-  { id: 'rogers', label: 'Rogers', mcc: 302, mncs: [720], country: 'ca' },
-  { id: 'telus', label: 'Telus', mcc: 302, mncs: [220], country: 'ca' },
-  { id: 'bell', label: 'Bell', mcc: 302, mncs: [610], country: 'ca' }
-];
+const SEARCH_RADIUS_KM = 45;
 
-/**
- * How far out to look for towers, in degrees of latitude.
- *
- * About 55 km at these latitudes. Past that the answer is "nothing near you"
- * regardless of the exact number, and OpenCellID caps the area a single
- * request may cover.
- */
-const SEARCH_SPAN_DEG = 0.5;
+/** OpenCellID caps the area one request may cover; half a degree is ~55 km. */
+const OPENCELLID_SPAN_DEG = 0.5;
 
-/**
- * Distance to the nearest tower, turned into bars.
- *
- * These thresholds are deliberately pessimistic. A camper who expects one bar
- * and gets three has a nice surprise; one who expects three and gets none may
- * have no way to call for help. The whole ladder is a guess about flat, open
- * ground — which most dispersed sites are not.
- */
-const barsForKm = (km: number): number => {
-  if (km <= 2) return 5;
-  if (km <= 5) return 4;
-  if (km <= 10) return 3;
-  if (km <= 20) return 2;
-  if (km <= 35) return 1;
-  return 0;
-};
+/** Beyond this the viewport holds more masts than anyone can read. */
+const MAX_TOWER_BBOX_DEG = 3;
 
 /* ------------------------------------------------------------------ */
 /* Cache                                                               */
@@ -119,164 +72,307 @@ const store = (key: string, body: unknown): void => {
 };
 
 /* ------------------------------------------------------------------ */
-
-const EARTH_RADIUS_KM = 6371;
-const toRad = (deg: number): number => (deg * Math.PI) / 180;
-
-const distanceKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(a)));
-};
-
-interface TowerResult { nearestKm: number; count: number; }
+/* Shaping                                                             */
+/* ------------------------------------------------------------------ */
 
 /**
- * Towers for one carrier around a point, or null when the lookup failed.
+ * Collapse sectors down to sites.
  *
- * NULL AND EMPTY ARE DIFFERENT and both are preserved all the way to the UI:
- * null is "we could not ask", an empty result is "we asked and OpenCellID has
- * nothing filed here". Neither is "no signal", but only the second one is even
- * evidence about the ground.
+ * OpenCellID lists one row per CELL — a three-sector mast is three rows, a
+ * mast running LTE and 5G on each sector is six. Counting those as six towers
+ * would tell a camper an empty ridge is a dense network. Rounding to four
+ * decimal places (about 11 m) merges everything mounted on one structure, and
+ * the merged record keeps the newest generation any of its sectors reported.
  */
-const towersFor = async (
-  carrier: CarrierNetwork,
-  lat: number,
-  lon: number,
-  key: string,
-  signal: AbortSignal
-): Promise<TowerResult | null> => {
-  const bbox = [
-    lon - SEARCH_SPAN_DEG, lat - SEARCH_SPAN_DEG,
-    lon + SEARCH_SPAN_DEG, lat + SEARCH_SPAN_DEG
-  ].map((n) => n.toFixed(4)).join(',');
+const dedupe = (towers: CellTower[]): CellTower[] => {
+  const bySite = new Map<string, CellTower>();
 
-  let nearestKm = Infinity;
-  let count = 0;
-  let anyResponse = false;
+  for (const tower of towers) {
+    const key =
+      `${tower.latitude.toFixed(4)},${tower.longitude.toFixed(4)},${tower.carrier ?? '?'}`;
+    const existing = bySite.get(key);
 
-  for (const mnc of carrier.mncs) {
-    try {
-      const url =
-        `https://opencellid.org/cell/getInArea?key=${encodeURIComponent(key)}` +
-        `&BBOX=${bbox}&mcc=${carrier.mcc}&mnc=${mnc}&format=json&limit=200`;
-
-      const res = await fetch(url, { signal });
-      if (!res.ok) continue;
-
-      const data = (await res.json()) as { cells?: { lat?: number; lon?: number }[] };
-      if (!Array.isArray(data?.cells)) continue;
-      anyResponse = true;
-
-      for (const cell of data.cells) {
-        if (typeof cell.lat !== 'number' || typeof cell.lon !== 'number') continue;
-        count += 1;
-        const d = distanceKm(lat, lon, cell.lat, cell.lon);
-        if (d < nearestKm) nearestKm = d;
-      }
-    } catch {
-      // One network code failing does not invalidate the other.
+    if (!existing) {
+      bySite.set(key, { ...tower });
+      continue;
     }
+    existing.technology = bestTechnology(existing.technology, tower.technology);
+    existing.operator = existing.operator ?? tower.operator;
   }
 
-  if (!anyResponse) return null;
-  return { nearestKm, count };
+  return [...bySite.values()];
+};
+
+interface Verdict {
+  bars: number;
+  strength: SignalStrength;
+  nearestTowerKm: number;
+  towerCount: number;
+  technology?: CellTechnology;
+}
+
+/**
+ * What to expect from a set of towers, seen from one point.
+ *
+ * THE GENERATION IS THE CAREFUL PART. It may only be quoted from a tower that
+ * would itself earn the strength being reported. Walking outward to the first
+ * mast that happens to carry a `5g` tag produces sentences like "strong signal
+ * likely · 5G" where the strong signal is a mast 2 km away that nobody has
+ * tagged and the 5G is a different mast 7 km further on — two true facts
+ * assembled into a claim neither of them supports. A camper reads that as "5G
+ * at full strength here".
+ *
+ * So the candidates are narrowed to towers in the same strength bracket as the
+ * nearest one, and the best generation among those is reported. When none of
+ * them says, nothing is said. A strength with no generation beside it is a
+ * perfectly good answer; a generation borrowed from a tower you cannot reach
+ * is not.
+ */
+const verdictFrom = (towers: CellTower[], lat: number, lon: number): Verdict | null => {
+  if (towers.length === 0) return null;
+
+  const ranked = towers
+    .map((tower) => ({
+      tower,
+      km: distanceKm(lat, lon, tower.latitude, tower.longitude)
+    }))
+    .sort((a, b) => a.km - b.km);
+
+  const nearest = ranked[0];
+  const bars = barsForKm(nearest.km);
+  const strength = strengthForBars(bars);
+
+  const technology = ranked
+    .filter((entry) => strengthForBars(barsForKm(entry.km)) === strength)
+    .reduce<CellTechnology | undefined>(
+      (best, entry) => bestTechnology(best, entry.tower.technology),
+      undefined
+    );
+
+  return {
+    bars,
+    strength,
+    nearestTowerKm: Number(nearest.km.toFixed(1)),
+    towerCount: ranked.length,
+    technology
+  };
+};
+
+/** Towers as the client wants them: positioned, named, and with a distance. */
+const shapeTowers = (towers: CellTower[], lat: number, lon: number) =>
+  towers
+    .map((tower) => ({
+      latitude: Number(tower.latitude.toFixed(5)),
+      longitude: Number(tower.longitude.toFixed(5)),
+      carrier: tower.carrier,
+      operator: tower.operator,
+      technology: tower.technology,
+      source: tower.source,
+      distanceKm: Number(distanceKm(lat, lon, tower.latitude, tower.longitude).toFixed(1))
+    }))
+    .sort((a, b) => a.distanceKm - b.distanceKm);
+
+const readCoords = (req: Request, keys: string[]): number[] | null => {
+  const values = keys.map((k) => parseFloat(req.query[k] as string));
+  return values.some((n) => Number.isNaN(n)) ? null : values;
 };
 
 /* ------------------------------------------------------------------ */
 
 export const registerCellRoutes = (app: Express): void => {
   app.get('/api/cell-coverage', async (req: Request, res: Response) => {
-    const lat = parseFloat(req.query.lat as string);
-    const lon = parseFloat(req.query.lon as string);
-
-    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+    const coords = readCoords(req, ['lat', 'lon']);
+    if (!coords) {
       return res.status(400).json({ error: 'lat and lon are required numeric query params.' });
     }
+    const [lat, lon] = coords;
 
-    const key = process.env.OPENCELLID_API_KEY;
-    if (!key) {
-      // Not an error. Most deployments will not have a key, and the app is
-      // required to work without one — it just cannot answer this question.
-      return res.json({
-        ok: false,
-        source: 'none',
-        basis: '',
-        carriers: [],
-        note:
-          'No cell coverage data is configured for this deployment. Plan for no ' +
-          'signal here and tell someone your route before you leave.'
-      });
-    }
-
-    // Half a degree is well inside the resolution this estimate deserves, and
-    // it means a whole valley shares one cached answer.
+    // Two decimal places is about a kilometre — far finer than this estimate
+    // deserves, and it means a whole valley shares one cached answer.
     const cacheKey = `cell:${lat.toFixed(2)},${lon.toFixed(2)}`;
     const hit = cached(cacheKey);
     if (hit) return res.json(hit);
 
+    const key = process.env.OPENCELLID_API_KEY;
+
     // Only ask about carriers that operate on this side of the border. A
     // Rogers tower search over Utah is a wasted round trip.
-    const country = lon < -52 && lat > 48.5 ? 'ca' : 'us';
+    const country = looksUS(lat, lon) ? 'us' : 'ca';
     const relevant = CARRIERS.filter((c) => c.country === country);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 12_000);
+
+    let masts: CellTower[] | null = null;
+    let perCarrier: { carrier: typeof CARRIERS[number]; towers: CellTower[] | null }[] = [];
 
     try {
-      const results = await Promise.all(
-        relevant.map(async (carrier) => ({
-          carrier,
-          towers: await towersFor(carrier, lat, lon, key, controller.signal)
-        }))
-      );
-      clearTimeout(timeout);
-
-      const carriers = results.map(({ carrier, towers }) => {
-        // Lookup failed, or the register is empty here. Either way we have no
-        // basis for a number, so we send none rather than sending a zero.
-        if (!towers || towers.count === 0) {
-          return { carrier: carrier.id, label: carrier.label };
-        }
-        return {
-          carrier: carrier.id,
-          label: carrier.label,
-          bars: barsForKm(towers.nearestKm),
-          nearestTowerKm: Number(towers.nearestKm.toFixed(1)),
-          towerCount: towers.count
-        };
-      });
-
-      const anyData = carriers.some((c) => 'bars' in c);
-
-      const body = {
-        ok: anyData,
-        source: 'OpenCellID (crowd-sourced tower register)',
-        basis:
-          'Estimated from the straight-line distance to the nearest recorded ' +
-          'tower. It does not account for terrain, and in mountains terrain ' +
-          'decides everything — treat this as a hint, not a measurement.',
-        carriers,
-        note: anyData
-          ? undefined
-          : 'No towers are recorded within about 55 km for any carrier. That may ' +
-            'mean no coverage, or simply that nobody has mapped this area.'
-      };
-
-      store(cacheKey, body);
-      return res.json(body);
+      /**
+       * Both registers at once. OSM answers for everyone without a key; the
+       * OpenCellID leg simply does not run when there is no key, and its
+       * absence costs carrier attribution and the 4G/5G label, not the whole
+       * answer.
+       */
+      [masts, perCarrier] = await Promise.all([
+        fetchOsmMastsNear(lat, lon, SEARCH_RADIUS_KM),
+        key
+          ? Promise.all(
+              relevant.map(async (carrier) => ({
+                carrier,
+                towers: await fetchOpenCellIdFor(
+                  carrier, lat, lon, OPENCELLID_SPAN_DEG, key, controller.signal
+                )
+              }))
+            )
+          : Promise.resolve([])
+      ]);
     } catch {
+      // Both legs already swallow their own failures; this is belt and braces.
+    } finally {
       clearTimeout(timeout);
+    }
+
+    const osmTowers = dedupe(masts ?? []).filter(
+      (tower) => distanceKm(lat, lon, tower.latitude, tower.longitude) <= SEARCH_RADIUS_KM
+    );
+
+    /**
+     * A carrier's row is built from that carrier's towers, from BOTH
+     * registers — OpenCellID's cells filed under its network codes, plus any
+     * OSM mast whose operator tag names it. An unattributed mast never lands
+     * in a named carrier's row, however close it is.
+     */
+    const carriers = relevant.map((carrier) => {
+      const fromOpenCellId = perCarrier.find((row) => row.carrier.id === carrier.id);
+      const fromOsm = osmTowers.filter((tower) => tower.carrier === carrier.id);
+
+      const known = dedupe([...(fromOpenCellId?.towers ?? []), ...fromOsm]);
+      const verdict = verdictFrom(known, lat, lon);
+
+      // Nothing known about this carrier here. Send no number at all rather
+      // than a zero, which would read as a measurement.
+      if (!verdict) return { carrier: carrier.id, label: carrier.label };
+
+      return {
+        carrier: carrier.id,
+        label: carrier.label,
+        bars: verdict.bars,
+        strength: verdict.strength,
+        technology: verdict.technology,
+        nearestTowerKm: verdict.nearestTowerKm,
+        towerCount: verdict.towerCount
+      };
+    });
+
+    /**
+     * The answer for a camper who does not care whose tower it is.
+     *
+     * Built from EVERY transmitter found, attributed or not, because the
+     * question "is there any signal at all up here" is the one that decides
+     * whether you can call for help — and most OSM masts name no operator.
+     */
+    const allTowers = dedupe([
+      ...osmTowers,
+      ...perCarrier.flatMap((row) => row.towers ?? [])
+    ]);
+    const overall = verdictFrom(allTowers, lat, lon);
+
+    const anyCarrierData = carriers.some((c) => 'bars' in c);
+    const askedSuccessfully = masts !== null || perCarrier.some((row) => row.towers !== null);
+
+    const sources = [
+      masts !== null ? 'OpenStreetMap mast register' : null,
+      key && perCarrier.some((row) => row.towers !== null)
+        ? 'OpenCellID (crowd-sourced cell register)'
+        : null
+    ].filter(Boolean);
+
+    const body = {
+      ok: Boolean(overall),
+      source: sources.length > 0 ? sources.join(' + ') : 'none',
+      basis:
+        'Worked out from the straight-line distance to the nearest recorded ' +
+        'transmitter. It does not account for terrain, and in mountains terrain ' +
+        'decides everything — treat this as a hint, not a measurement.',
+      carriers,
+      overall: overall
+        ? {
+            strength: overall.strength,
+            bars: overall.bars,
+            technology: overall.technology,
+            nearestTowerKm: overall.nearestTowerKm,
+            towerCount: overall.towerCount
+          }
+        : undefined,
+      // Enough for the sheet to list and the map to draw, without shipping a
+      // whole county down a one-bar connection.
+      towers: shapeTowers(allTowers, lat, lon).slice(0, 60),
+      note: !askedSuccessfully
+        ? 'Could not reach the tower registers just now, so nothing is known ' +
+          'about this spot. Plan for no signal.'
+        : !overall
+        ? `No transmitter is recorded within ${SEARCH_RADIUS_KM} km. That may mean ` +
+          'no coverage, or simply that nobody has mapped this area.'
+        : !anyCarrierData
+        ? 'Nobody has recorded which carrier owns the masts near here, so the ' +
+          'estimate above is for any network rather than a particular one.'
+        : !key
+        ? 'Carrier names and 4G/5G come from what surveyors tagged on each mast, ' +
+          'so they are patchy. Set an OpenCellID key for a fuller picture.'
+        : undefined
+    };
+
+    store(cacheKey, body);
+    return res.json(body);
+  });
+
+  /**
+   * Transmitters in a viewport, for the map layer.
+   *
+   * OSM only. OpenCellID's bounding-box endpoint is capped and metered per
+   * carrier, which is fine for one tapped point and wrong for a layer that
+   * refetches on every pan.
+   */
+  app.get('/api/cell-towers', async (req: Request, res: Response) => {
+    const coords = readCoords(req, ['minLat', 'minLon', 'maxLat', 'maxLon']);
+    if (!coords) {
+      return res.status(400).json({ error: 'minLat, minLon, maxLat, maxLon are required.' });
+    }
+    const [minLat, minLon, maxLat, maxLon] = coords;
+
+    if (
+      Math.abs(maxLat - minLat) > MAX_TOWER_BBOX_DEG ||
+      Math.abs(maxLon - minLon) > MAX_TOWER_BBOX_DEG
+    ) {
       return res.json({
         ok: false,
-        source: 'OpenCellID (crowd-sourced tower register)',
-        basis: '',
-        carriers: [],
-        note: 'Coverage lookup failed. Assume no signal until you can check it yourself.'
+        towers: [],
+        note: 'Zoom in to load cell towers.'
       });
     }
+
+    const cacheKey = `towers:${coords.map((n) => n.toFixed(2)).join(',')}`;
+    const hit = cached(cacheKey);
+    if (hit) return res.json(hit);
+
+    const masts = await fetchOsmMastsInBbox(minLat, minLon, maxLat, maxLon);
+
+    const centreLat = (minLat + maxLat) / 2;
+    const centreLon = (minLon + maxLon) / 2;
+
+    const body = {
+      ok: masts !== null,
+      source: 'OpenStreetMap mast register',
+      towers: masts ? shapeTowers(dedupe(masts), centreLat, centreLon).slice(0, 400) : [],
+      note: masts === null
+        ? 'Could not reach the mast register just now.'
+        : masts.length === 0
+        ? 'No masts are recorded in this view. That means nobody has surveyed ' +
+          'one here, not that there is no coverage.'
+        : undefined
+    };
+
+    store(cacheKey, body);
+    return res.json(body);
   });
 };

@@ -158,9 +158,42 @@ await safeRegister(
   'registerPushRoutes'
 );
 
+/**
+ * Which feature owns a path, so a route that failed to LOAD can say so.
+ *
+ * THIS EXISTS BECAUSE OF A BUG THAT HID FOR A WHOLE RELEASE. `weatherRoutes`
+ * threw at import time (a relative import missing its `.js`), `safeRegister`
+ * caught it exactly as designed, and every weather request then fell past the
+ * registered routes into the 404 below. The client dutifully reported
+ * "Weather unavailable (404)" — technically true, and useless: a 404 says the
+ * endpoint does not exist, when in fact it exists and failed to start.
+ *
+ * A 503 naming the real error is the difference between a five-minute fix and
+ * a week of guessing. `/api/health` already knew; nothing else asked it.
+ */
+const FEATURE_FOR_PATH: [RegExp, string][] = [
+  [/^\/api\/weather/, 'weather'],
+  [/^\/api\/boundaries/, 'boundaries'],
+  [/^\/api\/cell-/, 'cellCoverage'],
+  [/^\/api\/route/, 'routing'],
+  [/^\/api\/push/, 'push'],
+  [/^\/api\/alerts/, 'alerts']
+];
+
 // Unknown /api routes return JSON, not the SPA's HTML. A typo in a fetch URL
 // should read as "Unknown endpoint", not "unexpected token <".
 app.use((req, res) => {
+  const owner = FEATURE_FOR_PATH.find(([pattern]) => pattern.test(req.path))?.[1];
+
+  if (owner && loadErrors[owner]) {
+    return res.status(503).json({
+      error: `The ${owner} service failed to start on this deployment.`,
+      detail: loadErrors[owner],
+      path: req.path,
+      hint: 'See /api/health'
+    });
+  }
+
   res.status(404).json({
     error: 'Unknown endpoint',
     path: req.path,
