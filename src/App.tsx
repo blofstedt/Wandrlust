@@ -482,21 +482,24 @@ export default function App() {
     setCenter([stored.latitude, stored.longitude]);
   }, [toast]);
 
-  const handleAddReview = useCallback((siteId: string, review: CamperReview) => {
-    const applyReview = (site: Campsite): Campsite => {
-      const reviews = [review, ...site.reviews];
-      const average = reviews.reduce((acc, r) => acc + r.rating, 0) / reviews.length;
-      return {
-        ...site,
-        reviews,
-        rating: Number(average.toFixed(1)),
-        reviewCount: reviews.length
-      };
-    };
+  /**
+   * Take the site's new rating from the server, rather than working it out.
+   *
+   * This used to append the review to React state and recompute the average
+   * locally — which meant the figure on screen was this browser's opinion of
+   * the average, drifting from the database the moment anybody else reviewed
+   * the same spot, and vanishing entirely on reload. `refresh_campsite_rating`
+   * owns the number; the modal asks it and passes the answer through here.
+   */
+  const handleRatingChange = useCallback(
+    (siteId: string, rating: number, reviewCount: number) => {
+      const apply = (site: Campsite): Campsite => ({ ...site, rating, reviewCount });
 
-    setCampsites((prev) => prev.map((s) => (s.id === siteId ? applyReview(s) : s)));
-    setDetailModalSite((prev) => (prev && prev.id === siteId ? applyReview(prev) : prev));
-  }, []);
+      setCampsites((prev) => prev.map((s) => (s.id === siteId ? apply(s) : s)));
+      setDetailModalSite((prev) => (prev && prev.id === siteId ? apply(prev) : prev));
+    },
+    []
+  );
 
   /**
    * Filter and sort in one pass.
@@ -558,7 +561,21 @@ export default function App() {
 
     matches.sort((a, b) => {
       switch (filterState.sortBy) {
-        case 'rating': return b.site.rating - a.site.rating;
+        /**
+         * Reviewed sites first, then everything unreviewed by distance.
+         *
+         * A bare `b.rating - a.rating` put every site with no reviews at 0,
+         * tied with each other and below a genuine 1-star — so "highest rated"
+         * returned an arbitrary order for a dataset where almost nothing has
+         * been reviewed yet. An absent rating is not a bad rating.
+         */
+        case 'rating': {
+          const aRated = a.site.reviewCount > 0;
+          const bRated = b.site.reviewCount > 0;
+          if (aRated !== bRated) return aRated ? -1 : 1;
+          if (!aRated) return a.distance - b.distance;
+          return b.site.rating - a.site.rating;
+        }
         case 'name': return a.site.name.localeCompare(b.site.name);
         case 'stay_limit':
           return b.site.amenities.stayLimitDays - a.site.amenities.stayLimitDays;
@@ -782,7 +799,8 @@ export default function App() {
           isSaved={savedIds.has(detailModalSite.id)}
           onClose={() => setDetailModalSite(null)}
           onToggleSave={handleToggleSave}
-          onAddReview={handleAddReview}
+          onRatingChange={handleRatingChange}
+          onRequireAuth={() => setIsAuthOpen(true)}
         />
       )}
 

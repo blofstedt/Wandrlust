@@ -10,7 +10,7 @@
  *    DEFINER functions, never direct table writes.
  */
 import { supabase } from '../lib/supabase';
-import type { Campsite } from '../types';
+import type { Campsite, CamperReview } from '../types';
 import { campsiteIdKind, canReferenceCampsite as canReferenceId } from '../utils/campsiteId';
 
 /* ------------------------------------------------------------------ */
@@ -382,6 +382,134 @@ export const fetchMySubmissionStates = async (): Promise<Map<string, boolean>> =
   if (error || !Array.isArray(data)) return out;
   for (const row of data) out.set(String(row.id), Boolean(row.is_published));
   return out;
+};
+
+/* ------------------------------------------------------------------ */
+/* Reviews                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reviews for one site.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS FIXES
+ * ---------------------------------------------------------------------------
+ *
+ * Leaving a review recomputed the site's average in React state and stopped.
+ * Not localforage, not the server — a page reload erased it. `campsite_reviews`
+ * and its `refresh_campsite_rating` trigger have both existed since the first
+ * schema and no client code had ever referenced them.
+ *
+ * Hidden reviews are filtered by the row-level security policy, not here, so a
+ * review hidden after being reported disappears for everyone except its
+ * author — who keeps seeing their own, because a review that silently vanishes
+ * for the person who wrote it just looks like the app ate it.
+ */
+export const fetchCampsiteReviews = async (campsiteId: string): Promise<CamperReview[]> => {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('campsite_reviews')
+    .select('id, author, rating, comment, vehicle_type, created_at')
+    .eq('campsite_id', campsiteId)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error || !Array.isArray(data)) return [];
+
+  return data.map((row: any) => ({
+    id: String(row.id),
+    author: row.author ?? 'A camper',
+    date: row.created_at ?? new Date().toISOString(),
+    rating: Number(row.rating ?? 0),
+    comment: row.comment ?? '',
+    vehicleType: row.vehicle_type ?? undefined
+  }));
+};
+
+/**
+ * Leave or update a review.
+ *
+ * `author` is a SNAPSHOT of the handle at the time of writing, not a join. It
+ * is stored alongside `user_id` so a review still reads sensibly after the
+ * profile behind it is deleted — `user_id` is `on delete set null`, and a
+ * review suddenly attributed to nobody is worse than one attributed to a name
+ * that no longer has an account.
+ *
+ * Upserted on the (campsite_id, user_id) index, so editing yours updates the
+ * row rather than adding a second one. The rating trigger recomputes the
+ * site's average either way.
+ */
+export const submitCampsiteReview = async (
+  site: Campsite,
+  review: { rating: number; comment: string; vehicleType?: string }
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Sign in to leave a review.');
+
+  if (!Number.isFinite(review.rating) || review.rating < 1 || review.rating > 5) {
+    return failure('Pick a rating between 1 and 5.');
+  }
+  if (review.comment.trim().length === 0) return failure('Add a few words about the spot.');
+
+  // An OSM site has no row until somebody interacts with it. This is that
+  // moment, and without it the insert fails the foreign key.
+  const ready = await ensureCampsiteExists(site);
+  if (!ready.ok) return failure(ready.message);
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('handle, display_name')
+    .eq('id', uid)
+    .maybeSingle();
+
+  const author = (profile?.display_name || profile?.handle || 'A camper').slice(0, 60);
+
+  const { error } = await supabase
+    .from('campsite_reviews')
+    .upsert(
+      {
+        campsite_id: ready.data,
+        user_id: uid,
+        author,
+        rating: Math.round(review.rating),
+        comment: review.comment.trim().slice(0, 2000),
+        vehicle_type: review.vehicleType?.trim() || null
+      },
+      { onConflict: 'campsite_id,user_id' }
+    );
+
+  if (error) return failure(error.message);
+  return success(true);
+};
+
+/** Remove your own review. The policy allows no other. */
+export const deleteMyReview = async (reviewId: string): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+  const { error } = await supabase.from('campsite_reviews').delete().eq('id', reviewId);
+  if (error) return failure(error.message);
+  return success(true);
+};
+
+/** The site's rating and count after the trigger has recomputed them. */
+export const fetchCampsiteRating = async (
+  campsiteId: string
+): Promise<{ rating: number; reviewCount: number } | null> => {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from('campsites')
+    .select('rating, review_count')
+    .eq('id', campsiteId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return {
+    rating: Number(data.rating ?? 0),
+    reviewCount: Number(data.review_count ?? 0)
+  };
 };
 
 export const unlockStealthSite = async (campsiteId: string): Promise<Result<any>> => {
