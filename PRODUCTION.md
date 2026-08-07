@@ -124,4 +124,4 @@ Everything should still function, just without travel or overshoot.
 
 Keyboard pass: Tab through the app. Focus rings must always be visible, dialogs
 must trap focus, Escape must close them, and focus must land back on the
-control that opened them.
+control that opened them.

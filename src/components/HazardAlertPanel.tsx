@@ -200,4 +200,4 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
       </p>
     </div>
   );
-};
+};

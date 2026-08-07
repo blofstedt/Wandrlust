@@ -246,4 +246,4 @@ export const haptic = (pattern: 'tap' | 'success' | 'warning' | 'error' = 'tap')
   } catch {
     /* not supported */
   }
-};
+};

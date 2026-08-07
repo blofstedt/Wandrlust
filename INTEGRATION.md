@@ -197,4 +197,4 @@ rather than silently claiming they agreed to text that didn't exist yet.
 `[DATE]`, and have a lawyer review. I've written these to say what you asked
 them to say, clearly. I am not a lawyer, these are not legal advice, and
 whether a liability waiver actually holds up depends on your jurisdiction —
-consumer protection law limits what disclaimers can do in many places.
+consumer protection law limits what disclaimers can do in many places.

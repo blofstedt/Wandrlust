@@ -316,4 +316,4 @@ export const sendTestNotification = async (): Promise<boolean> => {
   } catch {
     return false;
   }
-};
+};

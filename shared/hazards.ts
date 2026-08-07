@@ -74,4 +74,4 @@ export const normaliseUrgency = (raw: string | undefined): AlertUrgency => {
 
 export const SEVERITY_RANK: Record<AlertSeverity, number> = {
   extreme: 4, severe: 3, moderate: 2, minor: 1, unknown: 0
-};
+};

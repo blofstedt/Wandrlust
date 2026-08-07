@@ -223,4 +223,4 @@ list of what is *not* yet production ready.
 ## Licence
 
 Data from OpenStreetMap is © OpenStreetMap contributors, available under the
-Open Database Licence.
+Open Database Licence.

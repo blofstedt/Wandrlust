@@ -217,4 +217,4 @@ grant execute on function public.seeded_land_sources() to anon, authenticated;
 --    3. /api/boundaries will now serve from here, and only fall back to the
 --       live ArcGIS services for viewports the database has nothing for.
 --       The response says which path answered, under meta.servedFrom.
--- =====================================================================
+-- =====================================================================

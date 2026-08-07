@@ -520,4 +520,4 @@ $$;
 commit;
 
 -- After this migration, the balances view is stale until refreshed:
---   refresh materialized view concurrently public.points_balances;
+--   refresh materialized view concurrently public.points_balances;

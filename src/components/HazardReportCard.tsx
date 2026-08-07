@@ -139,4 +139,4 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
       </div>
     </div>
   );
-};
+};

@@ -334,4 +334,4 @@ const main = async () => {
 main().catch((err) => {
   console.error('\nSeed failed:', err.message);
   process.exit(1);
-});
+});

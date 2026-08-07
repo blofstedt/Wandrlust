@@ -416,4 +416,4 @@ export const forecastOnArrival = (
     isNow: false,
     note: 'That is further out than the forecast goes'
   };
-};
+};

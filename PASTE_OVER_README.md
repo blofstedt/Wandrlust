@@ -28,4 +28,4 @@ the vector master, IS included.)
 ## Before pushing
 
     npm run lint
-    npm run dev
+    npm run dev

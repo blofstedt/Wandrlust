@@ -50,4 +50,4 @@ The PRIVATE key must never leave the server. Do not commit it.
 
 If you rotate these, every existing subscription becomes invalid and
 users must re-enable alerts.
-`);
+`);

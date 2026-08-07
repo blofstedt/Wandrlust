@@ -92,4 +92,4 @@ export const tierProgress = (id: TrustTier, score: number): number => {
   const span = next.minScore - current.minScore;
   if (span <= 0) return 100;
   return Math.max(0, Math.min(100, Math.round(((score - current.minScore) / span) * 100)));
-};
+};

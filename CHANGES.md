@@ -74,4 +74,4 @@ Plain English. Grouped by why it mattered.
   confident changes.
 - `PRODUCTION.md` still holds an honest list of what isn't launch-ready —
   boundary accuracy, Canadian coverage, the legal review. Nothing here changed
-  that list.
+  that list.

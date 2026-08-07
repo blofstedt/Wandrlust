@@ -772,4 +772,4 @@ export const registerBoundaryRoutes = (app: Express): void => {
 
     await remember(body);
   });
-};
+};

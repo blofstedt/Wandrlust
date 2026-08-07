@@ -369,4 +369,4 @@ self.addEventListener('pushsubscriptionchange', (event) => {
       }
     })()
   );
-});
+});

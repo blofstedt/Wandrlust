@@ -373,4 +373,4 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     reason:
       'State-level camping rules vary by state and are not in the federal SMA layer. PAD-US includes some state lands where Pub_Access is populated, but coverage is uneven.'
   }
-];
+];

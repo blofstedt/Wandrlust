@@ -7,6 +7,7 @@ import type { CellCoverage, MapDestination } from '../types';
 import type { WeatherSnapshot } from '../services/weatherService';
 import type { RouteResult } from '../services/routingService';
 import { CellCoverageCard, ArrivalWeatherCard } from './TripConditions';
+import { HazardAlertPanel } from './HazardAlertPanel';
 import { haptic } from '../utils/animation';
 import { directionsAppName } from '../utils/handoff';
 
@@ -210,6 +211,23 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
         {snap !== 'peek' && (
           <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-4 scroll-soft">
             {/*
+              Warnings first — safety before scenery.
+
+              The active fire / flood / storm / heat / smoke / cold warnings for
+              THIS point, from the National Weather Service and Environment
+              Canada. On the map they draw as animated, unselectable area
+              overlays; tapping this spot is what brings the detail down here.
+            */}
+            {weather.alerts.length > 0 && (
+              <section>
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                  Active warnings here
+                </h3>
+                <HazardAlertPanel alerts={weather.alerts} compact />
+              </section>
+            )}
+
+            {/*
               The land, and what it permits.
 
               Read from the boundary polygon already on screen, which is why
@@ -385,4 +403,4 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
       </div>
     </div>
   );
-};
+};

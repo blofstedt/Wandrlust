@@ -134,4 +134,4 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
  * — the opposite of what the data says. The layer stays off and the status
  * chip says to zoom in, exactly as the boundary layer does.
  */
-export const CELL_MIN_ZOOM = 9;
+export const CELL_MIN_ZOOM = 9;

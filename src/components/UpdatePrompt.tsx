@@ -42,4 +42,4 @@ export const UpdatePrompt: React.FC = () => {
   );
 
   return null;
-};
+};

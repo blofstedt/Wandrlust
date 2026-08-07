@@ -257,4 +257,4 @@ export const registerWeatherRoutes = (app: Express): void => {
     store(key, payload);
     return res.json(payload);
   });
-};
+};

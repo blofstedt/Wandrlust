@@ -148,4 +148,4 @@ npm run vapid    # generate push notification keys
 - **No smooth easing.** The motion is Pebble's frame-based "moook" curve on
   purpose — mechanical, with an overshoot that settles. That's the personality.
 - **No purchase prompts outside Settings.** The support link buys nothing in the
-  app. Points are earned, never sold.
+  app. Points are earned, never sold.

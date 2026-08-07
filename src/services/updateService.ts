@@ -136,4 +136,4 @@ export const watchForUpdates = (
     if (poll) clearInterval(poll);
     document.removeEventListener('visibilitychange', onVisibility);
   };
-};
+};

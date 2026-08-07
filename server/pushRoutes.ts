@@ -320,4 +320,4 @@ export const registerPushRoutes = (app: Express): void => {
 
     return res.json({ ok: true, processed: queued.length, sent, failed, skipped });
   });
-};
+};

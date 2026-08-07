@@ -47,4 +47,4 @@ export const fetchOpenMeteo = (
   lat: number,
   lon: number,
   imperial: boolean
-): Promise<OpenMeteoResult> => fetchOpenMeteoForecast(lat, lon, imperial, 10_000);
+): Promise<OpenMeteoResult> => fetchOpenMeteoForecast(lat, lon, imperial, 10_000);

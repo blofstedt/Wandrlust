@@ -294,4 +294,4 @@ export const LegalDocumentModal: React.FC<{
       </div>
     </div>
   );
-};
+};

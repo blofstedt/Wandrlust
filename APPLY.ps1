@@ -63,4 +63,4 @@ Write-Host ""
 Write-Host "Done. Now run these in the repo folder:" -ForegroundColor Cyan
 Write-Host "  npm install      (dependencies changed)"
 Write-Host "  npm run lint     (typecheck)"
-Write-Host "  npm run dev"
+Write-Host "  npm run dev"

@@ -253,4 +253,4 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
       </div>
     </div>
   );
-};
+};

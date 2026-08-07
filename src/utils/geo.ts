@@ -90,4 +90,4 @@ export const pointInGeometry = (
     return (g.coordinates as Ring[][]).some((poly) => pointInPolygon(lon, lat, poly));
   }
   return false;
-};
+};

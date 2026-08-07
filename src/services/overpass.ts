@@ -198,4 +198,4 @@ out center ${maxResults};`;
   }
 
   return [];
-};
+};

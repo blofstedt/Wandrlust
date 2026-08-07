@@ -60,4 +60,4 @@ export const countActiveFilters = (state: FilterState): number => {
   if (state.roadAccessMax !== DEFAULT_FILTERS.roadAccessMax) count += 1;
   if (state.maxDistanceMiles !== DEFAULT_FILTERS.maxDistanceMiles) count += 1;
   return count;
-};
+};

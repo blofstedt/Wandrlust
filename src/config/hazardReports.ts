@@ -1,3 +1,5 @@
+import type { WarningMotion } from '../utils/alertOverlay';
+
 /**
  * Camper hazard reports — how each kind looks on the map and reads in a list.
  *
@@ -5,12 +7,13 @@
  * them. They were previously two hand-kept lists and would have drifted the
  * first time somebody added a kind.
  *
- * These are DELIBERATELY DRAWN DIFFERENTLY FROM OFFICIAL ALERTS. A National
- * Weather Service fire warning is a triangle; a camper saying "there's fire
- * activity up the valley" is a rounded chip. One is an agency with a legal
- * duty and a detection network behind it, the other is one person's eyes.
- * Making them look alike would let the second borrow the authority of the
- * first, which is exactly the kind of overstatement this app refuses to make.
+ * Camper reports now wear the SAME animated cloud as an official warning, by
+ * request — a coloured cloud with a slow drifting strand, keyed to the hazard.
+ * What still keeps the two apart is behaviour, not looks: an official warning
+ * is a non-interactive overlay drawn over the agency's own area, while a camper
+ * report is a tappable marker that opens a card saying, in as many words, that
+ * it is one person's report and not verified. The `motion` below is the strand
+ * style each kind animates with, matching the weather families in alertOverlay.
  *
  * The `kind` values match the `hazard_kind` enum in migration 02. If you add
  * one, add it there first.
@@ -28,21 +31,23 @@ export interface HazardReportStyle {
    * legible when the map is busy.
    */
   prominent?: boolean;
+  /** The animated strand style this kind wears on its map cloud. */
+  motion: WarningMotion;
 }
 
 export const HAZARD_REPORT_STYLE: Record<string, HazardReportStyle> = {
-  fire_activity: { label: 'Fire activity', emoji: '🔥', color: '#F97316', prominent: true },
-  flooding: { label: 'Flooding', emoji: '🌊', color: '#0EA5E9', prominent: true },
-  enforcement_activity: { label: 'Enforcement', emoji: '🚔', color: '#3B82F6', prominent: true },
-  washout: { label: 'Washed out road', emoji: '🕳️', color: '#B45309', prominent: true },
-  weak_bridge: { label: 'Weak bridge', emoji: '🌉', color: '#B45309' },
-  low_clearance: { label: 'Low clearance', emoji: '📏', color: '#A855F7' },
-  downed_tree: { label: 'Downed tree', emoji: '🌲', color: '#16A34A' },
-  deep_mud: { label: 'Deep mud', emoji: '🟤', color: '#78350F' },
-  snow_drift: { label: 'Snow drift', emoji: '❄️', color: '#38BDF8' },
-  debris: { label: 'Debris', emoji: '🪨', color: '#94A3B8' },
-  wildlife: { label: 'Wildlife', emoji: '🐻', color: '#CA8A04' },
-  other: { label: 'Hazard', emoji: '⚠️', color: '#EAB308' }
+  fire_activity: { label: 'Fire activity', emoji: '🔥', color: '#F97316', prominent: true, motion: 'squiggle' },
+  flooding: { label: 'Flooding', emoji: '🌊', color: '#0EA5E9', prominent: true, motion: 'wave' },
+  enforcement_activity: { label: 'Enforcement', emoji: '🚔', color: '#3B82F6', prominent: true, motion: 'wave' },
+  washout: { label: 'Washed out road', emoji: '🕳️', color: '#B45309', prominent: true, motion: 'wave' },
+  weak_bridge: { label: 'Weak bridge', emoji: '🌉', color: '#B45309', motion: 'zigzag' },
+  low_clearance: { label: 'Low clearance', emoji: '📏', color: '#A855F7', motion: 'heatline' },
+  downed_tree: { label: 'Downed tree', emoji: '🌲', color: '#16A34A', motion: 'zigzag' },
+  deep_mud: { label: 'Deep mud', emoji: '🟤', color: '#78350F', motion: 'wave' },
+  snow_drift: { label: 'Snow drift', emoji: '❄️', color: '#38BDF8', motion: 'zigzag' },
+  debris: { label: 'Debris', emoji: '🪨', color: '#94A3B8', motion: 'zigzag' },
+  wildlife: { label: 'Wildlife', emoji: '🐻', color: '#CA8A04', motion: 'squiggle' },
+  other: { label: 'Hazard', emoji: '⚠️', color: '#EAB308', motion: 'wave' }
 };
 
 export const hazardReportStyle = (kind: string): HazardReportStyle =>
@@ -65,4 +70,4 @@ export const HAZARD_REPORT_KINDS: string[] = [
 export const reportStanding = (
   confirms: number,
   disputes: number
-): 'confirmed' | 'reported' => (confirms - disputes >= 2 ? 'confirmed' : 'reported');
+): 'confirmed' | 'reported' => (confirms - disputes >= 2 ? 'confirmed' : 'reported');

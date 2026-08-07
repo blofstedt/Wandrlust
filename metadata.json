@@ -2,4 +2,4 @@
   "name": "Wandrlust",
   "description": "Find free dispersed camping on BLM, National Forest and Canadian Crown Land, with interactive maps, live conditions, fire, flood and storm alerts, and offline maps for areas with no cell service.",
   "requestFramePermissions": ["geolocation"]
-}
+}

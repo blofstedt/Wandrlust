@@ -1036,4 +1036,4 @@ export const saveSettings = async (
 
   const { error } = await supabase.from('user_settings').upsert({ ...patch, user_id: uid });
   return error ? failure(error.message) : success(true, 'Settings saved');
-};
+};

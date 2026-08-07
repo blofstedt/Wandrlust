@@ -428,4 +428,4 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
     </header>
   );
-};
+};

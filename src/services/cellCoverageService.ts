@@ -152,4 +152,4 @@ export const fetchCellTowers = async (
 export const TOWER_REACH_M: Record<'strong' | 'usable', number> = {
   strong: 5_000,
   usable: 20_000
-};
+};

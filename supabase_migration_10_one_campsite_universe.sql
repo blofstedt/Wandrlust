@@ -520,4 +520,4 @@ commit;
 --         update public.campsites set is_hidden = false where id = '…';
 --         update public.content_reports set resolved_at = now()
 --          where target_kind = 'campsite' and target_id = '…';
--- =====================================================================
+-- =====================================================================

@@ -26,8 +26,9 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, badgesForParcel,
-  alertPattern, patternKey, dissolveKey, dissolveSegments
+  AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, alertBadge,
+  warningPattern, cloudMarkerHtml, hazardCloudHtml, WARNING_EMOJI, WARNING_LABEL,
+  dissolveKey, dissolveSegments
 } from '../utils/alertOverlay';
 import {
   BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
@@ -183,28 +184,37 @@ const buildCampsiteIcon = (isSelected: boolean, badges: AlertBadge[] = []): L.Di
 /**
  * A camper's hazard report.
  *
- * A rounded chip, never a triangle — the triangle belongs to the National
- * Weather Service and Environment Canada, and one person's report must not
- * borrow the look of an agency's warning. See src/config/hazardReports.ts.
+ * Now the SAME animated cloud as an official warning, by request — coloured by
+ * the hazard, carrying its icon, with a slow drifting strand keyed to the kind
+ * (rising smoke for fire, sliding water for a washout, sharp cold for a snow
+ * drift). A confirmed report gets a pale ring around the cloud.
+ *
+ * The look matches; the behaviour does not, and that is where the honesty
+ * lives. This marker stays interactive — tapping it opens the card that spells
+ * out it is one camper's report, not verified — whereas an official warning is
+ * drawn in a pointer-events:none pane and cannot be tapped at all.
  */
 const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
   const style = hazardReportStyle(record.kind);
   const confirmed = reportStanding(record.confirms, record.disputes) === 'confirmed';
-  const size = style.prominent ? 30 : 24;
+  // Smaller than an official warning cloud: a report is a point on a road, not
+  // a region, so it should not shout over the area overlays.
+  const size = style.prominent ? 56 : 46;
+  const height = Math.round((size * 64) / 72);
 
   return L.divIcon({
     className: 'hazard-report-marker',
-    html: `
-      <div class="relative flex items-center justify-center">
-        <div class="rounded-lg flex items-center justify-center shadow-lg border-2"
-             style="width:${size}px;height:${size}px;background:${style.color};border-color:${
-      confirmed ? '#F8FAFC' : '#0F172A'
-    }">
-          <span style="font-size:${size * 0.5}px;line-height:1">${style.emoji}</span>
-        </div>
-      </div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2]
+    html: hazardCloudHtml({
+      color: style.color,
+      motion: style.motion,
+      reduced: prefersReducedMotion(),
+      size,
+      glyph: style.emoji,
+      outline: confirmed
+    }),
+    iconSize: [size, height],
+    // Anchor on the cloud body (~y 30/64) so it sits on the reported point.
+    iconAnchor: [size / 2, Math.round((size * 30) / 72)]
   });
 };
 
@@ -416,7 +426,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
   const cellLayerRef = useRef<L.LayerGroup | null>(null);
-  const alertPatternLayerRef = useRef<L.LayerGroup | null>(null);
+  const warningRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
 
   /**
@@ -457,6 +467,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [isOverviewTier, setIsOverviewTier] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
   const [unmappableHazards, setUnmappableHazards] = useState(0);
+  /** Which warning families are drawn in view — drives the top-left legend. */
+  const [warningBadges, setWarningBadges] = useState<AlertBadge[]>([]);
   /** Camper-filed reports currently on screen — counted in the status chip. */
   const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
 
@@ -1562,131 +1574,139 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       clear();
       setHazards([]);
       setUnmappableHazards(0);
+      setWarningBadges([]);
       return;
     }
 
-    if (!map.getPane('hazardPane')) {
-      map.createPane('hazardPane');
-      const pane = map.getPane('hazardPane');
-      // Above campsite pins (600): a fire warning outranks a camping spot.
-      if (pane) pane.style.zIndex = '620';
+    // A dedicated, NON-INTERACTIVE pane. A weather warning is scenery a camper
+    // reads, not a control they select, so pointer-events are off — a tap falls
+    // straight through to the campsite pin or the map beneath. It sits above the
+    // boundaries and the coverage mask but below the campsite markers, so a pin
+    // is never hidden by the cloud drawn over its area.
+    if (!map.getPane('warningPane')) {
+      map.createPane('warningPane');
+      const wpane = map.getPane('warningPane');
+      if (wpane) { wpane.style.zIndex = '460'; wpane.style.pointerEvents = 'none'; }
     }
+
+    // One SVG renderer for the life of the effect. Its <defs> holds the animated
+    // patterns; a solid canvas fill cannot carry a pattern, which is why this
+    // layer is SVG rather than the canvas the boundaries draw to.
+    if (!warningRendererRef.current) {
+      warningRendererRef.current = L.svg({ pane: 'warningPane', padding: 0.3 });
+    }
+    // Non-null: just created above if it was missing.
+    const warningRenderer = warningRendererRef.current!;
 
     let cancelled = false;
     let controller: AbortController | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
 
     /**
-     * What this particular alert says.
+     * Draw each active warning as a tinted, animated AREA — no marker to tap.
      *
-     * Everything here is per-alert and conditional. The old version printed
-     * every field unconditionally, so a feed that supplies no description — and
-     * Environment Canada's alert index supplies none — produced a popup with
-     * the title repeated twice and two empty lines under it. If a field is
-     * absent it is left out entirely rather than rendered blank.
+     * For every alert the feed gave a real polygon:
+     *   1. a faint fill in the family colour, so the area is legible;
+     *   2. the same polygon filled with the family's slowly animated line
+     *      pattern — rising smoke, shimmering heat, sliding cold;
+     *   3. a soft cloud at the centroid, the icon the top-left legend names.
      *
-     * Escaped because `description` and `instruction` are agency text carried
-     * straight from a government feed into `innerHTML`.
+     * All of it is non-interactive. Alerts with no geometry are counted, never
+     * pinned to a guessed spot.
      */
-    const esc = (raw: unknown): string =>
-      String(raw ?? '')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-
-    const popupHtml = (alert: HazardAlert): string => {
-      const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
-      const when = (iso: string | null) =>
-        iso ? new Date(iso).toLocaleString([], {
-          weekday: 'short', hour: 'numeric', minute: '2-digit'
-        }) : null;
-
-      const row = (label: string, value: string | null | undefined) =>
-        value
-          ? `<div style="display:flex;gap:6px;margin-top:4px;font-size:10px;line-height:1.4">
-               <span style="color:#94A3B8;flex:0 0 52px">${label}</span>
-               <span style="color:#334155">${esc(value)}</span>
-             </div>`
-          : '';
-
-      // The headline is only worth its line when it says something the title
-      // did not — ECCC frequently repeats the event name into it.
-      const headline =
-        alert.headline && alert.headline.trim().toLowerCase() !== alert.event.trim().toLowerCase()
-          ? `<div style="color:#334155;margin-top:3px;font-size:11px">${esc(alert.headline)}</div>`
-          : '';
-
-      const description = alert.description
-        ? `<div style="color:#475569;margin-top:6px;font-size:11px;line-height:1.45;max-height:9em;overflow:auto">${esc(
-            alert.description
-          )}</div>`
-        : '';
-
-      const instruction = alert.instruction
-        ? `<div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:10px;line-height:1.35">${esc(
-            alert.instruction
-          )}</div>`
-        : '';
-
-      return `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:310px">
-          <span style="display:inline-block;padding:2px 7px;border-radius:6px;background:${
-            style.color
-          };color:#0F172A;font-weight:700;font-size:10px;text-transform:uppercase">${
-        style.icon
-      } ${style.label} · ${esc(alert.severity)}</span>
-          <strong style="display:block;font-size:13.5px;margin-top:6px;text-transform:capitalize">${esc(
-            alert.event
-          )}</strong>
-          ${headline}
-          ${description}
-          ${row('Where', alert.areaDescription)}
-          ${row(
-            'Covers',
-            alert.zoneCount && alert.zoneCount > 1 ? `${alert.zoneCount} forecast regions` : null
-          )}
-          ${row('Until', when(alert.expires ?? null))}
-          ${instruction}
-          <div style="color:#94A3B8;font-size:9.5px;margin-top:7px;padding-top:6px;border-top:1px solid #E2E8F0">
-            ${esc(alert.sender)}
-          </div>
-        </div>`;
-    };
-
     const render = (alerts: HazardAlert[]) => {
       clear();
+      const reduced = prefersReducedMotion();
       const placeable = alerts.filter((a) => Array.isArray(a.centroid) && a.geometry);
-      if (placeable.length === 0) return;
 
-      const group = L.layerGroup([], { pane: 'hazardPane' });
+      const group = L.layerGroup([], { pane: 'warningPane' });
+      const patternTargets: { geo: L.GeoJSON; badge: AlertBadge }[] = [];
+      const present = new Set<AlertBadge>();
 
       placeable.forEach((alert) => {
-        const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
+        const badge = alertBadge(alert);
+        if (!badge) return;
+        present.add(badge);
+        const color = BADGE_COLOR[badge];
 
-        // The area itself, faint, so the triangle has visible extent.
+        // Faint area fill, so the warned region reads even before the pattern.
         group.addLayer(
           L.geoJSON(alert.geometry as any, {
-            pane: 'hazardPane',
+            pane: 'warningPane',
+            renderer: warningRenderer,
             interactive: false,
-            style: {
-              color: style.color,
-              weight: 1.5,
-              opacity: 0.7,
-              fillColor: style.color,
-              fillOpacity: 0.12
-            }
-          })
+            style: { color, weight: 1.2, opacity: 0.5, fillColor: color, fillOpacity: 0.12 }
+          } as RenderedGeoJSONOptions)
         );
 
-        const marker = L.marker(alert.centroid as [number, number], {
-          pane: 'hazardPane',
-          icon: buildHazardIcon(alert),
-          title: `${alert.event} — ${alert.areaDescription}`,
-          riseOnHover: true
-        });
-        marker.bindPopup(() => popupHtml(alert));
-        group.addLayer(marker);
+        // Same area, filled with the animated pattern (wired up in <defs> below).
+        const patGeo = L.geoJSON(alert.geometry as any, {
+          pane: 'warningPane',
+          renderer: warningRenderer,
+          interactive: false,
+          style: { stroke: false, fill: true, fillOpacity: 1 }
+        } as RenderedGeoJSONOptions);
+        group.addLayer(patGeo);
+        patternTargets.push({ geo: patGeo, badge });
+
+        // The cloud icon at the centroid. Non-interactive, no popup.
+        group.addLayer(
+          L.marker(alert.centroid as [number, number], {
+            pane: 'warningPane',
+            icon: L.divIcon({
+              className: 'weather-warning-cloud',
+              html: cloudMarkerHtml(badge, reduced),
+              iconSize: [72, 64],
+              iconAnchor: [36, 44]
+            }),
+            interactive: false,
+            keyboard: false
+          })
+        );
       });
 
       hazardLayerRef.current = group.addTo(map);
+
+      // Leaflet's style API has no pattern option, so define each animated
+      // pattern in the renderer's <defs> and point the pattern polygons' fills
+      // at it. Defs are rebuilt each render, so nothing accumulates over a pan.
+      const svg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
+      if (svg) {
+        let defs = svg.querySelector('defs');
+        if (!defs) {
+          defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+          svg.insertBefore(defs, svg.firstChild);
+        }
+        defs.innerHTML = '';
+        const injected = new Set<string>();
+        for (const { badge } of patternTargets) {
+          const pattern = warningPattern(badge, reduced);
+          if (injected.has(pattern.id)) continue;
+          injected.add(pattern.id);
+          const parsed = new DOMParser()
+            .parseFromString(
+              `<svg xmlns="http://www.w3.org/2000/svg">${pattern.def}</svg>`,
+              'image/svg+xml'
+            )
+            .documentElement.firstElementChild;
+          if (parsed) defs.appendChild(document.importNode(parsed, true));
+        }
+        for (const { geo, badge } of patternTargets) {
+          const pattern = warningPattern(badge, reduced);
+          geo.eachLayer((sub) => {
+            const el = (sub as unknown as { _path?: SVGPathElement })._path;
+            if (!el) return;
+            el.setAttribute('fill', `url(#${pattern.id})`);
+            el.setAttribute('fill-opacity', '1');
+            el.setAttribute('stroke', 'none');
+          });
+        }
+      }
+
+      // Legend order: the three the redesign leads with first, then the rest.
+      const legendOrder: AlertBadge[] =
+        ['heat', 'smoke', 'winter', 'fire', 'flood', 'storm', 'wind'];
+      setWarningBadges(legendOrder.filter((b) => present.has(b)));
     };
 
     const run = async () => {
@@ -1847,112 +1867,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [hazards, pinnedCampsites, isMapReady, iconForId]);
 
   /* ------------------------------------------------------------------ */
-  /* Alert patterns over affected parcels                                */
+  /* Alert patterns over affected parcels — REMOVED                      */
   /* ------------------------------------------------------------------ */
   /**
-   * A subtle repeating icon over the parcels an active alert covers.
-   *
-   * Crown and BLM land have no pin to badge, so the warning has to live on the
-   * fill. This is a small SVG layer of its own — the main boundary layer draws
-   * to a canvas, which can only do solid fills, so pattern fills get their own
-   * pane above it. Only the handful of parcels actually under an alert are drawn
-   * here, so it stays cheap. Combined disasters tile both glyphs.
+   * This used to stamp a warning pattern onto the boundary PARCELS an alert
+   * intersected. It is gone: warnings now cover the AREA the agency actually
+   * warned about (the alert's own geometry), animated, in the effect above —
+   * so the pattern no longer rides on parcel edges and the parcels are left to
+   * speak for themselves.
    */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-
-    const clear = () => {
-      if (!alertPatternLayerRef.current) return;
-      try { map.removeLayer(alertPatternLayerRef.current); } catch { /* detached */ }
-      alertPatternLayerRef.current = null;
-    };
-
-    if (isOfflineMode || hazards.length === 0 || boundaries.features.length === 0) {
-      clear();
-      return;
-    }
-
-    if (!map.getPane('alertPatternPane')) {
-      map.createPane('alertPatternPane');
-      const pane = map.getPane('alertPatternPane');
-      // Above the boundary canvas (390), well below camper reports (610).
-      if (pane) { pane.style.zIndex = '400'; pane.style.pointerEvents = 'none'; }
-    }
-
-    // Group affected parcels by the pattern they'll wear, so each pattern is
-    // defined once and drives one layer.
-    const groups = new Map<string, { badges: AlertBadge[]; features: BoundaryFeature[] }>();
-    for (const feature of boundaries.features) {
-      const badges = badgesForParcel(feature.geometry, hazards);
-      if (badges.length === 0) continue;
-      const key = patternKey(badges);
-      const group = groups.get(key);
-      if (group) group.features.push(feature);
-      else groups.set(key, { badges, features: [feature] });
-    }
-
-    clear();
-    if (groups.size === 0) return;
-
-    const renderer = L.svg({ pane: 'alertPatternPane', padding: 0.3 });
-    const layerGroup = L.layerGroup([], { pane: 'alertPatternPane' });
-    const built: { geo: L.GeoJSON; badges: AlertBadge[] }[] = [];
-
-    groups.forEach(({ badges, features }) => {
-      const geo = L.geoJSON(
-        { type: 'FeatureCollection', features } as any,
-        {
-          pane: 'alertPatternPane',
-          renderer,
-          interactive: false,
-          style: { stroke: false, fill: true, fillOpacity: 1 }
-        } as L.GeoJSONOptions & { renderer: L.Renderer }
-      );
-      layerGroup.addLayer(geo);
-      built.push({ geo, badges });
-    });
-
-    alertPatternLayerRef.current = layerGroup.addTo(map);
-
-    // The paths exist now. Define each pattern in the renderer's <defs>, then
-    // point the group's fills at it — Leaflet's style API has no pattern option,
-    // so this is done on the raw SVG.
-    const svg = (renderer as unknown as { _container?: SVGSVGElement })._container;
-    if (svg) {
-      let defs = svg.querySelector('defs');
-      if (!defs) {
-        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-        svg.insertBefore(defs, svg.firstChild);
-      }
-      const injected = new Set<string>();
-      for (const { badges } of built) {
-        const pattern = alertPattern(badges);
-        if (!pattern || injected.has(pattern.id)) continue;
-        injected.add(pattern.id);
-        const parsed = new DOMParser()
-          .parseFromString(
-            `<svg xmlns="http://www.w3.org/2000/svg">${pattern.def}</svg>`,
-            'image/svg+xml'
-          )
-          .documentElement.firstElementChild;
-        if (parsed) defs.appendChild(document.importNode(parsed, true));
-      }
-      for (const { geo, badges } of built) {
-        const pattern = alertPattern(badges);
-        if (!pattern) continue;
-        geo.eachLayer((sub) => {
-          const el = (sub as unknown as { _path?: SVGPathElement })._path;
-          if (!el) return;
-          el.setAttribute('fill', `url(#${pattern.id})`);
-          el.setAttribute('fill-opacity', '1');
-          el.setAttribute('stroke', 'none');
-        });
-      }
-    }
-
-    return clear;
-  }, [boundaries, hazards, isMapReady, isOfflineMode]);
 
   /* ------------------------------------------------------------------ */
   /* User location                                                       */
@@ -2185,22 +2108,46 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         )}
 
-        {hazards.length > 0 && (
-          <div className="bg-amber-950/90 backdrop-blur-md border border-amber-600/70 rounded-xl px-3 py-1.5 shadow-xl anim-in-up">
-            <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-200">
+        {/*
+          The weather-warning legend. The overlays themselves cannot be tapped,
+          so this is what tells a camper what the coloured, animated clouds mean
+          — a colour swatch and an icon per active family. Tapping a campsite
+          pin inside a warning is what surfaces the detail, in the bottom card.
+        */}
+        {warningBadges.length > 0 && (
+          <div className="bg-slate-900/92 backdrop-blur-md border border-amber-600/50 rounded-xl px-3 py-2 shadow-xl anim-in-up max-w-[15rem]">
+            <div className="flex items-center gap-1.5 mb-1.5">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>
-                {hazards.length} active alert{hazards.length === 1 ? '' : 's'} here
+              <span className="text-[11px] font-bold text-amber-100">
+                Weather warnings here
               </span>
             </div>
-            {/* Said out loud rather than quietly dropped: some alerts arrive
-                with no area attached, and guessing one would be worse. */}
+            <ul className="space-y-1">
+              {warningBadges.map((b) => (
+                <li key={b} className="flex items-center gap-2">
+                  <span
+                    className="w-3.5 h-3.5 rounded-sm shrink-0 border border-slate-950/50"
+                    style={{ background: BADGE_COLOR[b] }}
+                  />
+                  <span className="text-xs leading-none" aria-hidden="true">
+                    {WARNING_EMOJI[b]}
+                  </span>
+                  <span className="text-[10px] text-slate-200 font-semibold">
+                    {WARNING_LABEL[b]}
+                  </span>
+                </li>
+              ))}
+            </ul>
             {unmappableHazards > 0 && (
-              <p className="text-[9px] text-amber-300/80 leading-tight mt-0.5">
-                {unmappableHazards} not shown on the map — no area given. Open the
-                site details to read {unmappableHazards === 1 ? 'it' : 'them'}.
+              <p className="text-[9px] text-amber-300/80 leading-tight mt-1.5">
+                {unmappableHazards} more with no mapped area — tap a spot to read
+                {unmappableHazards === 1 ? ' it' : ' them'}.
               </p>
             )}
+            <p className="text-[9px] text-slate-500 leading-tight mt-1">
+              Shaded, animated areas are active warnings. Tap a campsite pin inside
+              one to see the details.
+            </p>
           </div>
         )}
 
@@ -2407,4 +2354,4 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       )}
     </div>
   );
-};
+};

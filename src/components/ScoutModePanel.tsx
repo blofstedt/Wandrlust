@@ -227,4 +227,4 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
       </div>
     </div>
   );
-};
+};

@@ -111,4 +111,4 @@ export const TierBadge: React.FC<{ tier: TrustTier; className?: string }> = ({
       {def.label}
     </span>
   );
-};
+};

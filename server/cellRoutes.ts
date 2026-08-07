@@ -375,4 +375,4 @@ export const registerCellRoutes = (app: Express): void => {
     store(cacheKey, body);
     return res.json(body);
   });
-};
+};

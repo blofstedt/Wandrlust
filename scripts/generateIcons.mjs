@@ -152,4 +152,4 @@ const run = async () => {
 run().catch((error) => {
   console.error('Icon generation failed:', error.message);
   process.exit(1);
-});
+});

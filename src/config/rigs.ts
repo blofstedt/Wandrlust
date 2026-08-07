@@ -24,4 +24,4 @@ export const RIG_AVATAR: Record<RigType, { emoji: string; label: string }> = {
 };
 
 /** Shown for a camper who hasn't said what they drive. */
-export const UNKNOWN_RIG_EMOJI = '📍';
+export const UNKNOWN_RIG_EMOJI = '📍';

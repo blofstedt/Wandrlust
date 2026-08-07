@@ -412,4 +412,4 @@ export const fetchOpenCellIdFor = async (
   }
 
   return anyResponse ? towers : null;
-};
+};

@@ -6,6 +6,8 @@ import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import {
   fetchCampsiteReviews, submitCampsiteReview, fetchCampsiteRating
 } from '../services/dataService';
+import { useAuth } from '../contexts/AuthContext';
+import { ReportContentSheet } from './ReportContentSheet';
 import {
   X,
   MapPin,
@@ -603,4 +605,4 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
     </div>
   );
 };
-
+

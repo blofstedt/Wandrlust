@@ -474,4 +474,4 @@ export const CURATED_CAMPSITES: Campsite[] =  [
     "reviewCount": 0,
     "source": "verified"
   }
-];
+];

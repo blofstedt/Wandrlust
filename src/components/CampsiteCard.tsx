@@ -187,4 +187,4 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = ({
       </div>
     </article>
   );
-};
+};

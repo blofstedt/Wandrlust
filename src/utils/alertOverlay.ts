@@ -246,4 +246,167 @@ export const dissolveSegments = (
     if (n === 1) out.push(seg);
   });
   return out;
+};
+
+/* ------------------------------------------------------------------ */
+/* Weather warning overlays (heat / smoke / cold, and the rest)        */
+/* ------------------------------------------------------------------ */
+/**
+ * These power the new look: instead of a grey, tappable badge sitting on a
+ * parcel edge, an active warning is drawn as a coloured, gently ANIMATED cloud
+ * over the exact area the agency warned about. The camper cannot select it —
+ * it is scenery, not a control — so a legend (top-left) carries the meaning by
+ * colour and icon, and tapping a campsite pin inside a warning is what surfaces
+ * the detail in the bottom card.
+ */
+
+/** Emoji + human label per family, for the map legend. */
+export const WARNING_EMOJI: Record<AlertBadge, string> = {
+  heat: '\u{1F321}\uFE0F', smoke: '\u{1F32B}\uFE0F', winter: '\u2744\uFE0F',
+  fire: '\u{1F525}', flood: '\u{1F30A}', storm: '\u26C8\uFE0F', wind: '\u{1F4A8}'
 };
+
+export const WARNING_LABEL: Record<AlertBadge, string> = {
+  heat: 'Heat', smoke: 'Smoke / air quality', winter: 'Cold / winter',
+  fire: 'Fire', flood: 'Flood', storm: 'Storm', wind: 'Wind'
+};
+
+/** The animated line style a warning or report wears. */
+export type WarningMotion = 'squiggle' | 'heatline' | 'zigzag' | 'wave';
+
+const WARNING_MOTION: Record<AlertBadge, WarningMotion> = {
+  // Smoke drifts, fire flickers upward — both read as rising squiggles.
+  smoke: 'squiggle', fire: 'squiggle',
+  // Heat shimmers up as wavy horizontal lines.
+  heat: 'heatline',
+  // Cold gets sharp zig-zags.
+  winter: 'zigzag',
+  // Water, storm and wind slide sideways as gentle waves.
+  flood: 'wave', storm: 'wave', wind: 'wave'
+};
+
+/** One tile of the animated line, on a 30x30 grid. */
+const WARNING_GLYPH: Record<WarningMotion, string> = {
+  squiggle: 'M0 15 q7.5 -7 15 0 t15 0',
+  heatline: 'M0 10 q7.5 -5 15 0 t15 0 M0 21 q7.5 -5 15 0 t15 0',
+  zigzag: 'M0 15 l7.5 -8 l7.5 8 l7.5 -8 l7.5 8',
+  wave: 'M0 16 q7.5 -6 15 0 t15 0 M0 24 q7.5 -6 15 0 t15 0'
+};
+
+/**
+ * A tiling <pattern> (as an SVG string) of the family's animated line, ready to
+ * inject into an SVG renderer's <defs> and reference as a fill. The whole
+ * pattern drifts via an animated `patternTransform`, so it reads as slowly
+ * moving smoke, rising heat, or sliding cold rather than a static hatch.
+ *
+ * Under prefers-reduced-motion the animation is dropped and the lines sit still.
+ */
+export const warningPattern = (
+  badge: AlertBadge, reduced = false
+): { id: string; def: string } => {
+  const motion = WARNING_MOTION[badge];
+  const color = BADGE_COLOR[badge];
+  const id = `wl-warn-${badge}${reduced ? '-static' : ''}`;
+  const rises = motion === 'squiggle' || motion === 'heatline';
+  // One tile per loop keeps the drift seamless. Rising families move up;
+  // sliding families move sideways.
+  const to = rises ? '0 -30' : '30 0';
+  const dur = motion === 'heatline' ? '9s' : motion === 'zigzag' ? '11s' : '7s';
+  const anim = reduced
+    ? ''
+    : `<animateTransform attributeName="patternTransform" type="translate" ` +
+      `from="0 0" to="${to}" dur="${dur}" repeatCount="indefinite"/>`;
+  const def =
+    `<pattern id="${id}" patternUnits="userSpaceOnUse" width="30" height="30">` +
+    anim +
+    `<path d="${WARNING_GLYPH[motion]}" fill="none" stroke="${color}" ` +
+    `stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>` +
+    `</pattern>`;
+  return { id, def };
+};
+
+/** The short trailing strand under a cloud, per motion style. */
+const CLOUD_STRAND: Record<WarningMotion, string> = {
+  zigzag: 'M0 0 l5 -5 l5 5 l5 -5',
+  heatline: 'M0 0 q6 -5 12 0 t12 0',
+  squiggle: 'M0 0 q5 -5 10 0 t10 0',
+  wave: 'M0 0 q5 -5 10 0 t10 0'
+};
+
+/** The cloud body, reused for the shadow, the fill, and any outline. */
+const CLOUD_BLOB =
+  '<circle cx="22" cy="30" r="11"/><circle cx="38" cy="24" r="14"/>' +
+  '<circle cx="52" cy="31" r="10"/><rect x="20" y="30" width="34" height="12" rx="6"/>';
+
+/**
+ * A coloured cloud with a slowly animated strand trailing beneath it.
+ *
+ * This is the shared shape behind BOTH the official weather-warning overlays
+ * and the camper hazard reports — the two now look alike on purpose. What still
+ * tells them apart is behaviour, not appearance: an official warning sits in a
+ * pointer-events:none pane and cannot be tapped, while a camper report is a
+ * live marker that opens the "reported by a camper, not verified" card. So this
+ * function never sets pointer-events itself — interactivity is decided by the
+ * pane and the Leaflet marker, not by the icon markup.
+ *
+ * Under prefers-reduced-motion the strand holds still.
+ */
+export const hazardCloudHtml = (opts: {
+  color: string;
+  motion: WarningMotion;
+  reduced?: boolean;
+  /** Cloud width in px; height scales with it. Defaults to 72. */
+  size?: number;
+  /** An emoji drawn on the cloud body, so a report is identifiable without a legend. */
+  glyph?: string;
+  /** A pale ring around the cloud, used to mark a confirmed camper report. */
+  outline?: boolean;
+}): string => {
+  const { color, motion, reduced = false, size = 72, glyph, outline = false } = opts;
+  const height = Math.round((size * 64) / 72);
+  const strand = CLOUD_STRAND[motion];
+  const drift = (dur: string) =>
+    reduced
+      ? ''
+      : `<animateTransform attributeName="transform" type="translate" ` +
+        `values="0 0; 0 -5; 0 0" dur="${dur}" repeatCount="indefinite" additive="sum"/>`;
+  const outlineSvg = outline
+    ? `<g fill="none" stroke="#F8FAFC" stroke-width="2" opacity="0.9">${CLOUD_BLOB}</g>`
+    : '';
+  const glyphSvg = glyph
+    ? `<text x="37" y="30" text-anchor="middle" dominant-baseline="central" ` +
+      `font-size="18">${glyph}</text>`
+    : '';
+  return `
+    <div style="width:${size}px;height:${height}px">
+      <svg width="${size}" height="${height}" viewBox="0 0 72 64" aria-hidden="true">
+        <g fill="#0F172A" opacity="0.35" transform="translate(0,2)">${CLOUD_BLOB}</g>
+        <g fill="${color}">${CLOUD_BLOB}</g>
+        ${outlineSvg}
+        ${glyphSvg}
+        <g fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" opacity="0.85">
+          <g transform="translate(26 46)">${drift('4.5s')}<path d="${strand}"/></g>
+          <g transform="translate(36 48)">${drift('5.6s')}<path d="${strand}"/></g>
+          <g transform="translate(46 46)">${drift('4.9s')}<path d="${strand}"/></g>
+        </g>
+      </svg>
+    </div>`;
+};
+
+/**
+ * The cloud for an official warning area's centroid — the "icon" the top-left
+ * legend names. Carries the family emoji so it matches the camper-report clouds.
+ */
+export const cloudMarkerHtml = (badge: AlertBadge, reduced = false): string =>
+  hazardCloudHtml({
+    color: BADGE_COLOR[badge],
+    motion: WARNING_MOTION[badge],
+    reduced,
+    glyph: WARNING_EMOJI[badge]
+  });
+
+/** The active alerts whose drawn area contains a point — for the bottom card. */
+export const alertsCoveringPoint = (
+  lat: number, lon: number, alerts: HazardAlert[]
+): HazardAlert[] =>
+  alerts.filter((a) => a.geometry && pointInGeometry(lat, lon, a.geometry));

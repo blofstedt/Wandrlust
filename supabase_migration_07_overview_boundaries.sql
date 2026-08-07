@@ -182,4 +182,4 @@ create index if not exists public_lands_area_idx
 --  should return the count of large parcels across Montana — tens, not
 --  thousands. If it returns thousands, the seeded rows have no area_sq_km and
 --  are all being kept; re-run `npm run seed -- --lands` to populate it.
--- =====================================================================
+-- =====================================================================

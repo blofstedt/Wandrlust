@@ -273,4 +273,4 @@ export const getTileCacheSizeMb = async (): Promise<number> => {
     return 0;
   }
   return Number((bytes / (1024 * 1024)).toFixed(1));
-};
+};

@@ -537,4 +537,4 @@ export const registerRouteRoutes = (app: Express): void => {
 
     return res.json(body);
   });
-};
+};

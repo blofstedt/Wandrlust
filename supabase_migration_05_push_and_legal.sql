@@ -483,4 +483,4 @@ commit;
 --  3. Verify:
 --       select status, count(*) from public.notification_queue group by 1;
 --       select * from public.pending_legal_documents(auth.uid());
--- =====================================================================
+-- =====================================================================

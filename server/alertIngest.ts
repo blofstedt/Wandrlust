@@ -351,4 +351,4 @@ export const registerAlertRoutes = (app: Express): void => {
     const report = await runIngest(baseUrl);
     return res.json(report);
   });
-};
+};

@@ -196,4 +196,4 @@ A new user should be `tourist` with score 0. That's correct — trust is earned.
 - [ ] **Confirm email** turned back ON
 - [ ] Custom SMTP configured
 - [ ] Google consent screen published
-- [ ] `service_role` key absent from anything client-side
+- [ ] `service_role` key absent from anything client-side

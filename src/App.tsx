@@ -905,4 +905,4 @@ export default function App() {
       <LegalDocumentModal kind={legalDoc} onClose={() => setLegalDoc(null)} />
     </div>
   );
-}
+}

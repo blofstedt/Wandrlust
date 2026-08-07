@@ -108,4 +108,4 @@ export default defineConfig(({ mode }) => {
     // which are the ones that matter when debugging a live incident.
     esbuild: isProd ? { pure: ['console.log', 'console.debug'] } : undefined
   };
-});
+});

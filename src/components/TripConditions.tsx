@@ -282,4 +282,4 @@ export const ArrivalWeatherCard: React.FC<{
       )}
     </section>
   );
-};
+};

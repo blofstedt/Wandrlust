@@ -75,4 +75,4 @@ export const directionsAppName = (): string =>
 export const openDirections = (latitude: number, longitude: number): void => {
   if (typeof window === 'undefined') return;
   window.open(getDirectionsUrl(latitude, longitude), '_blank', 'noopener,noreferrer');
-};
+};

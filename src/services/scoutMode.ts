@@ -323,4 +323,4 @@ export class ScoutRecorder {
   isRunning(): boolean {
     return this.running;
   }
-}
+}

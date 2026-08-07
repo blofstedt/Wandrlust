@@ -211,4 +211,4 @@ Use the app to make your trip better — not to make it safe.
 
 ---
 
-*Last updated: [DATE]*
+*Last updated: [DATE]*

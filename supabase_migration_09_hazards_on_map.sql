@@ -87,4 +87,4 @@ comment on function public.hazards_near(double precision, double precision, doub
 grant execute on function public.hazards_near(double precision, double precision, double precision)
   to anon, authenticated;
 
-commit;
+commit;

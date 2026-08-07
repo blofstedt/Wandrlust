@@ -203,4 +203,4 @@ export const mergeCampsites = (...groups: Campsite[][]): Campsite[] => {
   }
 
   return merged;
-};
+};

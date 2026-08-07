@@ -215,4 +215,4 @@ export const fetchOpenMeteoForecast = async (
 
 /** Rough test for "is this coordinate in the contiguous US" — picks the units. */
 export const isUnitedStates = (lat: number, lon: number): boolean =>
-  lat >= 24.4 && lat <= 49.5 && lon >= -125.1 && lon <= -66.8;
+  lat >= 24.4 && lat <= 49.5 && lon >= -125.1 && lon <= -66.8;

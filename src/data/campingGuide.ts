@@ -518,4 +518,4 @@ export const CAMPING_GUIDE: GuideSection[] = [
       }
     ]
   }
-];
+];

@@ -18,6 +18,8 @@ import type { CellCoverage } from '../types';
 import { fetchRulesAtPoint, fetchHazardsAtPoint, checkIn, PointRules, PointHazard } from '../services/dataService';
 import { HazardAlertPanel } from './HazardAlertPanel';
 import { CellCoverageCard } from './TripConditions';
+import { SubmissionChip } from './SubmissionChip';
+import { ReportContentSheet } from './ReportContentSheet';
 import { useAuth } from '../contexts/AuthContext';
 import { haptic } from '../utils/animation';
 
@@ -438,4 +440,4 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
       />
     </div>
   );
-};
+};

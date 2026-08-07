@@ -107,4 +107,4 @@ commit;
 --
 --  Left commented deliberately: an uncommented statement here would make
 --  this migration fail on a permission error nobody can fix from this
---  side, and take the search_path fixes above down with it.
+--  side, and take the search_path fixes above down with it.

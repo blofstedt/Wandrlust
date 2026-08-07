@@ -290,4 +290,4 @@ export const fetchBoundaries = async (
     if (signal?.aborted || (error as Error)?.name === 'AbortError') return null;
     return EMPTY_BOUNDARIES;
   }
-};
+};

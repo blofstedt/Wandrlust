@@ -431,4 +431,4 @@ commit;
 --    select cron.schedule('release-reviews', '0 3 * * *',
 --      $$select public.release_stale_reviews()$$);
 --    select * from public.hazards_at_point(51.0447, -114.0719);
--- =====================================================================
+-- =====================================================================

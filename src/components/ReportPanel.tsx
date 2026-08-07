@@ -175,4 +175,4 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
       </div>
     </div>
   );
-};
+};

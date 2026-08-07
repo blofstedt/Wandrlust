@@ -37,4 +37,4 @@ export const requireSupabase = (): SupabaseClient => {
     );
   }
   return supabase;
-};
+};

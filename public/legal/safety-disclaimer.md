@@ -52,4 +52,4 @@ is not.
 - Carry a way to call for help that does not depend on cell coverage
 - Check conditions with the agencies whose job it is to know them
 
-**Use the app to make your trip better — not to make it safe.**
+**Use the app to make your trip better — not to make it safe.**

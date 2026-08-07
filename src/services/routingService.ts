@@ -90,4 +90,4 @@ export const calculateRoute = async (
   } catch {
     return { ...EMPTY_ROUTE, message: 'Routing unavailable offline' };
   }
-};
+};

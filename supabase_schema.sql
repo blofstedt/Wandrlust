@@ -502,4 +502,4 @@ commit;
 --    npm run seed
 --    select public.reverify_campsites();
 --    select land_verification, count(*) from public.campsites group by 1;
--- =====================================================================
+-- =====================================================================

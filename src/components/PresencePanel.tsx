@@ -228,4 +228,4 @@ export const PresencePanel: React.FC<PresencePanelProps> = ({
       </div>
     </div>
   );
-};
+};
