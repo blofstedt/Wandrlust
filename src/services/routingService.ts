@@ -1,28 +1,24 @@
 import type { Rig } from './dataService';
 
 /**
- * Rig-aware routing.
+ * Routing, as far as the browser is concerned.
  *
- * WHY THIS IS A THIN WRAPPER AND NOT A ROUTING ENGINE
+ * The engine ladder, the track handling and the shortfall measurement all live
+ * in `server/routeRoutes.ts` — read that file for why any of it works the way
+ * it does. This side just asks and renders what comes back.
  *
- * Vehicle-dimension routing needs a road graph carrying height, weight and
- * width restrictions. Building that is a multi-year project — OSM's coverage
- * of `maxheight` / `maxweight` tags is patchy, and the consequence of an error
- * is a wedged rig under a bridge.
+ * It moved off the client for three reasons: the Valhalla instance we rely on
+ * for forest-road routing asks for a User-Agent a browser cannot set, routes
+ * are worth caching across users, and an API key has no business in a bundle.
  *
- * So we delegate, and default to OSRM, which is free but has NO dimension
- * awareness. That distinction is surfaced to the user rather than hidden: a
- * route from a non-restriction-aware engine is explicitly labelled as such.
- *
- * For real clearance routing set VITE_ROUTING_PROVIDER=openrouteservice and
- * VITE_ORS_API_KEY. ORS supports an HGV profile with real restrictions.
+ * Never throws. With no server or no connection you get `ok: false` and a
+ * message saying so.
  */
 
 export interface RouteRequest {
   from: [number, number]; // [lat, lon]
   to: [number, number];
   rig?: Rig | null;
-  avoidUnpaved?: boolean;
 }
 
 export interface RouteWarning {
@@ -38,17 +34,29 @@ export interface RouteResult {
   provider: string;
   /** True when the engine actually applied the rig's dimensions. */
   dimensionAware: boolean;
+  /** True when the engine will drive an unpaved track to get there. */
+  routesTracks: boolean;
+  /**
+   * How far short of your pin the route ends, in km.
+   *
+   * Almost never zero, and that is honest rather than broken: no router
+   * carries every two-track. Anything above ~0.15 km is surfaced in the UI and
+   * drawn as a dashed line that is explicitly not called a route.
+   */
+  gapToDestinationKm: number;
   warnings: RouteWarning[];
   message: string;
 }
 
-const EMPTY_ROUTE: RouteResult = {
+export const EMPTY_ROUTE: RouteResult = {
   ok: false,
   geometry: [],
   distanceKm: 0,
   durationMin: 0,
   provider: 'none',
   dimensionAware: false,
+  routesTracks: false,
+  gapToDestinationKm: 0,
   warnings: [],
   message: 'No route'
 };
@@ -76,163 +84,36 @@ export const staticRigWarnings = (rig: Rig | null | undefined): RouteWarning[] =
       message: `At ${(rig.gross_weight_kg / 1000).toFixed(1)} t you may exceed posted limits on secondary bridges and seasonal-load-restricted roads.`
     });
   }
-  if (rig.ground_clearance_cm && rig.ground_clearance_cm < 20 && !rig.is_4wd) {
-    out.push({
-      severity: 'caution',
-      message: 'Low clearance and 2WD: avoid high-clearance and 4x4-rated access roads.'
-    });
-  }
-  if (rig.has_trailer) {
-    out.push({
-      severity: 'info',
-      message: 'Towing: check turnaround space before committing to a spur road.'
-    });
-  }
   return out;
 };
 
-/* ------------------------------------------------------------------ */
-/* OSRM — free, no key, NOT dimension aware                            */
-/* ------------------------------------------------------------------ */
+export const calculateRoute = async (
+  req: RouteRequest,
+  signal?: AbortSignal
+): Promise<RouteResult> => {
+  const params = new URLSearchParams({
+    fromLat: req.from[0].toFixed(6),
+    fromLon: req.from[1].toFixed(6),
+    toLat: req.to[0].toFixed(6),
+    toLon: req.to[1].toFixed(6)
+  });
 
-const routeViaOsrm = async (req: RouteRequest): Promise<RouteResult> => {
-  const [fromLat, fromLon] = req.from;
-  const [toLat, toLon] = req.to;
+  // Only send what the user has actually recorded. A zero here would read as
+  // "this vehicle is 0 cm tall" and quietly change which roads are allowed.
+  const rig = req.rig;
+  if (rig?.height_cm) params.set('heightCm', String(rig.height_cm));
+  if (rig?.width_cm) params.set('widthCm', String(rig.width_cm));
+  if (rig?.length_cm) params.set('lengthCm', String(rig.length_cm));
+  if (rig?.gross_weight_kg) params.set('weightKg', String(rig.gross_weight_kg));
+  if (rig?.ground_clearance_cm) params.set('clearanceCm', String(rig.ground_clearance_cm));
+  if (rig?.is_4wd) params.set('is4wd', 'true');
+  if (rig?.has_trailer) params.set('hasTrailer', 'true');
 
   try {
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${fromLon},${fromLat};${toLon},${toLat}` +
-      `?overview=full&geometries=geojson`;
-
-    const res = await fetch(url);
+    const res = await fetch(`/api/route?${params}`, { signal });
     if (!res.ok) return { ...EMPTY_ROUTE, message: `Routing failed (${res.status})` };
-
-    const data = await res.json();
-    const route = data?.routes?.[0];
-    if (!route) return { ...EMPTY_ROUTE, message: 'No route found' };
-
-    const coords: [number, number][] = (route.geometry?.coordinates ?? []).map(
-      ([lon, lat]: [number, number]) => [lat, lon] as [number, number]
-    );
-
-    const warnings = staticRigWarnings(req.rig);
-    warnings.unshift({
-      severity: 'critical',
-      message:
-        'This route does NOT account for your rig dimensions. It ignores height, ' +
-        'weight and width restrictions. Verify clearances yourself, especially on ' +
-        'forest and secondary roads.'
-    });
-
-    return {
-      ok: true,
-      geometry: coords,
-      distanceKm: Number((route.distance / 1000).toFixed(1)),
-      durationMin: Math.round(route.duration / 60),
-      provider: 'OSRM',
-      dimensionAware: false,
-      warnings,
-      message: 'Route calculated without dimension restrictions'
-    };
+    return (await res.json()) as RouteResult;
   } catch {
     return { ...EMPTY_ROUTE, message: 'Routing unavailable offline' };
   }
 };
-
-/* ------------------------------------------------------------------ */
-/* OpenRouteService — HGV profile, genuinely dimension aware           */
-/* ------------------------------------------------------------------ */
-
-const routeViaOrs = async (req: RouteRequest, apiKey: string): Promise<RouteResult> => {
-  const [fromLat, fromLon] = req.from;
-  const [toLat, toLon] = req.to;
-  const rig = req.rig;
-
-  const restrictions: Record<string, number> = {};
-  if (rig?.height_cm) restrictions.height = rig.height_cm / 100;
-  if (rig?.width_cm) restrictions.width = rig.width_cm / 100;
-  if (rig?.length_cm) restrictions.length = rig.length_cm / 100;
-  if (rig?.gross_weight_kg) restrictions.weight = rig.gross_weight_kg / 1000;
-
-  const body: Record<string, unknown> = {
-    coordinates: [
-      [fromLon, fromLat],
-      [toLon, toLat]
-    ],
-    profile: 'driving-hgv',
-    format: 'geojson'
-  };
-
-  if (Object.keys(restrictions).length > 0) {
-    body.options = { profile_params: { restrictions }, vehicle_type: 'hgv' };
-  }
-  if (req.avoidUnpaved) {
-    body.options = { ...(body.options as object), avoid_features: ['unpavedroads'] };
-  }
-
-  try {
-    const res = await fetch(
-      'https://api.openrouteservice.org/v2/directions/driving-hgv/geojson',
-      {
-        method: 'POST',
-        headers: { Authorization: apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      }
-    );
-
-    if (!res.ok) {
-      // Fall back rather than leaving the user with nothing.
-      const fallback = await routeViaOsrm(req);
-      return {
-        ...fallback,
-        message: `Dimension routing failed (${res.status}); showing an unrestricted route instead.`
-      };
-    }
-
-    const data = await res.json();
-    const feature = data?.features?.[0];
-    if (!feature) return { ...EMPTY_ROUTE, message: 'No route found for this rig' };
-
-    const coords: [number, number][] = (feature.geometry?.coordinates ?? []).map(
-      ([lon, lat]: [number, number]) => [lat, lon] as [number, number]
-    );
-    const summary = feature.properties?.summary ?? {};
-
-    const warnings = staticRigWarnings(req.rig);
-    warnings.unshift({
-      severity: 'info',
-      message:
-        'Route respects your rig height, width, length and weight where the ' +
-        'underlying map data records restrictions. Unmapped restrictions still exist.'
-    });
-
-    return {
-      ok: true,
-      geometry: coords,
-      distanceKm: Number(((summary.distance ?? 0) / 1000).toFixed(1)),
-      durationMin: Math.round((summary.duration ?? 0) / 60),
-      provider: 'OpenRouteService (HGV)',
-      dimensionAware: true,
-      warnings,
-      message: 'Route calculated with rig restrictions'
-    };
-  } catch {
-    return routeViaOsrm(req);
-  }
-};
-
-/* ------------------------------------------------------------------ */
-
-export const calculateRoute = async (req: RouteRequest): Promise<RouteResult> => {
-  const provider = import.meta.env.VITE_ROUTING_PROVIDER;
-  const orsKey = import.meta.env.VITE_ORS_API_KEY;
-
-  if (provider === 'openrouteservice' && orsKey) return routeViaOrs(req, orsKey);
-  return routeViaOsrm(req);
-};
-
-/** Does the app currently have dimension-aware routing available? */
-export const hasDimensionRouting = (): boolean =>
-  import.meta.env.VITE_ROUTING_PROVIDER === 'openrouteservice' &&
-  Boolean(import.meta.env.VITE_ORS_API_KEY);

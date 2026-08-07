@@ -43,7 +43,7 @@ and users silently stop receiving alerts while everything *looks* fine.
 | `npm run vapid` + `web-push` | Push delivery |
 | `NWS_USER_AGENT` | NWS asks for a contact string |
 | Custom SMTP in Supabase | Built-in sender is rate-limited to near-uselessness |
-| `VITE_ORS_API_KEY` | Otherwise routing ignores rig dimensions |
+| `ORS_API_KEY` | Optional. Routing works without it via Valhalla; this adds real rig-dimension routing |
 | `OPENCELLID_API_KEY` | Otherwise the cell signal panel says it has no data |
 
 ---

@@ -7,6 +7,7 @@ import { registerBoundaryRoutes } from './server/boundaryRoutes';
 import { registerWeatherRoutes } from './server/weatherRoutes';
 import { registerPushRoutes } from './server/pushRoutes';
 import { registerCellRoutes } from './server/cellRoutes';
+import { registerRouteRoutes } from './server/routeRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 
 /**
@@ -45,6 +46,9 @@ const startServer = async (): Promise<void> => {
 
   // Approximate cell coverage by carrier. Inert without OPENCELLID_API_KEY.
   registerCellRoutes(app);
+
+  // Routing. Tries engines that can drive a forest road before ones that can't.
+  registerRouteRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.

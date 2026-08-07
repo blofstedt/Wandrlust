@@ -2,7 +2,7 @@ import React from 'react';
 import { Signal, ThermometerSun, Clock, Loader2, CloudOff } from 'lucide-react';
 import type { CellCoverage } from '../types';
 import type { WeatherSnapshot } from '../services/weatherService';
-import { forecastOnArrival } from '../services/weatherService';
+import { forecastOnArrival, SOURCE_LABEL } from '../services/weatherService';
 
 /**
  * The two things a camper asks about a spot before committing to the drive:
@@ -129,6 +129,11 @@ export const ArrivalWeatherCard: React.FC<{
   // twice under two different headings as though they were two forecasts.
   const arrivalIsNow = arrival?.isNow ?? false;
 
+  // Hourly data makes "when you arrive" a genuinely different answer from
+  // "right now". Twelve-hour blocks usually don't, and the caption below has
+  // to say which one the reader is looking at.
+  const hourly = weather.resolution === 'hourly';
+
   return (
     <section>
       <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
@@ -210,8 +215,10 @@ export const ArrivalWeatherCard: React.FC<{
       {!isLoading && now && arrival?.period && (
         <p className="text-[9px] text-slate-500 leading-tight mt-1.5">
           {arrivalIsNow
-            ? `Short enough drive that arrival falls inside the current forecast period — same conditions. Driving time from ${originLabel}.`
-            : `Forecast periods are about twelve hours long, so this is the block your arrival falls in, not an hour-by-hour prediction. Driving time from ${originLabel}.`}
+            ? `Short enough drive that you arrive inside the current forecast slot — same conditions. Driving time from ${originLabel}.`
+            : hourly
+            ? `The forecast hour your arrival falls in. Driving time from ${originLabel}, so a slow road moves it. Source: ${SOURCE_LABEL[weather.source]}.`
+            : `This source only publishes twelve-hour blocks, so this is the block your arrival falls in rather than an hour-by-hour prediction. Driving time from ${originLabel}.`}
         </p>
       )}
     </section>
