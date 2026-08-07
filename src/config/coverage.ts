@@ -33,7 +33,9 @@ export const COVERAGE_BBOX: BoundingBox = {
   minLat: 24.4,
   minLon: -139.5,
   maxLat: 60.1,
-  maxLon: -52.6
+  // Pushed east to -52.0 so the box no longer clips the Avalon Peninsula —
+  // St John's sits at ~-52.7 and was falling just outside the old -52.6 edge.
+  maxLon: -52.0
 };
 
 /**
@@ -47,10 +49,25 @@ export const COVERAGE_OUTLINE: [number, number][] = [
   [-114.8, 32.5], [-111.1, 31.3], [-108.2, 31.3], [-106.5, 31.8],
   [-103.1, 29.0], [-101.4, 29.8], [-99.1, 26.4], [-97.1, 25.9],
   [-94.0, 29.7], [-89.0, 29.0], [-85.0, 29.7], [-82.9, 24.5], [-80.0, 25.2],
-  [-81.0, 31.0], [-75.5, 35.2], [-70.0, 41.5], [-66.9, 44.8],
-  [-59.0, 46.5], [-52.6, 47.5],
+  [-81.0, 31.0], [-75.5, 35.2], [-70.0, 41.5],
+  // Down the Gulf of Maine and AROUND Nova Scotia, which the old straight
+  // hop from New Brunswick to Newfoundland sliced clean through — the whole
+  // southern half of the province was being greyed out.
+  [-67.3, 44.8],   // New Brunswick / Maine coast
+  [-66.4, 43.7],   // Bay of Fundy mouth
+  [-65.8, 43.3],   // Cape Sable — the southern tip of Nova Scotia
+  [-62.0, 44.3],   // Nova Scotia south shore
+  [-59.7, 45.4],   // Canso, toward Cape Breton
+  [-59.6, 47.1],   // Cape Breton north into the Cabot Strait
+  // ...then Newfoundland, which was likewise cut off at its western edge.
+  [-59.4, 47.6],   // south coast approach
+  [-55.4, 46.7],   // Burin / south coast
+  [-52.6, 46.6],   // Cape Race
+  [-52.2, 47.6],   // Cape Spear / St John's, kept inside the mask
+  [-52.2, 51.6],   // up the east coast
+  [-55.6, 51.7],   // Strait of Belle Isle
   // The 60th parallel: the southern edge of the three territories.
-  [-52.6, 60.0], [-139.0, 60.0],
+  [-56.0, 60.0], [-139.0, 60.0],
   [-130.0, 54.0], [-125.0, 48.4]
 ];
 
@@ -109,7 +126,7 @@ export const BOUNDARY_MIN_ZOOM = 7;
  * drawn once and then simply panned around, rather than refetched on every
  * gesture.
  */
-export const BOUNDARY_OVERVIEW_MIN_ZOOM = 3;
+export const BOUNDARY_OVERVIEW_MIN_ZOOM = 2;
 
 /**
  * Smallest parcel, in km², worth drawing in the overview at a given zoom.
@@ -120,6 +137,9 @@ export const BOUNDARY_OVERVIEW_MIN_ZOOM = 3;
  * at BOUNDARY_MIN_ZOOM.
  */
 export const overviewMinAreaSqKm = (zoom: number): number => {
+  // Zoomed fully out, only the continent-scale blocks are worth a draw call —
+  // but there ARE some, so the map is never blank at minimum zoom.
+  if (zoom <= 2) return 8000;
   if (zoom <= 3) return 4000;
   if (zoom <= 4) return 1500;
   if (zoom <= 5) return 500;

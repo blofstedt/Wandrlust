@@ -300,6 +300,46 @@ const bboxExtent = (geometry: unknown): number => {
   return (maxLon - minLon) * (maxLat - minLat);
 };
 
+/** A geometry's bounding box as [minLon, minLat, maxLon, maxLat], or null. */
+const geometryBbox = (
+  geometry: unknown
+): [number, number, number, number] | null => {
+  const g = geometry as { coordinates?: unknown };
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  const walk = (node: unknown): void => {
+    if (!Array.isArray(node)) return;
+    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+      const [lon, lat] = node as [number, number];
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      return;
+    }
+    node.forEach(walk);
+  };
+  walk(g?.coordinates);
+  if (minLon === Infinity) return null;
+  return [minLon, minLat, maxLon, maxLat];
+};
+
+/**
+ * The NARROWEST side of a feature's bounding box, in screen pixels at the
+ * current view. This is what tells a razor-thin sliver apart from a real
+ * parcel: a sliver is long but only a pixel or two wide, so its narrow side is
+ * tiny however big its area or its long side is. A genuine parcel is wide on
+ * both axes. Used to drop slivers before they draw, so leftover hairline
+ * splinters from the source data simply never appear.
+ */
+const featureMinDimPx = (map: L.Map, geometry: unknown): number => {
+  const box = geometryBbox(geometry);
+  if (!box) return Number.MAX_SAFE_INTEGER;
+  const [minLon, minLat, maxLon, maxLat] = box;
+  const a = map.latLngToLayerPoint([minLat, minLon]);
+  const b = map.latLngToLayerPoint([maxLat, maxLon]);
+  return Math.min(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+};
+
 /** Pull the fields we show from a boundary feature's properties. */
 const landFromFeature = (properties: Record<string, any> | undefined): DestinationLand | undefined => {
   const p = properties;
@@ -859,6 +899,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * daylight on a phone. It is now a brighter stroke over a stronger fill.
      * The edges say the same thing they always did; you can just see them.
      */
+    // Below this many pixels on its short side, a parcel is a razor-thin sliver
+    // and is not drawn at all. Slightly higher in the overview, where nothing
+    // that small is legible anyway.
+    const SLIVER_PX = 2.5;
+
     const parcelStyle = (feature: any, centreLat: number, currentZoom: number, overview: boolean) => {
       const confidence: BoundaryConfidence =
         feature?.properties?._confidence ?? 'managing_agency';
@@ -915,6 +960,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // outline, so no parcel disappears at any zoom.
       const bands = new Map<string, { accuracy: EdgeAccuracy; color: string; features: BoundaryFeature[] }>();
       collection.features.forEach((feature) => {
+        // A razor-thin sliver is narrower than a couple of pixels on its short
+        // side. Drop it — outline and all — so leftover hairline splinters from
+        // the source data don't draw. Real parcels are wide on both axes.
+        if (featureMinDimPx(map, feature.geometry) < SLIVER_PX) return;
         const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
         const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
         const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
@@ -1042,14 +1091,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
 
       /* -- New data: full rebuild --------------------------------------- */
-      clearLayer();
       const renderer = boundaryRenderer();
 
       // No uncertainty band in the overview. At zoom 4 a ±200 m band is a
       // fraction of a pixel, so it would draw as a slightly thicker line that
       // says nothing — while costing one extra pass over every polygon.
       const halo = overview ? null : buildHalo(collection, centreLat, currentZoom);
-      if (halo) haloLayerRef.current = halo.group;
 
       const fill = L.geoJSON(collection as any, {
         pane: 'boundariesPane',
@@ -1057,21 +1104,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // Taps pass straight through to the map, which drops the destination
         // pin and reads this parcel's rules out of the collection in memory.
         interactive: false,
+        // Razor-thin slivers are filtered out here too, so the fill never draws
+        // a hairline splinter the halo already refused to outline.
+        filter: (feature: any) =>
+          featureMinDimPx(map, feature.geometry) >= (overview ? 3 : SLIVER_PX),
         style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview)
       } as RenderedGeoJSONOptions);
-      fillLayerRef.current = fill;
 
-      // A compositor blur turns the discrete rings into a continuous gradient.
-      // This replaced an SVG filter over the whole pane, which forced a full
-      // repaint of every polygon on every frame of a pan.
       if (pane) {
         pane.style.filter =
           halo && halo.widest > 0 ? `blur(${edgeBlurPx(halo.widest).toFixed(1)}px)` : '';
       }
 
-      boundaryLayerRef.current = L.layerGroup(
-        halo ? [halo.group, fill] : [fill]
-      ).addTo(map);
+      // SWAP, don't clear-then-build. The new layer goes on the map BEFORE the
+      // old one comes off, so there is never a frame with no boundaries — which
+      // is what made them flash and disappear on every new fetch.
+      const previous = boundaryLayerRef.current;
+      const nextGroup = L.layerGroup(halo ? [halo.group, fill] : [fill]).addTo(map);
+      if (previous) { try { map.removeLayer(previous); } catch { /* detached */ } }
+
+      boundaryLayerRef.current = nextGroup;
+      fillLayerRef.current = fill;
+      haloLayerRef.current = halo ? halo.group : null;
       renderSignatureRef.current = signature;
       renderedCollectionRef.current = collection;
     };
@@ -1657,6 +1711,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let cancelled = false;
     let controller: AbortController | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
+    // The area the current clouds were fetched for. A pan or zoom whose new
+    // view still sits inside this padded box reuses what is already drawn
+    // instead of refetching and rebuilding — which is what made the clouds
+    // blink out and back on every gesture. Warnings do not depend on zoom, so
+    // only leaving the loaded area triggers a refetch.
+    let loadedAlertBox: L.LatLngBounds | null = null;
 
     /**
      * Draw the active warnings, split by tier.
@@ -1672,7 +1732,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * Alerts the feed gave no geometry for are counted, never pinned to a guess.
      */
     const render = (alerts: HazardAlert[]) => {
-      clear();
       const placeable = alerts.filter((a) => Array.isArray(a.centroid) && a.geometry);
 
       const group = L.layerGroup([]);
@@ -1737,7 +1796,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         }
       });
 
+      // Swap: the fresh clouds go on the map before the old ones come off, so
+      // there is no blank frame between one render and the next.
+      const previous = hazardLayerRef.current;
       hazardLayerRef.current = group.addTo(map);
+      if (previous) { try { map.removeLayer(previous); } catch { /* detached */ } }
 
       // Leaflet's style API has no pattern option, so each glyph pattern is
       // defined in the glyph renderer's <defs> and the cloud's glyph path is
@@ -1784,15 +1847,27 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const run = async () => {
       const b = map.getBounds();
+      // Still inside the area we last fetched for: the clouds already cover the
+      // view, so leave them exactly as they are. This is the guard that stops
+      // the constant refetch-and-rebuild on every small pan or zoom.
+      if (loadedAlertBox && loadedAlertBox.contains(b)) return;
+
       controller?.abort();
       controller = new AbortController();
 
+      // Fetch a padded box, bigger than the viewport, so a short pan afterwards
+      // stays inside it and needs nothing.
+      const padded = b.pad(0.4);
       const alerts = await fetchAreaAlerts(
-        { minLat: b.getSouth(), minLon: b.getWest(), maxLat: b.getNorth(), maxLon: b.getEast() },
+        {
+          minLat: padded.getSouth(), minLon: padded.getWest(),
+          maxLat: padded.getNorth(), maxLon: padded.getEast()
+        },
         controller.signal
       );
       if (cancelled) return;
 
+      loadedAlertBox = padded;
       const sorted = sortAlerts(alerts);
       setHazards(sorted);
       setUnmappableHazards(sorted.filter((a) => !a.centroid || !a.geometry).length);

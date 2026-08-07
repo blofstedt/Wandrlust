@@ -97,4 +97,4 @@ export const AlertCard: React.FC<AlertCardProps> = ({ alert, onClose }) => {
       </div>
     </div>
   );
-};
+};
