@@ -290,23 +290,44 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
  * Sized generously and given a dark outline so it stays readable over both
  * bright snow and dark forest in satellite imagery.
  */
+/**
+ * An alert marker that says what KIND of alert it is at a glance.
+ *
+ * Every one of these used to be the same grey exclamation triangle, so a map
+ * with a fire ban, a flood watch and a snowfall warning on it looked like
+ * three copies of one anonymous hazard. The family's own colour and symbol now
+ * carry the meaning: you should be able to tell fire from flood without
+ * opening anything.
+ *
+ * Shape follows severity rather than adding a second colour language — a
+ * severe or extreme alert gets the pointed triangle and a pulse, everything
+ * milder gets a calmer rounded badge. That keeps the loud treatment for things
+ * that have actually been called dangerous.
+ */
 const buildHazardIcon = (alert: HazardAlert): L.DivIcon => {
   const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
   const urgent = alert.severity === 'extreme' || alert.severity === 'severe';
+  const size = urgent ? 34 : 28;
+
+  const shape = urgent
+    ? `<path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A"
+             stroke-width="1.6" stroke-linejoin="round"/>`
+    : `<rect x="2" y="4" width="20" height="16" rx="5" fill="${style.color}"
+             stroke="#0F172A" stroke-width="1.5"/>`;
 
   return L.divIcon({
     className: 'hazard-alert-marker',
     html: `
-      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}">
-        <svg viewBox="0 0 24 24" class="w-8 h-8 drop-shadow-lg" aria-hidden="true">
-          <path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A" stroke-width="1.6"
-                stroke-linejoin="round"/>
-          <path d="M12 9.2v5.1" stroke="#0F172A" stroke-width="2.1" stroke-linecap="round"/>
-          <circle cx="12" cy="17.6" r="1.15" fill="#0F172A"/>
-        </svg>
+      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}"
+           style="width:${size}px;height:${size}px">
+        <svg viewBox="0 0 24 24" class="absolute inset-0 w-full h-full drop-shadow-lg"
+             aria-hidden="true">${shape}</svg>
+        <span class="relative" style="font-size:${
+          urgent ? size * 0.38 : size * 0.44
+        }px;line-height:1;${urgent ? 'padding-top:' + size * 0.16 + 'px' : ''}">${style.icon}</span>
       </div>`,
-    iconSize: [32, 32],
-    iconAnchor: [16, 24]
+    iconSize: [size, size],
+    iconAnchor: [size / 2, urgent ? size * 0.78 : size / 2]
   });
 };
 
@@ -1520,29 +1541,78 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let controller: AbortController | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
 
+    /**
+     * What this particular alert says.
+     *
+     * Everything here is per-alert and conditional. The old version printed
+     * every field unconditionally, so a feed that supplies no description — and
+     * Environment Canada's alert index supplies none — produced a popup with
+     * the title repeated twice and two empty lines under it. If a field is
+     * absent it is left out entirely rather than rendered blank.
+     *
+     * Escaped because `description` and `instruction` are agency text carried
+     * straight from a government feed into `innerHTML`.
+     */
+    const esc = (raw: unknown): string =>
+      String(raw ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
     const popupHtml = (alert: HazardAlert): string => {
       const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
-      const expires = alert.expires
-        ? `<div style="color:#64748B;font-size:10px;margin-top:6px">Until ${new Date(
-            alert.expires
-          ).toLocaleString()}</div>`
-        : '';
-      const instruction = alert.instruction
-        ? `<div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:10px;line-height:1.35">${alert.instruction}</div>`
+      const when = (iso: string | null) =>
+        iso ? new Date(iso).toLocaleString([], {
+          weekday: 'short', hour: 'numeric', minute: '2-digit'
+        }) : null;
+
+      const row = (label: string, value: string | null | undefined) =>
+        value
+          ? `<div style="display:flex;gap:6px;margin-top:4px;font-size:10px;line-height:1.4">
+               <span style="color:#94A3B8;flex:0 0 52px">${label}</span>
+               <span style="color:#334155">${esc(value)}</span>
+             </div>`
+          : '';
+
+      // The headline is only worth its line when it says something the title
+      // did not — ECCC frequently repeats the event name into it.
+      const headline =
+        alert.headline && alert.headline.trim().toLowerCase() !== alert.event.trim().toLowerCase()
+          ? `<div style="color:#334155;margin-top:3px;font-size:11px">${esc(alert.headline)}</div>`
+          : '';
+
+      const description = alert.description
+        ? `<div style="color:#475569;margin-top:6px;font-size:11px;line-height:1.45;max-height:9em;overflow:auto">${esc(
+            alert.description
+          )}</div>`
         : '';
 
-      return `<div style="font-family:system-ui;font-size:12px;min-width:220px;max-width:300px">
-          <span style="display:inline-block;padding:2px 6px;border-radius:6px;background:${
+      const instruction = alert.instruction
+        ? `<div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:10px;line-height:1.35">${esc(
+            alert.instruction
+          )}</div>`
+        : '';
+
+      return `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:310px">
+          <span style="display:inline-block;padding:2px 7px;border-radius:6px;background:${
             style.color
           };color:#0F172A;font-weight:700;font-size:10px;text-transform:uppercase">${
-        style.label
-      } · ${alert.severity}</span>
-          <strong style="display:block;font-size:13px;margin-top:6px">${alert.event}</strong>
-          <div style="color:#334155;margin-top:2px">${alert.headline ?? ''}</div>
-          <div style="color:#475569;font-size:10px;margin-top:6px">${alert.areaDescription ?? ''}</div>
+        style.icon
+      } ${style.label} · ${esc(alert.severity)}</span>
+          <strong style="display:block;font-size:13.5px;margin-top:6px;text-transform:capitalize">${esc(
+            alert.event
+          )}</strong>
+          ${headline}
+          ${description}
+          ${row('Where', alert.areaDescription)}
+          ${row(
+            'Covers',
+            alert.zoneCount && alert.zoneCount > 1 ? `${alert.zoneCount} forecast regions` : null
+          )}
+          ${row('Until', when(alert.expires ?? null))}
           ${instruction}
-          <div style="color:#64748B;font-size:10px;margin-top:6px">Issued by ${alert.sender}</div>
-          ${expires}
+          <div style="color:#94A3B8;font-size:9.5px;margin-top:7px;padding-top:6px;border-top:1px solid #E2E8F0">
+            ${esc(alert.sender)}
+          </div>
         </div>`;
     };
 
