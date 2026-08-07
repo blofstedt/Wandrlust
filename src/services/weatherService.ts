@@ -46,6 +46,16 @@ export interface HazardAlert {
   geometry?: unknown;
   /** `[lat, lon]` centre of `geometry`. Present exactly when `geometry` is. */
   centroid?: [number, number];
+  /**
+   * How many separate forecast regions this one alert covers.
+   *
+   * Environment Canada publishes an alert once PER REGION, so a snowfall
+   * warning over the Rockies arrives as thirty rows sharing one code. They are
+   * merged back into a single alert server-side; this is the count that was
+   * merged, so the UI can say "12 areas" rather than drawing twelve markers
+   * that all mean the same thing.
+   */
+  zoneCount?: number;
 }
 
 export interface ForecastPeriod {
