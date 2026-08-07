@@ -27,7 +27,8 @@ import {
 } from '../utils/fuzzyBoundary';
 import {
   AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, alertBadge,
-  warningPattern, cloudMarkerHtml, hazardCloudHtml, WARNING_EMOJI, WARNING_LABEL,
+  cloudMarkerHtml, hazardCloudHtml, preciseMarkerHtml, isDiffuse,
+  WARNING_EMOJI, WARNING_LABEL,
   dissolveKey, dissolveSegments
 } from '../utils/alertOverlay';
 import {
@@ -389,13 +390,15 @@ interface MapComponentProps {
   onDropDestination: (lat: number, lon: number, land?: DestinationLand) => void;
   /** Fired when a camper's hazard report is tapped. */
   onSelectHazardReport?: (record: HazardRecord) => void;
+  /** Fired when a precise official warning (fire / flood / storm) is tapped. */
+  onSelectAlert?: (alert: HazardAlert) => void;
 }
 
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation,
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
-  destination, onDropDestination, onSelectHazardReport,
+  destination, onDropDestination, onSelectHazardReport, onSelectAlert,
   bottomCoverFraction = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -441,6 +444,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   dropRef.current = onDropDestination;
   const reportTapRef = useRef(onSelectHazardReport);
   reportTapRef.current = onSelectHazardReport;
+  const alertTapRef = useRef(onSelectAlert);
+  alertTapRef.current = onSelectAlert;
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -870,14 +875,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         };
       }
 
-      const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
       return {
         color: style.color,
         fillColor: style.fillColor,
         fillOpacity: style.fillOpacity,
-        // Where the uncertainty band is too thin to draw, the outline stands
-        // in for it, so the parcel still has a visible edge.
-        weight: shouldSimplify(accuracy, centreLat, currentZoom) ? 1.2 : 0,
+        // No per-parcel outline, ever. The dissolved-boundary layer draws the
+        // group's edge, so abutting same-category parcels read as ONE shape
+        // instead of a mesh of internal lines. A visible fill also means a
+        // parcel never silently vanishes when its edges are all shared.
+        weight: 0,
         opacity: 0.8
       };
     };
@@ -902,19 +908,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const rings = ringBudget(collection.features.length);
       const renderer = boundaryRenderer();
 
+      // Every parcel is grouped by dissolveKey — same organisation, usage and
+      // expectations — so parcels that share those AND share an edge collapse
+      // into one shape. Nothing is skipped here: a group always gets a drawn
+      // outline, so no parcel disappears at any zoom.
       const bands = new Map<string, { accuracy: EdgeAccuracy; color: string; features: BoundaryFeature[] }>();
       collection.features.forEach((feature) => {
         const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
-        // Below a few pixels the band is thinner than the line itself; the
-        // fill layer draws a hairline for those instead.
-        if (shouldSimplify(accuracy, centreLat, currentZoom)) return;
-
         const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
         const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
-        // Same-category parcels share a key so their shared edges can be dropped;
-        // a parcel with its own rules keeps a distinct key and its border stays.
         const key = dissolveKey(feature?.properties);
-
         const existing = bands.get(key);
         if (existing) existing.features.push(feature);
         else bands.set(key, { accuracy, color: style.color, features: [feature] });
@@ -924,13 +927,32 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       let widest = 0;
 
       bands.forEach(({ accuracy, color, features }) => {
-        // Drop the seams shared by two same-category parcels, so abutting
-        // Crown/BLM land draws as one outline instead of a mesh of lines. The
-        // fill already tiles seamlessly (weight 0), so removing the internal
-        // band is all it takes.
+        // Drop the seams shared by two parcels in the same group, so abutting
+        // Crown/BLM/PLUZ land draws as one outline instead of a web of internal
+        // lines. What survives is the true outer edge of the merged shape.
         const segments = dissolveSegments(features);
         if (segments.length === 0) return;
         const line = { type: 'MultiLineString', coordinates: segments } as any;
+
+        // Zoomed out far enough that the uncertainty band would be sub-pixel:
+        // draw the dissolved boundary as ONE thin crisp line rather than a fuzzy
+        // band. This is the fix for the mesh of edges — the grouping still holds
+        // at every zoom, it just switches from a soft band to a hairline.
+        if (shouldSimplify(accuracy, centreLat, currentZoom)) {
+          group.addLayer(
+            L.geoJSON(line, {
+              pane: 'boundariesPane',
+              renderer,
+              interactive: false,
+              style: {
+                color, weight: 1, opacity: 0.75,
+                fill: false, lineJoin: 'round', lineCap: 'round'
+              }
+            } as RenderedGeoJSONOptions)
+          );
+          return;
+        }
+
         const ringSpecs = buildFuzzRings(accuracy, centreLat, currentZoom, rings);
         widest = Math.max(widest, ringSpecs[0]?.weight ?? 0);
 
@@ -1578,20 +1600,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
 
-    // A dedicated, NON-INTERACTIVE pane. A weather warning is scenery a camper
-    // reads, not a control they select, so pointer-events are off — a tap falls
-    // straight through to the campsite pin or the map beneath. It sits above the
-    // boundaries and the coverage mask but below the campsite markers, so a pin
-    // is never hidden by the cloud drawn over its area.
+    // TWO panes, because the two tiers behave differently.
+    //
+    //   warningPane      — the diffuse clouds and every tinted area fill. It is
+    //                      pointer-events:none, so a tap on a cloud falls straight
+    //                      through to the map (which drops a spot and shows the
+    //                      warning in the sheet). Scenery, not a control.
+    //   warningIconPane  — the precise fire/flood/storm icons. Interactive, and
+    //                      above the campsite pins, because a flame on the map is
+    //                      worth more than the pin beneath it and it has to be
+    //                      tappable to open its card.
     if (!map.getPane('warningPane')) {
       map.createPane('warningPane');
       const wpane = map.getPane('warningPane');
       if (wpane) { wpane.style.zIndex = '460'; wpane.style.pointerEvents = 'none'; }
     }
+    if (!map.getPane('warningIconPane')) {
+      map.createPane('warningIconPane');
+      const ipane = map.getPane('warningIconPane');
+      if (ipane) ipane.style.zIndex = '616';
+    }
 
-    // One SVG renderer for the life of the effect. Its <defs> holds the animated
-    // patterns; a solid canvas fill cannot carry a pattern, which is why this
-    // layer is SVG rather than the canvas the boundaries draw to.
+    // One SVG renderer for the life of the effect, shared by every area fill.
+    // SVG rather than the boundary canvas so the fills compose cleanly with the
+    // animated cloud markers layered over them.
     if (!warningRendererRef.current) {
       warningRendererRef.current = L.svg({ pane: 'warningPane', padding: 0.3 });
     }
@@ -1603,24 +1635,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let debounce: ReturnType<typeof setTimeout> | null = null;
 
     /**
-     * Draw each active warning as a tinted, animated AREA — no marker to tap.
+     * Draw the active warnings, split by tier.
      *
-     * For every alert the feed gave a real polygon:
-     *   1. a faint fill in the family colour, so the area is legible;
-     *   2. the same polygon filled with the family's slowly animated line
-     *      pattern — rising smoke, shimmering heat, sliding cold;
-     *   3. a soft cloud at the centroid, the icon the top-left legend names.
+     *   DIFFUSE (smoke / heat / cold / wind) — a tinted area fill plus a slowly
+     *   animated CLOUD at its centre. Non-interactive; the top-left legend says
+     *   what each colour and icon means, and tapping a spot inside one surfaces
+     *   the detail through the destination sheet.
      *
-     * All of it is non-interactive. Alerts with no geometry are counted, never
-     * pinned to a guessed spot.
+     *   PRECISE (fire / flood / storm) — a faint area hint plus a crisp, TAPPABLE
+     *   icon at the centre. Tapping it opens the warning in the bottom card.
+     *
+     * Alerts the feed gave no geometry for are counted, never pinned to a guess.
      */
     const render = (alerts: HazardAlert[]) => {
       clear();
       const reduced = prefersReducedMotion();
       const placeable = alerts.filter((a) => Array.isArray(a.centroid) && a.geometry);
 
-      const group = L.layerGroup([], { pane: 'warningPane' });
-      const patternTargets: { geo: L.GeoJSON; badge: AlertBadge }[] = [];
+      const group = L.layerGroup([]);
       const present = new Set<AlertBadge>();
 
       placeable.forEach((alert) => {
@@ -1629,83 +1661,64 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         present.add(badge);
         const color = BADGE_COLOR[badge];
 
-        // Faint area fill, so the warned region reads even before the pattern.
-        group.addLayer(
-          L.geoJSON(alert.geometry as any, {
-            pane: 'warningPane',
-            renderer: warningRenderer,
-            interactive: false,
-            style: { color, weight: 1.2, opacity: 0.5, fillColor: color, fillOpacity: 0.12 }
-          } as RenderedGeoJSONOptions)
-        );
-
-        // Same area, filled with the animated pattern (wired up in <defs> below).
-        const patGeo = L.geoJSON(alert.geometry as any, {
-          pane: 'warningPane',
-          renderer: warningRenderer,
-          interactive: false,
-          style: { stroke: false, fill: true, fillOpacity: 1 }
-        } as RenderedGeoJSONOptions);
-        group.addLayer(patGeo);
-        patternTargets.push({ geo: patGeo, badge });
-
-        // The cloud icon at the centroid. Non-interactive, no popup.
-        group.addLayer(
-          L.marker(alert.centroid as [number, number], {
-            pane: 'warningPane',
+        if (isDiffuse(badge)) {
+          // The affected area, tinted so the cloud has visible extent.
+          group.addLayer(
+            L.geoJSON(alert.geometry as any, {
+              pane: 'warningPane',
+              renderer: warningRenderer,
+              interactive: false,
+              style: { color, weight: 1, opacity: 0.45, fillColor: color, fillOpacity: 0.14 }
+            } as RenderedGeoJSONOptions)
+          );
+          // The animated cloud at the centroid — squiggles for smoke, shimmer
+          // for heat, zig-zags for cold. Non-interactive, no popup.
+          group.addLayer(
+            L.marker(alert.centroid as [number, number], {
+              pane: 'warningPane',
+              icon: L.divIcon({
+                className: 'weather-warning-cloud',
+                html: cloudMarkerHtml(badge, reduced),
+                iconSize: [72, 64],
+                iconAnchor: [36, 44]
+              }),
+              interactive: false,
+              keyboard: false
+            })
+          );
+        } else {
+          // A faint hint of the area, so the icon has context, and the tappable
+          // icon itself in the interactive pane above.
+          group.addLayer(
+            L.geoJSON(alert.geometry as any, {
+              pane: 'warningPane',
+              renderer: warningRenderer,
+              interactive: false,
+              style: { color, weight: 1.4, opacity: 0.55, fillColor: color, fillOpacity: 0.1 }
+            } as RenderedGeoJSONOptions)
+          );
+          const marker = L.marker(alert.centroid as [number, number], {
+            pane: 'warningIconPane',
             icon: L.divIcon({
-              className: 'weather-warning-cloud',
-              html: cloudMarkerHtml(badge, reduced),
-              iconSize: [72, 64],
-              iconAnchor: [36, 44]
+              className: 'weather-warning-icon',
+              html: preciseMarkerHtml(badge),
+              iconSize: [36, 44],
+              iconAnchor: [18, 44]
             }),
-            interactive: false,
-            keyboard: false
-          })
-        );
+            title: `${alert.event} — tap for details`,
+            riseOnHover: true
+          });
+          marker.on('click', () => alertTapRef.current?.(alert));
+          group.addLayer(marker);
+        }
       });
 
       hazardLayerRef.current = group.addTo(map);
 
-      // Leaflet's style API has no pattern option, so define each animated
-      // pattern in the renderer's <defs> and point the pattern polygons' fills
-      // at it. Defs are rebuilt each render, so nothing accumulates over a pan.
-      const svg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
-      if (svg) {
-        let defs = svg.querySelector('defs');
-        if (!defs) {
-          defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-          svg.insertBefore(defs, svg.firstChild);
-        }
-        defs.innerHTML = '';
-        const injected = new Set<string>();
-        for (const { badge } of patternTargets) {
-          const pattern = warningPattern(badge, reduced);
-          if (injected.has(pattern.id)) continue;
-          injected.add(pattern.id);
-          const parsed = new DOMParser()
-            .parseFromString(
-              `<svg xmlns="http://www.w3.org/2000/svg">${pattern.def}</svg>`,
-              'image/svg+xml'
-            )
-            .documentElement.firstElementChild;
-          if (parsed) defs.appendChild(document.importNode(parsed, true));
-        }
-        for (const { geo, badge } of patternTargets) {
-          const pattern = warningPattern(badge, reduced);
-          geo.eachLayer((sub) => {
-            const el = (sub as unknown as { _path?: SVGPathElement })._path;
-            if (!el) return;
-            el.setAttribute('fill', `url(#${pattern.id})`);
-            el.setAttribute('fill-opacity', '1');
-            el.setAttribute('stroke', 'none');
-          });
-        }
-      }
-
-      // Legend order: the three the redesign leads with first, then the rest.
+      // Legend order: the diffuse cloud families first (they need the legend to
+      // be understood at all), then the precise icons.
       const legendOrder: AlertBadge[] =
-        ['heat', 'smoke', 'winter', 'fire', 'flood', 'storm', 'wind'];
+        ['smoke', 'heat', 'winter', 'wind', 'fire', 'flood', 'storm'];
       setWarningBadges(legendOrder.filter((b) => present.has(b)));
     };
 
@@ -2145,8 +2158,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               </p>
             )}
             <p className="text-[9px] text-slate-500 leading-tight mt-1">
-              Shaded, animated areas are active warnings. Tap a campsite pin inside
-              one to see the details.
+              Shaded, animated clouds are area warnings — tap a spot inside one for
+              details. Fire, flood and storm show a tappable icon instead.
             </p>
           </div>
         )}

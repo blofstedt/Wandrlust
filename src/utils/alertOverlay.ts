@@ -246,7 +246,8 @@ export const dissolveSegments = (
     if (n === 1) out.push(seg);
   });
   return out;
-};
+};
+
 
 /* ------------------------------------------------------------------ */
 /* Weather warning overlays (heat / smoke / cold, and the rest)        */
@@ -270,6 +271,28 @@ export const WARNING_LABEL: Record<AlertBadge, string> = {
   heat: 'Heat', smoke: 'Smoke / air quality', winter: 'Cold / winter',
   fire: 'Fire', flood: 'Flood', storm: 'Storm', wind: 'Wind'
 };
+
+/**
+ * The two kinds of hazard the map draws, and the whole point of this file's
+ * redesign.
+ *
+ *   DIFFUSE  — smoke, extreme heat, extreme cold, high wind. Things that hang
+ *              over a whole region with no single point to them. Drawn as a
+ *              tinted, gently animated CLOUD over the affected area. They are
+ *              scenery, not controls: you cannot tap them, and the top-left
+ *              legend is what says what each colour and icon means.
+ *
+ *   PRECISE  — fire, flood, storm. Things that happen at a place. Drawn as a
+ *              crisp ICON (a flame, a flood, a storm) you CAN tap, which opens
+ *              the warning in the card at the bottom of the screen.
+ */
+export const HAZARD_TIER: Record<AlertBadge, 'diffuse' | 'precise'> = {
+  smoke: 'diffuse', heat: 'diffuse', winter: 'diffuse', wind: 'diffuse',
+  fire: 'precise', flood: 'precise', storm: 'precise'
+};
+
+export const isDiffuse = (badge: AlertBadge): boolean =>
+  HAZARD_TIER[badge] === 'diffuse';
 
 /** The animated line style a warning or report wears. */
 export type WarningMotion = 'squiggle' | 'heatline' | 'zigzag' | 'wave';
@@ -405,8 +428,32 @@ export const cloudMarkerHtml = (badge: AlertBadge, reduced = false): string =>
     glyph: WARNING_EMOJI[badge]
   });
 
+/**
+ * A crisp, tappable pin for a PRECISE hazard (fire, flood, storm).
+ *
+ * Deliberately a hard-edged map marker rather than a soft cloud — a precise
+ * hazard has a place, and the icon claims one. Coloured by family, carrying the
+ * family glyph, with a dark outline so a flame reads over both bright snow and
+ * dark forest. This one is meant to be tapped: the caller wires a click to it.
+ */
+export const preciseMarkerHtml = (badge: AlertBadge): string => {
+  const color = BADGE_COLOR[badge];
+  const glyph = WARNING_EMOJI[badge];
+  return `
+    <div style="width:36px;height:44px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))">
+      <svg width="36" height="44" viewBox="0 0 36 44" aria-hidden="true">
+        <path d="M18 1.5C9.4 1.5 2.5 8.4 2.5 17c0 10.8 15.5 25.5 15.5 25.5S33.5 27.8 33.5 17
+                 C33.5 8.4 26.6 1.5 18 1.5z"
+              fill="${color}" stroke="#0F172A" stroke-width="2" stroke-linejoin="round"/>
+        <circle cx="18" cy="16.5" r="11" fill="#0F172A" opacity="0.16"/>
+        <text x="18" y="17.5" text-anchor="middle" dominant-baseline="central"
+              font-size="15">${glyph}</text>
+      </svg>
+    </div>`;
+};
+
 /** The active alerts whose drawn area contains a point — for the bottom card. */
 export const alertsCoveringPoint = (
   lat: number, lon: number, alerts: HazardAlert[]
 ): HazardAlert[] =>
-  alerts.filter((a) => a.geometry && pointInGeometry(lat, lon, a.geometry));
+  alerts.filter((a) => a.geometry && pointInGeometry(lat, lon, a.geometry));
