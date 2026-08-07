@@ -11,6 +11,7 @@
  */
 import { supabase } from '../lib/supabase';
 import type { Campsite } from '../types';
+import { campsiteIdKind, canReferenceCampsite as canReferenceId } from '../utils/campsiteId';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -201,10 +202,11 @@ export const ensureCampsiteExists = async (site: Campsite): Promise<Result<strin
 
   // Curated and Supabase-native ids are already rows. Anything device-local
   // never will be until it is submitted.
-  if (site.id.startsWith('user-') || site.id.startsWith('custom-')) {
+  const kind = campsiteIdKind(site.id);
+  if (kind === 'user') {
     return failure('Share this spot first so other campers can see it.');
   }
-  if (!/^osm-(node|way|relation)-\d+$/.test(site.id)) return success(site.id);
+  if (kind !== 'osm') return success(site.id);
 
   const { data, error } = await supabase.rpc('ensure_campsite', {
     in_id: site.id,
@@ -222,7 +224,7 @@ export const ensureCampsiteExists = async (site: Campsite): Promise<Result<strin
 
 /** True when this site can carry a check-in, review or report at all. */
 export const canReferenceCampsite = (site: Campsite): boolean =>
-  !site.id.startsWith('user-') && !site.id.startsWith('custom-');
+  canReferenceId(site.id);
 
 /**
  * Campsites other people can see, in the app's own shape.
@@ -294,6 +296,92 @@ export const fetchCampsitesNear = async (
       submittedByMe: Boolean(uid) && row.submitted_by === uid
     }];
   });
+};
+
+/**
+ * Share a spot the user just added, so other campers can eventually see it.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS FIXES
+ * ---------------------------------------------------------------------------
+ *
+ * "Submit a new free spot" wrote to browser storage and stopped there. The
+ * table, the row-level security policy and the moderation gate all existed and
+ * had existed for months; nothing was wired to them. So the app's headline
+ * contribution — the thing the points system pays for and the trust ladder is
+ * built around — was a private bookmark that died with the browser profile.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT IS AND IS NOT SENT
+ * ---------------------------------------------------------------------------
+ *
+ * Only the columns the form actually asked a human about. The amenity columns
+ * are NOT NULL with defaults ('none', 'gravel', 14 days, 0 bars), so writing
+ * `undefined` into them would silently record "no water, gravel road, no
+ * signal" as though somebody had checked. Omitting them lets the defaults
+ * apply and — crucially — is why `fetchCampsitesNear` refuses to read them
+ * back. The two halves of that decision have to stay in step.
+ *
+ * The row lands with `is_published = false`, so it is visible to its author
+ * and to nobody else until it is reviewed.
+ */
+export const submitCampsite = async (
+  site: Campsite
+): Promise<Result<{ pending: boolean }>> => {
+  if (!supabase) return failure('Saved on this device only — no server configured.');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Saved on this device. Sign in to share it with other campers.');
+
+  const { error } = await supabase.from('campsites').insert({
+    id: site.id,
+    name: site.name,
+    land_type: site.landType,
+    land_manager: site.landManager || null,
+    latitude: site.latitude,
+    longitude: site.longitude,
+    nearest_city: site.address?.nearestCity || null,
+    state_province: site.address?.stateProvince || null,
+    country: site.address?.country || null,
+    description: site.description || null,
+    images: Array.isArray(site.images) ? site.images : [],
+    source: 'user_submitted',
+    is_published: false,
+    land_verification: 'unverified',
+    submitted_by: uid
+  });
+
+  // A duplicate id means this device already sent it — a re-submit after a
+  // dropped connection, or the same uuid from a restored backup. Not a
+  // failure worth showing anyone.
+  if (error && error.code === '23505') return success({ pending: true });
+  if (error) return failure(error.message);
+
+  return success({ pending: true });
+};
+
+/**
+ * Which of this user's own submissions have since been published.
+ *
+ * One query on load rather than a per-site check. Relies on the author-read
+ * policy added in migration 10 — before it, a submitter could not see their
+ * own pending row at all, which made the chip below impossible to keep honest.
+ */
+export const fetchMySubmissionStates = async (): Promise<Map<string, boolean>> => {
+  const out = new Map<string, boolean>();
+  if (!supabase) return out;
+
+  const uid = await currentUserId();
+  if (!uid) return out;
+
+  const { data, error } = await supabase
+    .from('campsites')
+    .select('id, is_published')
+    .eq('submitted_by', uid);
+
+  if (error || !Array.isArray(data)) return out;
+  for (const row of data) out.set(String(row.id), Boolean(row.is_published));
+  return out;
 };
 
 export const unlockStealthSite = async (campsiteId: string): Promise<Result<any>> => {

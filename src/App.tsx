@@ -28,7 +28,7 @@ import { ReportPanel } from './components/ReportPanel';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { DestinationSheet } from './components/DestinationSheet';
 import { HazardReportCard } from './components/HazardReportCard';
-import { ErrorBoundary, EmptyState } from './components/ui/Feedback';
+import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
 import {
   createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
@@ -39,7 +39,7 @@ import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
-  fetchCampsitesNear, fetchMyRigs,
+  fetchCampsitesNear, fetchMyRigs, submitCampsite, fetchMySubmissionStates,
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
 import { mergeCampsites } from './utils/mergeCampsites';
@@ -57,6 +57,7 @@ export default function App() {
   // Who's signed in. Drives the rig lookup and the friends list — both are
   // inert without a session, which is the correct behaviour, not a bug.
   const { user } = useAuth();
+  const toast = useToast();
 
   // Navigation & view
   const [activeView, setActiveView] = useState<AppView>('map');
@@ -149,6 +150,38 @@ export default function App() {
 
     return () => { cancelled = true; };
   }, []);
+
+  /**
+   * Catch up on what happened to this user's own submissions.
+   *
+   * A spot submitted from this device is stored locally with whatever state it
+   * had at the time — usually `pending_review`. It gets approved later, on
+   * somebody else's schedule, and nothing would ever tell this browser. So one
+   * query on sign-in reconciles the chips.
+   *
+   * Only possible because of the author-read policy in migration 10: before
+   * it, the row-level security hid a user's own unpublished row from them, so
+   * there was no way to ask.
+   */
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    fetchMySubmissionStates().then((states) => {
+      if (cancelled || states.size === 0) return;
+
+      setCampsites((prev) => prev.map((site) => {
+        const published = states.get(site.id);
+        if (published === undefined) return site;
+
+        const next: Campsite['submissionState'] = published ? 'published' : 'pending_review';
+        if (site.submissionState === next && site.submittedByMe) return site;
+        return { ...site, submissionState: next, submittedByMe: true };
+      }));
+    });
+
+    return () => { cancelled = true; };
+  }, [user]);
 
   const handleSelectLocation = useCallback(
     async (loc: GeocodedLocation) => {
@@ -402,18 +435,52 @@ export default function App() {
     setSavedSites(await getSavedCampsites());
   }, []);
 
+  /**
+   * Save the spot, then try to share it. In that order, always.
+   *
+   * THE LOCAL WRITE COMES FIRST AND IS NEVER UNDONE. A camper standing at a
+   * pullout with one bar has just typed coordinates they may not be able to
+   * recover; losing that because an insert failed, or because they were signed
+   * out, would be the worst thing this form could do. So localforage gets it
+   * unconditionally, and the server write is an enhancement on top that is
+   * allowed to fail.
+   *
+   * What the share adds is other people seeing it — the row lands unpublished
+   * and waits for review, which is what the chip on the card explains.
+   */
   const handleAddCustomSite = useCallback(async (site: Campsite) => {
     await addCustomCampsite(site);
-    setCampsites((prev) => [site, ...prev]);
-    setSelectedCampsite(site);
+
+    const shared = await submitCampsite(site);
+    const stored: Campsite = {
+      ...site,
+      submissionState: shared.ok ? 'pending_review' : 'local_only',
+      submittedByMe: true
+    };
+
+    if (shared.ok) {
+      toast.success(
+        'Spot saved and sent for review',
+        'Only you can see it until it is approved.'
+      );
+    } else {
+      toast.info('Saved on this device', shared.message);
+    }
+
+    setCampsites((prev) => [stored, ...prev]);
+    setSelectedCampsite(stored);
     // Selecting a pin and having it be the destination are the same state
     // everywhere else, so a newly added spot has to set both — otherwise the
     // pin draws highlighted with no panel beneath it explaining why.
-    setDestination({ latitude: site.latitude, longitude: site.longitude, campsite: site });
+    setDestination({
+      latitude: stored.latitude,
+      longitude: stored.longitude,
+      campsite: stored
+    });
     // Unlike tapping an existing pin, this one IS worth flying to: the user
     // typed coordinates and has no idea yet where they landed.
-    setCenter([site.latitude, site.longitude]);
-  }, []);
+    setCenter([stored.latitude, stored.longitude]);
+  }, [toast]);
 
   const handleAddReview = useCallback((siteId: string, review: CamperReview) => {
     const applyReview = (site: Campsite): Campsite => {

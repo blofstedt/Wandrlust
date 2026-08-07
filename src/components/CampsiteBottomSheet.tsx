@@ -12,6 +12,7 @@ import {
   getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl
 } from '../utils/imageUtils';
 import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
+import { SubmissionChip } from './SubmissionChip';
 import { fetchWeather, WeatherSnapshot, EMPTY_WEATHER, summarise } from '../services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from '../services/cellCoverageService';
 import type { CellCoverage } from '../types';
@@ -151,6 +152,15 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 {campsite.address.nearestCity}
                 {campsite.address.stateProvince && `, ${campsite.address.stateProvince}`}
               </p>
+              {/* The full version with its explanation — this sheet has the
+                  room the card doesn't. */}
+              <div className="mt-1.5">
+                <SubmissionChip
+                  state={campsite.submissionState}
+                  submittedByMe={campsite.submittedByMe}
+                  withDetail
+                />
+              </div>
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0">
