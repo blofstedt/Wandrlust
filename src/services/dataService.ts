@@ -10,6 +10,7 @@
  *    DEFINER functions, never direct table writes.
  */
 import { supabase } from '../lib/supabase';
+import type { Campsite } from '../types';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -173,6 +174,128 @@ export const fetchVisibleCampsites = async (
   return ok(data, []);
 };
 
+/**
+ * Make sure this campsite exists in the database before pointing at it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS
+ * ---------------------------------------------------------------------------
+ *
+ * Six tables carry `campsite_id text not null references campsites(id)`. The
+ * app shows campsites from four places, and only two of them are in that
+ * table: the curated bundle and other campers' contributions. Tap check-in on
+ * a site that came from OpenStreetMap and the insert violated a foreign key,
+ * and `CampsiteBottomSheet` printed the raw Postgres error at the camper.
+ *
+ * So an OSM site is materialised on first interaction — it becomes a real
+ * shared record, which is what lets it accumulate check-ins, a capacity and a
+ * rating like anything else.
+ *
+ * A site that exists ONLY on this device cannot be materialised: it has never
+ * been submitted, so there is nothing for anyone else to reference. That is
+ * reported as a plain sentence, and the UI is expected not to offer the
+ * action in the first place.
+ */
+export const ensureCampsiteExists = async (site: Campsite): Promise<Result<string>> => {
+  if (!supabase) return failure('Not connected');
+
+  // Curated and Supabase-native ids are already rows. Anything device-local
+  // never will be until it is submitted.
+  if (site.id.startsWith('user-') || site.id.startsWith('custom-')) {
+    return failure('Share this spot first so other campers can see it.');
+  }
+  if (!/^osm-(node|way|relation)-\d+$/.test(site.id)) return success(site.id);
+
+  const { data, error } = await supabase.rpc('ensure_campsite', {
+    in_id: site.id,
+    in_name: site.name,
+    in_land_type: site.landType,
+    in_lat: site.latitude,
+    in_lon: site.longitude,
+    in_land_manager: site.landManager ?? '',
+    in_description: site.description ?? ''
+  });
+
+  if (error) return failure(error.message);
+  return success(String(data ?? site.id));
+};
+
+/** True when this site can carry a check-in, review or report at all. */
+export const canReferenceCampsite = (site: Campsite): boolean =>
+  !site.id.startsWith('user-') && !site.id.startsWith('custom-');
+
+/**
+ * Campsites other people can see, in the app's own shape.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY `amenities` COMES BACK EMPTY, DELIBERATELY
+ * ---------------------------------------------------------------------------
+ *
+ * `public.campsites` declares water, toilet, road_access, cell_* and
+ * stay_limit_days as NOT NULL with defaults — 'none', 'gravel', 0, 14. So a
+ * site nobody has ever surveyed is stored as "no water, gravel road, no
+ * signal, 14-day limit", and nothing in the row distinguishes that from a
+ * ranger having checked. Reading those columns back would put fabricated
+ * facts in front of a camper deciding where to sleep, which is the single
+ * thing this app has decided it will never do.
+ *
+ * Verified against the real data: of the 21 curated sites, exactly five
+ * record `is_free` and one records `permit_required`. Every other amenity
+ * column in the database is a default nobody chose.
+ *
+ * So this mapper carries identity, position and provenance, and leaves
+ * `amenities` empty — which the UI already renders as "not recorded" rather
+ * than as "no". Making those columns nullable is the real fix and is a
+ * migration of its own.
+ *
+ * Never throws. Returns [] with no Supabase configured, which is what keeps
+ * the app working with no keys at all.
+ */
+export const fetchCampsitesNear = async (
+  lat: number,
+  lon: number,
+  radiusMiles = 100
+): Promise<Campsite[]> => {
+  const rows = await fetchVisibleCampsites(lat, lon, radiusMiles);
+  if (!Array.isArray(rows)) return [];
+
+  // Resolved once for the whole batch rather than per row.
+  const uid = await currentUserId();
+
+  return rows.flatMap((row: any): Campsite[] => {
+    if (typeof row?.latitude !== 'number' || typeof row?.longitude !== 'number') return [];
+
+    return [{
+      id: String(row.id),
+      name: row.name ?? 'Unnamed site',
+      landType: row.land_type,
+      landManager: row.land_manager ?? '',
+      latitude: row.latitude,
+      longitude: row.longitude,
+      address: {
+        nearestCity: row.nearest_city ?? '',
+        stateProvince: row.state_province ?? '',
+        country: row.country ?? ''
+      },
+      description: row.description ?? '',
+      amenities: {},
+      images: Array.isArray(row.images) ? row.images : [],
+      reviews: [],
+      rating: Number(row.rating ?? 0),
+      reviewCount: Number(row.review_count ?? 0),
+      source: row.source ?? 'user_submitted',
+      capacityStatus: row.capacity_status ?? undefined,
+      isStealth: Boolean(row.is_stealth),
+      // The server fuzzed this position to ~2 km because the caller has not
+      // earned the exact one. The sheet says so rather than drawing it as
+      // though it were surveyed.
+      isApproximate: Boolean(row.is_approximate),
+      submissionState: row.is_published ? 'published' : 'pending_review',
+      submittedByMe: Boolean(uid) && row.submitted_by === uid
+    }];
+  });
+};
+
 export const unlockStealthSite = async (campsiteId: string): Promise<Result<any>> => {
   if (!supabase) return failure('Not connected');
   const { data, error } = await supabase.rpc('unlock_stealth_site', {
@@ -318,8 +441,15 @@ export const saveRig = async (rig: Partial<Rig>): Promise<Result<Rig>> => {
 /* Check-ins & points                                                  */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Takes the whole Campsite, not just an id.
+ *
+ * `ensureCampsiteExists` needs the name and position to materialise an
+ * OpenStreetMap site, and threading those through separately is how the two
+ * drift apart.
+ */
 export const checkIn = async (
-  campsiteId: string,
+  site: Campsite,
   capacity: 'empty' | 'light' | 'busy' | 'full' | 'unknown',
   rigType?: RigType | null,
   notes?: string
@@ -328,21 +458,27 @@ export const checkIn = async (
   const uid = await currentUserId();
   if (!uid) return failure('Sign in to check in');
 
+  const ready = await ensureCampsiteExists(site);
+  if (!ready.ok) return failure(ready.message);
+
   const { error } = await supabase.from('check_ins').insert({
     user_id: uid,
-    campsite_id: campsiteId,
+    campsite_id: site.id,
     capacity,
     rig_type: rigType ?? null,
     notes: notes ?? null
   });
   if (error) return failure(error.message);
 
-  // Keep the campsite's live capacity fresh for everyone else.
-  await supabase
-    .from('campsites')
-    .update({ capacity_status: capacity, capacity_updated_at: new Date().toISOString() })
-    .eq('id', campsiteId);
-
+  /**
+   * The campsite's own capacity_status is maintained by a trigger on
+   * check_ins (migration 10), not from here.
+   *
+   * This used to be a `.update()` on public.campsites that ignored its own
+   * error — and there is no UPDATE policy or grant on that table for
+   * `authenticated`, so it never once succeeded. Every pin showed "Unknown"
+   * capacity for as long as the feature existed.
+   */
   return success(true, 'Checked in');
 };
 

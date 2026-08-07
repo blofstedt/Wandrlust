@@ -92,7 +92,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
       if (!user) { onRequireAuth(); return; }
       setCheckingIn(true);
       haptic('success');
-      const result = await checkIn(campsite.id, capacity);
+      const result = await checkIn(campsite, capacity);
       setNotice(result.message);
       setCheckingIn(false);
     },
@@ -102,7 +102,10 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   if (!campsite) return null;
 
   const coords = `${campsite.latitude.toFixed(5)}, ${campsite.longitude.toFixed(5)}`;
-  const capacityKey = (campsite as any).capacity_status ?? 'unknown';
+  // Was `(campsite as any).capacity_status`. The field is `capacityStatus`,
+  // and the cast is what hid it — every pin has shown "Unknown" regardless of
+  // how many people had checked in.
+  const capacityKey = campsite.capacityStatus ?? 'unknown';
   const capacity = CAPACITY_STYLE[capacityKey] ?? CAPACITY_STYLE.unknown;
 
   const heightClass = snap === 'peek' ? 'h-[26vh]' : snap === 'half' ? 'h-[58vh]' : 'h-[92vh]';
