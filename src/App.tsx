@@ -108,6 +108,15 @@ export default function App() {
   const [destCoverage, setDestCoverage] = useState<CellCoverage>(UNKNOWN_COVERAGE);
   const [isLoadingConditions, setIsLoadingConditions] = useState(false);
 
+  /**
+   * How much of the map the destination sheet is currently sitting on, 0–1.
+   *
+   * Lives up here because the panel that knows the number and the map that
+   * needs it are siblings. The map uses it to park the chosen pin in the strip
+   * still showing, rather than underneath the panel describing it.
+   */
+  const [sheetCoverFraction, setSheetCoverFraction] = useState(0);
+
   // Panels & modals
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
@@ -701,6 +710,7 @@ export default function App() {
                     destination={destination}
                     onDropDestination={handleDropDestination}
                     onSelectHazardReport={setSelectedReport}
+                    bottomCoverFraction={sheetCoverFraction}
                     route={route}
                     isNavigating={isNavigating}
                     heading={heading}
@@ -897,6 +907,7 @@ export default function App() {
           onOpenDetail={
             destination?.campsite ? () => setSheetSite(destination.campsite!) : undefined
           }
+          onCoverageFractionChange={setSheetCoverFraction}
         />
       )}
 

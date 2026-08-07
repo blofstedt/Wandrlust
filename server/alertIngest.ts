@@ -31,9 +31,10 @@
  */
 import type { Express, Request, Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+// `.js` is required under strict ESM on Vercel. See weatherRoutes.ts.
 import {
   fetchNwsActiveAlerts, fetchEcccActiveAlerts, type NormalisedAlert
-} from './alertSources';
+} from './alertSources.js';
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;

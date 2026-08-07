@@ -1,8 +1,8 @@
 import React from 'react';
-import { Signal, ThermometerSun, Clock, Loader2, CloudOff } from 'lucide-react';
-import type { CellCoverage } from '../types';
+import { Signal, ThermometerSun, Clock, Loader2, CloudOff, RadioTower } from 'lucide-react';
+import type { CellCoverage, SignalStrength, CellTechnology } from '../types';
 import type { WeatherSnapshot } from '../services/weatherService';
-import { forecastOnArrival, SOURCE_LABEL } from '../services/weatherService';
+import { forecastOnArrival } from '../services/weatherService';
 
 /**
  * The two things a camper asks about a spot before committing to the drive:
@@ -36,75 +36,134 @@ const Bars: React.FC<{ bars: number }> = ({ bars }) => (
   </span>
 );
 
+/**
+ * The estimate in words.
+ *
+ * Every one of these is hedged — "likely", "probably", "expect" — because the
+ * number behind it is a distance to a mast, not a reading off a phone. Colour
+ * is muted for the same reason: a confident green here would look like a
+ * measurement, and the one thing this must never do is look like a
+ * measurement.
+ */
+const STRENGTH_COPY: Record<SignalStrength, { label: string; className: string }> = {
+  strong: { label: 'Strong signal likely', className: 'text-emerald-300' },
+  good: { label: 'Usable signal likely', className: 'text-sky-300' },
+  weak: { label: 'Weak signal at best', className: 'text-amber-300' },
+  none: { label: 'Probably no signal', className: 'text-rose-300' }
+};
+
+/** Short form for the per-carrier rows, where the carrier name carries context. */
+const STRENGTH_SHORT: Record<SignalStrength, string> = {
+  strong: 'Strong',
+  good: 'Usable',
+  weak: 'Weak',
+  none: 'Likely none'
+};
+
+const TechnologyChip: React.FC<{ technology: CellTechnology }> = ({ technology }) => (
+  <span className="px-1.5 py-px rounded bg-slate-700/70 border border-slate-600/60 text-[9px] font-bold text-slate-200 tracking-wide">
+    {technology}
+  </span>
+);
+
 export const CellCoverageCard: React.FC<{
   coverage: CellCoverage | null;
   isLoading?: boolean;
-}> = ({ coverage, isLoading }) => (
-  <section>
-    <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
-      <Signal className="w-3 h-3" />
-      Cell signal, by carrier
-    </h3>
+}> = ({ coverage, isLoading }) => {
+  const overall = coverage?.overall;
+  const named = coverage?.carriers.filter((c) => typeof c.bars === 'number').length ?? 0;
 
-    {isLoading && (
-      <div className="flex items-center gap-2 text-[11px] text-slate-400 py-2">
-        <Loader2 className="w-3 h-3 animate-spin" />
-        Checking coverage…
-      </div>
-    )}
+  return (
+    <section>
+      <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+        <Signal className="w-3 h-3" />
+        Cell signal
+      </h3>
 
-    {!isLoading && coverage && (
-      <>
-        {coverage.carriers.length > 0 ? (
-          <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 divide-y divide-slate-700/50">
-            {coverage.carriers.map((c) => (
-              <div key={c.carrier} className="flex items-center gap-2.5 px-3 py-2">
-                <span className="text-[11px] font-semibold text-slate-200 w-20 shrink-0">
-                  {c.label}
+      {isLoading && (
+        <div className="flex items-center gap-2 text-[11px] text-slate-400 py-2">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Checking coverage…
+        </div>
+      )}
+
+      {!isLoading && coverage && (
+        <>
+          {/*
+            The headline answer, for the camper who does not care whose tower
+            it is. Built from every transmitter found, named or not, because
+            most surveyed masts record no operator and "can I call for help"
+            is the question that actually decides the trip.
+          */}
+          {overall && (
+            <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 px-3 py-2.5 mb-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Bars bars={overall.bars} />
+                <span className={`text-xs font-bold ${STRENGTH_COPY[overall.strength].className}`}>
+                  {STRENGTH_COPY[overall.strength].label}
                 </span>
-
-                {typeof c.bars === 'number' ? (
-                  <>
-                    <Bars bars={c.bars} />
-                    <span className="text-[10px] text-slate-400 ml-auto text-right">
-                      {c.bars === 0 ? 'Likely none' : `~${c.bars} bar${c.bars === 1 ? '' : 's'}`}
-                      {c.nearestTowerKm != null && (
-                        <span className="block text-slate-500">
-                          nearest tower {c.nearestTowerKm} km
-                        </span>
-                      )}
-                    </span>
-                  </>
-                ) : (
-                  /* The distinction the whole file exists for: nothing is
-                     known about this carrier here, which is not the same as
-                     this carrier having no coverage here. */
-                  <span className="text-[10px] text-slate-500 ml-auto italic">
-                    No data for this carrier
-                  </span>
-                )}
+                {overall.technology && <TechnologyChip technology={overall.technology} />}
               </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-[11px] text-slate-400 rounded-xl border border-slate-700/60 bg-slate-800/50 px-3 py-2.5">
-            {coverage.note ?? 'No coverage information for this point.'}
-          </p>
-        )}
+              <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1.5">
+                <RadioTower className="w-3 h-3 shrink-0" />
+                Nearest mast {overall.nearestTowerKm} km away
+                {overall.towerCount > 1 && ` · ${overall.towerCount} within range`}
+              </p>
+            </div>
+          )}
 
-        {/* The caveat travels with the numbers, always, in both branches. */}
-        {coverage.basis && (
-          <p className="text-[9px] text-slate-500 leading-tight mt-1.5">
-            {coverage.basis} Source: {coverage.source}.
-          </p>
-        )}
-        {coverage.carriers.length > 0 && coverage.note && (
-          <p className="text-[9px] text-slate-500 leading-tight mt-1">{coverage.note}</p>
-        )}
-      </>
-    )}
-  </section>
-);
+          {coverage.carriers.length > 0 && (
+            <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 divide-y divide-slate-700/50">
+              {coverage.carriers.map((c) => (
+                <div key={c.carrier} className="flex items-center gap-2.5 px-3 py-2">
+                  <span className="text-[11px] font-semibold text-slate-200 w-20 shrink-0">
+                    {c.label}
+                  </span>
+
+                  {typeof c.bars === 'number' && c.strength ? (
+                    <>
+                      <Bars bars={c.bars} />
+                      {c.technology && <TechnologyChip technology={c.technology} />}
+                      <span className="text-[10px] text-slate-400 ml-auto text-right">
+                        {STRENGTH_SHORT[c.strength]}
+                        {c.nearestTowerKm != null && (
+                          <span className="block text-slate-500">
+                            nearest {c.nearestTowerKm} km
+                          </span>
+                        )}
+                      </span>
+                    </>
+                  ) : (
+                    /* The distinction the whole file exists for: nothing is
+                       known about this carrier here, which is not the same as
+                       this carrier having no coverage here. */
+                    <span className="text-[10px] text-slate-500 ml-auto italic">
+                      No data for this carrier
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!overall && coverage.carriers.length === 0 && (
+            <p className="text-[11px] text-slate-400 rounded-xl border border-slate-700/60 bg-slate-800/50 px-3 py-2.5">
+              {coverage.note ?? 'No coverage information for this point.'}
+            </p>
+          )}
+
+          {/* The caveat travels with the numbers, always, in every branch. */}
+          {coverage.basis && (overall || named > 0) && (
+            <p className="text-[9px] text-slate-500 leading-tight mt-1.5">{coverage.basis}</p>
+          )}
+          {coverage.note && (overall || coverage.carriers.length > 0) && (
+            <p className="text-[9px] text-slate-500 leading-tight mt-1">{coverage.note}</p>
+          )}
+        </>
+      )}
+    </section>
+  );
+};
 
 /* ------------------------------------------------------------------ */
 /* Weather now, and weather when you get there                         */
@@ -217,7 +276,7 @@ export const ArrivalWeatherCard: React.FC<{
           {arrivalIsNow
             ? `Short enough drive that you arrive inside the current forecast slot — same conditions. Driving time from ${originLabel}.`
             : hourly
-            ? `The forecast hour your arrival falls in. Driving time from ${originLabel}, so a slow road moves it. Source: ${SOURCE_LABEL[weather.source]}.`
+            ? `The forecast hour your arrival falls in. Driving time from ${originLabel}, so a slow road moves it.`
             : `This source only publishes twelve-hour blocks, so this is the block your arrival falls in rather than an hour-by-hour prediction. Driving time from ${originLabel}.`}
         </p>
       )}

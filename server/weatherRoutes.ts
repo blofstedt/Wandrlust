@@ -12,10 +12,20 @@
  * coordinate never changes.
  */
 import type { Express, Request, Response } from 'express';
+/**
+ * THE `.js` ON THESE IMPORTS IS LOAD-BEARING. DO NOT STRIP IT.
+ *
+ * On Vercel these modules are loaded by `api/index.ts` under strict ESM, where
+ * an extensionless relative specifier throws ERR_MODULE_NOT_FOUND. That throw
+ * was caught by `safeRegister`, so the weather routes silently never
+ * registered and every `/api/weather` call fell through to the catch-all and
+ * came back 404 — which the client rendered as "Weather unavailable (404)" on
+ * every campsite, in production, while working perfectly in dev.
+ */
 import {
   NWS_BASE, getJson, nwsAlertToHazard, fetchNwsAlertsAtPoint, fetchEcccAlerts, looksUS
-} from './alertSources';
-import { fetchOpenMeteo } from './openMeteo';
+} from './alertSources.js';
+import { fetchOpenMeteo } from './openMeteo.js';
 
 const POINT_TTL_MS = 24 * 60 * 60 * 1000;
 const FORECAST_TTL_MS = 10 * 60 * 1000;

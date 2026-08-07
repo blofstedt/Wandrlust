@@ -12,8 +12,10 @@
  * Nothing here throws. A feed that is down returns an empty list, and the
  * caller reports the outage rather than pretending there are no alerts.
  */
-import { classifyHazard, normaliseSeverity, normaliseUrgency } from '../shared/hazards';
-import type { HazardFamily, AlertSeverity } from '../shared/hazards';
+// `.js` is required: this module is loaded under strict ESM on Vercel, where
+// an extensionless relative import throws. See the note in weatherRoutes.ts.
+import { classifyHazard, normaliseSeverity, normaliseUrgency } from '../shared/hazards.js';
+import type { HazardFamily, AlertSeverity } from '../shared/hazards.js';
 
 export const NWS_BASE = 'https://api.weather.gov';
 export const ECCC_ALERTS = 'https://api.weather.gc.ca/collections/weather-alerts/items';

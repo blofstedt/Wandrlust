@@ -1,7 +1,7 @@
 /**
  * Weather, forecasts, and hazard alerts.
  *
- * Two free government sources, no API keys:
+ * Free government sources, no API keys:
  *   US     NWS      api.weather.gov      (requires a User-Agent contact string)
  *   Canada ECCC     api.weather.gc.ca    (OGC API Features)
  *
@@ -15,6 +15,7 @@ import {
   classifyHazard, SEVERITY_RANK,
   type HazardFamily, type AlertSeverity, type AlertUrgency
 } from '../../shared/hazards';
+import { fetchOpenMeteoForecast, isUnitedStates } from '../../shared/openMeteo';
 
 export type { HazardFamily, AlertSeverity, AlertUrgency };
 export { classifyHazard };
@@ -137,7 +138,61 @@ const cache = new Map<string, { at: number; data: WeatherSnapshot }>();
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 60;
 
-/** Never throws: on failure returns an empty snapshot with a note. */
+/**
+ * Straight to Open-Meteo, when our own API cannot answer.
+ *
+ * ---------------------------------------------------------------------------
+ * THIS IS A SAFETY NET, AND IT IS DELIBERATELY HALF AN ANSWER
+ * ---------------------------------------------------------------------------
+ *
+ * `/api/weather` went down for a whole release — a server module failed to
+ * import, the endpoint 404'd, and every camper saw "Weather unavailable" on
+ * every spot with no way for the app to recover. Open-Meteo needs no key and
+ * sends permissive CORS headers, so the browser can ask it directly. That
+ * turns an outage of our own making into a working forecast.
+ *
+ * WHAT IT CANNOT DO IS ALERTS, and the note says so out loud. Warnings come
+ * only from the National Weather Service and Environment Canada, both of which
+ * we reach through our own server. An empty alert list from this path means
+ * "we could not check", and if that ever renders as "all clear" then this
+ * fallback has made the app more dangerous rather than less.
+ */
+const directForecast = async (
+  latitude: number,
+  longitude: number,
+  reason: string,
+  signal?: AbortSignal
+): Promise<WeatherSnapshot> => {
+  const result = await fetchOpenMeteoForecast(
+    latitude, longitude, isUnitedStates(latitude, longitude), 10_000, signal
+  );
+
+  if (result.periods.length === 0) {
+    return { ...EMPTY_WEATHER, note: `No forecast available right now (${reason}).` };
+  }
+
+  return {
+    updatedAt: new Date().toISOString(),
+    timezone: result.timezone,
+    periods: result.periods,
+    alerts: [],
+    source: 'open-meteo',
+    resolution: 'hourly',
+    note:
+      `Forecast fetched straight from Open-Meteo because this app's own ` +
+      `weather service is unreachable (${reason}). WARNINGS AND WATCHES ARE ` +
+      'NOT INCLUDED on this route — check the National Weather Service or ' +
+      'Environment Canada before you rely on the sky being clear.'
+  };
+};
+
+/**
+ * Never throws, and tries not to come back empty.
+ *
+ * Our own API first, because only it can carry official alerts alongside the
+ * forecast. Open-Meteo directly if that fails, because a forecast without
+ * alerts beats a blank panel — as long as the missing alerts are stated.
+ */
 export const fetchWeather = async (
   latitude: number,
   longitude: number,
@@ -147,15 +202,7 @@ export const fetchWeather = async (
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
 
-  try {
-    const res = await fetch(
-      `/api/weather?lat=${latitude.toFixed(4)}&lon=${longitude.toFixed(4)}`,
-      { signal }
-    );
-    if (!res.ok) return { ...EMPTY_WEATHER, note: `Weather unavailable (${res.status})` };
-
-    const data = (await res.json()) as WeatherSnapshot;
-
+  const remember = (data: WeatherSnapshot): WeatherSnapshot => {
     // Bounded: a long trip planning session used to grow this map forever.
     if (cache.size >= CACHE_MAX_ENTRIES) {
       const oldest = cache.keys().next().value;
@@ -163,8 +210,48 @@ export const fetchWeather = async (
     }
     cache.set(key, { at: Date.now(), data });
     return data;
+  };
+
+  try {
+    const res = await fetch(
+      `/api/weather?lat=${latitude.toFixed(4)}&lon=${longitude.toFixed(4)}`,
+      { signal }
+    );
+
+    if (!res.ok) return remember(await directForecast(latitude, longitude, `${res.status}`, signal));
+
+    const data = (await res.json()) as WeatherSnapshot;
+
+    // The endpoint answered but had nothing — both government feeds and the
+    // server's own Open-Meteo leg came back empty. Worth one more try from
+    // here: a serverless function blocked upstream still leaves the phone with
+    // a working route to the same data.
+    if (!Array.isArray(data.periods) || data.periods.length === 0) {
+      const direct = await directForecast(latitude, longitude, 'empty response', signal);
+      if (direct.periods.length > 0) {
+        // Alerts DID come back from our own server on this path, so keep them
+        // rather than dropping them with the empty forecast.
+        return remember({
+          ...direct,
+          alerts: Array.isArray(data.alerts) ? data.alerts : [],
+          note: Array.isArray(data.alerts)
+            ? 'No official forecast covers this point, so the hours below come ' +
+              'from Open-Meteo. Warnings and watches are unaffected.'
+            : direct.note
+        });
+      }
+      return remember(data);
+    }
+
+    return remember(data);
   } catch {
-    return { ...EMPTY_WEATHER, note: 'Weather unavailable offline' };
+    // Aborted by the caller — not a failure, and it must not be cached.
+    if (signal?.aborted) return EMPTY_WEATHER;
+
+    const direct = await directForecast(latitude, longitude, 'offline', signal);
+    return direct.periods.length > 0
+      ? remember(direct)
+      : { ...EMPTY_WEATHER, note: 'Weather unavailable offline' };
   }
 };
 
