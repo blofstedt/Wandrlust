@@ -195,4 +195,3 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
   );
 };
 
-

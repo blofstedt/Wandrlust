@@ -4,6 +4,9 @@ import { ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL } from '../utils/amenitie
 import { getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl } from '../utils/imageUtils';
 import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import {
+  fetchCampsiteReviews, submitCampsiteReview, fetchCampsiteRating
+} from '../services/dataService';
+import {
   X,
   MapPin,
   Star,
@@ -600,5 +603,4 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
     </div>
   );
 };
-
 

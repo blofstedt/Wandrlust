@@ -130,4 +130,3 @@ export const uncertaintyCaution = (accuracy: EdgeAccuracy): string => {
   const ft = Math.round(m * 3.28084);
   return `Edges are approximate to roughly ±${m} m (±${ft} ft). The faded band is the uncertainty zone — inside it, you may be on either side of the real boundary.`;
 };
-

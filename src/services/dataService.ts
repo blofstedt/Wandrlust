@@ -10,7 +10,7 @@
  *    DEFINER functions, never direct table writes.
  */
 import { supabase } from '../lib/supabase';
-import type { Campsite } from '../types';
+import type { Campsite, CamperReview } from '../types';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -295,6 +295,281 @@ export const fetchCampsitesNear = async (
     }];
   });
 };
+
+/**
+ * Share a spot the user just added, so other campers can eventually see it.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS FIXES
+ * ---------------------------------------------------------------------------
+ *
+ * "Submit a new free spot" wrote to browser storage and stopped there. The
+ * table, the row-level security policy and the moderation gate all existed and
+ * had existed for months; nothing was wired to them. So the app's headline
+ * contribution — the thing the points system pays for and the trust ladder is
+ * built around — was a private bookmark that died with the browser profile.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT IS AND IS NOT SENT
+ * ---------------------------------------------------------------------------
+ *
+ * Only the columns the form actually asked a human about. The amenity columns
+ * are NOT NULL with defaults ('none', 'gravel', 14 days, 0 bars), so writing
+ * `undefined` into them would silently record "no water, gravel road, no
+ * signal" as though somebody had checked. Omitting them lets the defaults
+ * apply and — crucially — is why `fetchCampsitesNear` refuses to read them
+ * back. The two halves of that decision have to stay in step.
+ *
+ * The row lands with `is_published = false`, so it is visible to its author
+ * and to nobody else until it is reviewed.
+ */
+export const submitCampsite = async (
+  site: Campsite
+): Promise<Result<{ pending: boolean }>> => {
+  if (!supabase) return failure('Saved on this device only — no server configured.');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Saved on this device. Sign in to share it with other campers.');
+
+  const { error } = await supabase.from('campsites').insert({
+    id: site.id,
+    name: site.name,
+    land_type: site.landType,
+    land_manager: site.landManager || null,
+    latitude: site.latitude,
+    longitude: site.longitude,
+    nearest_city: site.address?.nearestCity || null,
+    state_province: site.address?.stateProvince || null,
+    country: site.address?.country || null,
+    description: site.description || null,
+    images: Array.isArray(site.images) ? site.images : [],
+    source: 'user_submitted',
+    is_published: false,
+    land_verification: 'unverified',
+    submitted_by: uid
+  });
+
+  // A duplicate id means this device already sent it — a re-submit after a
+  // dropped connection, or the same uuid from a restored backup. Not a
+  // failure worth showing anyone.
+  if (error && error.code === '23505') return success({ pending: true });
+  if (error) return failure(error.message);
+
+  return success({ pending: true });
+};
+
+/**
+ * Which of this user's own submissions have since been published.
+ *
+ * One query on load rather than a per-site check. Relies on the author-read
+ * policy added in migration 10 — before it, a submitter could not see their
+ * own pending row at all, which made the chip below impossible to keep honest.
+ */
+export const fetchMySubmissionStates = async (): Promise<Map<string, boolean>> => {
+  const out = new Map<string, boolean>();
+  if (!supabase) return out;
+
+  const uid = await currentUserId();
+  if (!uid) return out;
+
+  const { data, error } = await supabase
+    .from('campsites')
+    .select('id, is_published')
+    .eq('submitted_by', uid);
+
+  if (error || !Array.isArray(data)) return out;
+  for (const row of data) out.set(String(row.id), Boolean(row.is_published));
+  return out;
+};
+
+/* ------------------------------------------------------------------ */
+/* Reviews                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reviews for one site.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS FIXES
+ * ---------------------------------------------------------------------------
+ *
+ * Leaving a review recomputed the site's average in React state and stopped.
+ * Not localforage, not the server — a page reload erased it. `campsite_reviews`
+ * and its `refresh_campsite_rating` trigger have both existed since the first
+ * schema and no client code had ever referenced them.
+ *
+ * Hidden reviews are filtered by the row-level security policy, not here, so a
+ * review hidden after being reported disappears for everyone except its
+ * author — who keeps seeing their own, because a review that silently vanishes
+ * for the person who wrote it just looks like the app ate it.
+ */
+export const fetchCampsiteReviews = async (campsiteId: string): Promise<CamperReview[]> => {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('campsite_reviews')
+    .select('id, author, rating, comment, vehicle_type, created_at')
+    .eq('campsite_id', campsiteId)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error || !Array.isArray(data)) return [];
+
+  return data.map((row: any) => ({
+    id: String(row.id),
+    author: row.author ?? 'A camper',
+    date: row.created_at ?? new Date().toISOString(),
+    rating: Number(row.rating ?? 0),
+    comment: row.comment ?? '',
+    vehicleType: row.vehicle_type ?? undefined
+  }));
+};
+
+/**
+ * Leave or update a review.
+ *
+ * `author` is a SNAPSHOT of the handle at the time of writing, not a join. It
+ * is stored alongside `user_id` so a review still reads sensibly after the
+ * profile behind it is deleted — `user_id` is `on delete set null`, and a
+ * review suddenly attributed to nobody is worse than one attributed to a name
+ * that no longer has an account.
+ *
+ * Upserted on the (campsite_id, user_id) index, so editing yours updates the
+ * row rather than adding a second one. The rating trigger recomputes the
+ * site's average either way.
+ */
+export const submitCampsiteReview = async (
+  site: Campsite,
+  review: { rating: number; comment: string; vehicleType?: string }
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Sign in to leave a review.');
+
+  if (!Number.isFinite(review.rating) || review.rating < 1 || review.rating > 5) {
+    return failure('Pick a rating between 1 and 5.');
+  }
+  if (review.comment.trim().length === 0) return failure('Add a few words about the spot.');
+
+  // An OSM site has no row until somebody interacts with it. This is that
+  // moment, and without it the insert fails the foreign key.
+  const ready = await ensureCampsiteExists(site);
+  if (!ready.ok) return failure(ready.message);
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('handle, display_name')
+    .eq('id', uid)
+    .maybeSingle();
+
+  const author = (profile?.display_name || profile?.handle || 'A camper').slice(0, 60);
+
+  const { error } = await supabase
+    .from('campsite_reviews')
+    .upsert(
+      {
+        campsite_id: ready.data,
+        user_id: uid,
+        author,
+        rating: Math.round(review.rating),
+        comment: review.comment.trim().slice(0, 2000),
+        vehicle_type: review.vehicleType?.trim() || null
+      },
+      { onConflict: 'campsite_id,user_id' }
+    );
+
+  if (error) return failure(error.message);
+  return success(true);
+};
+
+/** Remove your own review. The policy allows no other. */
+export const deleteMyReview = async (reviewId: string): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+  const { error } = await supabase.from('campsite_reviews').delete().eq('id', reviewId);
+  if (error) return failure(error.message);
+  return success(true);
+};
+
+/** The site's rating and count after the trigger has recomputed them. */
+export const fetchCampsiteRating = async (
+  campsiteId: string
+): Promise<{ rating: number; reviewCount: number } | null> => {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from('campsites')
+    .select('rating, review_count')
+    .eq('id', campsiteId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return {
+    rating: Number(data.rating ?? 0),
+    reviewCount: Number(data.review_count ?? 0)
+  };
+};
+
+/* ------------------------------------------------------------------ */
+/* Reporting bad content                                               */
+/* ------------------------------------------------------------------ */
+
+export type ReportTargetKind = 'campsite' | 'campsite_review' | 'campsite_photo' | 'poi';
+
+export type ContentReportReason =
+  | 'spam' | 'wrong_location' | 'private_property' | 'unsafe'
+  | 'abusive' | 'not_camping' | 'other';
+
+/**
+ * Flag a record as bad.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS IS NOT
+ * ---------------------------------------------------------------------------
+ *
+ * NOT `reportBurnedSite`. That one is about the PLACE — gated, closed, washed
+ * out, someone moved you on — and it feeds the zone-alert clustering. This is
+ * about the RECORD: a listing on private land, a fake spot, an abusive review.
+ * Conflating the two is how a moderation queue fills up with "road impassable"
+ * and nobody finds the actual spam.
+ *
+ * Until this existed there was no flag, edit, or remove path for user content
+ * anywhere in the app. A community app that cannot take bad data down is a
+ * liability, and especially so for one whose stated rule is never to claim
+ * more than it knows.
+ *
+ * Three distinct reporters auto-hide the target — deliberately low, because
+ * pre-launch there is no moderator on duty. `is_hidden` is a curtain, not an
+ * eraser: nothing is deleted, and a wrong call costs nothing but a service-role
+ * update to undo.
+ */
+export const reportContent = async (
+  targetKind: ReportTargetKind,
+  targetId: string,
+  reason: ContentReportReason,
+  detail?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Sign in to report something.');
+
+  const { error } = await supabase.from('content_reports').insert({
+    target_kind: targetKind,
+    target_id: targetId,
+    reporter_id: uid,
+    reason,
+    detail: detail?.trim().slice(0, 1000) || null
+  });
+
+  // Already reported by this person. The unique index makes a second one a
+  // no-op, and telling them off for tapping twice serves nobody.
+  if (error && error.code === '23505') return success(true);
+  if (error) return failure(error.message);
+
+  return success(true);
+};
+
 
 export const unlockStealthSite = async (campsiteId: string): Promise<Result<any>> => {
   if (!supabase) return failure('Not connected');
