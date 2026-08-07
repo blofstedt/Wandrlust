@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   X, MapPin, Star, Navigation, Bookmark, Signal, Droplet,
   Flame, Dog, Clock, ShieldCheck, Loader2, CheckCircle2,
-  ChevronUp, Camera, ThermometerSun, Copy, Check
+  ChevronUp, Camera, ThermometerSun, Copy, Check, Flag
 } from 'lucide-react';
 import type { Campsite } from '../types';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../utils/imageUtils';
 import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import { SubmissionChip } from './SubmissionChip';
+import { ReportContentSheet } from './ReportContentSheet';
 import { fetchWeather, WeatherSnapshot, EMPTY_WEATHER, summarise } from '../services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from '../services/cellCoverageService';
 import type { CellCoverage } from '../types';
@@ -62,6 +63,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   const [checkingIn, setCheckingIn] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [isReporting, setIsReporting] = useState(false);
 
   // Load everything context-dependent when the pin changes.
   useEffect(() => {
@@ -164,6 +166,16 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0">
+              {/* Quiet on purpose. Reporting is a rare, deliberate act, not a
+                  primary action competing with Save. */}
+              <button
+                onClick={() => { haptic('tap'); setIsReporting(true); }}
+                className="p-2 rounded-xl border bg-slate-800 border-slate-700 text-slate-500 hover:text-rose-300"
+                aria-label="Report this spot"
+                title="Report this spot"
+              >
+                <Flag className="w-4 h-4" />
+              </button>
               <button
                 onClick={() => { haptic('tap'); onToggleSave(campsite); }}
                 className={`p-2 rounded-xl border ${
@@ -416,6 +428,16 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
           </div>
         )}
       </div>
+
+      <ReportContentSheet
+        isOpen={isReporting}
+        onClose={() => setIsReporting(false)}
+        targetKind="campsite"
+        targetId={campsite.id}
+        targetLabel={campsite.name}
+        isSignedIn={Boolean(user)}
+        onRequireAuth={onRequireAuth}
+      />
     </div>
   );
 };

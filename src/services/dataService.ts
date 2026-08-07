@@ -512,6 +512,66 @@ export const fetchCampsiteRating = async (
   };
 };
 
+/* ------------------------------------------------------------------ */
+/* Reporting bad content                                               */
+/* ------------------------------------------------------------------ */
+
+export type ReportTargetKind = 'campsite' | 'campsite_review' | 'campsite_photo' | 'poi';
+
+export type ContentReportReason =
+  | 'spam' | 'wrong_location' | 'private_property' | 'unsafe'
+  | 'abusive' | 'not_camping' | 'other';
+
+/**
+ * Flag a record as bad.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS IS NOT
+ * ---------------------------------------------------------------------------
+ *
+ * NOT `reportBurnedSite`. That one is about the PLACE — gated, closed, washed
+ * out, someone moved you on — and it feeds the zone-alert clustering. This is
+ * about the RECORD: a listing on private land, a fake spot, an abusive review.
+ * Conflating the two is how a moderation queue fills up with "road impassable"
+ * and nobody finds the actual spam.
+ *
+ * Until this existed there was no flag, edit, or remove path for user content
+ * anywhere in the app. A community app that cannot take bad data down is a
+ * liability, and especially so for one whose stated rule is never to claim
+ * more than it knows.
+ *
+ * Three distinct reporters auto-hide the target — deliberately low, because
+ * pre-launch there is no moderator on duty. `is_hidden` is a curtain, not an
+ * eraser: nothing is deleted, and a wrong call costs nothing but a service-role
+ * update to undo.
+ */
+export const reportContent = async (
+  targetKind: ReportTargetKind,
+  targetId: string,
+  reason: ContentReportReason,
+  detail?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Sign in to report something.');
+
+  const { error } = await supabase.from('content_reports').insert({
+    target_kind: targetKind,
+    target_id: targetId,
+    reporter_id: uid,
+    reason,
+    detail: detail?.trim().slice(0, 1000) || null
+  });
+
+  // Already reported by this person. The unique index makes a second one a
+  // no-op, and telling them off for tapping twice serves nobody.
+  if (error && error.code === '23505') return success(true);
+  if (error) return failure(error.message);
+
+  return success(true);
+};
+
 export const unlockStealthSite = async (campsiteId: string): Promise<Result<any>> => {
   if (!supabase) return failure('Not connected');
   const { data, error } = await supabase.rpc('unlock_stealth_site', {

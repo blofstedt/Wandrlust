@@ -7,6 +7,7 @@ import {
   fetchCampsiteReviews, submitCampsiteReview, fetchCampsiteRating
 } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
+import { ReportContentSheet } from './ReportContentSheet';
 import {
   X,
   MapPin,
@@ -31,7 +32,8 @@ import {
   TreePine,
   Maximize2,
   Camera,
-  Layers
+  Layers,
+  Flag
 } from 'lucide-react';
 
 interface CampsiteDetailModalProps {
@@ -72,6 +74,8 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
   const [vehicleType, setVehicleType] = useState('Van / Camper');
   const [isSavingReview, setIsSavingReview] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reportingReview, setReportingReview] =
+    useState<{ id: string; author: string } | null>(null);
 
   /**
    * Reviews from the server, which are the real ones.
@@ -564,7 +568,21 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                       <div className="text-amber-400 font-bold">★ {rev.rating}</div>
                     </div>
                     <p className="text-xs text-slate-300">{rev.comment}</p>
-                    <div className="text-[10px] text-slate-500 mt-1.5">{rev.date}</div>
+                    <div className="flex items-center justify-between mt-1.5">
+                      <div className="text-[10px] text-slate-500">{rev.date}</div>
+                      {/* Only offered for server-backed reviews. A bundled one
+                          has no row to report. */}
+                      {serverReviews?.some((r) => r.id === rev.id) && (
+                        <button
+                          onClick={() => setReportingReview({ id: rev.id, author: rev.author })}
+                          className="text-[10px] text-slate-600 hover:text-rose-300 flex items-center gap-1"
+                          aria-label={`Report the review by ${rev.author}`}
+                        >
+                          <Flag className="w-2.5 h-2.5" />
+                          Report
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -572,6 +590,18 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {reportingReview && (
+        <ReportContentSheet
+          isOpen
+          onClose={() => setReportingReview(null)}
+          targetKind="campsite_review"
+          targetId={reportingReview.id}
+          targetLabel={`Review by ${reportingReview.author}`}
+          isSignedIn={Boolean(user)}
+          onRequireAuth={onRequireAuth}
+        />
+      )}
     </div>
   );
 };
