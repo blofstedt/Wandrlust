@@ -74,7 +74,33 @@ export interface Campsite {
   savedOffline?: boolean;
   /** Live occupancy, when the server has reported one. */
   capacityStatus?: 'empty' | 'light' | 'busy' | 'full' | 'unknown';
+
+  /**
+   * A pin only campers who have earned the tier can see exactly.
+   *
+   * `isApproximate` means the SERVER deliberately rounded this position to
+   * roughly 2 km before sending it. Drawing such a pin as though it were
+   * surveyed is a lie about where the site is, so anything rendering a
+   * campsite has to check this and say so.
+   */
+  isStealth?: boolean;
+  isApproximate?: boolean;
+
+  /** Where a user's own submission has got to. Absent for anything else. */
+  submissionState?: SubmissionState;
+  /** True when the signed-in camper is the one who submitted this. */
+  submittedByMe?: boolean;
 }
+
+/**
+ * How far a camper's own submitted spot has travelled.
+ *
+ * `local_only` is the honest name for what every submission used to be: saved
+ * to this browser and shared with nobody. It is still what happens when you
+ * submit while signed out, and the UI has to say so rather than implying the
+ * spot has been contributed.
+ */
+export type SubmissionState = 'local_only' | 'pending_review' | 'published' | 'rejected';
 
 export interface GeocodedLocation {
   displayName: string;

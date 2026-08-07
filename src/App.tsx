@@ -39,9 +39,10 @@ import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
-  fetchMyRigs,
+  fetchCampsitesNear, fetchMyRigs,
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
+import { mergeCampsites } from './utils/mergeCampsites';
 import { calculateRoute, type RouteResult } from './services/routingService';
 import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
@@ -171,14 +172,25 @@ export default function App() {
 
       setIsSearchingSites(true);
       try {
-        const liveSites = await fetchOverpassCampsites(
-          loc.lat, loc.lon, filterState.maxDistanceMiles
-        );
-        setCampsites((prev) => {
-          const existing = new Set(prev.map((s) => s.id));
-          const fresh = liveSites.filter((s) => !existing.has(s.id));
-          return fresh.length > 0 ? [...prev, ...fresh] : prev;
-        });
+        /**
+         * Both registers at once: what other campers have contributed, and
+         * what OpenStreetMap knows.
+         *
+         * Until now the app only ever asked Overpass. Everything submitted
+         * through Wandrlust stayed in the submitter's own browser, so the
+         * "community" half of a community app reached nobody. This is the
+         * line that makes a shared spot actually shared.
+         *
+         * With no Supabase configured `fetchCampsitesNear` returns an empty
+         * array and `mergeCampsites` collapses to what this did before —
+         * the app still works with no keys at all.
+         */
+        const [shared, liveSites] = await Promise.all([
+          fetchCampsitesNear(loc.lat, loc.lon, filterState.maxDistanceMiles),
+          fetchOverpassCampsites(loc.lat, loc.lon, filterState.maxDistanceMiles)
+        ]);
+
+        setCampsites((prev) => mergeCampsites(prev, shared, liveSites));
       } catch (err) {
         console.warn('Campsite lookup failed:', err);
       } finally {
