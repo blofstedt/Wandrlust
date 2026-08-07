@@ -26,6 +26,10 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
+  AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, badgesForParcel,
+  alertPattern, patternKey, dissolveKey, dissolveSegments
+} from '../utils/alertOverlay';
+import {
   BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
   BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
   COVERAGE_LABEL, isWithinCoverage, CELL_MIN_ZOOM
@@ -140,11 +144,29 @@ const worldFillZoom = (widthPx: number): number =>
  */
 
 /** A spot a camper added themselves. */
-const buildCampsiteIcon = (isSelected: boolean): L.DivIcon =>
-  L.divIcon({
+const buildCampsiteIcon = (isSelected: boolean, badges: AlertBadge[] = []): L.DivIcon => {
+  // A small word-chip per active alert, stacked just above the pin. Fire, Flood,
+  // Smoke — the same words a camper reads in the alert panel, in the family
+  // colour, so the map says what's wrong here without opening anything.
+  const chips = badges
+    .map(
+      (b) =>
+        `<span style="background:${BADGE_COLOR[b]};color:#0b1120;font-size:9px;` +
+        `font-weight:800;line-height:1;padding:2px 5px;border-radius:5px;` +
+        `border:1px solid rgba(2,6,23,.55);white-space:nowrap;` +
+        `box-shadow:0 1px 3px rgba(0,0,0,.45)">${BADGE_LABEL[b]}</span>`
+    )
+    .join('');
+  const chipStack = badges.length
+    ? `<div style="position:absolute;bottom:100%;left:50%;transform:translateX(-50%);` +
+      `margin-bottom:3px;display:flex;flex-direction:column;gap:2px;align-items:center;` +
+      `pointer-events:none">${chips}</div>`
+    : '';
+  return L.divIcon({
     className: 'custom-campsite-marker',
     html: `
       <div class="relative flex items-center justify-center ${isSelected ? 'scale-125 z-50' : 'z-10'}">
+        ${chipStack}
         <div class="w-8 h-8 rounded-full flex items-center justify-center shadow-xl border-2 bg-emerald-500 ${
           isSelected ? 'border-white ring-4 ring-emerald-400/50' : 'border-slate-900'
         }">
@@ -156,6 +178,7 @@ const buildCampsiteIcon = (isSelected: boolean): L.DivIcon =>
     iconSize: [32, 32],
     iconAnchor: [16, 16]
   });
+};
 
 /**
  * A camper's hazard report.
@@ -375,6 +398,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const underlayLayerRef = useRef<L.TileLayer | null>(null);
   const boundaryLayerRef = useRef<L.LayerGroup | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  /** Alert badges affecting each pinned campsite, keyed by id. */
+  const badgesByIdRef = useRef<Map<string, AlertBadge[]>>(new Map());
 
   // What boundary data we already hold, so a pan inside it costs nothing.
   const loadedBoxRef = useRef<BoundingBox | null>(null);
@@ -391,6 +416,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
   const cellLayerRef = useRef<L.LayerGroup | null>(null);
+  const alertPatternLayerRef = useRef<L.LayerGroup | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
 
   /**
@@ -873,7 +899,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
         const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
         const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
-        const key = `${accuracy}|${confidence}`;
+        // Same-category parcels share a key so their shared edges can be dropped;
+        // a parcel with its own rules keeps a distinct key and its border stays.
+        const key = dissolveKey(feature?.properties);
 
         const existing = bands.get(key);
         if (existing) existing.features.push(feature);
@@ -884,12 +912,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       let widest = 0;
 
       bands.forEach(({ accuracy, color, features }) => {
+        // Drop the seams shared by two same-category parcels, so abutting
+        // Crown/BLM land draws as one outline instead of a mesh of lines. The
+        // fill already tiles seamlessly (weight 0), so removing the internal
+        // band is all it takes.
+        const segments = dissolveSegments(features);
+        if (segments.length === 0) return;
+        const line = { type: 'MultiLineString', coordinates: segments } as any;
         const ringSpecs = buildFuzzRings(accuracy, centreLat, currentZoom, rings);
         widest = Math.max(widest, ringSpecs[0]?.weight ?? 0);
 
         ringSpecs.forEach((ring) => {
           group.addLayer(
-            L.geoJSON({ type: 'FeatureCollection', features } as any, {
+            L.geoJSON(line, {
               pane: 'boundariesPane',
               renderer,
               interactive: false,
@@ -1706,6 +1741,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     [campsites]
   );
 
+  /** Icon for a pinned site, given its current selection and alert badges. */
+  const iconForId = useCallback(
+    (id: string) =>
+      buildCampsiteIcon(selectedIdRef.current === id, badgesByIdRef.current.get(id) ?? []),
+    []
+  );
+
   // Rebuilt only when the campsite list changes. Selection is handled
   // separately below — previously changing the selection tore down and rebuilt
   // every marker on the map, which stuttered badly with a few hundred pins.
@@ -1755,7 +1797,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const markers = pinnedCampsites.map((site) => {
       const marker = L.marker([site.latitude, site.longitude], {
-        icon: buildCampsiteIcon(selectedIdRef.current === site.id),
+        icon: iconForId(site.id),
         title: `${site.name} — added by a camper`
       });
       marker.on('click', () => onSelectCampsite(site));
@@ -1770,18 +1812,147 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     map.addLayer(cluster);
     clusterRef.current = cluster;
-  }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenDetailModal]);
+  }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenDetailModal, iconForId]);
 
   // Swap only the two icons that changed.
   useEffect(() => {
     const previousId = selectedIdRef.current;
     const nextId = selectedCampsite?.id ?? null;
     if (previousId === nextId) return;
-
-    markersRef.current.get(previousId ?? '')?.setIcon(buildCampsiteIcon(false));
-    if (nextId) markersRef.current.get(nextId)?.setIcon(buildCampsiteIcon(true));
+    // Update the ref first: iconForId reads it, and both pins need the new state.
     selectedIdRef.current = nextId;
-  }, [selectedCampsite]);
+    if (previousId) markersRef.current.get(previousId)?.setIcon(iconForId(previousId));
+    if (nextId) markersRef.current.get(nextId)?.setIcon(iconForId(nextId));
+  }, [selectedCampsite, iconForId]);
+
+  /**
+   * Keep each pinned campsite's alert badges current.
+   *
+   * Kept out of the cluster effect on purpose: alerts refresh on every pan, and
+   * rebuilding the whole marker cluster that often would stutter. This only
+   * swaps the icon on markers that already exist — the same trick the selection
+   * effect above uses.
+   */
+  useEffect(() => {
+    const next = new Map<string, AlertBadge[]>();
+    for (const site of pinnedCampsites) {
+      const badges = hazards.length
+        ? badgesForPoint(site.latitude, site.longitude, hazards)
+        : [];
+      if (badges.length) next.set(site.id, badges);
+    }
+    badgesByIdRef.current = next;
+    if (!isMapReady) return;
+    markersRef.current.forEach((marker, id) => marker.setIcon(iconForId(id)));
+  }, [hazards, pinnedCampsites, isMapReady, iconForId]);
+
+  /* ------------------------------------------------------------------ */
+  /* Alert patterns over affected parcels                                */
+  /* ------------------------------------------------------------------ */
+  /**
+   * A subtle repeating icon over the parcels an active alert covers.
+   *
+   * Crown and BLM land have no pin to badge, so the warning has to live on the
+   * fill. This is a small SVG layer of its own — the main boundary layer draws
+   * to a canvas, which can only do solid fills, so pattern fills get their own
+   * pane above it. Only the handful of parcels actually under an alert are drawn
+   * here, so it stays cheap. Combined disasters tile both glyphs.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!alertPatternLayerRef.current) return;
+      try { map.removeLayer(alertPatternLayerRef.current); } catch { /* detached */ }
+      alertPatternLayerRef.current = null;
+    };
+
+    if (isOfflineMode || hazards.length === 0 || boundaries.features.length === 0) {
+      clear();
+      return;
+    }
+
+    if (!map.getPane('alertPatternPane')) {
+      map.createPane('alertPatternPane');
+      const pane = map.getPane('alertPatternPane');
+      // Above the boundary canvas (390), well below camper reports (610).
+      if (pane) { pane.style.zIndex = '400'; pane.style.pointerEvents = 'none'; }
+    }
+
+    // Group affected parcels by the pattern they'll wear, so each pattern is
+    // defined once and drives one layer.
+    const groups = new Map<string, { badges: AlertBadge[]; features: BoundaryFeature[] }>();
+    for (const feature of boundaries.features) {
+      const badges = badgesForParcel(feature.geometry, hazards);
+      if (badges.length === 0) continue;
+      const key = patternKey(badges);
+      const group = groups.get(key);
+      if (group) group.features.push(feature);
+      else groups.set(key, { badges, features: [feature] });
+    }
+
+    clear();
+    if (groups.size === 0) return;
+
+    const renderer = L.svg({ pane: 'alertPatternPane', padding: 0.3 });
+    const layerGroup = L.layerGroup([], { pane: 'alertPatternPane' });
+    const built: { geo: L.GeoJSON; badges: AlertBadge[] }[] = [];
+
+    groups.forEach(({ badges, features }) => {
+      const geo = L.geoJSON(
+        { type: 'FeatureCollection', features } as any,
+        {
+          pane: 'alertPatternPane',
+          renderer,
+          interactive: false,
+          style: { stroke: false, fill: true, fillOpacity: 1 }
+        } as L.GeoJSONOptions & { renderer: L.Renderer }
+      );
+      layerGroup.addLayer(geo);
+      built.push({ geo, badges });
+    });
+
+    alertPatternLayerRef.current = layerGroup.addTo(map);
+
+    // The paths exist now. Define each pattern in the renderer's <defs>, then
+    // point the group's fills at it — Leaflet's style API has no pattern option,
+    // so this is done on the raw SVG.
+    const svg = (renderer as unknown as { _container?: SVGSVGElement })._container;
+    if (svg) {
+      let defs = svg.querySelector('defs');
+      if (!defs) {
+        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        svg.insertBefore(defs, svg.firstChild);
+      }
+      const injected = new Set<string>();
+      for (const { badges } of built) {
+        const pattern = alertPattern(badges);
+        if (!pattern || injected.has(pattern.id)) continue;
+        injected.add(pattern.id);
+        const parsed = new DOMParser()
+          .parseFromString(
+            `<svg xmlns="http://www.w3.org/2000/svg">${pattern.def}</svg>`,
+            'image/svg+xml'
+          )
+          .documentElement.firstElementChild;
+        if (parsed) defs.appendChild(document.importNode(parsed, true));
+      }
+      for (const { geo, badges } of built) {
+        const pattern = alertPattern(badges);
+        if (!pattern) continue;
+        geo.eachLayer((sub) => {
+          const el = (sub as unknown as { _path?: SVGPathElement })._path;
+          if (!el) return;
+          el.setAttribute('fill', `url(#${pattern.id})`);
+          el.setAttribute('fill-opacity', '1');
+          el.setAttribute('stroke', 'none');
+        });
+      }
+    }
+
+    return clear;
+  }, [boundaries, hazards, isMapReady, isOfflineMode]);
 
   /* ------------------------------------------------------------------ */
   /* User location                                                       */
