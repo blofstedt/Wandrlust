@@ -8,6 +8,7 @@ import type { WeatherSnapshot } from '../services/weatherService';
 import type { RouteResult } from '../services/routingService';
 import { CellCoverageCard, ArrivalWeatherCard } from './TripConditions';
 import { haptic } from '../utils/animation';
+import { directionsAppName } from '../utils/handoff';
 
 /**
  * What's at the place you just picked.
@@ -43,7 +44,8 @@ interface DestinationSheetProps {
   coverage: CellCoverage;
   isLoadingConditions: boolean;
   onClose: () => void;
-  onNavigate: () => void;
+  /** Hands the drive to Apple or Google Maps. See `src/utils/handoff.ts`. */
+  onOpenDirections: () => void;
   /** Only offered for a real campsite; a bare point has no detail page. */
   onOpenDetail?: () => void;
   /**
@@ -77,7 +79,7 @@ const SNAP_FRACTION: Record<'peek' | 'half' | 'full', number> = {
 
 export const DestinationSheet: React.FC<DestinationSheetProps> = ({
   destination, route, isRouting, originLabel, weather, coverage,
-  isLoadingConditions, onClose, onNavigate, onOpenDetail,
+  isLoadingConditions, onClose, onOpenDirections, onOpenDetail,
   onCoverageFractionChange
 }) => {
   const [snap, setSnap] = useState<'peek' | 'half' | 'full'>('half');
@@ -356,18 +358,29 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
           </div>
         )}
 
-        {/* --------------------------------------------------- navigate */}
+        {/* ------------------------------------------------- directions */}
+        {/*
+          NOT disabled while the route is still being worked out, and not
+          disabled when there is no route at all.
+
+          Those two states are about OUR routing engine, and this button does
+          not use it — it opens the phone's maps app with a coordinate. A
+          camper who can see the pin should always be able to set off towards
+          it. The route only informs the warnings above; it is not a gate on
+          leaving.
+        */}
         <div className="px-4 pb-4 pt-2 border-t border-slate-800 shrink-0 bg-slate-900">
           <button
-            onClick={() => { haptic('success'); onNavigate(); }}
-            disabled={isRouting || !route?.ok}
-            className="w-full px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:hover:bg-emerald-600 shadow-lg shadow-emerald-950/50"
+            onClick={() => { haptic('success'); onOpenDirections(); }}
+            className="w-full px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50"
           >
-            {isRouting
-              ? <Loader2 className="w-4 h-4 animate-spin" />
-              : <Navigation className="w-4 h-4" />}
-            {isRouting ? 'Finding a route…' : 'Navigate here'}
+            <Navigation className="w-4 h-4" />
+            Directions in {directionsAppName()}
           </button>
+          <p className="text-[9px] text-slate-500 text-center mt-1.5 leading-snug">
+            Opens your maps app, so it carries through to CarPlay and Android
+            Auto. It won't know about anything above.
+          </p>
         </div>
       </div>
     </div>

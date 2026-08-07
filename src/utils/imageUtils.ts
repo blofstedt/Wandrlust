@@ -54,5 +54,5 @@ export const getCampsiteDisplayImage = (campsite: Campsite): string => {
 export const getStreetViewUrl = (latitude: number, longitude: number): string =>
   `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${latitude},${longitude}`;
 
-export const getDirectionsUrl = (latitude: number, longitude: number): string =>
-  `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}`;
+// Directions moved to `src/utils/handoff.ts` — it is no longer a Google-only
+// link, and it is now how the app gets you to a spot at all.

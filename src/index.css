@@ -337,50 +337,7 @@
    vestibular symptoms) and remove all travel, scale and overshoot.
    ==================================================================== */
 
-/* ------------------------------------------------------------------ *
- * The rotating map stage (navigation mode)
- *
- * MapComponent turns the whole Leaflet container so the direction of travel
- * points up the screen. Everything drawn on the map turns with it, including
- * text — so every marker's contents are turned back by the same amount here.
- *
- * `--map-counter-rotate` is set on `.map-stage` from React and is the exact
- * inverse of the stage's own rotation. It defaults to 0deg, so these rules are
- * inert outside navigation.
- *
- * The child selector matters: Leaflet owns the `transform` on
- * `.leaflet-marker-icon` itself — that is how it positions markers — so the
- * counter-rotation has to go on the element inside. Every divIcon in
- * MapComponent renders exactly one root element for this reason.
- * ------------------------------------------------------------------ */
-
-.map-stage .leaflet-marker-icon > * {
-  transform: rotate(var(--map-counter-rotate, 0deg));
-  transform-origin: 50% 50%;
-  transition: transform 900ms linear;
-}
-
-/* A teardrop pin has to pivot on its point, not its middle, or the tip
-   wanders off the thing it is marking as the map turns. */
-.map-stage .destination-marker > * {
-  transform-origin: 50% 100%;
-}
-
-/* Cluster badges are circles; rotating them about their centre is invisible,
-   but the number inside must stay the right way up. */
-.map-stage .custom-cluster-icon > * {
-  transform-origin: 50% 50%;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  /* No animated turning. The map still orients itself, it just gets there
-     without the sweep — rotation is exactly the kind of large-field motion
-     that provokes vestibular symptoms. */
-  .map-stage,
-  .map-stage .leaflet-marker-icon > * {
-    transition: none !important;
-  }
-
   *,
   *::before,
   *::after {

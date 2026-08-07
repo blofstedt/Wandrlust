@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Campsite, CamperReview } from '../types';
 import { ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL } from '../utils/amenities';
 import { getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl } from '../utils/imageUtils';
+import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import {
   X,
   MapPin,
@@ -217,11 +218,11 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                   <span>{copiedCoords ? 'Copied!' : coordsString}</span>
                 </button>
                 <a
-                  href={`https://www.google.com/maps/search/?api=1&query=${campsite.latitude},${campsite.longitude}`}
+                  href={getDirectionsUrl(campsite.latitude, campsite.longitude)}
                   target="_blank"
                   rel="noreferrer"
                   className="p-2 rounded-xl bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/40 transition-all"
-                  title="Open in Google Maps"
+                  title={`Directions in ${directionsAppName()}`}
                 >
                   <Navigation className="w-4 h-4" />
                 </a>

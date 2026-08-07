@@ -61,32 +61,6 @@ export const EMPTY_ROUTE: RouteResult = {
   message: 'No route'
 };
 
-/** Dimension checks we can make without a routing engine at all. */
-export const staticRigWarnings = (rig: Rig | null | undefined): RouteWarning[] => {
-  if (!rig) return [];
-  const out: RouteWarning[] = [];
-
-  if (rig.height_cm && rig.height_cm > 411) {
-    out.push({
-      severity: 'caution',
-      message: `At ${(rig.height_cm / 100).toFixed(2)} m you exceed the 13'6" (4.11 m) clearance common on older US bridges and many forest roads.`
-    });
-  }
-  if (rig.length_cm && rig.length_cm > 1067) {
-    out.push({
-      severity: 'caution',
-      message: `At ${(rig.length_cm / 100).toFixed(1)} m you exceed the 35 ft limit posted at many national forest campgrounds and switchback roads.`
-    });
-  }
-  if (rig.gross_weight_kg && rig.gross_weight_kg > 11793) {
-    out.push({
-      severity: 'caution',
-      message: `At ${(rig.gross_weight_kg / 1000).toFixed(1)} t you may exceed posted limits on secondary bridges and seasonal-load-restricted roads.`
-    });
-  }
-  return out;
-};
-
 export const calculateRoute = async (
   req: RouteRequest,
   signal?: AbortSignal
