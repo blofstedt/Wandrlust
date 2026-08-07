@@ -37,37 +37,80 @@ const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry');
 const ONLY_SOURCE = args.find((a) => a.startsWith('--source='))?.split('=')[1];
 
-const toCampsiteRow = (site: Campsite) => ({
-  id: site.id,
-  name: site.name,
-  land_type: site.landType,
-  land_manager: site.landManager ?? '',
-  latitude: site.latitude,
-  longitude: site.longitude,
-  elevation_ft: site.elevationFt ?? null,
-  nearest_city: site.address?.nearestCity ?? '',
-  state_province: site.address?.stateProvince ?? '',
-  country: site.address?.country ?? '',
-  address_description: site.address?.description ?? null,
-  description: site.description ?? '',
-  water: site.amenities.water,
-  toilet: site.amenities.toilet,
-  road_access: site.amenities.roadAccess,
-  cell_verizon: site.amenities.cellSignal.verizon,
-  cell_att: site.amenities.cellSignal.att,
-  cell_tmobile: site.amenities.cellSignal.tmobile,
-  max_rv_length_feet: site.amenities.maxRvLengthFeet ?? 0,
-  fire_ring: site.amenities.fireRing,
-  pet_friendly: site.amenities.petFriendly,
-  trash_service: site.amenities.trashService,
-  shade: site.amenities.shade,
-  stay_limit_days: site.amenities.stayLimitDays,
-  is_free: site.amenities.isFree,
-  permit_required: site.amenities.permitRequired,
-  images: site.images ?? [],
-  source: site.source,
-  is_published: true
-});
+/**
+ * A campsite as a database row.
+ *
+ * ---------------------------------------------------------------------------
+ * THIS FUNCTION USED TO CRASH ON THE FIRST ROW
+ * ---------------------------------------------------------------------------
+ *
+ * It read `site.amenities.cellSignal.verizon`. Every field on
+ * `CampsiteAmenities` is optional and NOT ONE of the curated sites records a
+ * cell signal, so `cellSignal` was always undefined and reading `.verizon` off
+ * it threw a TypeError before a single row was built. `npm run seed -- --sites`
+ * has therefore never worked, which means the curated campsites were never in
+ * `public.campsites` at all — and every table that references a campsite by id
+ * had nothing to point at.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY UNDEFINED FIELDS ARE OMITTED RATHER THAN DEFAULTED
+ * ---------------------------------------------------------------------------
+ *
+ * The old code also wrote `max_rv_length_feet: … ?? 0`. Zero does not mean
+ * "unknown", it means "no RV of any length fits", and a camper filtering for a
+ * 30-foot rig would have had the site hidden from them by a number nobody
+ * measured. The same trap applies to every amenity here.
+ *
+ * So a field the curated data does not record is left OUT of the row entirely
+ * and the column default applies. Those defaults are themselves not
+ * observations, which is exactly why `dataService` does not read the amenity
+ * columns back — see the note there. Making the columns nullable so absence
+ * can be stored honestly is the real fix and is a migration of its own.
+ */
+const toCampsiteRow = (site: Campsite) => {
+  const a = site.amenities ?? {};
+
+  // Only keys with a real value survive; `undefined` is dropped so Postgres
+  // applies the column default rather than us inventing one.
+  const defined = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
+    Object.fromEntries(
+      Object.entries(obj).filter(([, value]) => value !== undefined)
+    ) as Partial<T>;
+
+  return {
+    id: site.id,
+    name: site.name,
+    land_type: site.landType,
+    land_manager: site.landManager ?? '',
+    latitude: site.latitude,
+    longitude: site.longitude,
+    elevation_ft: site.elevationFt ?? null,
+    nearest_city: site.address?.nearestCity ?? '',
+    state_province: site.address?.stateProvince ?? '',
+    country: site.address?.country ?? '',
+    address_description: site.address?.description ?? null,
+    description: site.description ?? '',
+    images: site.images ?? [],
+    source: site.source,
+    is_published: true,
+    ...defined({
+      water: a.water,
+      toilet: a.toilet,
+      road_access: a.roadAccess,
+      cell_verizon: a.cellSignal?.verizon,
+      cell_att: a.cellSignal?.att,
+      cell_tmobile: a.cellSignal?.tmobile,
+      max_rv_length_feet: a.maxRvLengthFeet,
+      fire_ring: a.fireRing,
+      pet_friendly: a.petFriendly,
+      trash_service: a.trashService,
+      shade: a.shade,
+      stay_limit_days: a.stayLimitDays,
+      is_free: a.isFree,
+      permit_required: a.permitRequired
+    })
+  };
+};
 
 const seedCampsites = async () => {
   const rows = CURATED_CAMPSITES.map(toCampsiteRow);

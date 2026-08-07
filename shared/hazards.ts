@@ -15,19 +15,45 @@ export type AlertUrgency = 'immediate' | 'expected' | 'future' | 'past' | 'unkno
 /**
  * Map an NWS / ECCC event name onto a hazard family.
  *
- * Order matters: fire is checked FIRST because "Fire Weather Watch" would
- * otherwise fall through to another family, and getting fire wrong is the most
- * dangerous failure here.
+ * ORDER IS LOAD-BEARING. Read the whole function before moving a line.
+ *
+ *  1. FIRE first, always. "Fire Weather Watch" contains "weather" and would
+ *     fall through to storm, and getting fire wrong is the most dangerous
+ *     failure this function can have.
+ *  2. FREEZING RAIN before flood. Canada issues "freezing rain warning" and
+ *     "rainfall warning" as different products with different responses — one
+ *     is an ice hazard, the other a water hazard. A bare /rain/ test in the
+ *     flood branch would claim both, so the icy ones are claimed first and the
+ *     flood branch matches "rainfall" rather than "rain".
+ *
+ * The Canadian names matter as much as the American ones here. Environment
+ * Canada's products are worded differently — "rainfall warning", "arctic
+ * outflow", "snow squall", "les suêtes wind" — and every one of them that
+ * falls through lands on the generic grey advisory icon, which is what made
+ * the map unreadable before.
  */
 export const classifyHazard = (eventName: string): HazardFamily => {
   const e = (eventName ?? '').toLowerCase();
-  if (/red flag|fire weather|wildfire|fire danger|burn ban|extreme fire/.test(e)) return 'fire';
-  if (/flood|flash flood|hydrologic|dam break|seiche|storm surge/.test(e)) return 'flood';
-  if (/tornado|thunderstorm|hurricane|tropical|typhoon|severe weather|squall|waterspout/.test(e))
+
+  // Wildfire smoke is filed by ECCC as an air quality statement; a camper
+  // deciding whether to sleep in it is making a fire-season decision.
+  if (/red flag|fire weather|wildfire|fire danger|burn ban|extreme fire|smoke/.test(e)) {
+    return 'fire';
+  }
+  // Claimed before the flood branch — see the note above.
+  if (/freezing rain|ice storm|freezing drizzle/.test(e)) return 'winter';
+
+  if (/flood|hydrologic|dam break|seiche|storm surge|rainfall|heavy rain|tsunami/.test(e)) {
+    return 'flood';
+  }
+  if (/tornado|thunderstorm|hurricane|tropical|typhoon|severe weather|squall|waterspout/.test(e)) {
     return 'storm';
-  if (/snow|blizzard|ice|freez|winter|frost|sleet|avalanche|cold|chill/.test(e)) return 'winter';
-  if (/heat|hot/.test(e)) return 'heat';
-  if (/wind|gale|dust/.test(e)) return 'wind';
+  }
+  if (/snow|blizzard|ice|freez|winter|frost|sleet|avalanche|cold|chill|arctic/.test(e)) {
+    return 'winter';
+  }
+  if (/heat|hot|humidex/.test(e)) return 'heat';
+  if (/wind|gale|dust|suêtes|suetes/.test(e)) return 'wind';
   return 'other';
 };
 

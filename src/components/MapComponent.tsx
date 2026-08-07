@@ -14,11 +14,9 @@ import type {
   Campsite, CellTower, DestinationLand, MapDestination, MapTileLayer
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
-import { pointInGeometry, destinationPoint, unwrapBearing } from '../utils/geo';
+import { pointInGeometry } from '../utils/geo';
 import { hazardReportStyle, reportStanding } from '../config/hazardReports';
-import { RIG_AVATAR, UNKNOWN_RIG_EMOJI } from '../config/rigs';
-import { fetchHazardsNear, HazardRecord, NearbyCamper } from '../services/dataService';
-import type { RouteResult } from '../services/routingService';
+import { fetchHazardsNear, HazardRecord } from '../services/dataService';
 import {
   fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains, BOUNDARY_STYLES,
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
@@ -99,31 +97,6 @@ const TILE_PERFORMANCE = {
  * than coloured mush.
  */
 const UNDERLAY_NATIVE_ZOOM = 8;
-
-/**
- * How close the chase camera sits while navigating.
- *
- * Close enough that individual spur roads are distinguishable — which is the
- * decision a camper is actually making on the last few kilometres — without
- * being so close that a junction arrives with no warning.
- */
-const NAVIGATION_ZOOM = 15;
-
-/**
- * Where the vehicle sits on screen, as a fraction of viewport height from the
- * top. 0.5 would be dead centre; 0.64 is a bit below it.
- *
- * Expressed as a screen POSITION rather than as a forward offset on purpose.
- * The offset version was wrong the first time — it read as "distance from the
- * bottom" and put the camper underneath the navigation panel, where it could
- * not be seen at all. This way the number means exactly what it looks like,
- * and the conversion to a forward distance happens once, below.
- *
- * 0.60 leaves most of the screen showing the road ahead while staying clear of
- * the HUD — which grows when there's a warning to show, so the clearance has to
- * hold for the tallest version of it, not the shortest.
- */
-const CAMERA_VEHICLE_SCREEN_FRACTION = 0.60;
 
 /**
  * The hard edge of the map.
@@ -265,60 +238,6 @@ const buildTowerIcon = (tower: CellTower): L.DivIcon => {
 };
 
 /**
- * A camper on the road — you, or somebody else.
- *
- * Yours is the plain camper van; a placeholder until there's a rig picker
- * wired to it. Friends get their own rig's avatar and their name. Everyone
- * else gets a muted dot and no name at all.
- *
- * ON THE WORD "ANONYMOUS": positions here are already snapped to a ~1 km grid
- * by the server before they leave the database, and the app withholds the
- * handle for anyone who isn't a friend. But the handle IS in the response —
- * hiding it is a display choice, not a guarantee, and the UI says "names
- * hidden" rather than "anonymous" for exactly that reason.
- */
-const buildCamperIcon = (options: {
-  emoji: string;
-  name?: string;
-  isSelf?: boolean;
-}): L.DivIcon => {
-  const { emoji, name, isSelf } = options;
-  const ring = isSelf ? '#34D399' : name ? '#38BDF8' : '#64748B';
-
-  const label = name
-    ? `<span class="mt-0.5 px-1.5 py-px rounded-md bg-slate-950/85 text-[9px] font-bold text-slate-100 whitespace-nowrap shadow">${name}</span>`
-    : '';
-
-  return L.divIcon({
-    className: 'camper-avatar-marker',
-    html: `
-      <div class="relative flex flex-col items-center">
-        ${isSelf ? '<span class="absolute -top-1 w-11 h-11 rounded-full bg-emerald-400/25 anim-pulse"></span>' : ''}
-        <div class="relative w-9 h-9 rounded-full flex items-center justify-center shadow-xl border-2 bg-slate-900"
-             style="border-color:${ring}">
-          <span style="font-size:17px;line-height:1">${emoji}</span>
-        </div>
-        ${label}
-      </div>`,
-    iconSize: [36, name ? 52 : 36],
-    iconAnchor: [18, 18]
-  });
-};
-
-/** Your vehicle avatar. A plain camper for now, as asked. */
-const SELF_CAMPER_SVG = `
-  <svg viewBox="0 0 40 28" class="w-7 h-5" aria-hidden="true">
-    <rect x="1.5" y="5" width="26" height="14" rx="3" fill="#F8FAFC" stroke="#0F172A" stroke-width="1.4"/>
-    <path d="M27.5 9h5.2l4.8 5.4V19h-10z" fill="#E2E8F0" stroke="#0F172A" stroke-width="1.4" stroke-linejoin="round"/>
-    <rect x="5.5" y="8" width="7.5" height="5" rx="1.2" fill="#38BDF8"/>
-    <rect x="1.5" y="14.5" width="26" height="2.6" fill="#10B981"/>
-    <circle cx="9.5" cy="20.5" r="3.6" fill="#0F172A"/>
-    <circle cx="30" cy="20.5" r="3.6" fill="#0F172A"/>
-    <circle cx="9.5" cy="20.5" r="1.3" fill="#94A3B8"/>
-    <circle cx="30" cy="20.5" r="1.3" fill="#94A3B8"/>
-  </svg>`;
-
-/**
  * Rough size of a shape, as the area of its bounding box in square degrees.
  *
  * Only ever used to rank two overlapping parcels against each other, so the
@@ -371,23 +290,44 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
  * Sized generously and given a dark outline so it stays readable over both
  * bright snow and dark forest in satellite imagery.
  */
+/**
+ * An alert marker that says what KIND of alert it is at a glance.
+ *
+ * Every one of these used to be the same grey exclamation triangle, so a map
+ * with a fire ban, a flood watch and a snowfall warning on it looked like
+ * three copies of one anonymous hazard. The family's own colour and symbol now
+ * carry the meaning: you should be able to tell fire from flood without
+ * opening anything.
+ *
+ * Shape follows severity rather than adding a second colour language — a
+ * severe or extreme alert gets the pointed triangle and a pulse, everything
+ * milder gets a calmer rounded badge. That keeps the loud treatment for things
+ * that have actually been called dangerous.
+ */
 const buildHazardIcon = (alert: HazardAlert): L.DivIcon => {
   const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
   const urgent = alert.severity === 'extreme' || alert.severity === 'severe';
+  const size = urgent ? 34 : 28;
+
+  const shape = urgent
+    ? `<path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A"
+             stroke-width="1.6" stroke-linejoin="round"/>`
+    : `<rect x="2" y="4" width="20" height="16" rx="5" fill="${style.color}"
+             stroke="#0F172A" stroke-width="1.5"/>`;
 
   return L.divIcon({
     className: 'hazard-alert-marker',
     html: `
-      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}">
-        <svg viewBox="0 0 24 24" class="w-8 h-8 drop-shadow-lg" aria-hidden="true">
-          <path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A" stroke-width="1.6"
-                stroke-linejoin="round"/>
-          <path d="M12 9.2v5.1" stroke="#0F172A" stroke-width="2.1" stroke-linecap="round"/>
-          <circle cx="12" cy="17.6" r="1.15" fill="#0F172A"/>
-        </svg>
+      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}"
+           style="width:${size}px;height:${size}px">
+        <svg viewBox="0 0 24 24" class="absolute inset-0 w-full h-full drop-shadow-lg"
+             aria-hidden="true">${shape}</svg>
+        <span class="relative" style="font-size:${
+          urgent ? size * 0.38 : size * 0.44
+        }px;line-height:1;${urgent ? 'padding-top:' + size * 0.16 + 'px' : ''}">${style.icon}</span>
       </div>`,
-    iconSize: [32, 32],
-    iconAnchor: [16, 24]
+    iconSize: [size, size],
+    iconAnchor: [size / 2, urgent ? size * 0.78 : size / 2]
   });
 };
 
@@ -416,24 +356,6 @@ interface MapComponentProps {
   onDropDestination: (lat: number, lon: number, land?: DestinationLand) => void;
   /** Fired when a camper's hazard report is tapped. */
   onSelectHazardReport?: (record: HazardRecord) => void;
-
-  /** The route being followed, or null when not navigating. */
-  route: RouteResult | null;
-  isNavigating: boolean;
-  /** Direction of travel in degrees from north, or null when not moving. */
-  heading?: number | null;
-  /**
-   * Whether the camera is locked behind the vehicle.
-   *
-   * Turned off the moment the user drags the map — they wanted to look at
-   * something — and turned back on by the recentre button.
-   */
-  isFollowing?: boolean;
-  onFollowChange?: (following: boolean) => void;
-  /** Other campers to draw while navigating. */
-  nearbyCampers?: NearbyCamper[];
-  /** Whose names may be shown. Everyone else stays unnamed. */
-  friendIds?: Set<string>;
 }
 
 export const MapComponent: React.FC<MapComponentProps> = ({
@@ -441,9 +363,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
   destination, onDropDestination, onSelectHazardReport,
-  bottomCoverFraction = 0,
-  route, isNavigating, heading = null, isFollowing = true, onFollowChange,
-  nearbyCampers = [], friendIds
+  bottomCoverFraction = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -472,8 +392,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
   const cellLayerRef = useRef<L.LayerGroup | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
-  const routeLayerRef = useRef<L.LayerGroup | null>(null);
-  const camperLayerRef = useRef<L.LayerGroup | null>(null);
 
   /**
    * Callbacks reached through refs, not through effect dependencies.
@@ -487,12 +405,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   dropRef.current = onDropDestination;
   const reportTapRef = useRef(onSelectHazardReport);
   reportTapRef.current = onSelectHazardReport;
-  const navigatingRef = useRef(isNavigating);
-  navigatingRef.current = isNavigating;
-  const followRef = useRef(isFollowing);
-  followRef.current = isFollowing;
-  /** True once the chase camera has set its own zoom for this trip. */
-  const navZoomAppliedRef = useRef(false);
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -521,13 +433,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [unmappableHazards, setUnmappableHazards] = useState(0);
   /** Camper-filed reports currently on screen — counted in the status chip. */
   const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
-  /**
-   * How far the map is turned, in degrees, unwrapped.
-   *
-   * Unwrapped means it keeps counting past 360 instead of resetting — see the
-   * chase-camera effect for why that matters to a CSS transform.
-   */
-  const [mapBearing, setMapBearing] = useState(0);
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -1227,9 +1132,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!map || !isMapReady) return;
 
     const handleTap = (event: L.LeafletMouseEvent) => {
-      // Mid-route, a stray tap must not silently retarget the navigation.
-      if (navigatingRef.current) return;
-
       const { lat, lng } = event.latlng;
 
       /**
@@ -1546,13 +1448,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * translation, so the screen-space gap between two points survives it. Pick
    * the coordinate Q sitting `(centre − target)` pixels BELOW the pin right
    * now; make Q the new centre; the pin lands exactly on the target row.
-   *
-   * Deliberately does NOT run while navigating — the chase camera owns the
-   * viewport then, and a second thing moving it would fight for the wheel.
    */
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isMapReady || !destination || isNavigating) return;
+    if (!map || !isMapReady || !destination) return;
 
     /**
      * Wait for the panel to finish growing before measuring around it.
@@ -1600,155 +1499,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // `destination` identity changes when the user picks somewhere new, which
     // is exactly when this should re-run. A manual pan afterwards is left
     // alone — nothing here depends on the map's own move events.
-  }, [destination, bottomCoverFraction, isMapReady, isNavigating]);
-
-  /* ------------------------------------------------------------------ */
-  /* Navigation: the route line, and who else is out there               */
-  /* ------------------------------------------------------------------ */
-  /**
-   * The route, drawn as a casing and a line so it reads over any base map.
-   *
-   * A single stroke disappears against a river on the topo layer and against
-   * a road on satellite. The dark casing underneath is what keeps it legible
-   * without having to shout with colour.
-   */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-
-    const clear = () => {
-      if (!routeLayerRef.current) return;
-      try { map.removeLayer(routeLayerRef.current); } catch { /* detached */ }
-      routeLayerRef.current = null;
-    };
-
-    clear();
-    if (!isNavigating || !route?.ok || route.geometry.length < 2) return;
-
-    if (!map.getPane('routePane')) {
-      map.createPane('routePane');
-      const pane = map.getPane('routePane');
-      // Above the boundaries, below every marker.
-      if (pane) { pane.style.zIndex = '500'; pane.style.pointerEvents = 'none'; }
-    }
-
-    const group = L.layerGroup([], { pane: 'routePane' });
-    group.addLayer(
-      L.polyline(route.geometry, {
-        pane: 'routePane', interactive: false,
-        color: '#0F172A', weight: 11, opacity: 0.55, lineCap: 'round', lineJoin: 'round'
-      })
-    );
-    group.addLayer(
-      L.polyline(route.geometry, {
-        pane: 'routePane', interactive: false,
-        color: '#34D399', weight: 5.5, opacity: 0.95, lineCap: 'round', lineJoin: 'round'
-      })
-    );
-
-    /**
-     * The last stretch the router couldn't do, drawn as what it is.
-     *
-     * When the route ends short of the pin — which on dispersed sites is the
-     * norm, because the spur is an unmapped two-track — a solid line straight
-     * to the destination would be a lie in the most dangerous direction: it
-     * would look like a road. So it is dashed, amber, and thinner than the
-     * route, and the sheet and HUD both spell out in words how far it is and
-     * why it isn't routed.
-     */
-    if (destination && route.gapToDestinationKm > 0.15) {
-      const end = route.geometry[route.geometry.length - 1];
-      group.addLayer(
-        L.polyline(
-          [end, [destination.latitude, destination.longitude]],
-          {
-            pane: 'routePane', interactive: false,
-            color: '#F59E0B', weight: 3, opacity: 0.9,
-            dashArray: '2 9', lineCap: 'round'
-          }
-        )
-      );
-    }
-
-    routeLayerRef.current = group.addTo(map);
-
-    /**
-     * Frame the whole drive — but only when nothing else owns the view.
-     *
-     * With the chase camera engaged, which is the normal case the moment you
-     * tap Navigate, this would zoom out to the whole route and then get
-     * immediately overridden on the next GPS fix: a visible lurch for no
-     * information. It earns its place only when following is off, where the
-     * user has deliberately stepped back to look at the trip as a whole.
-     */
-    if (followRef.current) return clear;
-
-    try {
-      map.fitBounds(L.latLngBounds(route.geometry), {
-        paddingTopLeft: [36, 36],
-        paddingBottomRight: [36, 260],
-        animate: true
-      });
-    } catch { /* degenerate geometry — leave the view alone */ }
-
-    return clear;
-    // `route.geometry` identity is what actually matters; a new RouteResult
-    // object with the same line should not re-frame the map underneath someone.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route?.geometry, isNavigating, isMapReady, destination]);
-
-  /**
-   * Everyone else on the road.
-   *
-   * Friends are named and wear their own rig. Everyone else is a muted dot
-   * with no name — and note that "no name" is a display decision: the handle
-   * is in the response, the server only guarantees the ~1 km position
-   * coarsening. The legend says "names hidden" rather than "anonymous"
-   * because that is the claim we can actually stand behind.
-   */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-
-    const clear = () => {
-      if (!camperLayerRef.current) return;
-      try { map.removeLayer(camperLayerRef.current); } catch { /* detached */ }
-      camperLayerRef.current = null;
-    };
-
-    clear();
-    if (!isNavigating || nearbyCampers.length === 0) return;
-
-    if (!map.getPane('camperPane')) {
-      map.createPane('camperPane');
-      const pane = map.getPane('camperPane');
-      if (pane) pane.style.zIndex = '640';
-    }
-
-    const group = L.layerGroup([], { pane: 'camperPane' });
-    nearbyCampers.forEach((camper) => {
-      if (typeof camper.approx_lat !== 'number' || typeof camper.approx_lon !== 'number') return;
-      const isFriend = friendIds?.has(camper.user_id) ?? false;
-
-      group.addLayer(
-        L.marker([camper.approx_lat, camper.approx_lon], {
-          pane: 'camperPane',
-          icon: buildCamperIcon({
-            emoji: isFriend && camper.rig_type
-              ? RIG_AVATAR[camper.rig_type].emoji
-              : isFriend ? UNKNOWN_RIG_EMOJI : '•',
-            name: isFriend ? camper.handle : undefined
-          }),
-          title: isFriend
-            ? `${camper.handle} — position accurate to about a kilometre`
-            : 'A camper nearby — name hidden, position accurate to about a kilometre'
-        })
-      );
-    });
-
-    camperLayerRef.current = group.addTo(map);
-    return clear;
-  }, [isNavigating, nearbyCampers, friendIds, isMapReady]);
+  }, [destination, bottomCoverFraction, isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Fire, flood and storm alerts                                        */
@@ -1790,29 +1541,78 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let controller: AbortController | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
 
+    /**
+     * What this particular alert says.
+     *
+     * Everything here is per-alert and conditional. The old version printed
+     * every field unconditionally, so a feed that supplies no description — and
+     * Environment Canada's alert index supplies none — produced a popup with
+     * the title repeated twice and two empty lines under it. If a field is
+     * absent it is left out entirely rather than rendered blank.
+     *
+     * Escaped because `description` and `instruction` are agency text carried
+     * straight from a government feed into `innerHTML`.
+     */
+    const esc = (raw: unknown): string =>
+      String(raw ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
     const popupHtml = (alert: HazardAlert): string => {
       const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
-      const expires = alert.expires
-        ? `<div style="color:#64748B;font-size:10px;margin-top:6px">Until ${new Date(
-            alert.expires
-          ).toLocaleString()}</div>`
-        : '';
-      const instruction = alert.instruction
-        ? `<div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:10px;line-height:1.35">${alert.instruction}</div>`
+      const when = (iso: string | null) =>
+        iso ? new Date(iso).toLocaleString([], {
+          weekday: 'short', hour: 'numeric', minute: '2-digit'
+        }) : null;
+
+      const row = (label: string, value: string | null | undefined) =>
+        value
+          ? `<div style="display:flex;gap:6px;margin-top:4px;font-size:10px;line-height:1.4">
+               <span style="color:#94A3B8;flex:0 0 52px">${label}</span>
+               <span style="color:#334155">${esc(value)}</span>
+             </div>`
+          : '';
+
+      // The headline is only worth its line when it says something the title
+      // did not — ECCC frequently repeats the event name into it.
+      const headline =
+        alert.headline && alert.headline.trim().toLowerCase() !== alert.event.trim().toLowerCase()
+          ? `<div style="color:#334155;margin-top:3px;font-size:11px">${esc(alert.headline)}</div>`
+          : '';
+
+      const description = alert.description
+        ? `<div style="color:#475569;margin-top:6px;font-size:11px;line-height:1.45;max-height:9em;overflow:auto">${esc(
+            alert.description
+          )}</div>`
         : '';
 
-      return `<div style="font-family:system-ui;font-size:12px;min-width:220px;max-width:300px">
-          <span style="display:inline-block;padding:2px 6px;border-radius:6px;background:${
+      const instruction = alert.instruction
+        ? `<div style="margin-top:8px;padding:6px;border-radius:6px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:10px;line-height:1.35">${esc(
+            alert.instruction
+          )}</div>`
+        : '';
+
+      return `<div style="font-family:system-ui;font-size:12px;min-width:230px;max-width:310px">
+          <span style="display:inline-block;padding:2px 7px;border-radius:6px;background:${
             style.color
           };color:#0F172A;font-weight:700;font-size:10px;text-transform:uppercase">${
-        style.label
-      } · ${alert.severity}</span>
-          <strong style="display:block;font-size:13px;margin-top:6px">${alert.event}</strong>
-          <div style="color:#334155;margin-top:2px">${alert.headline ?? ''}</div>
-          <div style="color:#475569;font-size:10px;margin-top:6px">${alert.areaDescription ?? ''}</div>
+        style.icon
+      } ${style.label} · ${esc(alert.severity)}</span>
+          <strong style="display:block;font-size:13.5px;margin-top:6px;text-transform:capitalize">${esc(
+            alert.event
+          )}</strong>
+          ${headline}
+          ${description}
+          ${row('Where', alert.areaDescription)}
+          ${row(
+            'Covers',
+            alert.zoneCount && alert.zoneCount > 1 ? `${alert.zoneCount} forecast regions` : null
+          )}
+          ${row('Until', when(alert.expires ?? null))}
           ${instruction}
-          <div style="color:#64748B;font-size:10px;margin-top:6px">Issued by ${alert.sender}</div>
-          ${expires}
+          <div style="color:#94A3B8;font-size:9.5px;margin-top:7px;padding-top:6px;border-top:1px solid #E2E8F0">
+            ${esc(alert.sender)}
+          </div>
         </div>`;
     };
 
@@ -1996,63 +1796,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
     if (!userLocation) return;
 
-    /**
-     * A blue dot when you're browsing, your camper when you're driving.
-     *
-     * Navigation is the one time the map is being read at a glance from a
-     * driver's seat, and a dot identical to every other blue dot in every
-     * other app is the wrong thing to hunt for. The camper is deliberately
-     * larger than it needs to be.
-     */
-    const icon = isNavigating
-      ? L.divIcon({
-          className: 'user-camper-marker',
-          html: `
-            <div class="relative flex items-center justify-center">
-              <span class="absolute w-14 h-14 rounded-full bg-emerald-400/20 anim-pulse"></span>
-              <!--
-                The forward cone.
+    const icon = L.divIcon({
+      className: 'user-location-marker',
+      html: `
+        <div class="relative flex items-center justify-center">
+          <div class="absolute w-12 h-12 bg-blue-500/20 rounded-full animate-ping"></div>
+          <div class="w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-lg relative z-10"></div>
+        </div>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 8]
+    });
 
-                The camper itself is drawn side-on and held upright so it stays
-                readable, which means it can't also point anywhere. The cone
-                does that job: the map is turned so travel is up the screen, and
-                because this whole icon is counter-rotated back to upright, the
-                cone reliably points where the vehicle is going.
-              -->
-              <span class="absolute bottom-7">
-                <svg viewBox="0 0 40 34" class="w-12 h-10" aria-hidden="true">
-                  <defs>
-                    <linearGradient id="wl-cone" x1="0" y1="1" x2="0" y2="0">
-                      <stop offset="0%" stop-color="#34D399" stop-opacity="0.95"/>
-                      <stop offset="100%" stop-color="#34D399" stop-opacity="0"/>
-                    </linearGradient>
-                  </defs>
-                  <path d="M20 34 L2 4 A22 22 0 0 1 38 4 Z" fill="url(#wl-cone)"/>
-                </svg>
-              </span>
-              <span class="relative flex items-center justify-center w-11 h-11 rounded-full bg-slate-900 border-2 border-emerald-400 shadow-xl">
-                ${SELF_CAMPER_SVG}
-              </span>
-            </div>`,
-          iconSize: [44, 44],
-          iconAnchor: [22, 22]
-        })
-      : L.divIcon({
-          className: 'user-location-marker',
-          html: `
-            <div class="relative flex items-center justify-center">
-              <div class="absolute w-12 h-12 bg-blue-500/20 rounded-full animate-ping"></div>
-              <div class="w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-lg relative z-10"></div>
-            </div>`,
-          iconSize: [16, 16],
-          iconAnchor: [8, 8]
-        });
-
-    userMarkerRef.current = L.marker(userLocation, {
-      icon,
-      zIndexOffset: isNavigating ? 1000 : 0
-    }).addTo(map);
-  }, [userLocation, isMapReady, isNavigating]);
+    userMarkerRef.current = L.marker(userLocation, { icon }).addTo(map);
+  }, [userLocation, isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Recentre                                                            */
@@ -2060,9 +1816,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapReady) return;
-    // While the chase camera has the wheel, a search-driven recentre would
-    // yank the view off the vehicle mid-corner.
-    if (isNavigating && isFollowing) return;
     // Leaflet clamps to minZoom and maxBounds internally, so a request to fly
     // somewhere outside the world simply lands at the nearest valid view.
     try {
@@ -2072,135 +1825,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [center, zoom, isMapReady]);
-
-  /* ------------------------------------------------------------------ */
-  /* The chase camera                                                    */
-  /* ------------------------------------------------------------------ */
-  /**
-   * The stage has to grow before it can rotate, and Leaflet has to be told.
-   *
-   * Leaflet caches the container's pixel size. Changing it from 100% to 152%
-   * without `invalidateSize` leaves it drawing tiles for the old box, offset
-   * from where the map actually is — the same class of bug the ResizeObserver
-   * on mount exists to prevent.
-   */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-    const t = setTimeout(() => {
-      try { map.invalidateSize({ animate: false }); } catch { /* detached */ }
-    }, 60);
-    return () => clearTimeout(t);
-  }, [isNavigating, isMapReady]);
-
-  /**
-   * Dragging the map means "let me look at something", so following stops.
-   *
-   * Only a genuine drag. Zooming keeps the lock, because pinching to see
-   * further up the road is not the same as wanting to leave the vehicle.
-   */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady || !isNavigating) return;
-
-    const release = () => onFollowChange?.(false);
-    map.on('dragstart', release);
-    return () => { map.off('dragstart', release); };
-  }, [isMapReady, isNavigating, onFollowChange]);
-
-  /**
-   * Put the vehicle low in the frame with the road ahead filling the screen.
-   *
-   * The map is centred not on the vehicle but on a point projected forward
-   * along the heading. At the default zoom that lands the camper about a third
-   * of the way up from the bottom, which is the framing every driver already
-   * knows from a car's built-in navigation — you see where you're going, not
-   * where you've been.
-   *
-   * The forward offset is computed from the real metres-per-pixel at this
-   * latitude and zoom, so the framing holds whether you're in Arizona or the
-   * Yukon and whether you're zoomed to a town or a switchback.
-   */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-    if (!isNavigating || !isFollowing || !userLocation) return;
-
-    const [lat, lon] = userLocation;
-
-    /**
-     * Snap to the navigation zoom once, then leave the zoom alone.
-     *
-     * Forcing it on every position update — which `Math.max(getZoom(), ...)`
-     * effectively did — meant a user who zoomed out to see the next junction
-     * got dragged back in on the next GPS fix, about once a second. Now the
-     * close-in view is the starting point, not a floor.
-     */
-    let zoomLevel = map.getZoom();
-    if (!navZoomAppliedRef.current) {
-      zoomLevel = NAVIGATION_ZOOM;
-      navZoomAppliedRef.current = true;
-    }
-
-    // Web Mercator ground resolution: 156543.03 m/px at the equator, halved
-    // per zoom level, narrowed by latitude.
-    const metresPerPixel =
-      (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoomLevel;
-    // Moving the map centre forward by d pixels pushes the vehicle d pixels
-    // DOWN the screen, so the lead is the gap between where we want the
-    // vehicle and the centre of the viewport.
-    const leadPx = map.getSize().y * (CAMERA_VEHICLE_SCREEN_FRACTION - 0.5);
-    const forwardKm = (leadPx * metresPerPixel) / 1000;
-
-    const target = heading == null
-      ? ([lat, lon] as [number, number])
-      : destinationPoint(lat, lon, heading, forwardKm);
-
-    /**
-     * NEVER FORCE `animate: true` ON A LONG JUMP.
-     *
-     * This is the bug that made the camper vanish. Leaflet guards its animated
-     * pan with `if (options.animate !== true && !this.getSize().contains(offset))
-     * return false` — the guard exists precisely to refuse animating a pan
-     * longer than a screen, and its own source comments that doing so makes
-     * Chrome put tiles and markers in the wrong place. Passing `animate: true`
-     * short-circuits that guard. The first camera call after tapping Navigate
-     * is a jump of thousands of pixels, so it took the forbidden path, left the
-     * map pane transform and every marker's layer point disagreeing by about
-     * 4000 px, and put the vehicle marker somewhere off the top of the world.
-     *
-     * So: smooth for the small corrections a GPS fix produces, and an instant
-     * cut for anything bigger. Which is also what it should look like — you do
-     * not want the camera sliding across a province.
-     */
-    try {
-      const jumpPx = map.latLngToContainerPoint(target).distanceTo(
-        map.getSize().divideBy(2)
-      );
-      const smooth = zoomLevel === map.getZoom() && jumpPx < map.getSize().y * 0.75;
-
-      map.setView(target, zoomLevel, smooth
-        ? { animate: true, duration: 0.9 }
-        : { animate: false });
-    } catch { /* not ready */ }
-  }, [userLocation, heading, isNavigating, isFollowing, isMapReady]);
-
-  /**
-   * Turn the ground under the vehicle so travel is always up the screen.
-   *
-   * `unwrapBearing` keeps the number climbing past 360 rather than wrapping,
-   * because CSS animates through whatever value it is given: a wrap from 359°
-   * to 1° would spin the whole map backwards through a full turn.
-   *
-   * Snapping back to zero when navigation ends is deliberate and immediate —
-   * north-up is the only orientation a map you are reading rather than driving
-   * should ever be in.
-   */
-  useEffect(() => {
-    if (!isNavigating) { setMapBearing(0); navZoomAppliedRef.current = false; return; }
-    if (heading == null) return;
-    setMapBearing((previous) => unwrapBearing(previous, heading));
-  }, [heading, isNavigating]);
 
   const statusText = useCallback((): string => {
     if (!showBoundaries) return 'Land boundaries hidden';
@@ -2229,36 +1853,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   return (
     <div className="relative w-full h-full bg-slate-950 overflow-hidden">
       {/*
-        The rotating stage.
+        The stage Leaflet lives in.
 
-        Leaflet lives in here, and in navigation mode this element is rotated so
-        the direction of travel points up the screen. Two things make that work:
+        It used to rotate — in navigation mode it turned so the direction of
+        travel pointed up the screen, which meant it also had to be oversized to
+        √2 of the viewport so the corners never showed bare background, and
+        every marker icon needed a counter-rotation in CSS to stay upright.
+        Navigation is gone and so is all of that. North is up, the stage is
+        exactly the viewport, and the tile budget is a third of what it was.
 
-        1. IT IS OVERSIZED WHILE NAVIGATING. A square rotated 45° needs √2 times
-           its width to still cover the viewport, so the stage grows to 152% and
-           is inset by a quarter on each side. Without it the corners of the
-           screen would show bare background as the map turned. It goes back to
-           exactly 100% the moment you stop, because 2.3× the tiles is not a
-           cost to pay while somebody is browsing.
-
-        2. EVERYTHING ELSE IS ITS SIBLING. All the chrome below sits outside
-           this element, so none of it rotates.
-
-        `--map-counter-rotate` is read by src/index.css to hold marker icons and
-        their labels upright while the ground turns underneath them.
+        It stays a wrapper rather than collapsing into the container below
+        because everything else on this screen is deliberately its SIBLING —
+        that is what keeps the chrome out of Leaflet's transform.
       */}
-      <div
-        ref={stageRef}
-        className={`map-stage absolute ${isNavigating ? '-inset-[26%]' : 'inset-0'}`}
-        style={{
-          transform: `rotate(${-mapBearing}deg)`,
-          // Matches the heading smoothing interval, so the turn is continuous
-          // rather than a series of visible steps. Collapses under
-          // prefers-reduced-motion via the rule in index.css.
-          transition: isNavigating ? 'transform 900ms linear' : 'none',
-          ['--map-counter-rotate' as string]: `${mapBearing}deg`
-        }}
-      >
+      <div ref={stageRef} className="map-stage absolute inset-0">
         <div ref={containerRef} className="w-full h-full" />
       </div>
       {/*
@@ -2549,31 +2157,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       {/*
         Zoom, in React rather than Leaflet.
 
-        Leaflet's own control would live inside the rotating stage and end up
-        somewhere diagonal the moment navigation starts. Hidden while
-        navigating anyway — the chase camera owns the zoom, and a driver has
-        the HUD.
+        Leaflet's own control would live inside the stage element and inherit
+        anything ever done to it; these sit outside as siblings of the map, next
+        to the rest of the chrome.
       */}
-      {!isNavigating && (
-        <div className="absolute bottom-6 right-3 z-[1000] flex flex-col rounded-xl overflow-hidden border border-slate-700/80 shadow-xl">
-          <button
-            type="button"
-            onClick={() => mapRef.current?.zoomIn()}
-            className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none"
-            aria-label="Zoom in"
-          >
-            +
-          </button>
-          <button
-            type="button"
-            onClick={() => mapRef.current?.zoomOut()}
-            className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none border-t border-slate-700/80"
-            aria-label="Zoom out"
-          >
-            −
-          </button>
-        </div>
-      )}
+      <div className="absolute bottom-6 right-3 z-[1000] flex flex-col rounded-xl overflow-hidden border border-slate-700/80 shadow-xl">
+        <button
+          type="button"
+          onClick={() => mapRef.current?.zoomIn()}
+          className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none"
+          aria-label="Zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          onClick={() => mapRef.current?.zoomOut()}
+          className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none border-t border-slate-700/80"
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+      </div>
 
       {/*
         Map credits, behind a button instead of printed across the map.
@@ -2615,12 +2220,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       {/*
         The one instruction on the map.
 
-        Shown only until the user has picked somewhere, and never while
-        navigating. A tap target that covers the entire screen is invisible
-        until somebody tells you it's there — but once you know, the hint is
-        clutter, so it removes itself.
+        Shown only until the user has picked somewhere. A tap target that
+        covers the entire screen is invisible until somebody tells you it's
+        there — but once you know, the hint is clutter, so it removes itself.
       */}
-      {!destination && !isNavigating && (
+      {!destination && (
         <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
           <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl">
             <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />

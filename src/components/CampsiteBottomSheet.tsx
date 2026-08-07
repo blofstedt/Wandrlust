@@ -2,16 +2,18 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   X, MapPin, Star, Navigation, Bookmark, Signal, Droplet,
   Flame, Dog, Clock, ShieldCheck, Loader2, CheckCircle2,
-  ChevronUp, Camera, ThermometerSun, Copy, Check
+  ChevronUp, Camera, ThermometerSun, Copy, Check, Flag
 } from 'lucide-react';
 import type { Campsite } from '../types';
 import {
   ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL, bestCellSignal
 } from '../utils/amenities';
 import {
-  getCampsiteDisplayImage, getCloseSatelliteImageUrl,
-  getStreetViewUrl, getDirectionsUrl
+  getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl
 } from '../utils/imageUtils';
+import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
+import { SubmissionChip } from './SubmissionChip';
+import { ReportContentSheet } from './ReportContentSheet';
 import { fetchWeather, WeatherSnapshot, EMPTY_WEATHER, summarise } from '../services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from '../services/cellCoverageService';
 import type { CellCoverage } from '../types';
@@ -61,6 +63,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   const [checkingIn, setCheckingIn] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [isReporting, setIsReporting] = useState(false);
 
   // Load everything context-dependent when the pin changes.
   useEffect(() => {
@@ -92,7 +95,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
       if (!user) { onRequireAuth(); return; }
       setCheckingIn(true);
       haptic('success');
-      const result = await checkIn(campsite.id, capacity);
+      const result = await checkIn(campsite, capacity);
       setNotice(result.message);
       setCheckingIn(false);
     },
@@ -102,7 +105,10 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   if (!campsite) return null;
 
   const coords = `${campsite.latitude.toFixed(5)}, ${campsite.longitude.toFixed(5)}`;
-  const capacityKey = (campsite as any).capacity_status ?? 'unknown';
+  // Was `(campsite as any).capacity_status`. The field is `capacityStatus`,
+  // and the cast is what hid it — every pin has shown "Unknown" regardless of
+  // how many people had checked in.
+  const capacityKey = campsite.capacityStatus ?? 'unknown';
   const capacity = CAPACITY_STYLE[capacityKey] ?? CAPACITY_STYLE.unknown;
 
   const heightClass = snap === 'peek' ? 'h-[26vh]' : snap === 'half' ? 'h-[58vh]' : 'h-[92vh]';
@@ -148,9 +154,28 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 {campsite.address.nearestCity}
                 {campsite.address.stateProvince && `, ${campsite.address.stateProvince}`}
               </p>
+              {/* The full version with its explanation — this sheet has the
+                  room the card doesn't. */}
+              <div className="mt-1.5">
+                <SubmissionChip
+                  state={campsite.submissionState}
+                  submittedByMe={campsite.submittedByMe}
+                  withDetail
+                />
+              </div>
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0">
+              {/* Quiet on purpose. Reporting is a rare, deliberate act, not a
+                  primary action competing with Save. */}
+              <button
+                onClick={() => { haptic('tap'); setIsReporting(true); }}
+                className="p-2 rounded-xl border bg-slate-800 border-slate-700 text-slate-500 hover:text-rose-300"
+                aria-label="Report this spot"
+                title="Report this spot"
+              >
+                <Flag className="w-4 h-4" />
+              </button>
               <button
                 onClick={() => { haptic('tap'); onToggleSave(campsite); }}
                 className={`p-2 rounded-xl border ${
@@ -394,6 +419,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="btn px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"
+                title={`Open in ${directionsAppName()}`}
               >
                 <Navigation className="w-3.5 h-3.5" />
                 Directions
@@ -402,6 +428,16 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
           </div>
         )}
       </div>
+
+      <ReportContentSheet
+        isOpen={isReporting}
+        onClose={() => setIsReporting(false)}
+        targetKind="campsite"
+        targetId={campsite.id}
+        targetLabel={campsite.name}
+        isSignedIn={Boolean(user)}
+        onRequireAuth={onRequireAuth}
+      />
     </div>
   );
 };

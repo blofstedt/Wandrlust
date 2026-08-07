@@ -1,7 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Campsite, CamperReview } from '../types';
 import { ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL } from '../utils/amenities';
 import { getCampsiteDisplayImage, getCloseSatelliteImageUrl, getStreetViewUrl } from '../utils/imageUtils';
+import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
+import {
+  fetchCampsiteReviews, submitCampsiteReview, fetchCampsiteRating
+} from '../services/dataService';
+import { useAuth } from '../contexts/AuthContext';
+import { ReportContentSheet } from './ReportContentSheet';
 import {
   X,
   MapPin,
@@ -26,7 +32,8 @@ import {
   TreePine,
   Maximize2,
   Camera,
-  Layers
+  Layers,
+  Flag
 } from 'lucide-react';
 
 interface CampsiteDetailModalProps {
@@ -34,7 +41,17 @@ interface CampsiteDetailModalProps {
   isSaved: boolean;
   onClose: () => void;
   onToggleSave: (site: Campsite) => void;
-  onAddReview: (siteId: string, review: CamperReview) => void;
+  /**
+   * Fired after the server has recomputed the site's rating.
+   *
+   * Not "here is a review to add" any more — the database owns the average now
+   * (refresh_campsite_rating), so this reports the new figures rather than
+   * asking the parent to work them out. Two people reviewing the same site used
+   * to produce two different averages in two browsers.
+   */
+  onRatingChange: (siteId: string, rating: number, reviewCount: number) => void;
+  /** Reviews need a session now, so the modal has to be able to ask for one. */
+  onRequireAuth: () => void;
 }
 
 export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
@@ -42,18 +59,45 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
   isSaved,
   onClose,
   onToggleSave,
-  onAddReview
+  onRatingChange,
+  onRequireAuth
 }) => {
+  const { user } = useAuth();
   const [copiedCoords, setCopiedCoords] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [imageMode, setImageMode] = useState<'photo' | 'aerial'>('photo');
 
   // Add review form state
   const [showReviewForm, setShowReviewForm] = useState(false);
-  const [authorName, setAuthorName] = useState('');
   const [rating, setRating] = useState(5);
   const [commentText, setCommentText] = useState('');
   const [vehicleType, setVehicleType] = useState('Van / Camper');
+  const [isSavingReview, setIsSavingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reportingReview, setReportingReview] =
+    useState<{ id: string; author: string } | null>(null);
+
+  /**
+   * Reviews from the server, which are the real ones.
+   *
+   * `campsite.reviews` is whatever the bundled dataset shipped with, and for
+   * every site in the app today that is an empty array. Server reviews replace
+   * it once they load; with no Supabase configured the fetch returns [] and
+   * the bundled list stands, which is the no-keys behaviour the app promises.
+   */
+  const [serverReviews, setServerReviews] = useState<CamperReview[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCampsiteReviews(campsite.id).then((rows) => {
+      if (!cancelled) setServerReviews(rows);
+    });
+    return () => { cancelled = true; };
+  }, [campsite.id]);
+
+  const reviews = serverReviews && serverReviews.length > 0
+    ? serverReviews
+    : campsite.reviews;
 
   const coordsString = `${campsite.latitude.toFixed(5)}, ${campsite.longitude.toFixed(5)}`;
 
@@ -63,21 +107,43 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
     setTimeout(() => setCopiedCoords(false), 2000);
   };
 
-  const handleSubmitReview = (e: React.FormEvent) => {
+  const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authorName.trim() || !commentText.trim()) return;
+    if (!commentText.trim()) return;
 
-    const newReview: CamperReview = {
-      id: `rev-${Date.now()}`,
-      author: authorName,
-      date: new Date().toISOString().split('T')[0],
+    if (!user) { onRequireAuth(); return; }
+
+    setIsSavingReview(true);
+    setReviewError(null);
+
+    const result = await submitCampsiteReview(campsite, {
       rating,
       comment: commentText,
       vehicleType
-    };
+    });
 
-    onAddReview(campsite.id, newReview);
-    setAuthorName('');
+    setIsSavingReview(false);
+
+    if (!result.ok) {
+      setReviewError(result.message);
+      return;
+    }
+
+    /**
+     * Re-read rather than patching state.
+     *
+     * The old code recomputed the average in React and never told anyone, so
+     * the number on screen drifted from the one in the database the moment a
+     * second person reviewed the same site. The trigger owns the average now;
+     * we ask it what the answer is.
+     */
+    const [fresh, totals] = await Promise.all([
+      fetchCampsiteReviews(campsite.id),
+      fetchCampsiteRating(campsite.id)
+    ]);
+    setServerReviews(fresh);
+    if (totals) onRatingChange(campsite.id, totals.rating, totals.reviewCount);
+
     setCommentText('');
     setShowReviewForm(false);
   };
@@ -217,11 +283,11 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                   <span>{copiedCoords ? 'Copied!' : coordsString}</span>
                 </button>
                 <a
-                  href={`https://www.google.com/maps/search/?api=1&query=${campsite.latitude},${campsite.longitude}`}
+                  href={getDirectionsUrl(campsite.latitude, campsite.longitude)}
                   target="_blank"
                   rel="noreferrer"
                   className="p-2 rounded-xl bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/40 transition-all"
-                  title="Open in Google Maps"
+                  title={`Directions in ${directionsAppName()}`}
                 >
                   <Navigation className="w-4 h-4" />
                 </a>
@@ -399,7 +465,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
             <div className="flex items-center justify-between mb-4">
               <h4 className="font-semibold text-slate-100 text-base flex items-center gap-2">
                 <MessageSquare className="w-4 h-4 text-emerald-400" />
-                Camper Reviews ({campsite.reviews.length})
+                Camper Reviews ({reviews.length})
               </h4>
               <button
                 onClick={() => setShowReviewForm(!showReviewForm)}
@@ -412,28 +478,28 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
             {/* Review Form Drawer */}
             {showReviewForm && (
               <form onSubmit={handleSubmitReview} className="mb-4 p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-[11px] font-bold text-slate-400 uppercase">Your Name</label>
-                    <input
-                      type="text"
-                      required
-                      value={authorName}
-                      onChange={(e) => setAuthorName(e.target.value)}
-                      placeholder="e.g. Alex M."
-                      className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold text-slate-400 uppercase">Vehicle / Rig Type</label>
-                    <input
-                      type="text"
-                      value={vehicleType}
-                      onChange={(e) => setVehicleType(e.target.value)}
-                      placeholder="e.g. Sprinter Van, 4x4 Truck, Tent"
-                      className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    />
-                  </div>
+                {/*
+                  THE "YOUR NAME" BOX IS GONE ON PURPOSE.
+
+                  It was a free-text field with no connection to the account
+                  leaving the review, so anyone could sign any name to anything
+                  — including somebody else's. A review is a claim about a
+                  place that other people act on, and it has to be attributable
+                  to a real account or it is worth nothing. The handle is taken
+                  from the session now, and one account gets one review per
+                  site (a unique index, so a second one edits the first).
+                */}
+                <div>
+                  <label className="text-[11px] font-bold text-slate-400 uppercase">
+                    Vehicle / Rig Type
+                  </label>
+                  <input
+                    type="text"
+                    value={vehicleType}
+                    onChange={(e) => setVehicleType(e.target.value)}
+                    placeholder="e.g. Sprinter Van, 4x4 Truck, Tent"
+                    className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
                 </div>
 
                 <div>
@@ -466,22 +532,33 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                   />
                 </div>
 
+                {reviewError && (
+                  <p className="text-[11px] text-rose-300 bg-rose-950/50 border border-rose-800/50 rounded-lg p-2">
+                    {reviewError}
+                  </p>
+                )}
+
                 <button
                   type="submit"
-                  className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md"
+                  disabled={isSavingReview}
+                  className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md disabled:opacity-60 disabled:hover:bg-emerald-600"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  Post Review
+                  {isSavingReview ? 'Posting…' : user ? 'Post Review' : 'Sign in to post'}
                 </button>
+                <p className="text-[10px] text-slate-500 text-center leading-snug">
+                  Posted under your account handle. You get one review per spot —
+                  posting again edits the one you already left.
+                </p>
               </form>
             )}
 
             {/* Review List */}
-            {campsite.reviews.length === 0 ? (
+            {reviews.length === 0 ? (
               <p className="text-xs text-slate-400 italic">No camper reviews yet. Be the first to leave a report!</p>
             ) : (
               <div className="space-y-3">
-                {campsite.reviews.map((rev) => (
+                {reviews.map((rev) => (
                   <div key={rev.id} className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800/80">
                     <div className="flex items-center justify-between text-xs mb-1">
                       <div className="font-bold text-slate-200">
@@ -491,7 +568,21 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                       <div className="text-amber-400 font-bold">★ {rev.rating}</div>
                     </div>
                     <p className="text-xs text-slate-300">{rev.comment}</p>
-                    <div className="text-[10px] text-slate-500 mt-1.5">{rev.date}</div>
+                    <div className="flex items-center justify-between mt-1.5">
+                      <div className="text-[10px] text-slate-500">{rev.date}</div>
+                      {/* Only offered for server-backed reviews. A bundled one
+                          has no row to report. */}
+                      {serverReviews?.some((r) => r.id === rev.id) && (
+                        <button
+                          onClick={() => setReportingReview({ id: rev.id, author: rev.author })}
+                          className="text-[10px] text-slate-600 hover:text-rose-300 flex items-center gap-1"
+                          aria-label={`Report the review by ${rev.author}`}
+                        >
+                          <Flag className="w-2.5 h-2.5" />
+                          Report
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -499,6 +590,18 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {reportingReview && (
+        <ReportContentSheet
+          isOpen
+          onClose={() => setReportingReview(null)}
+          targetKind="campsite_review"
+          targetId={reportingReview.id}
+          targetLabel={`Review by ${reportingReview.author}`}
+          isSignedIn={Boolean(user)}
+          onRequireAuth={onRequireAuth}
+        />
+      )}
     </div>
   );
 };
