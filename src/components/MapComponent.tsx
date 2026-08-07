@@ -6,11 +6,18 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
-  AlertTriangle, ChevronDown, Crosshair, Eye, Layers, Loader2, Shield
+  AlertTriangle, ChevronDown, Crosshair, Eye, Layers, Loader2, MousePointerClick, Shield
 } from 'lucide-react';
 
-import type { Campsite, LandType, MapTileLayer } from '../types';
+import type {
+  Campsite, DestinationLand, MapDestination, MapTileLayer
+} from '../types';
 import { getCachedTile } from '../services/offlineStorage';
+import { pointInGeometry } from '../utils/geo';
+import { hazardReportStyle, reportStanding } from '../config/hazardReports';
+import { RIG_AVATAR, UNKNOWN_RIG_EMOJI } from '../config/rigs';
+import { fetchHazardsNear, HazardRecord, NearbyCamper } from '../services/dataService';
+import type { RouteResult } from '../services/routingService';
 import {
   fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains, BOUNDARY_STYLES,
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
@@ -112,39 +119,34 @@ const WORLD_BOUNDS = L.latLngBounds([-85.05, -180], [85.05, 180]);
 const worldFillZoom = (widthPx: number): number =>
   Math.max(1, Math.ceil(Math.log2(Math.max(widthPx, 1) / 256)));
 
-const LAND_TYPE_COLOR: Record<LandType, string> = {
-  blm: '#F59E0B',
-  usfs: '#10B981',
-  state_forest: '#8B5CF6',
-  crown_land: '#06B6D4',
-  dispersed: '#8B5CF6'
-};
-
-const LAND_TYPE_BADGE: Record<LandType, string> = {
-  blm: 'BLM',
-  usfs: 'USFS',
-  state_forest: 'STATE',
-  crown_land: 'CROWN',
-  dispersed: 'SPOT'
-};
-
 /**
- * Pin markup. Extracted so selection can swap an icon without a full rebuild.
+ * WHAT GETS AN ICON ON THIS MAP, AND WHAT DOESN'T
  *
- * No land-type badge. Each pin used to carry a little BLM/USFS/CROWN/SPOT
- * label, which at any realistic pin density turned the map into a wall of
- * four-letter words with the terrain barely visible behind it. The land type is
- * still on the pin — it is the colour, and the legend names the colours — and
- * it is spelled out in full the moment you tap one.
+ * Only two things: something a camper reported, and somewhere a camper added.
+ * Nothing else earns a pin.
+ *
+ * Every campsite used to get one, colour-coded by land type, which meant a
+ * region with a lot of BLM sections drew as a solid mat of orange dots over
+ * the terrain a camper was trying to read. Worse, those pins were mostly
+ * derived — an OpenStreetMap node or a curated row saying "there is BLM land
+ * here" — and a pin is a much stronger claim than that. It says "this is a
+ * place". The land itself is already drawn, as the boundary polygon it
+ * actually is, with a fuzzy edge saying how sure we are.
+ *
+ * So: no land-type pins. Camper-submitted spots keep theirs, because somebody
+ * stood there. Camper hazard reports get theirs, because somebody drove it.
+ * Official alerts keep their warning triangles. That's the whole set.
  */
-const buildMarkerIcon = (site: Campsite, isSelected: boolean): L.DivIcon =>
+
+/** A spot a camper added themselves. */
+const buildCampsiteIcon = (isSelected: boolean): L.DivIcon =>
   L.divIcon({
     className: 'custom-campsite-marker',
     html: `
       <div class="relative flex items-center justify-center ${isSelected ? 'scale-125 z-50' : 'z-10'}">
-        <div class="w-8 h-8 rounded-full flex items-center justify-center shadow-xl border-2 ${
+        <div class="w-8 h-8 rounded-full flex items-center justify-center shadow-xl border-2 bg-emerald-500 ${
           isSelected ? 'border-white ring-4 ring-emerald-400/50' : 'border-slate-900'
-        }" style="background-color:${LAND_TYPE_COLOR[site.landType]}">
+        }">
           <svg class="w-4 h-4 text-slate-950 stroke-[2.5]" viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path d="M19 20 12 4 5 20" /><path d="M12 4v16" /><path d="M2 20h20" />
           </svg>
@@ -153,6 +155,157 @@ const buildMarkerIcon = (site: Campsite, isSelected: boolean): L.DivIcon =>
     iconSize: [32, 32],
     iconAnchor: [16, 16]
   });
+
+/**
+ * A camper's hazard report.
+ *
+ * A rounded chip, never a triangle — the triangle belongs to the National
+ * Weather Service and Environment Canada, and one person's report must not
+ * borrow the look of an agency's warning. See src/config/hazardReports.ts.
+ */
+const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
+  const style = hazardReportStyle(record.kind);
+  const confirmed = reportStanding(record.confirms, record.disputes) === 'confirmed';
+  const size = style.prominent ? 30 : 24;
+
+  return L.divIcon({
+    className: 'hazard-report-marker',
+    html: `
+      <div class="relative flex items-center justify-center">
+        <div class="rounded-lg flex items-center justify-center shadow-lg border-2"
+             style="width:${size}px;height:${size}px;background:${style.color};border-color:${
+      confirmed ? '#F8FAFC' : '#0F172A'
+    }">
+          <span style="font-size:${size * 0.5}px;line-height:1">${style.emoji}</span>
+        </div>
+      </div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2]
+  });
+};
+
+/**
+ * The pin the user drops by tapping.
+ *
+ * A teardrop rather than a circle, so at a glance it never reads as one of the
+ * data pins around it. This is the one marker on the map that came from the
+ * user rather than from a source.
+ */
+const buildDestinationIcon = (): L.DivIcon =>
+  L.divIcon({
+    className: 'destination-marker',
+    html: `
+      <div class="relative flex items-end justify-center anim-pin-drop">
+        <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
+        <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
+          <path d="M12 1c5.2 0 9.4 4.2 9.4 9.4 0 6.8-9.4 20.6-9.4 20.6S2.6 17.2 2.6 10.4C2.6 5.2 6.8 1 12 1z"
+                fill="#F43F5E" stroke="#0F172A" stroke-width="1.7" stroke-linejoin="round"/>
+          <circle cx="12" cy="10.4" r="3.5" fill="#0F172A"/>
+        </svg>
+      </div>`,
+    iconSize: [32, 40],
+    iconAnchor: [16, 40]
+  });
+
+/**
+ * A camper on the road — you, or somebody else.
+ *
+ * Yours is the plain camper van; a placeholder until there's a rig picker
+ * wired to it. Friends get their own rig's avatar and their name. Everyone
+ * else gets a muted dot and no name at all.
+ *
+ * ON THE WORD "ANONYMOUS": positions here are already snapped to a ~1 km grid
+ * by the server before they leave the database, and the app withholds the
+ * handle for anyone who isn't a friend. But the handle IS in the response —
+ * hiding it is a display choice, not a guarantee, and the UI says "names
+ * hidden" rather than "anonymous" for exactly that reason.
+ */
+const buildCamperIcon = (options: {
+  emoji: string;
+  name?: string;
+  isSelf?: boolean;
+}): L.DivIcon => {
+  const { emoji, name, isSelf } = options;
+  const ring = isSelf ? '#34D399' : name ? '#38BDF8' : '#64748B';
+
+  const label = name
+    ? `<span class="mt-0.5 px-1.5 py-px rounded-md bg-slate-950/85 text-[9px] font-bold text-slate-100 whitespace-nowrap shadow">${name}</span>`
+    : '';
+
+  return L.divIcon({
+    className: 'camper-avatar-marker',
+    html: `
+      <div class="relative flex flex-col items-center">
+        ${isSelf ? '<span class="absolute -top-1 w-11 h-11 rounded-full bg-emerald-400/25 anim-pulse"></span>' : ''}
+        <div class="relative w-9 h-9 rounded-full flex items-center justify-center shadow-xl border-2 bg-slate-900"
+             style="border-color:${ring}">
+          <span style="font-size:17px;line-height:1">${emoji}</span>
+        </div>
+        ${label}
+      </div>`,
+    iconSize: [36, name ? 52 : 36],
+    iconAnchor: [18, 18]
+  });
+};
+
+/** Your vehicle avatar. A plain camper for now, as asked. */
+const SELF_CAMPER_SVG = `
+  <svg viewBox="0 0 40 28" class="w-7 h-5" aria-hidden="true">
+    <rect x="1.5" y="5" width="26" height="14" rx="3" fill="#F8FAFC" stroke="#0F172A" stroke-width="1.4"/>
+    <path d="M27.5 9h5.2l4.8 5.4V19h-10z" fill="#E2E8F0" stroke="#0F172A" stroke-width="1.4" stroke-linejoin="round"/>
+    <rect x="5.5" y="8" width="7.5" height="5" rx="1.2" fill="#38BDF8"/>
+    <rect x="1.5" y="14.5" width="26" height="2.6" fill="#10B981"/>
+    <circle cx="9.5" cy="20.5" r="3.6" fill="#0F172A"/>
+    <circle cx="30" cy="20.5" r="3.6" fill="#0F172A"/>
+    <circle cx="9.5" cy="20.5" r="1.3" fill="#94A3B8"/>
+    <circle cx="30" cy="20.5" r="1.3" fill="#94A3B8"/>
+  </svg>`;
+
+/**
+ * Rough size of a shape, as the area of its bounding box in square degrees.
+ *
+ * Only ever used to rank two overlapping parcels against each other, so the
+ * distortion of treating degrees as a flat grid does not matter — both shapes
+ * sit at the same latitude, because they both contain the same tapped point.
+ */
+const bboxExtent = (geometry: unknown): number => {
+  const g = geometry as { coordinates?: unknown };
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+
+  const walk = (node: unknown): void => {
+    if (!Array.isArray(node)) return;
+    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+      const [lon, lat] = node as [number, number];
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      return;
+    }
+    node.forEach(walk);
+  };
+
+  walk(g?.coordinates);
+  if (minLon === Infinity) return Number.MAX_SAFE_INTEGER;
+  return (maxLon - minLon) * (maxLat - minLat);
+};
+
+/** Pull the fields we show from a boundary feature's properties. */
+const landFromFeature = (properties: Record<string, any> | undefined): DestinationLand | undefined => {
+  const p = properties;
+  if (!p) return undefined;
+  return {
+    name: p._name ?? 'Public land',
+    designation: p._designation ?? p._confidence ?? 'Public land',
+    attribution: p._attribution ?? undefined,
+    stayLimitDays: p._stayLimitDays ?? undefined,
+    permitRequired: p._permitRequired ?? undefined,
+    permitName: p._permitName ?? undefined,
+    permitUrl: p._permitUrl ?? undefined,
+    fireBanActive: p._fireBanActive ?? undefined,
+    campfirePolicy: p._campfirePolicy ?? undefined
+  };
+};
 
 
 /**
@@ -192,12 +345,29 @@ interface MapComponentProps {
   onOpenDetailModal: (site: Campsite) => void;
   onLocateUser?: () => void;
   isLocating?: boolean;
+
+  /** The pin the user dropped, or the site they selected. Null when neither. */
+  destination: MapDestination | null;
+  /** Fired when the user taps bare map. Carries the land under the tap. */
+  onDropDestination: (lat: number, lon: number, land?: DestinationLand) => void;
+  /** Fired when a camper's hazard report is tapped. */
+  onSelectHazardReport?: (record: HazardRecord) => void;
+
+  /** The route being followed, or null when not navigating. */
+  route: RouteResult | null;
+  isNavigating: boolean;
+  /** Other campers to draw while navigating. */
+  nearbyCampers?: NearbyCamper[];
+  /** Whose names may be shown. Everyone else stays unnamed. */
+  friendIds?: Set<string>;
 }
 
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation,
   isOfflineMode, onOpenDetailModal, onLocateUser,
-  isLocating = false
+  isLocating = false,
+  destination, onDropDestination, onSelectHazardReport,
+  route, isNavigating, nearbyCampers = [], friendIds
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -222,6 +392,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const fillLayerRef = useRef<L.GeoJSON | null>(null);
   const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
+  const reportLayerRef = useRef<L.LayerGroup | null>(null);
+  const destinationMarkerRef = useRef<L.Marker | null>(null);
+  const routeLayerRef = useRef<L.LayerGroup | null>(null);
+  const camperLayerRef = useRef<L.LayerGroup | null>(null);
+
+  /**
+   * Callbacks reached through refs, not through effect dependencies.
+   *
+   * The map click listener is bound once for the life of the map. If it
+   * depended on the callback identity it would be torn down and rebound on
+   * every render of App, and Leaflet would briefly have no click handler at
+   * all in the middle of a tap.
+   */
+  const dropRef = useRef(onDropDestination);
+  dropRef.current = onDropDestination;
+  const reportTapRef = useRef(onSelectHazardReport);
+  reportTapRef.current = onSelectHazardReport;
+  const navigatingRef = useRef(isNavigating);
+  navigatingRef.current = isNavigating;
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -238,6 +427,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [isOverviewTier, setIsOverviewTier] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
   const [unmappableHazards, setUnmappableHazards] = useState(0);
+  /** Camper-filed reports currently on screen — counted in the status chip. */
+  const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -582,143 +773,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
 
     /**
-     * What the land is, and what the rules are. Nothing else.
+     * THE PARCELS NO LONGER OPEN A POPUP, AND THAT IS THE POINT.
      *
-     * This used to also carry an edge-accuracy note, a camping-basis note, the
-     * source attribution, an uncertainty band explanation and a survey
-     * disclaimer — five paragraphs of provenance wrapped around two lines
-     * anyone actually acts on. It filled a phone screen.
+     * Tapping the map now drops a destination pin — which has to work over
+     * public land above all, since public land is where the camping is. A
+     * parcel that swallowed the tap to open its own popup made the feature
+     * useless over exactly the ground the app exists for.
      *
-     * The provenance has not been dropped, it has moved to where it belongs:
-     * the legend states "edges approximate" permanently, expands to the full
-     * uncertainty explanation, and the fuzzy band is drawn on the map itself.
-     * One short line stays here, because a popup that names a piece of land
-     * and lists rules for it reads as authoritative, and the boundary under it
-     * is not.
+     * Nothing was lost. Everything that popup said — the land's name, the stay
+     * limit, the permit, the fire ban, the "approximate boundary, not
+     * permission to camp" line — is now in the destination sheet, which reads
+     * better, is reachable by keyboard, and sits beside the weather and signal
+     * for the same point.
+     *
+     * `interactive: false` below is what lets the tap through to the map. The
+     * canvas renderer hit-tests every interactive path it holds; with several
+     * hundred parcels on screen, opting out is also measurably cheaper.
      */
-    const popupHtml = (properties: Record<string, any>): string => {
-      const p = properties ?? {};
-      const style = BOUNDARY_STYLES[p._confidence as BoundaryConfidence];
-
-      /**
-       * The rules the land manager sets, shown before anything else.
-       *
-       * This is the half a camper actually acts on: how long they may stay,
-       * whether they need a permit and where to buy it, and above all whether
-       * there is a fire ban on right now. Everything in this block comes from
-       * the agency — a camper's report never reaches these fields, because
-       * "I stayed and nobody minded" is not a regulation.
-       *
-       * A rule that has not been recorded is omitted rather than shown as
-       * absent. Silence here means nobody has entered it, never "no limit".
-       */
-      const rules: string[] = [];
-      if (p._stayLimitDays != null) {
-        rules.push(`Stay up to <strong>${p._stayLimitDays} days</strong>${
-          p._moveDistanceKm != null ? `, then move at least ${p._moveDistanceKm} km` : ''
-        }`);
-      }
-      if (p._permitRequired === true) {
-        const named = p._permitName ? `: ${p._permitName}` : '';
-        rules.push(
-          p._permitUrl
-            ? `<strong>Permit required</strong>${named} — <a href="${p._permitUrl}" target="_blank" rel="noopener noreferrer" style="color:#0369A1">get it here</a>`
-            : `<strong>Permit required</strong>${named}`
-        );
-      } else if (p._permitRequired === false) {
-        rules.push('No permit required');
-      }
-      if (p._campfirePolicy) rules.push(`Fires: ${p._campfirePolicy}`);
-      if (p._setbackWaterM != null) rules.push(`Camp at least ${p._setbackWaterM} m from water`);
-      if (p._wastePolicy) rules.push(`Waste: ${p._wastePolicy}`);
-      if (p._leaveNoTrace) rules.push(p._leaveNoTrace);
-      if (p._restrictions) rules.push(p._restrictions);
-
-      // A live ban outranks every other rule, so it gets its own red block at
-      // the top rather than a line in a list somebody might skim past.
-      const fireBan = p._fireBanActive
-        ? `<div style="margin-top:8px;padding:7px;border-radius:6px;background:#7F1D1D;border:1px solid #DC2626">
-             <div style="color:#FEE2E2;font-size:11px;font-weight:800">🔥 FIRE BAN IN EFFECT</div>
-             <div style="color:#FECACA;font-size:10px;line-height:1.35;margin-top:2px">No open fire on this land${
-               p._fireBanCheckedAt
-                 ? `. Last checked ${new Date(p._fireBanCheckedAt).toLocaleDateString()}`
-                 : ''
-             }. Confirm with the managing agency before lighting anything.</div>
-           </div>`
-        : '';
-
-      const rulesBlock = rules.length
-        ? `<div style="margin-top:8px;padding:7px;border-radius:6px;background:#F0FDF4;border:1px solid #86EFAC">
-             <div style="color:#166534;font-size:10px;font-weight:700;margin-bottom:3px">Rules for this land</div>
-             <ul style="margin:0;padding-left:14px;color:#166534;font-size:10px;line-height:1.5">${
-               rules.map((r) => `<li>${r}</li>`).join('')
-             }</ul>
-           </div>`
-        : `<div style="margin-top:8px;color:#64748B;font-size:10px;line-height:1.35">
-             No camping rules recorded for this parcel. That does not mean there are
-             none — check with ${p._attribution ?? 'the managing agency'} before you stay.
-           </div>`;
-
-      return `<div style="font-family:system-ui;font-size:12px;min-width:190px;max-width:250px">
-           <strong style="font-size:13px;line-height:1.3">${p._name ?? 'Public land'}</strong>
-           <div style="margin-top:4px">
-             <span style="display:inline-block;padding:2px 6px;border-radius:6px;background:${
-               style?.fillColor ?? '#94A3B8'
-             };color:#0F172A;font-weight:700;font-size:10px">${style?.label ?? 'Public land'}</span>
-           </div>
-           ${fireBan}
-           ${rulesBlock}
-           <div style="margin-top:7px;color:#94A3B8;font-size:9px;line-height:1.35">
-             Approximate boundary — not permission to camp.
-           </div>
-         </div>`;
-    };
-
-    /* ---- Fuzzy edge rendering -----------------------------------------
-     * We never draw a crisp boundary line. Each polygon gets a soft fill plus
-     * a stack of translucent strokes whose total width equals the dataset's
-     * real positional uncertainty, converted from metres to pixels at the
-     * current zoom. A hard line would claim a precision none of these sources
-     * have, and the failure mode is somebody parking on private land.
-     *
-     * The strokes are batched: every polygon that shares an edge accuracy and
-     * a confidence tier shares the same band geometry, so they go into one
-     * layer per ring instead of one layer per ring per polygon. That is the
-     * difference between a couple of dozen layers and several thousand.
-     */
-    /**
-     * Open a parcel's rules over the parcel you tapped.
-     *
-     * Leaflet's default is to anchor a polygon popup at the click point, which
-     * on a phone puts it under your thumb and off to one side of the shape it
-     * describes — with several parcels touching, it was genuinely unclear which
-     * one had answered. Anchoring at the parcel's own centre makes it obvious.
-     *
-     * With one exception: a national forest can be four hundred kilometres
-     * across, and its centre is then nowhere near the screen. When the centre
-     * isn't in view, the tap point wins — a popup you can see beats a
-     * theoretically better-placed one you can't.
-     */
-    const bindParcelPopup = (feature: any, lyr: L.Layer) => {
-      const popup = L.popup({
-        maxWidth: 260,
-        maxHeight: 300,
-        autoPanPadding: [14, 14]
-      });
-
-      lyr.on('click', (event: L.LeafletMouseEvent) => {
-        L.DomEvent.stopPropagation(event);
-        let at = event.latlng;
-        try {
-          const centre = (lyr as L.Polygon).getCenter?.();
-          if (centre && map.getBounds().pad(-0.05).contains(centre)) at = centre;
-        } catch { /* not a closed shape — keep the tap point */ }
-
-        // Built here rather than up front: a viewport can hold several hundred
-        // parcels and almost none of them are ever opened.
-        popup.setContent(popupHtml(feature?.properties)).setLatLng(at).openOn(map);
-      });
-    };
 
     /**
      * Style for one parcel's fill and outline at a given zoom.
@@ -896,8 +967,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const fill = L.geoJSON(collection as any, {
         pane: 'boundariesPane',
         renderer,
-        style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview),
-        onEachFeature: bindParcelPopup
+        // Taps pass straight through to the map, which drops the destination
+        // pin and reads this parcel's rules out of the collection in memory.
+        interactive: false,
+        style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview)
       } as RenderedGeoJSONOptions);
       fillLayerRef.current = fill;
 
@@ -1024,6 +1097,294 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
   }, [isMapReady, showBoundaries, isOfflineMode]);
 
+  /* ------------------------------------------------------------------ */
+  /* Tap anywhere to pick a destination                                  */
+  /* ------------------------------------------------------------------ */
+  /**
+   * A tap on bare map drops a pin there; a tap on an icon selects the icon.
+   *
+   * That split is Leaflet's, not ours. `_findEventTargets` only falls back to
+   * the map when no interactive layer was hit, so a marker tap never reaches
+   * this handler — which is why the parcels had to become non-interactive for
+   * it to work over public land, and why the campsite pins did not.
+   *
+   * The land under the tap is read from the polygons already in memory rather
+   * than fetched. It costs a point-in-polygon test against what is on screen
+   * and no round trip at all.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const handleTap = (event: L.LeafletMouseEvent) => {
+      // Mid-route, a stray tap must not silently retarget the navigation.
+      if (navigatingRef.current) return;
+
+      const { lat, lng } = event.latlng;
+
+      /**
+       * Smallest matching parcel wins.
+       *
+       * Parcels nest — a wilderness area sits inside a national forest — and
+       * naming the forest when the user tapped the wilderness would quote the
+       * wrong rules, which are usually the stricter ones. Feature order is
+       * whatever the upstream service happened to return, so the tie has to be
+       * broken on something. Bounding-box area is a rough stand-in for real
+       * area and costs one pass over coordinates we already hold; it only has
+       * to rank two shapes that both contain the same point.
+       */
+      let best: { feature: BoundaryFeature; extent: number } | null = null;
+      for (const feature of collectionRef.current.features) {
+        if (!pointInGeometry(lat, lng, feature.geometry)) continue;
+        const extent = bboxExtent(feature.geometry);
+        if (!best || extent < best.extent) best = { feature, extent };
+      }
+
+      dropRef.current(lat, lng, landFromFeature(best?.feature.properties as any));
+    };
+
+    map.on('click', handleTap);
+    return () => { map.off('click', handleTap); };
+  }, [isMapReady]);
+
+  /* ------------------------------------------------------------------ */
+  /* Camper hazard reports                                               */
+  /* ------------------------------------------------------------------ */
+  /**
+   * What other campers have reported: washouts, flooding, fire, enforcement.
+   *
+   * Refetched as the map moves, on a coarse radius so an ordinary pan reuses
+   * what is already loaded. Every one of these is one person's account —
+   * `reportStanding` decides how loudly to draw it, and the report's own sheet
+   * says who many people have confirmed it. Without Supabase this returns an
+   * empty list and the layer simply never appears.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!reportLayerRef.current) return;
+      try { map.removeLayer(reportLayerRef.current); } catch { /* detached */ }
+      reportLayerRef.current = null;
+    };
+
+    if (isOfflineMode) { clear(); setHazardReports([]); return; }
+
+    if (!map.getPane('reportPane')) {
+      map.createPane('reportPane');
+      const pane = map.getPane('reportPane');
+      // Under the official alert triangles (620), over the campsite pins.
+      if (pane) pane.style.zIndex = '610';
+    }
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let loadedAt: [number, number] | null = null;
+
+    const render = (records: HazardRecord[]) => {
+      clear();
+      if (records.length === 0) return;
+
+      const group = L.layerGroup([], { pane: 'reportPane' });
+      records.forEach((record) => {
+        if (typeof record.latitude !== 'number' || typeof record.longitude !== 'number') return;
+        const style = hazardReportStyle(record.kind);
+        const marker = L.marker([record.latitude, record.longitude], {
+          pane: 'reportPane',
+          icon: buildHazardReportIcon(record),
+          title: `${style.label} — reported by a camper`,
+          riseOnHover: true
+        });
+        marker.on('click', () => reportTapRef.current?.(record));
+        group.addLayer(marker);
+      });
+
+      reportLayerRef.current = group.addTo(map);
+    };
+
+    const run = async () => {
+      const centre = map.getCenter();
+      // Loaded within ~50 km of here already: the 150 km fetch still covers
+      // the view, so don't spend a request on it.
+      if (loadedAt && map.distance(centre, L.latLng(loadedAt)) < 50_000) return;
+
+      const records = await fetchHazardsNear(centre.lat, centre.lng, 150);
+      if (cancelled) return;
+
+      loadedAt = [centre.lat, centre.lng];
+      setHazardReports(records);
+      render(records);
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 700);
+    };
+
+    load();
+    map.on('moveend', load);
+
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend', load);
+      clear();
+    };
+  }, [isMapReady, isOfflineMode]);
+
+  /* ------------------------------------------------------------------ */
+  /* The dropped destination pin                                         */
+  /* ------------------------------------------------------------------ */
+  /**
+   * One pin at a time, and it stays until the user picks somewhere else.
+   *
+   * Nothing is drawn when the destination is an existing campsite — that pin
+   * is already on the map and is highlighted instead, so a teardrop on top of
+   * it would just be two markers claiming one spot.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!destinationMarkerRef.current) return;
+      try { map.removeLayer(destinationMarkerRef.current); } catch { /* detached */ }
+      destinationMarkerRef.current = null;
+    };
+
+    clear();
+    if (!destination || destination.campsite) return;
+
+    destinationMarkerRef.current = L.marker(
+      [destination.latitude, destination.longitude],
+      { icon: buildDestinationIcon(), title: 'Your chosen spot', zIndexOffset: 900 }
+    ).addTo(map);
+
+    return clear;
+  }, [destination, isMapReady]);
+
+  /* ------------------------------------------------------------------ */
+  /* Navigation: the route line, and who else is out there               */
+  /* ------------------------------------------------------------------ */
+  /**
+   * The route, drawn as a casing and a line so it reads over any base map.
+   *
+   * A single stroke disappears against a river on the topo layer and against
+   * a road on satellite. The dark casing underneath is what keeps it legible
+   * without having to shout with colour.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!routeLayerRef.current) return;
+      try { map.removeLayer(routeLayerRef.current); } catch { /* detached */ }
+      routeLayerRef.current = null;
+    };
+
+    clear();
+    if (!isNavigating || !route?.ok || route.geometry.length < 2) return;
+
+    if (!map.getPane('routePane')) {
+      map.createPane('routePane');
+      const pane = map.getPane('routePane');
+      // Above the boundaries, below every marker.
+      if (pane) { pane.style.zIndex = '500'; pane.style.pointerEvents = 'none'; }
+    }
+
+    const group = L.layerGroup([], { pane: 'routePane' });
+    group.addLayer(
+      L.polyline(route.geometry, {
+        pane: 'routePane', interactive: false,
+        color: '#0F172A', weight: 11, opacity: 0.55, lineCap: 'round', lineJoin: 'round'
+      })
+    );
+    group.addLayer(
+      L.polyline(route.geometry, {
+        pane: 'routePane', interactive: false,
+        color: '#34D399', weight: 5.5, opacity: 0.95, lineCap: 'round', lineJoin: 'round'
+      })
+    );
+
+    routeLayerRef.current = group.addTo(map);
+
+    /**
+     * Frame the whole drive when you set off.
+     *
+     * Without this the map sits wherever it was when you tapped Navigate,
+     * which after a tap near the edge of the screen can be a view containing
+     * neither end of the route. The bottom padding is generous because the HUD
+     * covers the lower third of the screen and a route framed underneath it is
+     * a route you cannot see.
+     */
+    try {
+      map.fitBounds(L.latLngBounds(route.geometry), {
+        paddingTopLeft: [36, 36],
+        paddingBottomRight: [36, 260],
+        animate: true
+      });
+    } catch { /* degenerate geometry — leave the view alone */ }
+
+    return clear;
+    // `route.geometry` identity is what actually matters; a new RouteResult
+    // object with the same line should not re-frame the map underneath someone.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route?.geometry, isNavigating, isMapReady]);
+
+  /**
+   * Everyone else on the road.
+   *
+   * Friends are named and wear their own rig. Everyone else is a muted dot
+   * with no name — and note that "no name" is a display decision: the handle
+   * is in the response, the server only guarantees the ~1 km position
+   * coarsening. The legend says "names hidden" rather than "anonymous"
+   * because that is the claim we can actually stand behind.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!camperLayerRef.current) return;
+      try { map.removeLayer(camperLayerRef.current); } catch { /* detached */ }
+      camperLayerRef.current = null;
+    };
+
+    clear();
+    if (!isNavigating || nearbyCampers.length === 0) return;
+
+    if (!map.getPane('camperPane')) {
+      map.createPane('camperPane');
+      const pane = map.getPane('camperPane');
+      if (pane) pane.style.zIndex = '640';
+    }
+
+    const group = L.layerGroup([], { pane: 'camperPane' });
+    nearbyCampers.forEach((camper) => {
+      if (typeof camper.approx_lat !== 'number' || typeof camper.approx_lon !== 'number') return;
+      const isFriend = friendIds?.has(camper.user_id) ?? false;
+
+      group.addLayer(
+        L.marker([camper.approx_lat, camper.approx_lon], {
+          pane: 'camperPane',
+          icon: buildCamperIcon({
+            emoji: isFriend && camper.rig_type
+              ? RIG_AVATAR[camper.rig_type].emoji
+              : isFriend ? UNKNOWN_RIG_EMOJI : '•',
+            name: isFriend ? camper.handle : undefined
+          }),
+          title: isFriend
+            ? `${camper.handle} — position accurate to about a kilometre`
+            : 'A camper nearby — name hidden, position accurate to about a kilometre'
+        })
+      );
+    });
+
+    camperLayerRef.current = group.addTo(map);
+    return clear;
+  }, [isNavigating, nearbyCampers, friendIds, isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Fire, flood and storm alerts                                        */
@@ -1166,6 +1527,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /* ------------------------------------------------------------------ */
   /* Markers                                                             */
   /* ------------------------------------------------------------------ */
+  /**
+   * Only camper-submitted spots get a pin.
+   *
+   * The curated rows and the OpenStreetMap nodes are still in the app — they
+   * fill the list view, they are searchable, and they are still the thing the
+   * filters filter. They just don't put a marker on the map any more, because
+   * a marker asserts "somebody was here" and those two sources assert
+   * "a database says there is public land around here", which the boundary
+   * polygons already say, more honestly, at their true resolution.
+   */
+  const pinnedCampsites = React.useMemo(
+    () => campsites.filter((site) => site.source === 'user_submitted'),
+    [campsites]
+  );
+
   // Rebuilt only when the campsite list changes. Selection is handled
   // separately below — previously changing the selection tore down and rebuilt
   // every marker on the map, which stuttered badly with a few hundred pins.
@@ -1213,10 +1589,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     });
 
-    const markers = campsites.map((site) => {
+    const markers = pinnedCampsites.map((site) => {
       const marker = L.marker([site.latitude, site.longitude], {
-        icon: buildMarkerIcon(site, selectedIdRef.current === site.id),
-        title: site.name
+        icon: buildCampsiteIcon(selectedIdRef.current === site.id),
+        title: `${site.name} — added by a camper`
       });
       marker.on('click', () => onSelectCampsite(site));
       marker.on('dblclick', () => onOpenDetailModal(site));
@@ -1230,7 +1606,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     map.addLayer(cluster);
     clusterRef.current = cluster;
-  }, [campsites, isMapReady, onSelectCampsite, onOpenDetailModal]);
+  }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenDetailModal]);
 
   // Swap only the two icons that changed.
   useEffect(() => {
@@ -1238,16 +1614,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const nextId = selectedCampsite?.id ?? null;
     if (previousId === nextId) return;
 
-    if (previousId) {
-      const previousSite = campsites.find((s) => s.id === previousId);
-      const marker = markersRef.current.get(previousId);
-      if (previousSite && marker) marker.setIcon(buildMarkerIcon(previousSite, false));
-    }
-    if (nextId && selectedCampsite) {
-      markersRef.current.get(nextId)?.setIcon(buildMarkerIcon(selectedCampsite, true));
-    }
+    markersRef.current.get(previousId ?? '')?.setIcon(buildCampsiteIcon(false));
+    if (nextId) markersRef.current.get(nextId)?.setIcon(buildCampsiteIcon(true));
     selectedIdRef.current = nextId;
-  }, [selectedCampsite, campsites]);
+  }, [selectedCampsite]);
 
   /* ------------------------------------------------------------------ */
   /* User location                                                       */
@@ -1262,19 +1632,43 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
     if (!userLocation) return;
 
+    /**
+     * A blue dot when you're browsing, your camper when you're driving.
+     *
+     * Navigation is the one time the map is being read at a glance from a
+     * driver's seat, and a dot identical to every other blue dot in every
+     * other app is the wrong thing to hunt for. The camper is deliberately
+     * larger than it needs to be.
+     */
+    const icon = isNavigating
+      ? L.divIcon({
+          className: 'user-camper-marker',
+          html: `
+            <div class="relative flex items-center justify-center">
+              <span class="absolute w-14 h-14 rounded-full bg-emerald-400/20 anim-pulse"></span>
+              <span class="relative flex items-center justify-center w-11 h-11 rounded-full bg-slate-900 border-2 border-emerald-400 shadow-xl">
+                ${SELF_CAMPER_SVG}
+              </span>
+            </div>`,
+          iconSize: [44, 44],
+          iconAnchor: [22, 22]
+        })
+      : L.divIcon({
+          className: 'user-location-marker',
+          html: `
+            <div class="relative flex items-center justify-center">
+              <div class="absolute w-12 h-12 bg-blue-500/20 rounded-full animate-ping"></div>
+              <div class="w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-lg relative z-10"></div>
+            </div>`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8]
+        });
+
     userMarkerRef.current = L.marker(userLocation, {
-      icon: L.divIcon({
-        className: 'user-location-marker',
-        html: `
-          <div class="relative flex items-center justify-center">
-            <div class="absolute w-12 h-12 bg-blue-500/20 rounded-full animate-ping"></div>
-            <div class="w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-lg relative z-10"></div>
-          </div>`,
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-      })
+      icon,
+      zIndexOffset: isNavigating ? 1000 : 0
     }).addTo(map);
-  }, [userLocation, isMapReady]);
+  }, [userLocation, isMapReady, isNavigating]);
 
   /* ------------------------------------------------------------------ */
   /* Recentre                                                            */
@@ -1458,6 +1852,27 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         )}
 
+        {/*
+          Camper reports are counted separately from official alerts, and
+          worded so the difference is unmissable. These are people's accounts
+          of a road; the amber chip above is an agency's warning about weather.
+        */}
+        {hazardReports.length > 0 && (
+          <div className="bg-slate-900/90 backdrop-blur-md border border-slate-600/70 rounded-xl px-3 py-1.5 shadow-xl anim-in-up">
+            <div className="flex items-center gap-2 text-[11px] font-semibold text-slate-200">
+              <span className="text-xs leading-none">📣</span>
+              <span>
+                {hazardReports.length} camper report
+                {hazardReports.length === 1 ? '' : 's'} nearby
+              </span>
+            </div>
+            <p className="text-[9px] text-slate-400 leading-tight mt-0.5">
+              Reported by other campers, not verified. Tap one to see how many
+              people have confirmed it.
+            </p>
+          </div>
+        )}
+
         {!isWithinCoverage(center[0], center[1]) && (
           <div className="bg-slate-800/95 backdrop-blur-md border border-slate-600 text-slate-300 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
             <Eye className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
@@ -1536,52 +1951,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
       </div>
 
-      {/* Selected pin preview */}
-      {selectedCampsite && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm z-[999] anim-in-up">
-          <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/60 p-3 rounded-2xl shadow-2xl flex flex-col">
-            <div className="flex justify-between items-start gap-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span
-                    className="w-2.5 h-2.5 rounded-full"
-                    style={{ backgroundColor: LAND_TYPE_COLOR[selectedCampsite.landType] }}
-                  />
-                  <span className="text-[11px] font-bold text-slate-300 tracking-wider">
-                    {LAND_TYPE_BADGE[selectedCampsite.landType]}
-                  </span>
-                  <span className="text-slate-600">•</span>
-                  <span className="text-[11px] text-slate-400 font-medium truncate">
-                    {selectedCampsite.address.nearestCity}
-                    {selectedCampsite.address.stateProvince && `, ${selectedCampsite.address.stateProvince}`}
-                  </span>
-                </div>
-                <h3 className="font-['Outfit'] font-bold text-base text-slate-100 truncate">
-                  {selectedCampsite.name}
-                </h3>
-              </div>
-              <button
-                onClick={() => onOpenDetailModal(selectedCampsite)}
-                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1 shadow-md shadow-emerald-950 shrink-0"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                Details
-              </button>
-            </div>
+      {/*
+        The one instruction on the map.
 
-            <div className="mt-2.5 flex items-center justify-between text-xs text-slate-300 border-t border-slate-800/80 pt-2">
-              <span className="flex items-center gap-2">
-                <span>
-                  ⭐️ {selectedCampsite.rating > 0 ? selectedCampsite.rating.toFixed(1) : '—'}
-                  {selectedCampsite.reviewCount > 0 && ` (${selectedCampsite.reviewCount})`}
-                </span>
-                <span>•</span>
-                <span className="text-emerald-400 font-semibold">Public land</span>
-              </span>
-              <span className="text-[11px] text-slate-400">
-                {selectedCampsite.amenities.stayLimitDays}d max stay
-              </span>
-            </div>
+        Shown only until the user has picked somewhere, and never while
+        navigating. A tap target that covers the entire screen is invisible
+        until somebody tells you it's there — but once you know, the hint is
+        clutter, so it removes itself.
+      */}
+      {!destination && !isNavigating && (
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
+          <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl">
+            <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="text-[11px] font-semibold text-slate-200">
+              Tap anywhere to pick a spot
+            </span>
           </div>
         </div>
       )}

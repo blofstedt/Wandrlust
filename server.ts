@@ -6,6 +6,7 @@ import { createServer as createViteServer } from 'vite';
 import { registerBoundaryRoutes } from './server/boundaryRoutes';
 import { registerWeatherRoutes } from './server/weatherRoutes';
 import { registerPushRoutes } from './server/pushRoutes';
+import { registerCellRoutes } from './server/cellRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 
 /**
@@ -41,6 +42,9 @@ const startServer = async (): Promise<void> => {
 
   // Web Push delivery.
   registerPushRoutes(app);
+
+  // Approximate cell coverage by carrier. Inert without OPENCELLID_API_KEY.
+  registerCellRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.

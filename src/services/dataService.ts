@@ -258,6 +258,35 @@ export const fetchNearbyCampers = async (
   return ok(data, []);
 };
 
+/**
+ * Who you have an accepted friendship with, as a set of user ids.
+ *
+ * Used by navigation mode to decide whose name is safe to draw on the map.
+ * Everyone else on screen stays unnamed.
+ *
+ * The friendship is symmetric but the row is not — either party may have sent
+ * the request — so both directions are read and merged. RLS already limits
+ * this table to rows you are part of, so there is no filter for that here.
+ */
+export const fetchFriendIds = async (): Promise<Set<string>> => {
+  if (!supabase) return new Set();
+  const uid = await currentUserId();
+  if (!uid) return new Set();
+
+  const { data, error } = await supabase
+    .from('friendships')
+    .select('requester_id, addressee_id')
+    .eq('status', 'accepted');
+
+  if (error || !data) return new Set();
+
+  return new Set(
+    data.map((row: { requester_id: string; addressee_id: string }) =>
+      row.requester_id === uid ? row.addressee_id : row.requester_id
+    )
+  );
+};
+
 /* ------------------------------------------------------------------ */
 /* Rigs                                                                */
 /* ------------------------------------------------------------------ */
@@ -383,13 +412,30 @@ export const confirmHazard = async (
   return error ? failure(error.message) : success(true, agrees ? 'Confirmed' : 'Disputed');
 };
 
-export const fetchActiveHazards = async (): Promise<HazardRecord[]> => {
+/**
+ * Active camper hazard reports around a point.
+ *
+ * Goes through the `hazards_near` RPC (migration 09) rather than reading the
+ * table, because `hazard_reports.geom` is a PostGIS point and PostgREST hands
+ * that back as EWKB hex — the previous direct read produced records whose
+ * latitude and longitude were `undefined`, which no caller had noticed because
+ * nothing drew them. The RPC projects to lat/lon and filters by distance in
+ * the database.
+ *
+ * Positions are exact, deliberately: a washout is a place on a road, and a
+ * hazard rounded to the nearest kilometre is a hazard you drive into.
+ */
+export const fetchHazardsNear = async (
+  lat: number,
+  lon: number,
+  radiusKm = 150
+): Promise<HazardRecord[]> => {
   if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('hazard_reports')
-    .select('*')
-    .eq('is_active', true)
-    .limit(300);
+  const { data, error } = await supabase.rpc('hazards_near', {
+    in_lat: lat,
+    in_lon: lon,
+    in_radius_km: radiusKm
+  });
   if (error) return [];
   return ok(data, []);
 };

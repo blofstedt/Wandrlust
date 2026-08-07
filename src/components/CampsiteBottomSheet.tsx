@@ -13,8 +13,11 @@ import {
   getStreetViewUrl, getDirectionsUrl
 } from '../utils/imageUtils';
 import { fetchWeather, WeatherSnapshot, EMPTY_WEATHER, summarise } from '../services/weatherService';
+import { fetchCellCoverage, UNKNOWN_COVERAGE } from '../services/cellCoverageService';
+import type { CellCoverage } from '../types';
 import { fetchRulesAtPoint, fetchHazardsAtPoint, checkIn, PointRules, PointHazard } from '../services/dataService';
 import { HazardAlertPanel } from './HazardAlertPanel';
+import { CellCoverageCard } from './TripConditions';
 import { useAuth } from '../contexts/AuthContext';
 import { haptic } from '../utils/animation';
 
@@ -53,6 +56,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   const [weather, setWeather] = useState<WeatherSnapshot>(EMPTY_WEATHER);
   const [rules, setRules] = useState<PointRules[]>([]);
   const [hazards, setHazards] = useState<PointHazard[]>([]);
+  const [coverage, setCoverage] = useState<CellCoverage>(UNKNOWN_COVERAGE);
   const [loading, setLoading] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -68,12 +72,14 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
     Promise.all([
       fetchWeather(campsite.latitude, campsite.longitude),
       fetchRulesAtPoint(campsite.latitude, campsite.longitude),
-      fetchHazardsAtPoint(campsite.latitude, campsite.longitude)
-    ]).then(([w, r, h]) => {
+      fetchHazardsAtPoint(campsite.latitude, campsite.longitude),
+      fetchCellCoverage(campsite.latitude, campsite.longitude)
+    ]).then(([w, r, h, c]) => {
       if (cancelled) return;
       setWeather(w);
       setRules(r);
       setHazards(h);
+      setCoverage(c);
       setLoading(false);
     });
 
@@ -324,10 +330,25 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
               </div>
             </section>
 
+            {/*
+              Approximated coverage, alongside — not instead of — the recorded
+              `cellSignal` amenity in the row above. They answer different
+              questions: that one is what a camper who stood here reported,
+              this one is where the towers are. Neither replaces the other, and
+              a site usually has only one of them.
+            */}
+            <CellCoverageCard coverage={coverage} isLoading={loading} />
+
             {weather.periods.length > 0 && (
               <section>
+                {/*
+                  Renamed from "Forecast on arrival", which it never was — this
+                  is the plain multi-period forecast for the site with no travel
+                  time applied to it. The arrival-time version lives in the
+                  destination sheet, where a route exists to work it out from.
+                */}
                 <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                  Forecast on arrival
+                  Forecast here
                 </h3>
                 <div className="flex gap-2 overflow-x-auto pb-1 scroll-soft">
                   {weather.periods.slice(0, 6).map((p, i) => (
