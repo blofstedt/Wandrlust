@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type {
   Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
   DestinationLand, MapDestination, CellCoverage
@@ -316,17 +316,29 @@ export default function App() {
   );
 
   /**
-   * A pin was rejected — either in water or outside the precise
-   * coverage polygon (a sliver of northern Mexico, for example).
-   * Show a short toast for 2.4s and reset; this is the kind of
-   * feedback that should not stick around longer than the user's
-   * reaction time.
+   * A pin was refused — in water, or outside the coverage area.
+   *
+   * Shows a short notice and clears it after a beat. The timer is held
+   * in a ref and reset on each refusal, because tapping the water twice
+   * is the normal way to meet this message and the naive version broke
+   * exactly there: every refusal started its own timer, and the first
+   * one to fire cleared whatever notice was on screen at the time. Tap,
+   * tap, and the second warning vanished after a couple of hundred
+   * milliseconds — long enough to flicker, too short to read.
    */
+  const refusalTimer = useRef<number | null>(null);
+
   const handlePinRefused = useCallback((reason: 'water' | 'outside_coverage') => {
     setPinRefusal(reason);
-    window.setTimeout(() => {
-      setPinRefusal((current) => (current === reason ? null : current));
+    if (refusalTimer.current !== null) window.clearTimeout(refusalTimer.current);
+    refusalTimer.current = window.setTimeout(() => {
+      refusalTimer.current = null;
+      setPinRefusal(null);
     }, 2400);
+  }, []);
+
+  useEffect(() => () => {
+    if (refusalTimer.current !== null) window.clearTimeout(refusalTimer.current);
   }, []);
 
   const handleClearDestination = useCallback(() => {

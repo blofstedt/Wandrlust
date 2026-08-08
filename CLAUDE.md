@@ -46,6 +46,7 @@ question shouldn't rewrite components.
 | If the task is about… | Open these | Ignore |
 | --- | --- | --- |
 | The map, pins, boundaries, layers | `src/components/MapComponent.tsx`, `src/services/boundaryService.ts`, `src/utils/fuzzyBoundary.ts`, `src/config/coverage.ts` | everything server-side |
+| State/province lines, land-vs-water pin check | `src/services/admin1Service.ts`, `src/services/landService.ts`, `scripts/buildMapAssets.ts` | server routes — there aren't any |
 | Picking a destination, navigation mode | `src/components/DestinationSheet.tsx`, `NavigationPanel.tsx`, `TripConditions.tsx`, `src/services/routingService.ts`, `server/routeRoutes.ts` | boundaries |
 | Cell signal by carrier | `src/services/cellCoverageService.ts`, `server/cellRoutes.ts` | everything else |
 | Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
@@ -88,6 +89,10 @@ src/
 public/
   sw.js                    Service worker — push only, no asset caching
   legal/*.md               Privacy, terms, safety disclaimer (live copies)
+  map/                     Prebuilt map data, COMMITTED. Regenerate with
+                           `npm run map:assets`, never fetched at runtime.
+    admin1-us-ca.json      State / province outlines
+    land-mask.bin          Land-vs-water bitmask for the pin check
 ```
 
 ## House rules
@@ -118,6 +123,7 @@ npm run dev      # http://localhost:3000 — works with zero API keys
 npm run build
 npm run lint     # typecheck only
 npm run seed     # load boundary data into Supabase (needs service_role key)
+npm run map:assets  # rebuild public/map/ from Natural Earth (rarely needed)
 npm run vapid    # generate push notification keys
 ```
 
@@ -137,6 +143,11 @@ npm run vapid    # generate push notification keys
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** 01 through 09. `supabase_schema.sql` is
   destructive — it drops and recreates.
+- **The API runs as one Vercel serverless function.** The filesystem is
+  read-only apart from `/tmp`, and there is a 30-second cap. "Download a big
+  dataset on first request and cache it on disk" silently fails and re-downloads
+  on every cold start. Big static datasets get prebuilt into `public/map/` and
+  committed instead — see `scripts/buildMapAssets.ts`.
 - **There are no automated tests.** Verify changes by reasoning through them and
   by running `npm run lint`. Be careful.
 

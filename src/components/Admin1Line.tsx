@@ -1,7 +1,7 @@
 /**
  * "United States — Montana" line for the per-pin card.
  *
- * Reads the admin-1 the point sits in via /api/admin1/at. Renders
+ * Reads the region the point sits in from the bundled outlines. Renders
  * nothing while the lookup is in flight (the user opens the card,
  * the line appears within 250 ms; no spinner) and nothing on
  * failure (a missing country is a missing country, not a "we don't
@@ -32,24 +32,24 @@ export const Admin1Line: React.FC<Admin1LineProps> = ({
   const [admin1, setAdmin1] = useState<Admin1 | null>(null);
   const [loaded, setLoaded] = useState(false);
 
+  /**
+   * The lookup is local now — the outlines are a bundled file, so this
+   * is a point-in-polygon test rather than a request. The old version
+   * waited 200 ms before even starting, to avoid firing a round trip at
+   * a card the user was scrolling past; with no round trip to avoid,
+   * the delay bought nothing and cost a visible flash of missing text.
+   */
   useEffect(() => {
     let cancelled = false;
-    let controller: AbortController | null = null;
     setLoaded(false);
 
-    const timer = setTimeout(async () => {
-      controller = new AbortController();
-      const hit = await findAdmin1At(latitude, longitude, controller.signal);
+    void findAdmin1At(latitude, longitude).then((hit) => {
       if (cancelled) return;
       setAdmin1(hit);
       setLoaded(true);
-    }, 200);
+    });
 
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      clearTimeout(timer);
-    };
+    return () => { cancelled = true; };
   }, [latitude, longitude]);
 
   if (!loaded || !admin1) return null;
