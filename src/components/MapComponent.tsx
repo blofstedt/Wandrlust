@@ -23,6 +23,7 @@ import {
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import { fetchActiveFires, ActiveFire } from '../services/fireService';
+import { fetchAdmin1, Admin1 } from '../services/admin1Service';
 import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
@@ -598,6 +599,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
   /** Active-fire layer (perimeters + points). Cleared when `showFires` is off. */
   const fireLayerRef = useRef<L.LayerGroup | null>(null);
+  /** State / province boundary lines. Cleared when `showAdmin1` is off. */
+  const admin1LayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
   const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
@@ -650,6 +653,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * toggle is the on/off for the on-map marker layer when it ships.
    */
   const [showFires, setShowFires] = useState(false);
+  /**
+   * State / province boundary lines. OFF by default — a state line is
+   * a context, not a highlight, and the user who wants it knows they
+   * want it. The pin card already shows country + admin-1, so the
+   * layer is the on-map counterpart, not a different feature.
+   */
+  const [showAdmin1, setShowAdmin1] = useState(false);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
@@ -2286,6 +2296,132 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady, isOfflineMode, showFires]);
 
   /* ------------------------------------------------------------------ */
+  /* State / province boundary lines (Natural Earth admin-1)           */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Draw the admin-1 lines.
+   *
+   *   - Outline-only: no fill. The lines are a context, not a
+   *     highlight — filling would compete with the campsite pins,
+   *     the boundary fills, the warnings, and the fire markers.
+   *   - Light slate, 1 px at most zoom levels; 1.4 px above zoom 8
+   *     so a state line at city zoom doesn't get antialiased to
+   *     nothing.
+   *   - Above the boundary fills (which is at boundariesPane, z 440),
+   *     below the campsite pins and the warning layers, so it
+   *     doesn't sit on top of anything that already does the job
+   *     of "draw my attention here".
+   *   - Same fetch/render pattern as the warnings and fires:
+   *     250 ms debounce, requestId guard, padded bbox, clear-on-off.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = (): void => {
+      if (!admin1LayerRef.current) return;
+      try { map.removeLayer(admin1LayerRef.current); } catch { /* detached */ }
+      admin1LayerRef.current = null;
+    };
+
+    if (isOfflineMode) {
+      clear();
+      return;
+    }
+
+    if (!showAdmin1) {
+      clear();
+      return;
+    }
+
+    if (!map.getPane('admin1Pane')) {
+      map.createPane('admin1Pane');
+      const pane = map.getPane('admin1Pane');
+      if (pane) {
+        // Above boundariesPane (440) and coveragePane, below warnings
+        // (460) and fires (560). The line is a context, so it sits
+        // visually behind the safety layers.
+        pane.style.zIndex = '450';
+      }
+    }
+
+    const padded = (): BoundingBox => requestBoxFor({
+      minLat: map.getBounds().getSouth(),
+      minLon: map.getBounds().getWest(),
+      maxLat: map.getBounds().getNorth(),
+      maxLon: map.getBounds().getEast()
+    }, map.getZoom());
+
+    let loadedBox: L.LatLngBounds | null = null;
+    let requestId = 0;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    let controller: AbortController | null = null;
+
+    const renderAdmin1 = (features: Array<{ type: 'Feature'; geometry: GeoJSON.Geometry; properties: Admin1 }>): void => {
+      const group = L.layerGroup();
+      const z = map.getZoom();
+      const weight = z >= 8 ? 1.4 : 1.0;
+      for (const f of features) {
+        const poly = L.geoJSON(
+          { type: 'Feature', geometry: f.geometry, properties: {} } as GeoJSON.Feature,
+          {
+            pane: 'admin1Pane',
+            style: {
+              // Slate-500 at 60% — visible on satellite, visible on
+              // street, doesn't shout. The "under it" line of
+              // cartography, not the "look at me" line.
+              color: 'rgb(100 116 139)',
+              opacity: 0.6,
+              weight,
+              fill: false,
+              lineJoin: 'round',
+              interactive: false
+            }
+          }
+        );
+        group.addLayer(poly);
+      }
+      const previous = admin1LayerRef.current;
+      admin1LayerRef.current = group.addTo(map);
+      if (previous) {
+        try { map.removeLayer(previous); } catch { /* detached */ }
+      }
+    };
+
+    const run = async (): Promise<void> => {
+      const b = padded();
+      const ll = L.latLngBounds([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
+      if (loadedBox && loadedBox.contains(ll)) return;
+      loadedBox = ll;
+
+      const myId = ++requestId;
+      controller?.abort();
+      controller = new AbortController();
+
+      const data = await fetchAdmin1(b, controller.signal);
+      if (cancelled || myId !== requestId) return;
+      renderAdmin1(data.features);
+    };
+
+    const schedule = (): void => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => { run().catch(() => undefined); }, 250);
+    };
+
+    map.on('moveend zoomend', schedule);
+    schedule();
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend zoomend', schedule);
+      clear();
+    };
+  }, [isMapReady, isOfflineMode, showAdmin1]);
+
+  /* ------------------------------------------------------------------ */
   /* Markers                                                             */
   /* ------------------------------------------------------------------ */
   /**
@@ -2978,6 +3114,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 type="checkbox"
                 checked={showFires}
                 onChange={(e) => setShowFires(e.target.checked)}
+                className="accent-emerald-500 w-3.5 h-3.5"
+              />
+            </label>
+            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+              <span>State / province lines</span>
+              <input
+                type="checkbox"
+                checked={showAdmin1}
+                onChange={(e) => setShowAdmin1(e.target.checked)}
                 className="accent-emerald-500 w-3.5 h-3.5"
               />
             </label>
