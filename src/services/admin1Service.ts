@@ -1,27 +1,44 @@
 /**
- * First-order administrative boundaries (US states, Canadian provinces).
+ * State and province boundaries (US + Canada).
  *
- * Two clients of the same /api/admin1 endpoints, used in two places:
+ * Serves two callers from one bundled file:
  *
- *   - Map layer (`showAdmin1` toggle): fetch all admin-1 polygons
- *     in the viewport, draw as outline-only. Light line, no fill —
- *     the boundaries are a context, not a highlight.
+ *   - The "State / province lines" map layer, which needs the outlines
+ *     that overlap the current viewport.
+ *   - The pin card's "Alberta, Canada" line, which needs the one
+ *     region a single point falls inside.
  *
- *   - Pin card ("United States — Montana"): ask the server which
- *     admin-1 a single point is in. The polygon hit-test is
- *     server-side because the dataset is 14 MB and the per-pin
- *     check is one HTTP call instead of 14 MB to the client.
+ * WHY THIS IS A BUNDLED FILE AND NOT AN API CALL
+ *
+ * It used to be an API call, and it did not work. The server fetched
+ * Natural Earth's 1:10m admin-1 set on demand — 63 MB — and tried to
+ * cache it on a serverless filesystem that is read-only, so every cold
+ * start downloaded it again inside a 30-second budget it could not meet.
+ * The layer drew nothing.
+ *
+ * `scripts/buildMapAssets.ts` now trims the 1:50m set to the 64 US and
+ * Canadian regions and thins the coordinates, which comes to ~134 KB
+ * over the wire. That is small enough to hold in the browser, which
+ * removes the server from both jobs: the layer filters locally and the
+ * pin lookup is a point-in-polygon test with no round trip.
+ *
+ * IMPORTANT: these are cartographic outlines, accurate to roughly a
+ * kilometre. They are for orientation — "am I still in Montana?" — and
+ * must never be used to decide which jurisdiction's camping rules apply
+ * to a spot near a border.
  */
 import type { BoundingBox } from '../config/coverage';
 
-/** Slim shape from server/admin1Routes.ts Admin1Props. */
 export interface Admin1 {
-  id: string;
   country: 'United States' | 'Canada';
   countryCode: 'US' | 'CA';
+  /** "State", "Province", "Territory". */
   type: string;
+  /** "Montana", "Alberta". */
   name: string;
+  /** "US-MT", "CA-AB". */
   isoCode: string;
+  /** "Mont.", "Alta." */
   abbrev: string;
 }
 
@@ -36,132 +53,158 @@ export interface Admin1Collection {
   features: Admin1Feature[];
 }
 
-/* ------------------------------------------------------------------ */
-/* Map layer: bbox fetch                                                */
-/* ------------------------------------------------------------------ */
+const EMPTY: Admin1Collection = { type: 'FeatureCollection', features: [] };
 
-const memCache = new Map<string, { at: number; data: Admin1Collection }>();
-/** 24h in-memory. The underlying data is from Natural Earth, which
- *  is a 5-year-stale snapshot of admin boundaries — 24h of
- *  staleness on top of that is rounding error. */
-const MEM_TTL_MS = 24 * 60 * 60 * 1000;
-const MEM_MAX_ENTRIES = 30;
+/** Feature plus a precomputed bounds, so filtering never rewalks rings. */
+interface IndexedFeature {
+  feature: Admin1Feature;
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
+}
 
-const memGet = (key: string): Admin1Collection | null => {
-  const hit = memCache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > MEM_TTL_MS) {
-    memCache.delete(key);
-    return null;
+let indexed: IndexedFeature[] | null = null;
+let loadPromise: Promise<IndexedFeature[]> | null = null;
+let unavailable = false;
+
+const ringsOf = (geometry: GeoJSON.Geometry): number[][][] => {
+  if (geometry.type === 'Polygon') return geometry.coordinates as number[][][];
+  if (geometry.type === 'MultiPolygon') {
+    return (geometry.coordinates as number[][][][]).flat();
   }
-  return hit.data;
+  return [];
 };
 
-const memPut = (key: string, data: Admin1Collection): void => {
-  if (memCache.size >= MEM_MAX_ENTRIES) {
-    const oldest = memCache.keys().next().value;
-    if (oldest) memCache.delete(oldest);
+const indexFeature = (feature: Admin1Feature): IndexedFeature => {
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  for (const ring of ringsOf(feature.geometry)) {
+    for (const [lon, lat] of ring) {
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
   }
-  memCache.set(key, { at: Date.now(), data });
+  return { feature, minLon, minLat, maxLon, maxLat };
 };
-
-const bboxKey = (box: BoundingBox): string => [
-  box.minLon.toFixed(2), box.minLat.toFixed(2),
-  box.maxLon.toFixed(2), box.maxLat.toFixed(2)
-].join(',');
 
 /**
- * Fetch the admin-1 polygons in a viewport.
- *
- *   - Empty FeatureCollection on failure or out-of-coverage.
- *     The map layer degrades to "no lines drawn" silently.
- *   - Never throws.
- *   - The bbox is rounded to 2 decimals before being sent, so adjacent
- *     viewports share the same cache entry.
+ * Load the bundled outlines. Never throws; an empty list means the
+ * layer draws nothing and the pin card shows no region line, which is
+ * the correct way to fail — silence rather than a wrong answer.
  */
-export const fetchAdmin1 = async (
-  box: BoundingBox,
-  signal?: AbortSignal
-): Promise<Admin1Collection> => {
-  const key = bboxKey(box);
-  const fromMem = memGet(key);
-  if (fromMem) return fromMem;
+const load = async (): Promise<IndexedFeature[]> => {
+  if (indexed) return indexed;
+  if (unavailable) return [];
+  if (loadPromise) return loadPromise;
 
-  const params = new URLSearchParams({
-    bbox: [
-      box.minLon.toFixed(5), box.minLat.toFixed(5),
-      box.maxLon.toFixed(5), box.maxLat.toFixed(5)
-    ].join(',')
-  });
+  loadPromise = (async () => {
+    try {
+      const res = await fetch('/map/admin1-us-ca.json');
+      if (!res.ok) { unavailable = true; return []; }
+      const data = await res.json() as Admin1Collection;
+      if (!Array.isArray(data?.features)) { unavailable = true; return []; }
+      indexed = data.features.map(indexFeature);
+      return indexed;
+    } catch {
+      unavailable = true;
+      return [];
+    } finally {
+      loadPromise = null;
+    }
+  })();
 
-  try {
-    const res = await fetch(`/api/admin1?${params.toString()}`, { signal });
-    if (!res.ok) return { type: 'FeatureCollection', features: [] };
-    const data = await res.json() as Admin1Collection;
-    if (data?.type !== 'FeatureCollection' || !Array.isArray(data.features)) {
-      return { type: 'FeatureCollection', features: [] };
-    }
-    memPut(key, data);
-    return data;
-  } catch (error) {
-    if ((error as Error)?.name === 'AbortError') {
-      return { type: 'FeatureCollection', features: [] };
-    }
-    return { type: 'FeatureCollection', features: [] };
-  }
+  return loadPromise;
 };
 
-/* ------------------------------------------------------------------ */
-/* Pin card: single-point lookup                                        */
-/* ------------------------------------------------------------------ */
-
-const pointCache = new Map<string, { at: number; data: Admin1 | null }>();
-/** 7 days. The server has the data, the result is a stable
- *  identifier, and a user opening the same pin twice in a week
- *  deserves the same answer. */
-const POINT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const POINT_MAX_ENTRIES = 200;
-
-const pointKey = (lat: number, lon: number): string =>
-  `${lat.toFixed(3)},${lon.toFixed(3)}`;
+/** Kick off the download ahead of first use. Safe to call repeatedly. */
+export const primeAdmin1 = (): void => { void load(); };
 
 /**
- * Find the admin-1 (state/province) that contains a single point.
- * Returns null if the point is in Mexico, mid-ocean, or anywhere
- * outside the US+CA dataset. Used by the per-pin card.
+ * Every state or province whose outline overlaps the box.
  *
- *   - 3-decimal precision in the cache key (~110 m). A user
- *     tapping 5 m away is asking the same question; a user
- *     tapping 200 m away might cross a state line and deserves
- *     a re-lookup.
- *   - Never throws.
+ * A plain bounds overlap, which is the whole test.
+ *
+ * The previous version tried to be clever here and asked whether any
+ * edge of the polygon crossed the viewport. That is a different
+ * question, and it has a spectacular failure mode: zoom far enough into
+ * Alberta that no part of Alberta's border is on screen and Alberta
+ * stops matching, so the layer goes blank at exactly the zoom levels
+ * where someone is actually looking at it. Overlap includes the
+ * enclosing region, which is what a viewport inside a state needs.
  */
-export const findAdmin1At = async (
-  lat: number, lon: number,
-  signal?: AbortSignal
-): Promise<Admin1 | null> => {
-  const key = pointKey(lat, lon);
-  const hit = pointCache.get(key);
-  if (hit && Date.now() - hit.at < POINT_TTL_MS) return hit.data;
+export const fetchAdmin1 = async (box: BoundingBox): Promise<Admin1Collection> => {
+  const all = await load();
+  if (!all.length) return EMPTY;
 
-  const params = new URLSearchParams({ lat: lat.toFixed(5), lon: lon.toFixed(5) });
-  try {
-    const res = await fetch(`/api/admin1/at?${params.toString()}`, { signal });
-    if (!res.ok) {
-      pointCache.set(key, { at: Date.now(), data: null });
-      return null;
+  const features = all
+    .filter((entry) =>
+      entry.minLon <= box.maxLon && entry.maxLon >= box.minLon &&
+      entry.minLat <= box.maxLat && entry.maxLat >= box.minLat)
+    .map((entry) => entry.feature);
+
+  return { type: 'FeatureCollection', features };
+};
+
+/** Ray casting against one ring. */
+const pointInRing = (lon: number, lat: number, ring: number[][]): boolean => {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) &&
+        lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
     }
-    const data = await res.json() as { hit: Admin1 | null };
-    const value = data?.hit ?? null;
-    if (pointCache.size >= POINT_MAX_ENTRIES) {
-      const oldest = pointCache.keys().next().value;
-      if (oldest) pointCache.delete(oldest);
-    }
-    pointCache.set(key, { at: Date.now(), data: value });
-    return value;
-  } catch (error) {
-    if ((error as Error)?.name === 'AbortError') return null;
-    pointCache.set(key, { at: Date.now(), data: null });
-    return null;
   }
+  return inside;
+};
+
+/**
+ * Point-in-polygon across a feature's rings, counting crossings so an
+ * inner ring subtracts. Straddling a shared border resolves to whichever
+ * region is checked first; at the scale of these outlines the two
+ * answers are both defensible within a kilometre of the line.
+ */
+const pointInFeature = (lon: number, lat: number, geometry: GeoJSON.Geometry): boolean => {
+  if (geometry.type === 'Polygon') {
+    const rings = geometry.coordinates as number[][][];
+    if (!rings.length || !pointInRing(lon, lat, rings[0])) return false;
+    for (let i = 1; i < rings.length; i += 1) {
+      if (pointInRing(lon, lat, rings[i])) return false;
+    }
+    return true;
+  }
+  if (geometry.type === 'MultiPolygon') {
+    for (const poly of geometry.coordinates as number[][][][]) {
+      if (!poly.length || !pointInRing(lon, lat, poly[0])) continue;
+      let inHole = false;
+      for (let i = 1; i < poly.length && !inHole; i += 1) {
+        if (pointInRing(lon, lat, poly[i])) inHole = true;
+      }
+      if (!inHole) return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Which state or province contains this point?
+ *
+ * Null for anywhere outside the US and Canada — Mexico, open ocean — and
+ * null while the outlines are still loading. Callers render nothing
+ * rather than guessing.
+ */
+export const findAdmin1At = async (lat: number, lon: number): Promise<Admin1 | null> => {
+  const all = await load();
+  for (const entry of all) {
+    if (lon < entry.minLon || lon > entry.maxLon) continue;
+    if (lat < entry.minLat || lat > entry.maxLat) continue;
+    if (pointInFeature(lon, lat, entry.feature.geometry)) return entry.feature.properties;
+  }
+  return null;
 };

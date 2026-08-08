@@ -23,8 +23,8 @@ import {
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import { fetchActiveFires, ActiveFire } from '../services/fireService';
-import { fetchAdmin1, Admin1 } from '../services/admin1Service';
-import { isOnLand as isOnLandService } from '../services/landService';
+import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
+import { isOnLand, primeLandMask } from '../services/landService';
 import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
@@ -35,7 +35,7 @@ import {
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
-  BoundingBox, COVERAGE_BBOX, COVERAGE_OUTLINE, BOUNDARY_MIN_ZOOM,
+  BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
   BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
@@ -118,46 +118,20 @@ const UNDERLAY_NATIVE_ZOOM = 8;
 const WORLD_BOUNDS = L.latLngBounds([-85.05, -180], [85.05, 180]);
 
 /**
- * The rectangle the user can pan inside and cannot pan out of.
+ * The frame the map lives in — the box the user pans inside and cannot
+ * drag out of, with an equal margin on all four sides.
  *
- * Reads from the same `COVERAGE_BBOX` that gates data fetches, so
- * the pannable area and the data area are the same thing — the
- * user cannot drag to a spot that says "no data here" because
- * there is no spot to drag to. The result is fewer tile fetches
- * (everything outside the box is unreachable, the tile layer
- * never sees a request for it), no need for the gray-outside
- * mask, and a cleaner mental model: the map shows the area the
- * app is about, full stop.
+ * Note this is `MAP_VIEW_BBOX`, not `COVERAGE_BBOX`. Pinning the
+ * pannable area to the data area sounds tidy and looks wrong: it jams
+ * the Pacific coast and the Gulf against the edges of the screen with
+ * no breathing room, and it makes the coverage line unreachable at the
+ * exact moment you want to see where it runs. The view gets the margin;
+ * the data keeps its tight box.
  */
 const PAN_BOUNDS = L.latLngBounds(
-  [COVERAGE_BBOX.minLat, COVERAGE_BBOX.minLon],
-  [COVERAGE_BBOX.maxLat, COVERAGE_BBOX.maxLon]
+  [MAP_VIEW_BBOX.minLat, MAP_VIEW_BBOX.minLon],
+  [MAP_VIEW_BBOX.maxLat, MAP_VIEW_BBOX.maxLon]
 );
-
-/**
- * Smallest zoom the user is allowed to zoom out to.
- *
- * Without this, panning to an empty area was possible at any
- * zoom; the map would let you zoom out to "the whole world" and
- * tile-fetch every continent to do it. Picking a number that
- * shows the box filling a phone screen (zoom 3) cuts off
- * everything below it and makes the box feel like the only map
- * there is. A wider monitor still sees a sensible view because
- * the world-fill zoom is computed from the container width, not
- * hard-coded.
- */
-const MIN_ZOOM = 3;
-
-/**
- * Smallest zoom at which the world still fills the viewport width.
- *
- * Hard-coding a number breaks somewhere: too high and phones can't zoom out
- * far enough, too low and an ultrawide monitor shows empty gutters either side
- * of the map. The world is 256px across at zoom 0 and doubles each level, so
- * solve for it from the actual container width instead of guessing.
- */
-const worldFillZoom = (widthPx: number): number =>
-  Math.max(1, Math.ceil(Math.log2(Math.max(widthPx, 1) / 256)));
 
 /**
  * WHAT GETS AN ICON ON THIS MAP, AND WHAT DOESN'T
@@ -732,22 +706,36 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       zoom,
       zoomControl: false,
       attributionControl: false,
-      // The user cannot pan outside the supported coverage rectangle.
-      // `maxBoundsViscosity: 1.0` makes the edge hard — a drag past the
-      // edge rubber-bands the map back, the GPU never has to composite
-      // anything outside the box, and the tile layer never sees a
-      // request for a region we have no data for. The earlier
-      // world-wide bounds were a workaround for "we can pan anywhere
-      // but we don't have data there" — `maxBounds` replaces the
-      // workaround at the source.
+      // The user pans inside the frame and cannot drag out of it.
+      // Viscosity 1.0 makes the edge hard, so a drag past it rubber-bands
+      // straight back rather than sliding off into ocean the app has
+      // nothing to say about.
+      //
+      // The minimum zoom is NOT set here. It depends on the container
+      // size, which isn't trustworthy yet, so `applyMinZoom` below owns
+      // it — one place, not two.
       worldCopyJump: false,
       maxBounds: PAN_BOUNDS,
       maxBoundsViscosity: 1.0,
-      // Same reasoning as maxBounds: the user has no business
-      // zooming out to "the whole world" because there is no
-      // whole world to show. A pin dropped at zoom 0 would be a
-      // pin dropped on a tile we never fetched.
-      minZoom: MIN_ZOOM
+      /**
+       * Half-level zoom granularity, so the frame can be met exactly.
+       *
+       * The zoom-out floor computed in `applyMinZoom` is fractional —
+       * whatever level makes the frame meet the edges of this particular
+       * screen. Leaflet rounds a requested zoom to `zoomSnap` BEFORE
+       * clamping it to the minimum, so at the default of 1 that floor is
+       * only reachable when rounding happens to land below it. On a
+       * phone it rounded 2.65 up to 3 and the frame overshot the screen;
+       * on a desktop it rounded 4.24 down and the frame fit. Same code,
+       * two different results, for no reason the user could see.
+       *
+       * At 0.5 the rounding lands below the floor and the clamp wins, so
+       * both end up exactly at the fit. Zoom buttons step by whole
+       * levels from a whole level, so ordinary zooming still sits on
+       * integers where the tiles are pixel-sharp; only the fully
+       * zoomed-out frame is fractional.
+       */
+      zoomSnap: 0.5
     });
     /**
      * NO LEAFLET CONTROLS. Zoom and attribution are React, below.
@@ -764,13 +752,51 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      */
 
     /**
-     * Keep the minimum zoom tied to the container width.
+     * Stop zooming out once the frame fills the screen.
      *
-     * Recomputed on resize so rotating a phone or dragging a window narrower
-     * can't strand the user at a zoom level that's now below the minimum.
+     * THIS IS THE LINE THAT DECIDES HOW FAR OUT THE MAP GOES, and it
+     * previously undid the setting above it. The old version solved for
+     * the zoom at which the WHOLE WORLD filled the viewport width, which
+     * on a phone works out to zoom 1 — so the map opened on the entire
+     * planet, South America and all, with a `maxBounds` far too small to
+     * constrain anything at that scale. Whatever minimum was passed to
+     * the constructor got overwritten a few lines later.
+     *
+     * `getBoundsZoom` asks the right question instead: how far out can we
+     * go before the frame stops fitting? Zooming out past that only ever
+     * reveals the parts of the world this app has nothing to say about.
+     *
+     * Recomputed on resize, so rotating a phone or dragging a window
+     * narrower can't strand the user below the new minimum.
      */
     const applyMinZoom = () => {
-      const next = worldFillZoom(map.getSize().x);
+      const size = map.getSize();
+      if (!size.x || !size.y) return;
+
+      // Frame size in projected pixels at zoom 0, so the ratio to the
+      // viewport gives the scale that just fits — and log2 of a scale is
+      // a zoom level.
+      const nw = map.project(PAN_BOUNDS.getNorthWest(), 0);
+      const se = map.project(PAN_BOUNDS.getSouthEast(), 0);
+      const frameWidth = Math.abs(se.x - nw.x);
+      const frameHeight = Math.abs(se.y - nw.y);
+      if (!frameWidth || !frameHeight) return;
+
+      /**
+       * Fractional on purpose. `getBoundsZoom` would floor this to a
+       * whole level, and on a phone the fit lands around 2.65 — so
+       * flooring to 2 halves the scale and leaves the continent as a
+       * small rectangle adrift in a field of grey. Landing exactly on
+       * the fit means the frame meets the left and right edges of the
+       * screen at full zoom-out, which is the shape of the thing.
+       *
+       * Computed rather than asked for, because `getBoundsZoom` also
+       * clamps its answer to the minimum currently in force — so once
+       * this had been set, widening the window could never lower it
+       * again, and the map would stay stuck at the phone-sized minimum.
+       */
+      const next = Math.log2(Math.min(size.x / frameWidth, size.y / frameHeight));
+
       map.setMinZoom(next);
       if (map.getZoom() < next) map.setZoom(next);
     };
@@ -779,6 +805,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     mapRef.current = map;
     setIsMapReady(true);
+
+    /**
+     * Pull the two bundled map files down now, while the user is still
+     * getting their bearings, so neither ever blocks an interaction.
+     * The land mask has to be resident before the first tap — the pin
+     * check reads it synchronously and treats "not loaded yet" as
+     * "allow the pin", so a slow download would quietly let a few
+     * ocean pins through rather than making anyone wait.
+     */
+    primeLandMask();
+    primeAdmin1();
 
     // The container is often still being laid out on first paint.
     const timer = setTimeout(() => {
@@ -972,6 +1009,53 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       try { map.removeLayer(vectorLayer); } catch { /* already detached */ }
     };
   }, [isMapReady, showCrownLand]);
+
+  /* ------------------------------------------------------------------ */
+  /* Grey mask outside the supported coverage area                       */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Everything this app has no data for is greyed out: Mexico, the
+   * oceans, and the three northern territories.
+   *
+   * This is not decoration, and it is not optional. It is how the map
+   * tells the truth about its own limits. Without it the satellite
+   * imagery runs edge to edge and northern Mexico looks exactly like
+   * southern Arizona — same terrain, same detail, no pins — and an empty
+   * map that looks in-bounds reads as "we checked, there's nothing
+   * here". That is the one claim this app must never make by accident.
+   * Greying it says "we didn't look" instead.
+   *
+   * Drawn once on a canvas with generous padding rather than as an SVG
+   * path: the shape never changes, so rasterising it once and sliding
+   * the surface around beats re-projecting a world-sized polygon on
+   * every pan and zoom, and it kills the flicker along the grey edge.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    if (!map.getPane('coveragePane')) {
+      map.createPane('coveragePane');
+      const pane = map.getPane('coveragePane');
+      if (pane) { pane.style.zIndex = '450'; pane.style.pointerEvents = 'none'; }
+    }
+
+    const toLatLng = (ring: [number, number][]) =>
+      ring.map(([lon, lat]) => [lat, lon] as [number, number]);
+
+    const renderer = L.canvas({ pane: 'coveragePane', padding: 1 });
+
+    // A world-sized polygon with the supported region punched out of it.
+    const mask = L.polygon([toLatLng(WORLD_RING), toLatLng(COVERAGE_OUTLINE)], {
+      pane: 'coveragePane', renderer, interactive: false, stroke: true,
+      color: '#64748B', weight: 1, fillColor: '#0F172A', fillOpacity: 0.72
+    } as L.PolylineOptions).addTo(map);
+
+    return () => {
+      try { map.removeLayer(mask); } catch { /* detached */ }
+      try { map.removeLayer(renderer); } catch { /* never attached */ }
+    };
+  }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Public land boundaries                                              */
@@ -1502,57 +1586,48 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const handleTap = (event: L.LeafletMouseEvent) => {
       const { lat, lng } = event.latlng;
 
-      // Pre-flight: is the tap on land and inside the precise
-      // coverage polygon? With maxBounds, the user cannot pan
-      // outside the rectangle, but the rectangle is a little
-      // larger than the precise coverage polygon (a sliver of
-      // northern Mexico, for example, sits inside the
-      // rectangle but outside the polygon). A tap there gets
-      // the 'outside coverage' message; a tap in a lake or
-      // ocean gets the 'this is water' message. A tap that
-      // passes both checks drops a pin as before.
-      //
-      // We run the checks in parallel — they hit different
-      // server endpoints and neither is on the critical path
-      // of a subsequent render. The land check is the slow one
-      // (a single HTTP round trip with a 200-entry in-memory
-      // cache), so the perceived latency is whichever is
-      // slower; doing them in series would double it.
-      //
-      // Coverage check is local and synchronous; the land
-      // check is the only async one.
+      /**
+       * Two ways a tap can be refused, both decided here and now.
+       *
+       * Outside coverage: the frame has margin around the data area, so
+       * there is reachable map — northern Mexico, mostly — that we have
+       * nothing to say about. Dropping a pin there would produce a card
+       * full of confident blanks.
+       *
+       * Water: a pin in the middle of a lake or out at sea is never a
+       * campsite. Both tests are synchronous, so the pin lands on the
+       * same frame as the tap; the previous version awaited an HTTP
+       * round trip before it would accept a tap, which on a weak
+       * connection felt like the map had stopped responding.
+       */
       if (!isWithinCoverage(lat, lng)) {
         pinRefusedRef.current?.('outside_coverage');
         return;
       }
-      void (async () => {
-        const onLand = await isOnLandService(lat, lng);
-        // onLand === null is a server failure; fail open.
-        if (onLand === false) {
-          pinRefusedRef.current?.('water');
-          return;
-        }
+      if (!isOnLand(lat, lng)) {
+        pinRefusedRef.current?.('water');
+        return;
+      }
 
-        /**
-         * Smallest matching parcel wins.
-         *
-         * Parcels nest — a wilderness area sits inside a national forest — and
-         * naming the forest when the user tapped the wilderness would quote the
-         * wrong rules, which are usually the stricter ones. Feature order is
-         * whatever the upstream service happened to return, so the tie has to be
-         * broken on something. Bounding-box area is a rough stand-in for real
-         * area and costs one pass over coordinates we already hold; it only has
-         * to rank two shapes that both contain the same point.
-         */
-        let best: { feature: BoundaryFeature; extent: number } | null = null;
-        for (const feature of collectionRef.current.features) {
-          if (!pointInGeometry(lat, lng, feature.geometry)) continue;
-          const extent = bboxExtent(feature.geometry);
-          if (!best || extent < best.extent) best = { feature, extent };
-        }
+      /**
+       * Smallest matching parcel wins.
+       *
+       * Parcels nest — a wilderness area sits inside a national forest — and
+       * naming the forest when the user tapped the wilderness would quote the
+       * wrong rules, which are usually the stricter ones. Feature order is
+       * whatever the upstream service happened to return, so the tie has to be
+       * broken on something. Bounding-box area is a rough stand-in for real
+       * area and costs one pass over coordinates we already hold; it only has
+       * to rank two shapes that both contain the same point.
+       */
+      let best: { feature: BoundaryFeature; extent: number } | null = null;
+      for (const feature of collectionRef.current.features) {
+        if (!pointInGeometry(lat, lng, feature.geometry)) continue;
+        const extent = bboxExtent(feature.geometry);
+        if (!best || extent < best.extent) best = { feature, extent };
+      }
 
-        dropRef.current(lat, lng, landFromFeature(best?.feature.properties as any));
-      })();
+      dropRef.current(lat, lng, landFromFeature(best?.feature.properties as any));
     };
 
     map.on('click', handleTap);
@@ -2390,55 +2465,79 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       maxLon: map.getBounds().getEast()
     }, map.getZoom());
 
-    let loadedBox: L.LatLngBounds | null = null;
     let requestId = 0;
     let debounce: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
-    let controller: AbortController | null = null;
+    /** Which regions are currently drawn, so an identical set is a no-op. */
+    let drawnKey = '';
 
     const renderAdmin1 = (features: Array<{ type: 'Feature'; geometry: GeoJSON.Geometry; properties: Admin1 }>): void => {
-      const group = L.layerGroup();
       const z = map.getZoom();
-      const weight = z >= 8 ? 1.4 : 1.0;
-      for (const f of features) {
-        const poly = L.geoJSON(
-          { type: 'Feature', geometry: f.geometry, properties: {} } as GeoJSON.Feature,
-          {
-            pane: 'admin1Pane',
-            style: {
-              // Slate-500 at 60% — visible on satellite, visible on
-              // street, doesn't shout. The "under it" line of
-              // cartography, not the "look at me" line.
-              color: 'rgb(100 116 139)',
-              opacity: 0.6,
-              weight,
-              fill: false,
-              lineJoin: 'round',
-              interactive: false
-            }
+      /**
+       * Canvas, not SVG. Fifty states and thirteen provinces are tens of
+       * thousands of vertices, and as SVG that is tens of thousands of
+       * DOM nodes for the browser to re-project on every pan — which is
+       * precisely the kind of thing that makes this map stutter. On a
+       * canvas it is one element and a draw call.
+       */
+      const renderer = L.canvas({ pane: 'admin1Pane', padding: 0.5 });
+
+      const layer = L.geoJSON(
+        { type: 'FeatureCollection', features } as unknown as GeoJSON.FeatureCollection,
+        // `renderer` is forwarded to each Path Leaflet builds, but it is
+        // missing from the GeoJSON options type, hence the assertion.
+        {
+          pane: 'admin1Pane',
+          renderer,
+          interactive: false,
+          style: {
+            // Slate-500 at 60% — visible on satellite, visible on
+            // street, doesn't shout. The "under it" line of
+            // cartography, not the "look at me" line.
+            color: 'rgb(100 116 139)',
+            opacity: 0.6,
+            // A hair thicker close in, so a state line at city zoom
+            // doesn't get antialiased down to nothing.
+            weight: z >= 8 ? 1.4 : 1.0,
+            fill: false,
+            lineJoin: 'round'
           }
-        );
-        group.addLayer(poly);
-      }
+        } as L.GeoJSONOptions
+      );
+
       const previous = admin1LayerRef.current;
-      admin1LayerRef.current = group.addTo(map);
+      admin1LayerRef.current = layer.addTo(map);
       if (previous) {
         try { map.removeLayer(previous); } catch { /* detached */ }
       }
     };
 
     const run = async (): Promise<void> => {
-      const b = padded();
-      const ll = L.latLngBounds([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
-      if (loadedBox && loadedBox.contains(ll)) return;
-      loadedBox = ll;
-
       const myId = ++requestId;
-      controller?.abort();
-      controller = new AbortController();
-
-      const data = await fetchAdmin1(b, controller.signal);
+      const data = await fetchAdmin1(padded());
       if (cancelled || myId !== requestId) return;
+
+      /**
+       * Redraw only when the set of visible regions actually changes.
+       *
+       * The lookup is local now, so re-filtering on every pan is free —
+       * but rebuilding the layer is not, and panning across Wyoming
+       * would otherwise throw away and re-create the same geometry
+       * dozens of times. Comparing the region list is the cheap way to
+       * tell a real change from a nudge.
+       *
+       * The previous version cached the loaded BOX instead, and skipped
+       * any view inside it. That kept every polygon it had ever seen:
+       * zoom out once to the whole continent and all sixty-four regions
+       * stayed loaded and drawn for the rest of the session, no matter
+       * how far back in you went.
+       */
+      // The zoom tier is part of the key because it decides line weight;
+      // without it, crossing zoom 8 inside one state never restyles.
+      const key = `${map.getZoom() >= 8 ? 'near' : 'far'}:` +
+        data.features.map((f) => f.properties.isoCode).sort().join('|');
+      if (key === drawnKey && admin1LayerRef.current) return;
+      drawnKey = key;
       renderAdmin1(data.features);
     };
 
@@ -2452,7 +2551,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     return () => {
       cancelled = true;
-      controller?.abort();
       if (debounce) clearTimeout(debounce);
       map.off('moveend zoomend', schedule);
       clear();

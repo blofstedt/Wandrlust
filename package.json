@@ -22,6 +22,7 @@
     "seed": "tsx scripts/seedSupabase.ts",
     "seed:sites": "tsx scripts/seedSupabase.ts --sites",
     "seed:lands": "tsx scripts/seedSupabase.ts --lands",
+    "map:assets": "tsx scripts/buildMapAssets.ts",
     "vapid": "tsx scripts/generateVapidKeys.ts"
   },
   "dependencies": {
@@ -56,4 +57,4 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
   }
-}
+}

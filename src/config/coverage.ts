@@ -46,6 +46,68 @@ export const COVERAGE_BBOX: BoundingBox = {
   maxLon: -52.0
 };
 
+/* ------------------------------------------------------------------ */
+/* The map's viewing frame                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Web Mercator latitude projection, in degree-equivalent units.
+ *
+ * The map is Mercator, so a degree of longitude is a fixed number of
+ * screen pixels but a degree of latitude is not — one degree near the
+ * Mexican border is a good deal shorter on screen than one degree in
+ * northern Quebec. Padding the coverage box by a flat number of
+ * degrees therefore produces a frame that LOOKS lopsided: a fat
+ * margin along the bottom edge and a thin one along the top. Padding
+ * in projected space and converting back is what makes the four
+ * margins actually match on screen.
+ */
+const mercatorY = (lat: number): number =>
+  (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+
+const inverseMercatorY = (y: number): number =>
+  (360 / Math.PI) * Math.atan(Math.exp((y * Math.PI) / 180)) - 90;
+
+/**
+ * How much breathing room to leave around the coverage area, as a
+ * fraction of the frame's longest side. Big enough that the coastlines
+ * aren't jammed against the edge of the screen, small enough that the
+ * continent still dominates the view.
+ */
+const VIEW_PAD_FRACTION = 0.06;
+
+const viewPad = VIEW_PAD_FRACTION * Math.max(
+  COVERAGE_BBOX.maxLon - COVERAGE_BBOX.minLon,
+  mercatorY(COVERAGE_BBOX.maxLat) - mercatorY(COVERAGE_BBOX.minLat)
+);
+
+/**
+ * The rectangle the map lives inside — Leaflet's `maxBounds`, and the
+ * frame the user sees when fully zoomed out.
+ *
+ * This is DELIBERATELY NOT `COVERAGE_BBOX`. They answer different
+ * questions and conflating them is what made the map feel wrong:
+ *
+ *   - `COVERAGE_BBOX` is a claim about DATA — "inside here we have
+ *     something to say". It gates queries and the point-in-coverage
+ *     test, and it must stay tight, because widening it would widen
+ *     what the app implies it knows.
+ *   - `MAP_VIEW_BBOX` is a claim about the VIEW — "this is the part
+ *     of the world worth looking at". It wants margin, because a
+ *     continent shoved against the edge of the viewport looks like a
+ *     rendering bug rather than a decision.
+ *
+ * The margin is equal on all four sides in projected space, so the
+ * gap above Canada, below Texas, west of the Pacific coast and east
+ * of Newfoundland are the same width on screen.
+ */
+export const MAP_VIEW_BBOX: BoundingBox = {
+  minLon: COVERAGE_BBOX.minLon - viewPad,
+  maxLon: COVERAGE_BBOX.maxLon + viewPad,
+  minLat: inverseMercatorY(mercatorY(COVERAGE_BBOX.minLat) - viewPad),
+  maxLat: inverseMercatorY(mercatorY(COVERAGE_BBOX.maxLat) + viewPad)
+};
+
 /**
  * Simplified outline of CONUS + the Canadian provinces, as [lon, lat] pairs.
  *
