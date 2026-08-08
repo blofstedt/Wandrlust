@@ -24,6 +24,7 @@ import {
 } from '../services/boundaryService';
 import { fetchActiveFires, ActiveFire } from '../services/fireService';
 import { fetchAdmin1, Admin1 } from '../services/admin1Service';
+import { isOnLand as isOnLandService } from '../services/landService';
 import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
@@ -588,6 +589,13 @@ interface MapComponentProps {
   bottomCoverFraction?: number;
   /** Fired when the user taps bare map. Carries the land under the tap. */
   onDropDestination: (lat: number, lon: number, land?: DestinationLand) => void;
+  /**
+   * Fired when a tap is rejected — pin in water, or pin in the
+   * bit of the pannable box that falls outside the precise
+   * coverage polygon (a sliver of northern Mexico, say). The
+   * reason chooses which notice to show.
+   */
+  onPinRefused?: (reason: 'water' | 'outside_coverage') => void;
   /** Fired when a camper's hazard report is tapped. */
   onSelectHazardReport?: (record: HazardRecord) => void;
   /** Fired when a precise official warning (fire / flood / storm) is tapped. */
@@ -598,7 +606,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation,
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
-  destination, onDropDestination, onSelectHazardReport, onSelectAlert,
+  destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert,
   bottomCoverFraction = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -653,6 +661,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const dropRef = useRef(onDropDestination);
   dropRef.current = onDropDestination;
+  const pinRefusedRef = useRef(onPinRefused);
+  pinRefusedRef.current = onPinRefused;
   const reportTapRef = useRef(onSelectHazardReport);
   reportTapRef.current = onSelectHazardReport;
   const alertTapRef = useRef(onSelectAlert);
@@ -1492,25 +1502,57 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const handleTap = (event: L.LeafletMouseEvent) => {
       const { lat, lng } = event.latlng;
 
-      /**
-       * Smallest matching parcel wins.
-       *
-       * Parcels nest — a wilderness area sits inside a national forest — and
-       * naming the forest when the user tapped the wilderness would quote the
-       * wrong rules, which are usually the stricter ones. Feature order is
-       * whatever the upstream service happened to return, so the tie has to be
-       * broken on something. Bounding-box area is a rough stand-in for real
-       * area and costs one pass over coordinates we already hold; it only has
-       * to rank two shapes that both contain the same point.
-       */
-      let best: { feature: BoundaryFeature; extent: number } | null = null;
-      for (const feature of collectionRef.current.features) {
-        if (!pointInGeometry(lat, lng, feature.geometry)) continue;
-        const extent = bboxExtent(feature.geometry);
-        if (!best || extent < best.extent) best = { feature, extent };
+      // Pre-flight: is the tap on land and inside the precise
+      // coverage polygon? With maxBounds, the user cannot pan
+      // outside the rectangle, but the rectangle is a little
+      // larger than the precise coverage polygon (a sliver of
+      // northern Mexico, for example, sits inside the
+      // rectangle but outside the polygon). A tap there gets
+      // the 'outside coverage' message; a tap in a lake or
+      // ocean gets the 'this is water' message. A tap that
+      // passes both checks drops a pin as before.
+      //
+      // We run the checks in parallel — they hit different
+      // server endpoints and neither is on the critical path
+      // of a subsequent render. The land check is the slow one
+      // (a single HTTP round trip with a 200-entry in-memory
+      // cache), so the perceived latency is whichever is
+      // slower; doing them in series would double it.
+      //
+      // Coverage check is local and synchronous; the land
+      // check is the only async one.
+      if (!isWithinCoverage(lat, lng)) {
+        pinRefusedRef.current?.('outside_coverage');
+        return;
       }
+      void (async () => {
+        const onLand = await isOnLandService(lat, lng);
+        // onLand === null is a server failure; fail open.
+        if (onLand === false) {
+          pinRefusedRef.current?.('water');
+          return;
+        }
 
-      dropRef.current(lat, lng, landFromFeature(best?.feature.properties as any));
+        /**
+         * Smallest matching parcel wins.
+         *
+         * Parcels nest — a wilderness area sits inside a national forest — and
+         * naming the forest when the user tapped the wilderness would quote the
+         * wrong rules, which are usually the stricter ones. Feature order is
+         * whatever the upstream service happened to return, so the tie has to be
+         * broken on something. Bounding-box area is a rough stand-in for real
+         * area and costs one pass over coordinates we already hold; it only has
+         * to rank two shapes that both contain the same point.
+         */
+        let best: { feature: BoundaryFeature; extent: number } | null = null;
+        for (const feature of collectionRef.current.features) {
+          if (!pointInGeometry(lat, lng, feature.geometry)) continue;
+          const extent = bboxExtent(feature.geometry);
+          if (!best || extent < best.extent) best = { feature, extent };
+        }
+
+        dropRef.current(lat, lng, landFromFeature(best?.feature.properties as any));
+      })();
     };
 
     map.on('click', handleTap);

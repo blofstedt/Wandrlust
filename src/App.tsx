@@ -48,7 +48,7 @@ import { calculateRoute, type RouteResult } from './services/routingService';
 import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot, type HazardAlert } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
 import { useAuth } from './contexts/AuthContext';
-import { Search, Bookmark, MapPinOff, SlidersHorizontal } from 'lucide-react';
+import { Search, Bookmark, MapPinOff, SlidersHorizontal, Waves } from 'lucide-react';
 
 /** Calgary, AB — the app's home coordinates. */
 const HOME_CENTER: [number, number] = [51.0447, -114.0719];
@@ -79,6 +79,7 @@ export default function App() {
   const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
   const [isSearchingSites, setIsSearchingSites] = useState(false);
   const [outOfCoverageNotice, setOutOfCoverageNotice] = useState<string | null>(null);
+  const [pinRefusal, setPinRefusal] = useState<'water' | 'outside_coverage' | null>(null);
   const [nearbyCampers, setNearbyCampers] = useState<NearbyCamper[]>([]);
 
   /* ---------------------------------------------- Destination & routing */
@@ -308,10 +309,25 @@ export default function App() {
       setSelectedCampsite(null);
       setSelectedReport(null);
       setSelectedAlert(null);
+      setPinRefusal(null);
       setDestination({ latitude: lat, longitude: lon, land });
     },
     []
   );
+
+  /**
+   * A pin was rejected — either in water or outside the precise
+   * coverage polygon (a sliver of northern Mexico, for example).
+   * Show a short toast for 2.4s and reset; this is the kind of
+   * feedback that should not stick around longer than the user's
+   * reaction time.
+   */
+  const handlePinRefused = useCallback((reason: 'water' | 'outside_coverage') => {
+    setPinRefusal(reason);
+    window.setTimeout(() => {
+      setPinRefusal((current) => (current === reason ? null : current));
+    }, 2400);
+  }, []);
 
   const handleClearDestination = useCallback(() => {
     setDestination(null);
@@ -695,6 +711,7 @@ export default function App() {
                     isLocating={isLocating}
                     destination={destination}
                     onDropDestination={handleDropDestination}
+                    onPinRefused={handlePinRefused}
                     onSelectHazardReport={(r) => { setSelectedReport(r); setSelectedAlert(null); }}
                     onSelectAlert={(a) => { setSelectedAlert(a); setSelectedReport(null); }}
                     bottomCoverFraction={sheetCoverFraction}
@@ -715,6 +732,29 @@ export default function App() {
                       <strong>{outOfCoverageNotice}</strong> is outside our coverage.
                       Wandrlust currently supports {COVERAGE_LABEL}, so campsite and
                       boundary data is unavailable here.
+                    </span>
+                  </div>
+                )}
+
+                {/*
+                  Pin-refused toast. Two cases:
+                    'water' — the tap was in a lake, a bay, or the ocean.
+                    'outside_coverage' — the tap was in the pannable
+                       rectangle but outside the precise coverage
+                       polygon (a sliver of northern Mexico is the
+                       main one; the user cannot reach anywhere else
+                       because of maxBounds).
+                  Auto-clears after 2.4s; see handlePinRefused.
+                */}
+                {pinRefusal && (
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-amber-500/60 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-[11px] flex items-start gap-2 anim-in-up">
+                    {pinRefusal === 'water'
+                      ? <Waves className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
+                      : <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />}
+                    <span>
+                      {pinRefusal === 'water'
+                        ? <>This spot is in <strong>water</strong>. Drop the pin on land — a campsite needs a place to pitch a tent.</>
+                        : <>This spot is <strong>outside our coverage</strong>. Wandrlust currently supports {COVERAGE_LABEL}.</>}
                     </span>
                   </div>
                 )}
@@ -912,4 +952,4 @@ export default function App() {
       <LegalDocumentModal kind={legalDoc} onClose={() => setLegalDoc(null)} />
     </div>
   );
-}
+}
