@@ -483,16 +483,55 @@ export const warningGlyphPattern = (
 };
 
 /**
+ * SVG path data for the icon inside the precise marker, per family.
+ *
+ * WHY PATHS, NOT EMOJI. The previous version rendered the family glyph as a
+ * `<text>` element carrying the emoji codepoint. That worked on desktop
+ * Chrome but on iOS Safari and several Android WebViews, color emoji inside
+ * SVG `<text>` draws as a missing-glyph box (□) or nothing at all. A
+ * camper looking for a flame sees a blank pin, and the family the pin is
+ * trying to communicate is lost.
+ *
+ * Paths render the same in every browser that supports SVG (which is every
+ * browser this app ships to). The flame, water and storm shapes below are
+ * designed to read at 22×22 px — the actual draw size — over both light
+ * and dark backgrounds, with the family's own colour as the fill.
+ */
+const PRECISE_GLYPH: Record<'fire' | 'flood' | 'storm', string> = {
+  // Flame: two stacked tongues with a hot core.
+  fire:
+    'M12 2.5c-1.2 3-3.4 4.6-4.4 7.4-.9 2.5-.4 5.2 1.2 6.8.4-2.4 1.6-3.6 3-4.2' +
+    '-.2 1.6.4 3.2 1.4 4 1 .8 2.2 1 3.2.4-.4 1.4-.4 2.6.4 3.4.6.6 1.4.8 2.2.6' +
+    ' 1.8-.4 3-2.2 3-4 0-2-1.2-3.6-2.4-5.2-1.4-1.8-2.8-3.6-3.2-5.8-.2-1.2 0-2.4.4-3.4' +
+    '-1.6.4-3 1.4-4 2.8z',
+  // Water: three stacked wave crests.
+  flood:
+    'M3 9.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1' +
+    'M3 14.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1' +
+    'M3 19.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1',
+  // Storm: a cloud with a single lightning bolt.
+  storm:
+    'M7 14.5c-2.2 0-4-1.6-4-3.5 0-1.6 1.2-3 2.8-3.4.4-2.6 2.8-4.6 5.6-4.6' +
+    ' 2.4 0 4.4 1.4 5.2 3.4.4-.2 1-.2 1.4-.2 2.2 0 4 1.6 4 3.6 0 1.8-1.4 3.2-3.2 3.6' +
+    'H7zM11 16l-2.4 4h2.2l-1.4 3 4-4.6h-2.2l1.4-2.4H11z'
+};
+
+/**
  * A crisp, tappable pin for a PRECISE hazard (fire, flood, storm).
  *
  * Deliberately a hard-edged map marker rather than a soft cloud — a precise
  * hazard has a place, and the icon claims one. Coloured by family, carrying the
- * family glyph, with a dark outline so a flame reads over both bright snow and
- * dark forest. This one is meant to be tapped: the caller wires a click to it.
+ * family glyph as a real SVG path, with a dark outline so a flame reads over
+ * both bright snow and dark forest. This one is meant to be tapped: the caller
+ * wires a click to it.
  */
 export const preciseMarkerHtml = (badge: AlertBadge): string => {
   const color = BADGE_COLOR[badge];
-  const glyph = WARNING_EMOJI[badge];
+  // Diffuse badges should never reach this function — they go to the cloud
+  // branch. Be defensive: if one does, fall back to a generic dot rather
+  // than producing malformed SVG.
+  const path = PRECISE_GLYPH[badge as 'fire' | 'flood' | 'storm']
+    ?? 'M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z';
   return `
     <div style="width:36px;height:44px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))">
       <svg width="36" height="44" viewBox="0 0 36 44" aria-hidden="true">
@@ -500,8 +539,9 @@ export const preciseMarkerHtml = (badge: AlertBadge): string => {
                  C33.5 8.4 26.6 1.5 18 1.5z"
               fill="${color}" stroke="#0F172A" stroke-width="2" stroke-linejoin="round"/>
         <circle cx="18" cy="16.5" r="11" fill="#0F172A" opacity="0.16"/>
-        <text x="18" y="17.5" text-anchor="middle" dominant-baseline="central"
-              font-size="15">${glyph}</text>
+        <path d="${path}" fill="#FFFFFF" stroke="#0F172A" stroke-width="0.8"
+              stroke-linejoin="round" stroke-linecap="round"
+              transform="translate(7 5.5) scale(0.92)"/>
       </svg>
     </div>`;
 };
@@ -510,4 +550,4 @@ export const preciseMarkerHtml = (badge: AlertBadge): string => {
 export const alertsCoveringPoint = (
   lat: number, lon: number, alerts: HazardAlert[]
 ): HazardAlert[] =>
-  alerts.filter((a) => a.geometry && pointInGeometry(lat, lon, a.geometry));
+  alerts.filter((a) => a.geometry && pointInGeometry(lat, lon, a.geometry));
