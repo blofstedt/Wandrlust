@@ -1544,36 +1544,37 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const glyphRenderer = warningGlyphRendererRef.current!;
 
     /**
-     * Inject the per-cloud soft edge into the cloud renderer's <defs> ONCE.
+     * THE BLUR — and why it lives on each path now, not on the pane.
      *
-     * The old CSS `filter: blur(6px)` on the whole warningPane forced the
-     * compositor to re-rasterize the blurred output on every paint, and during
-     * a pan or zoom that meant every animation frame. An SVG <feGaussianBlur>
-     * defined in the renderer's own <defs> and referenced from each cloud
-     * path gets cached by the browser: a pan becomes a translate of an
-     * already-rasterized layer rather than a full re-blur of the pane every
-     * tick. The look is identical.
+     * The first version put `filter: blur(6px)` on the whole warningPane,
+     * which forced the compositor to re-blur every cloud on every paint —
+     * a six-pixel blur over an area that moves with the map is the most
+     * expensive thing the GPU can be asked to do, and a pan/zoom turned it
+     * into every animation frame.
      *
-     * The filter id is stable so re-running the effect on every alert fetch
-     * does not stack a new <defs> every time — we set the contents in place
-     * if the <defs> already exists.
+     * The second version (the one being replaced here) tried an SVG
+     * <feGaussianBlur> in the renderer's <defs>, with each cloud path
+     * pointing at it via `filter="url(#…)"`. That was supposed to give
+     * per-path caching, but it broke the clouds entirely:
+     *
+     *   1. The defs was injected on the FIRST effect run, BEFORE the
+     *      renderer's `_container` had been created (Leaflet mints the SVG
+     *      element lazily, the first time a layer is added to the map that
+     *      uses this renderer). On a cold start, the defs injection was a
+     *      no-op and the filter URL on every cloud path pointed at a filter
+     *      that did not exist — the clouds drew as nothing.
+     *   2. Even when the defs DID land, the per-path `eachLayer` walked
+     *      `sub._path` BEFORE the layer was added to the group, when those
+     *      path elements did not exist yet. The filter attribute was set on
+     *      zero paths, so the clouds drew as nothing.
+     *
+     * The fix is per-element CSS filter, applied as an inline style on
+     * each cloud path after it has been added to the map. The browser
+     * caches each filtered element as its own compositing layer, and a
+     * pan/zoom becomes a translate of those layers rather than a full
+     * re-blur. There is no defs to inject, no path attribute to set after
+     * the fact, and no first-render race.
      */
-    const warningSvg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
-    if (warningSvg) {
-      let defs = warningSvg.querySelector('defs');
-      if (!defs) {
-        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-        warningSvg.insertBefore(defs, warningSvg.firstChild);
-      }
-      // Only set innerHTML if the filter is missing. The id is fixed, so the
-      // effect can run any number of times without churning the DOM.
-      if (!defs.querySelector('#wl-cloud-soft')) {
-        defs.innerHTML =
-          '<filter id="wl-cloud-soft" x="-10%" y="-10%" width="120%" height="120%">' +
-          '<feGaussianBlur stdDeviation="6" />' +
-          '</filter>';
-      }
-    }
 
     let cancelled = false;
     let controller: AbortController | null = null;
@@ -1613,14 +1614,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         const color = BADGE_COLOR[badge];
 
         if (isDiffuse(badge)) {
-          // ONE red (or grey / cyan) cloud over the whole warned area. No stroke,
-          // so the internal seams between the alert's forecast-region polygons
-          // never draw; the per-path SVG blur in defs (see above) feathers the
-          // outer edge and hides any hairline sliver between them — the area
-          // reads as a single cloud. The blur is applied per path so the
-          // browser can cache the filter output and a pan/zoom becomes a
-          // translate of the rasterized cloud rather than a full re-blur every
-          // animation frame.
+          // ONE red (or grey / cyan) cloud over the whole warned area. No
+          // stroke, so the internal seams between the alert's forecast-region
+          // polygons never draw; the per-path CSS blur (set on `_path` AFTER
+          // the layer is in the map, see below) feathers the outer edge and
+          // hides any hairline sliver between them — the area reads as a
+          // single cloud. The blur is per element so the browser caches each
+          // cloud as its own compositing layer, and a pan/zoom becomes a
+          // translate of those layers rather than a full re-blur every frame.
           const cloudGeo = L.geoJSON(alert.geometry as any, {
             pane: 'warningPane',
             renderer: warningRenderer,
@@ -1632,17 +1633,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               fillOpacity: 0.3
             }
           } as RenderedGeoJSONOptions);
-          // Leaflet's style API doesn't expose SVG `filter`, so we set the
-          // attribute on each path directly. Paths are created synchronously
-          // above, so they exist by the time we get here.
+          group.addLayer(cloudGeo);
+          // The path elements now exist. Apply the per-element blur via
+          // inline style. Doing it HERE — after the layer is in the group,
+          // and crucially before the group is added to the map (so paths
+          // are in their final state when the first paint happens) — is
+          // what keeps the cold-start case working. The previous attempt
+          // walked `_path` before the layer was added and silently set
+          // nothing.
           cloudGeo.eachLayer((sub) => {
             const el = (sub as unknown as { _path?: SVGPathElement })._path;
-            if (el) el.setAttribute('filter', 'url(#wl-cloud-soft)');
+            if (el) el.style.filter = 'blur(6px)';
           });
-          group.addLayer(cloudGeo);
-          // The same area, filled with the tiled family glyph — thermometers for
-          // heat — in the crisp glyph pane above the blur. Wired to its pattern
-          // in <defs> below.
+          // The same area, filled with the tiled family glyph — thermometers
+          // for heat — in the crisp glyph pane above the blur. Wired to its
+          // pattern in <defs> below.
           const glyphGeo = L.geoJSON(alert.geometry as any, {
             pane: 'warningGlyphPane',
             renderer: glyphRenderer,

@@ -189,8 +189,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             onClick={() => setActiveView('map')}
             className="flex items-center gap-2.5 no-press text-left"
           >
-            <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-gradient-to-br from-emerald-500 via-teal-600 to-amber-600 flex items-center justify-center shadow-lg shadow-emerald-900/40 border border-emerald-400/30">
-              <Compass className="w-5 h-5 text-white" />
+            <div className="w-9 h-9 md:w-10 md:h-10 shrink-0 rounded-xl bg-gradient-to-br from-emerald-500 via-teal-600 to-amber-600 flex items-center justify-center shadow-lg shadow-emerald-900/40 border border-emerald-400/30">
+              <Compass className="w-5 h-5 text-white shrink-0" />
             </div>
             <div>
               <span className="font-['Outfit'] font-extrabold text-lg md:text-xl tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-amber-300 bg-clip-text text-transparent">
@@ -428,4 +428,4 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
     </header>
   );
-};
+};
