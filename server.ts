@@ -9,6 +9,7 @@ import { registerPushRoutes } from './server/pushRoutes';
 import { registerCellRoutes } from './server/cellRoutes';
 import { registerRouteRoutes } from './server/routeRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
+import { registerFireRoutes } from './server/fireRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -53,6 +54,12 @@ const startServer = async (): Promise<void> => {
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.
   registerAlertRoutes(app);
+
+  // Active wildfire data, US (WFIGS perimeters) + Canada (FireRadar points).
+  // No API key on either side; the response is a unified GeoJSON that the
+  // client can style as two distinct things (perimeters in red, points
+  // in orange) without needing to know which country a fire came from.
+  registerFireRoutes(app);
 
   // Unknown API routes must return JSON, not the SPA's index.html — otherwise
   // a typo in a fetch URL shows up in the client as "unexpected token <".
@@ -133,4 +140,4 @@ const startServer = async (): Promise<void> => {
 startServer().catch((err) => {
   console.error('Failed to start server:', err);
   process.exit(1);
-});
+});
