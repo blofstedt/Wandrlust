@@ -541,6 +541,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
   const [showBoundaries, setShowBoundaries] = useState(true);
+  /**
+   * Weather warning overlay (clouds + flame icons). ON by default because
+   * warnings are the safety feature, and a camper who has the layer off
+   * still gets a heads-up on the destination sheet and campsite bottom
+   * sheet (the per-pin hazard panel reads from `hazards` state, not from
+   * this toggle, so a hidden layer does not silence the pin card).
+   */
+  const [showWarnings, setShowWarnings] = useState(true);
+  /**
+   * Active-fire layer. OFF by default — there is no active fire data
+   * source yet (WFIGS/CIFFC integration is a separate feature), so the
+   * toggle is wired but does nothing visible until the data lands. The
+   * pin card already lists fire bans and NWS fire warnings; this
+   * toggle is the on/off for the on-map marker layer when it ships.
+   */
+  const [showFires, setShowFires] = useState(false);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
@@ -1624,6 +1640,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
 
+    // Layer off: clear the existing clouds and skip the fetch. The
+    // hazard state is intentionally NOT cleared — the per-pin
+    // destination sheet and campsite bottom sheet read from `hazards`
+    // directly, so a hidden layer does not silence the pin card. A
+    // camper who has the layer off still sees "Heat advisory nearby"
+    // on the pin they're considering — which is the point of having
+    // the layer toggleable without losing safety context.
+    if (!showWarnings) {
+      clear();
+      setWarningBadges([]);
+      return;
+    }
+
     // TWO panes, because the two tiers behave differently.
     //
     //   warningPane      — the diffuse clouds and every tinted area fill. It is
@@ -2008,7 +2037,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         warningGlyphRendererRef.current = null;
       }
     };
-  }, [isMapReady, isOfflineMode]);
+  }, [isMapReady, isOfflineMode, showWarnings]);
 
   /* ------------------------------------------------------------------ */
   /* Markers                                                             */
@@ -2688,6 +2717,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 />
               </label>
             )}
+            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+              <span>Weather warnings</span>
+              <input
+                type="checkbox"
+                checked={showWarnings}
+                onChange={(e) => setShowWarnings(e.target.checked)}
+                className="accent-emerald-500 w-3.5 h-3.5"
+              />
+            </label>
+            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+              <span>Active fires</span>
+              <input
+                type="checkbox"
+                checked={showFires}
+                onChange={(e) => setShowFires(e.target.checked)}
+                className="accent-emerald-500 w-3.5 h-3.5"
+              />
+            </label>
           </div>
         )}
 
