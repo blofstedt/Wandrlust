@@ -22,7 +22,7 @@ import {
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
-import { fetchActiveFires, ActiveFire } from '../services/fireService';
+import { fetchActiveFires, isUnderControl, ActiveFire } from '../services/fireService';
 import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
 import { isOnLand, primeLandMask } from '../services/landService';
 import {
@@ -403,20 +403,48 @@ const centroidAndRadius = (ring: [number, number][]): { cx: number; cy: number; 
 /* ------------------------------------------------------------------ */
 
 /**
- * Orange flame dot for a Canadian reported fire location.
+ * Flame colours. One pair, used by the icon, the perimeter outline and
+ * the layer-menu key, so the three can never drift apart.
  *
- * Inline SVG so a single divIcon is one DOM node. The colour is the
- * existing "fire" warning family colour, so a flame on the map reads
- * the same regardless of which side of the border it came from.
+ *   red    — still running. The agency has not reported it under control.
+ *   orange — reported held / contained / under control. Still burning,
+ *            still worth knowing about, just not spreading.
  */
-const buildFirePointHtml = (): string => `
-  <div class="wl-fire-dot">
-    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-      <path d="M12 2c-1 3-4 5-4 9a4 4 0 0 0 8 0c0-2-1-3-2-4 0 2-1 3-2 3 0-3 0-5 0-8z"
-        fill="#F97316" stroke="#7C2D12" stroke-width="1" stroke-linejoin="round" />
+const FIRE_COLOR = {
+  running: { fill: '#EF4444', stroke: '#450A0A' },   // red-500 on red-950
+  controlled: { fill: '#F97316', stroke: '#431407' } // orange-500 on orange-950
+} as const;
+
+/**
+ * The flame drawn at a fire's location. US and Canada, perimeter and
+ * point — the same icon every time.
+ *
+ * It used to be Canada-only: a US fire was a bare red polygon outline
+ * with no marker, so at any zoom where the perimeter was smaller than a
+ * fingertip there was nothing to see and nothing to tap. Now the flame
+ * marks every fire and the polygon is the extra detail on top of it.
+ *
+ * There is no white disc behind the flame any more. The halo made every
+ * fire look like a UI button pinned to the map; a dark outline on the
+ * flame plus a drop shadow (see `.wl-fire-flame` in index.css) keeps it
+ * readable over satellite imagery without the chrome.
+ *
+ * Inline SVG so a single divIcon is one DOM node. `paint-order: stroke`
+ * puts the dark edge outside the fill, so the flame keeps its shape
+ * instead of being eaten by its own outline.
+ */
+const buildFirePointHtml = (underControl: boolean): string => {
+  const c = underControl ? FIRE_COLOR.controlled : FIRE_COLOR.running;
+  return `
+  <div class="wl-fire-flame">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+      <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"
+        fill="${c.fill}" stroke="${c.stroke}" stroke-width="1.6"
+        stroke-linejoin="round" stroke-linecap="round" paint-order="stroke" />
     </svg>
   </div>
 `;
+};
 
 /**
  * Escape user-supplied text before it goes into a popup. The fire name
@@ -452,6 +480,7 @@ const formatSize = (fire: ActiveFire): string => {
  * small table of attributes, all from the upstream record.
  */
 const buildFirePopupHtml = (fire: ActiveFire): string => {
+  const controlled = isUnderControl(fire);
   const rows: Array<[string, string]> = [];
   rows.push(['Size', formatSize(fire)]);
   if (fire.contained != null) {
@@ -478,10 +507,25 @@ const buildFirePopupHtml = (fire: ActiveFire): string => {
      </div>`
   ).join('');
 
+  /**
+   * The colour has to say what it means somewhere, and the popup is the
+   * one place the user is already asking "what is this?". The wording is
+   * careful: "not reported under control" is what we actually know, and
+   * is not the same claim as "out of control".
+   */
+  const c = controlled ? FIRE_COLOR.controlled : FIRE_COLOR.running;
+  const stateText = controlled
+    ? 'Reported under control'
+    : 'Not reported under control';
+
   return `
     <div class="font-sans text-slate-100 min-w-[180px]">
       <div class="text-[13px] font-bold leading-tight">${escapeHtml(fire.name)}</div>
       <div class="text-[10px] uppercase tracking-wider text-slate-400 mb-2">${escapeHtml(fire.region)}</div>
+      <div class="flex items-center gap-1.5 mb-2">
+        <span style="width:8px;height:8px;border-radius:9999px;background:${c.fill};display:inline-block;flex:none"></span>
+        <span class="text-[10px] font-bold" style="color:${c.fill}">${stateText}</span>
+      </div>
       <div class="border-t border-slate-700 pt-1.5">${rowsHtml}</div>
       <div class="text-[9px] text-slate-500 mt-1.5">Source: ${source}</div>
     </div>
@@ -685,12 +729,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const [showFires, setShowFires] = useState(true);
   /**
-   * State / province boundary lines. OFF by default — a state line is
-   * a context, not a highlight, and the user who wants it knows they
-   * want it. The pin card already shows country + admin-1, so the
-   * layer is the on-map counterpart, not a different feature.
+   * State / province boundary lines. ON by default.
+   *
+   * They used to start off, on the reasoning that a state line is context
+   * rather than a highlight. Wrong call for this app: where you are is
+   * the first question a dispersed-camping map has to answer, and camping
+   * rules, permits and fire bans all change at exactly these lines. A
+   * thin line the user can switch off costs far less than a map that
+   * makes them guess which state they're looking at.
    */
-  const [showAdmin1, setShowAdmin1] = useState(false);
+  const [showAdmin1, setShowAdmin1] = useState(true);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
@@ -2391,17 +2439,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /**
    * Fetch and draw the active-fire layer.
    *
-   *   - Off by default (`showFires`); when off we clear what is drawn and
+   *   - On by default (`showFires`); when off we clear what is drawn and
    *     skip the fetch. The per-pin card reads from this same data
    *     independently of the toggle, so a hidden layer still surfaces
    *     "fire X km away" on the pin.
-   *   - Perimeters (US, WFIGS) get a thin red stroke and a faint red
-   *     fill. The fire's actual size is in `sizeAcres`; we do not try to
-   *     scale the stroke by acreage, because the user wants "there is a
-   *     fire here", not "this fire is bigger than that fire".
-   *   - Points (CA, FireRadar) get an orange dot using the existing
-   *     flame icon path the warnings use, so a fire pin reads the same
-   *     regardless of which side of the border it's on.
+   *   - ONLY ACTIVE FIRES ARE HERE AT ALL. `/api/fires` drops incidents
+   *     the agency has declared out, so this layer never has to decide
+   *     what "active" means — it draws what it's given.
+   *   - Every fire gets a flame, coloured by control state: orange when
+   *     the agency reports it under control, red when it doesn't. A US
+   *     perimeter and a Canadian point look the same, because to a
+   *     camper they mean the same thing.
+   *   - Perimeters (US, WFIGS) additionally get a thin stroke and faint
+   *     fill of the burn footprint. The fire's actual size is in
+   *     `sizeAcres`; we do not try to scale anything by acreage, because
+   *     the user wants "there is a fire here", not "this fire is bigger
+   *     than that fire".
    *   - Pane above the boundary fills, below the campsite pins. A flame
    *     marker on the map is worth more than the pin beneath it and has
    *     to be tappable to open its popup, same as a warning icon.
@@ -2475,16 +2528,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
          * record was malformed. Skip the bad one and draw the rest.
          */
         try {
+          const controlled = isUnderControl(fire);
+          const colour = controlled ? FIRE_COLOR.controlled : FIRE_COLOR.running;
+          const popup = buildFirePopupHtml(fire);
+
+          // The burn footprint, when the feed gives us one. Drawn first so
+          // the flame sits on top of its own perimeter.
           if (fire.kind === 'perimeter') {
             const poly = L.geoJSON(
               { type: 'Feature', geometry: fire.geometry, properties: {} } as GeoJSON.Feature,
               {
                 pane: 'firePane',
                 style: {
-                  color: '#DC2626',       // red-600 — the perimeter outline
+                  color: colour.fill,
                   weight: 1.5,
                   opacity: 0.85,
-                  fillColor: '#DC2626',
+                  fillColor: colour.fill,
                   fillOpacity: 0.12,
                   // The polyline joins mustn't be smoothed — the data is
                   // a satellite-derived footprint and the joins are
@@ -2493,22 +2552,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 }
               }
             );
-            poly.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
+            poly.bindPopup(popup, { className: 'wl-fire-popup' });
             group.addLayer(poly);
-          } else {
-            // Point: orange flame icon at the reported location.
-            const marker = L.marker([fire.centroid.lat, fire.centroid.lon], {
-              pane: 'firePane',
-              icon: L.divIcon({
-                className: 'wl-fire-marker',
-                html: buildFirePointHtml(),
-                iconSize: [22, 22],
-                iconAnchor: [11, 11]
-              })
-            });
-            marker.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
-            group.addLayer(marker);
           }
+
+          // The flame. EVERY fire gets one, US and Canadian alike — a
+          // perimeter smaller than a fingertip is invisible and untappable
+          // without it, which is most perimeters at trip-planning zoom.
+          const marker = L.marker([fire.centroid.lat, fire.centroid.lon], {
+            pane: 'firePane',
+            icon: L.divIcon({
+              className: 'wl-fire-marker',
+              html: buildFirePointHtml(controlled),
+              iconSize: [26, 26],
+              iconAnchor: [13, 13]
+            })
+          });
+          marker.bindPopup(popup, { className: 'wl-fire-popup' });
+          group.addLayer(marker);
         } catch { /* unusable geometry from the feed — draw the others */ }
       }
       // Swap in the new layer; the old one was already removed by `clear`.
@@ -3419,6 +3480,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 className="accent-emerald-500 w-3.5 h-3.5"
               />
             </label>
+            {/*
+              The flame colours mean something, so they get a key. It only
+              appears while the layer is on — a key to something that isn't
+              drawn is just clutter. Colours come from FIRE_COLOR so the
+              key can't drift away from the flames on the map.
+            */}
+            {showFires && (
+              <div className="px-2 pb-1.5 -mt-0.5 flex flex-col gap-0.5">
+                <span className="flex items-center gap-1.5 text-[9px] text-slate-400">
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: FIRE_COLOR.running.fill }}
+                  />
+                  Not reported under control
+                </span>
+                <span className="flex items-center gap-1.5 text-[9px] text-slate-400">
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: FIRE_COLOR.controlled.fill }}
+                  />
+                  Reported under control
+                </span>
+              </div>
+            )}
             <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
               <span>State / province lines</span>
               <input
