@@ -10,17 +10,24 @@
  * Two kinds of feature, one shape:
  *
  *   - `kind: 'perimeter'` — a polygon outline of the burn footprint.
- *     Renders as a red outline. Carries percent contained, discovery
- *     date, and the source agency. US only; the Canadian feed
- *     publishes points, not perimeters.
+ *     Carries percent contained, discovery date, and the source
+ *     agency. US only; the Canadian feed publishes points, not
+ *     perimeters.
  *
  *   - `kind: 'point'` — a pin at the reported fire location.
- *     Renders as an orange dot. Carries the provincial status
- *     (e.g. "Being held") and reported size. Canada only.
+ *     Carries the provincial status (e.g. "Being held") and reported
+ *     size. Canada only.
  *
- * The card is colour-by-kind, not colour-by-country: a US perim is
- * the same red as a CA point would be, but they're never both rendered
- * for the same fire, so this matters only for picking the icon.
+ * COLOUR IS BY CONTROL STATE, NOT BY KIND OR COUNTRY. Both kinds wear
+ * the same flame icon: orange when the agency reports the fire under
+ * control, red when it doesn't. A perimeter additionally gets its burn
+ * footprint outlined in the same colour. The country a fire is in
+ * changes nothing about how it looks — it used to, and a US fire and a
+ * Canadian one 40 km apart looked like two unrelated features.
+ *
+ * Only burning fires come back at all: `/api/fires` drops incidents the
+ * agency has declared out. "Under control" is not "out" and is still on
+ * the map.
  */
 import type { BoundingBox } from '../config/coverage';
 import { distanceKm } from '../utils/geo';
@@ -46,6 +53,12 @@ export interface ActiveFire {
   cause: string | null;
   /** "Being held", "Out of Control", "Under observation", etc. or null. */
   status: string | null;
+  /**
+   * True when the agency reports the fire as held / contained / under
+   * control. Set by `/api/fires`; see `isUnderControl` below for the
+   * fallback used when an older cached response predates the field.
+   */
+  underControl?: boolean;
   /** Centroid for proximity checks. */
   centroid: { lat: number; lon: number };
   /** The raw GeoJSON geometry. Polygon for perimeters, Point for points. */
@@ -192,6 +205,27 @@ export const fetchActiveFires = async (
     if ((error as Error)?.name === 'AbortError') return empty(['aborted']);
     return empty([(error as Error).message]);
   }
+};
+
+/**
+ * Is this fire reported as under control?
+ *
+ * The server sets `underControl` on every fire it serves. This exists for
+ * the one case the server can't cover: a response cached in memory (or
+ * served from an older deployment) that predates the field. Rather than
+ * treat `undefined` as "under control" — the reassuring answer, and the
+ * wrong one — fall back to reading the same two facts the server reads,
+ * and default to "not under control" when neither is present.
+ */
+export const isUnderControl = (fire: ActiveFire): boolean => {
+  if (typeof fire.underControl === 'boolean') return fire.underControl;
+  if (fire.contained != null && fire.contained >= 100) return true;
+  // Separators flattened before matching, so "out-of-control" and
+  // "OUT_OF_CONTROL" hit the same guard "Out of Control" does.
+  const s = (fire.status ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!s) return false;
+  if (/out of control|not under control/.test(s)) return false;
+  return /under control|being held|\bheld\b|contain\w*|patrol\w*|observ\w*|monitor\w*/.test(s);
 };
 
 /**

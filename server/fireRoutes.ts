@@ -28,9 +28,22 @@
  *
  * Perimeters are richer (you can see the burn footprint). Points are
  * coarser (a pin at the reported location) but cover the country
- * uniformly. We do not pretend the point is the perimeter — the client
- * draws them as two distinct things (red outline for perimeters, orange
- * dot for points) so the user can tell what they are looking at.
+ * uniformly. We do not pretend the point is the perimeter — a perimeter
+ * additionally gets its burn footprint outlined, and a point never does.
+ * Both wear the same flame icon, coloured by `underControl`, so a fire
+ * reads the same on either side of the border.
+ *
+ * ---------------------------------------------------------------------------
+ * "Active" means active
+ * ---------------------------------------------------------------------------
+ *
+ * Both feeds carry finished fires — a US perimeter keeps its record after
+ * the incident is declared out, and the Canadian feed keeps extinguished
+ * incidents for a while. Those are filtered out here rather than in the
+ * client, so every consumer (map layer, per-pin card, push alerts) agrees
+ * on what counts as burning. A fire that is contained or being held is
+ * still active and is still returned — being under control is a colour,
+ * not a reason to hide it.
  *
  * ---------------------------------------------------------------------------
  * Caching
@@ -74,6 +87,16 @@ interface WfigsAttrs {
   attr_InitialLatitude?: number;
   attr_InitialLongitude?: number;
   attr_StageOfControlStatus?: string;
+  /** Set once the incident is declared out. Its presence means "finished". */
+  attr_FireOutDateTime?: number;
+  /** Set when the perimeter was fully contained / brought under control. */
+  attr_ContainmentDateTime?: number;
+  attr_ControlDateTime?: number;
+  /** 'WF' wildfire, 'RX' prescribed burn. We only map wildfires. */
+  attr_IncidentTypeCategory?: string;
+  attr_ModifiedOnDateTime_dt?: number;
+  poly_DateCurrent?: number;
+  poly_PolygonDateTime?: number;
   poly_GISAcres?: number;
   GlobalID?: string;
 }
@@ -103,6 +126,17 @@ interface FireFeatureProps {
   discovered: string | null;
   cause: string | null;
   status: string | null;
+  /**
+   * True when the agency reports the fire as held / contained / under
+   * control, false when it is still running. Drives the colour of the
+   * flame on the map: orange for under control, red for not.
+   *
+   * This is the AGENCY'S word, not ours. When a feed says nothing about
+   * control state we report `false` — "not reported under control" — and
+   * the map draws red. Red on a fire we know little about is the honest
+   * side to err on.
+   */
+  underControl: boolean;
   /** Centroid for points and perimeters alike. */
   centroid: [number, number];
   /** The raw GeoJSON geometry. */
@@ -153,6 +187,123 @@ const polygonCentroid = (rings: number[][][]): [number, number] | null => {
   }
   if (!n) return null;
   return [sumLon / n, sumLat / n];
+};
+
+/* ------------------------------------------------------------------ */
+/* Active vs. finished, running vs. under control                      */
+/* ------------------------------------------------------------------ */
+/**
+ * The two feeds describe the same two facts in different words, so the
+ * word matching lives here once and both fetchers use it.
+ *
+ *   "is it finished?"        → isFinishedStatus
+ *   "is it under control?"   → isCalmStatus
+ *
+ * These read the agency's own status string. Neither one invents a
+ * state the feed didn't report: an unrecognised status is neither
+ * finished nor calm, which keeps the fire on the map, drawn in red.
+ */
+/**
+ * Lowercase, and flatten every separator to a single space.
+ *
+ * The agencies write the same status four ways — "Out of Control",
+ * "out-of-control", "OUT_OF_CONTROL". Without this, the hyphenated form
+ * dodges the "out of control" guard below and then matches the bare word
+ * "out", and a fire that is running loose gets deleted from the map as
+ * finished. Normalise first, match second.
+ */
+const normaliseStatus = (raw: string | null | undefined): string =>
+  (raw ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+const isFinishedStatus = (raw: string | null | undefined): boolean => {
+  const s = normaliseStatus(raw);
+  if (!s) return false;
+  // "Out", "Fire out", "Extinguished", "Declared out". Guard against
+  // "out of control", which contains "out" and is the exact opposite.
+  if (/out of control/.test(s)) return false;
+  return /\b(out|extinguish\w*|complete|closed|inactive)\b/.test(s);
+};
+
+const isCalmStatus = (raw: string | null | undefined): boolean => {
+  const s = normaliseStatus(raw);
+  if (!s) return false;
+  if (/out of control|not under control/.test(s)) return false;
+  // BC / Alberta / Ontario wording, plus the US "contained" family.
+  return /under control|being held|\bheld\b|contain\w*|patrol\w*|observ\w*|monitor\w*/.test(s);
+};
+
+/**
+ * How long a perimeter can sit untouched before we stop calling it active.
+ *
+ * WFIGS "current" carries the whole season, and a good number of records
+ * are fires that finished weeks ago whose crew never filed an out date.
+ * Drawing those is the map claiming a fire is burning where nothing is.
+ * A month with no update to an incident record is the agency's way of
+ * saying it's over.
+ *
+ * Every filter in this file only ever removes a fire on POSITIVE
+ * evidence it is finished — a stated out date, a stated status, a stated
+ * update time that has gone stale. A record missing the field is kept.
+ * Getting this backwards would hide a burning fire from someone driving
+ * toward it, which is the one failure this app cannot have.
+ */
+const STALE_AFTER_DAYS = 30;
+const STALE_AFTER_MS = STALE_AFTER_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * Newest epoch-ms timestamp across the fields NIFC uses for "last touched".
+ *
+ * DISCOVERY DATE IS DELIBERATELY NOT IN THIS LIST. A big western fire
+ * burns for two months; ageing a record out by when it STARTED would
+ * erase exactly the fires that matter most. Only fields that mean "this
+ * record was updated" count, and when none of them are present we return
+ * null and keep the fire. Silence is not evidence a fire went out.
+ */
+const lastTouchedMs = (a: WfigsAttrs): number | null => {
+  const candidates = [
+    a.attr_ModifiedOnDateTime_dt,
+    a.poly_DateCurrent,
+    a.poly_PolygonDateTime
+  ].filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  if (!candidates.length) return null;
+  return Math.max(...candidates);
+};
+
+/**
+ * Is this WFIGS record a fire that is still going?
+ *
+ * Out means out: an out date, a prescribed burn, or a record nobody has
+ * touched in a month. Everything else stays on the map, contained or
+ * not — a 100%-contained fire is still a fire you can smell from your
+ * campsite, and it is drawn in orange rather than hidden.
+ */
+const isActiveWfigs = (a: WfigsAttrs): boolean => {
+  if (typeof a.attr_FireOutDateTime === 'number' && Number.isFinite(a.attr_FireOutDateTime)) {
+    return false;
+  }
+  if (isFinishedStatus(a.attr_StageOfControlStatus)) return false;
+  // Category is 'WF' for wildfires. Prescribed burns ('RX') are planned
+  // work, not a hazard to route around, and showing them as wildfire
+  // alarms a camper about a fire crew doing their job.
+  const category = (a.attr_IncidentTypeCategory ?? '').trim().toUpperCase();
+  if (category && category !== 'WF') return false;
+
+  const touched = lastTouchedMs(a);
+  if (touched != null && Date.now() - touched > STALE_AFTER_MS) return false;
+
+  return true;
+};
+
+/** US: contained or formally controlled counts as under control. */
+const wfigsUnderControl = (a: WfigsAttrs): boolean => {
+  const dated = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v);
+  if (dated(a.attr_ControlDateTime) || dated(a.attr_ContainmentDateTime)) return true;
+  if (isCalmStatus(a.attr_StageOfControlStatus)) return true;
+  const pct = safeNumber(a.attr_PercentContained);
+  if (pct != null && pct >= 100) return true;
+  // Partly contained is not contained. A fire at 60% is still running on
+  // 40% of its edge, and the camper downwind of that edge needs red.
+  return false;
 };
 
 const fetchWfigsPerimeters = async (
@@ -210,6 +361,7 @@ const fetchWfigsPerimeters = async (
   for (const f of data.features) {
     const a = f.attributes ?? {};
     if (!f.geometry?.rings?.length) continue;
+    if (!isActiveWfigs(a)) continue;
     const rings = f.geometry.rings;
     const centroid = polygonCentroid(rings) ??
       [a.attr_InitialLongitude ?? 0, a.attr_InitialLatitude ?? 0];
@@ -232,7 +384,8 @@ const fetchWfigsPerimeters = async (
       region: [a.attr_POOState, a.attr_POOCounty].filter(Boolean).join(' / ') || 'US',
       discovered: dateFromEpochMs(a.attr_FireDiscoveryDateTime),
       cause: null,
-      status: null,
+      status: a.attr_StageOfControlStatus?.trim() || null,
+      underControl: wfigsUnderControl(a),
       centroid: centroid as [number, number],
       geometry
     });
@@ -278,7 +431,11 @@ const fetchFireRadarPoints = async (
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
     if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) continue;
     const p = f.properties ?? {};
-    if (p.extinguished) continue; // skip contained fires — they're done
+    // Finished fires are not "active fires". The feed flags most of them
+    // with `extinguished`, but some provinces only say so in the status
+    // string ("Out", "Extinguished"), so check both.
+    if (p.extinguished) continue;
+    if (isFinishedStatus(p.status)) continue;
     out.push({
       id: `fireradar:${p.incidentId ?? Math.random()}`,
       name: p.name?.trim() || 'Unnamed fire',
@@ -292,6 +449,9 @@ const fetchFireRadarPoints = async (
       discovered: dateFromIso(p.firstReportedAt),
       cause: p.suspectedCause ?? null,
       status: p.status ?? null,
+      // "Being held", "Under control", "Being patrolled" → orange.
+      // "Out of control" and anything the provinces word differently → red.
+      underControl: isCalmStatus(p.status),
       centroid: [lon, lat],
       geometry: f.geometry
     });

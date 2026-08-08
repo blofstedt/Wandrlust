@@ -350,24 +350,27 @@
 /* ====================================================================
    Active-fire layer.
 
-   The flame dot is a div with a single SVG inside, so the only style
-   needed is the white halo that lifts it off the satellite and
-   street-layer basemaps. Without it, an orange flame on a
-   brown/orange satellite image is hard to spot at a glance.
+   Just the flame — no white disc behind it. The halo used to be here to
+   lift an orange flame off brown satellite imagery, but it turned every
+   fire into a UI button stuck on the map and read as chrome rather than
+   terrain. The flame carries its own dark outline (drawn with
+   paint-order: stroke, so the outline sits outside the fill), and the
+   drop shadow below separates it from the basemap the same way the
+   disc did, without boxing it in.
    ==================================================================== */
-.wl-fire-dot {
+.wl-fire-flame {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(124, 45, 18, 0.4);
+  width: 26px;
+  height: 26px;
 }
-.wl-fire-dot svg {
+.wl-fire-flame svg {
   display: block;
+  /* Two shadows: a tight dark one for contrast on bright ground, and a
+     wider soft one so the flame still separates from dark forest. */
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.85))
+          drop-shadow(0 0 4px rgba(0, 0, 0, 0.45));
 }
 
 /* Popup: tone the Leaflet default chrome so the fire card matches
