@@ -35,8 +35,8 @@ import {
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
-  BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
-  BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
+  BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
+  BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
@@ -107,17 +107,6 @@ const TILE_PERFORMANCE = {
 const UNDERLAY_NATIVE_ZOOM = 8;
 
 /**
- * The hard edge of the map.
- *
- * Web Mercator can't represent latitude beyond about ±85.05°, and without an
- * explicit bound Leaflet tiles the world infinitely sideways. That's what
- * produced three side-by-side copies of Earth: the tile layer repeated, but
- * the grey coverage mask is a single polygon, so it only landed on the middle
- * copy while the others sat there unmasked.
- */
-const WORLD_BOUNDS = L.latLngBounds([-85.05, -180], [85.05, 180]);
-
-/**
  * The frame the map lives in — the box the user pans inside and cannot
  * drag out of, with an equal margin on all four sides.
  *
@@ -132,6 +121,30 @@ const PAN_BOUNDS = L.latLngBounds(
   [MAP_VIEW_BBOX.minLat, MAP_VIEW_BBOX.minLon],
   [MAP_VIEW_BBOX.maxLat, MAP_VIEW_BBOX.maxLon]
 );
+
+/**
+ * The only part of the planet any tile layer is allowed to fetch.
+ *
+ * It is `PAN_BOUNDS`, deliberately — the frame is the furthest the user
+ * can ever pan, so a tile outside it can never be looked at. It can
+ * still be DOWNLOADED, though, and it was: the layers were bounded to
+ * the whole world, so zooming out on a wide screen quietly pulled in
+ * the Atlantic, Europe, west Africa and a slice of South America.
+ * Every one of those tiles is a request, a decode and a chunk of
+ * memory spent drawing places this app has nothing to say about, under
+ * a grey mask that hides them anyway.
+ *
+ * Bounding the layers to the frame means they are never requested at
+ * all. Where the screen is a different shape from the frame, the band
+ * left over is filled by the matte in the coverage-mask effect rather
+ * than by imagery.
+ *
+ * (`noWrap` stays on every layer alongside this. Without it Leaflet
+ * tiles the world infinitely sideways — the "three copies of Earth"
+ * bug, where the mask is a single polygon and only covers the middle
+ * copy.)
+ */
+const TILE_BOUNDS = PAN_BOUNDS;
 
 /**
  * WHAT GETS AN ICON ON THIS MAP, AND WHAT DOESN'T
@@ -801,7 +814,36 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const next = Math.log2(Math.min(size.x / frameWidth, size.y / frameHeight));
 
       map.setMinZoom(next);
-      if (map.getZoom() < next) map.setZoom(next);
+
+      /**
+       * Fully zoomed out means one exact view, so snap to it.
+       *
+       * At the minimum the frame either fits the screen exactly in one
+       * dimension and is letterboxed in the other, or fits both. Either
+       * way there is nowhere to pan to — so the view is completely
+       * determined, and it should be the frame, dead centre, with the
+       * leftover band split evenly between the two edges.
+       *
+       * Leaflet gets there on its own most of the time, but not after a
+       * resize: `invalidateSize` shifts the view without re-running the
+       * bounds clamp, so rotating a phone could leave the continent
+       * sitting high or low in the frame with all the grey below it.
+       *
+       * The centre is measured in PROJECTED space, not by averaging the
+       * corner latitudes. Mercator stretches the north, so the halfway
+       * latitude and the halfway pixel are two different places — about
+       * four degrees apart over a frame this tall, which is a visibly
+       * off-centre map.
+       */
+      if (map.getZoom() <= next + 1e-9) {
+        const middle = map.unproject(
+          map.project(PAN_BOUNDS.getNorthWest(), next)
+            .add(map.project(PAN_BOUNDS.getSouthEast(), next))
+            .divideBy(2),
+          next
+        );
+        map.setView(middle, next, { animate: false });
+      }
     };
     applyMinZoom();
     map.on('resize', applyMinZoom);
@@ -900,13 +942,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           return tile;
         }
       });
-      // noWrap + bounds: draw the world exactly once. Without these the layer
-      // repeats horizontally and the coverage mask only covers one copy.
+      // noWrap + bounds: draw the frame exactly once, and nothing outside it.
+      // See TILE_BOUNDS.
       layer = new OfflineTileLayer('', {
         ...TILE_PERFORMANCE,
         maxZoom: 19,
         noWrap: true,
-        bounds: WORLD_BOUNDS,
+        bounds: TILE_BOUNDS,
         attribution: 'Offline tile cache'
       });
     } else {
@@ -915,7 +957,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         ...TILE_PERFORMANCE,
         maxZoom: 19,
         noWrap: true,
-        bounds: WORLD_BOUNDS,
+        bounds: TILE_BOUNDS,
         attribution: config.attribution
       });
     }
@@ -951,7 +993,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         maxNativeZoom: UNDERLAY_NATIVE_ZOOM,
         maxZoom: 19,
         noWrap: true,
-        bounds: WORLD_BOUNDS,
+        bounds: TILE_BOUNDS,
         updateWhenIdle: false,
         updateWhenZooming: false,
         keepBuffer: 2,
@@ -1037,16 +1079,51 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const map = mapRef.current;
     if (!map || !isMapReady) return;
 
+    /**
+     * ABOVE EVERY DATA LAYER, at 645.
+     *
+     * It used to sit at 450 — under the warning clouds, the fire
+     * perimeters, the camper reports and the pins. Anything whose shape
+     * crossed the coverage line therefore carried on drawing at full
+     * strength over the grey: a heat cloud reaching down into Mexico, a
+     * fire perimeter running off into the Pacific, a storm icon out over
+     * open water. The mask said "we didn't look here" and the layer on
+     * top of it said "here's what's here".
+     *
+     * At 645 the grey covers them all, so the coverage line is the same
+     * line for every layer on the map. Still below Leaflet's tooltip
+     * (650) and popup (700) panes, so tapping something near the edge
+     * still opens a readable card, and still pointer-events:none, so it
+     * never swallows a tap.
+     */
     if (!map.getPane('coveragePane')) {
       map.createPane('coveragePane');
       const pane = map.getPane('coveragePane');
-      if (pane) { pane.style.zIndex = '450'; pane.style.pointerEvents = 'none'; }
+      if (pane) { pane.style.zIndex = '645'; pane.style.pointerEvents = 'none'; }
     }
 
     const toLatLng = (ring: [number, number][]) =>
       ring.map(([lon, lat]) => [lat, lon] as [number, number]);
 
     const renderer = L.canvas({ pane: 'coveragePane', padding: 1 });
+
+    /**
+     * The matte: everything outside the viewing frame, solid.
+     *
+     * Tiles stop at the frame (see TILE_BOUNDS), so on a screen that
+     * isn't the frame's shape there is a band down two sides — or
+     * across the top and bottom, on a phone held upright — with no
+     * imagery behind it. This fills that band with the same flat
+     * colour as the map container, so it reads as a deliberate matte
+     * around the map rather than tiles that failed to arrive.
+     *
+     * Drawn before the grey mask so the mask's 72% grey lands on top
+     * of it; both are the same colour, so the result out there is flat.
+     */
+    const matte = L.polygon([toLatLng(WORLD_RING), toLatLng(VIEW_RING)], {
+      pane: 'coveragePane', renderer, interactive: false, stroke: false,
+      fillColor: '#0F172A', fillOpacity: 1
+    } as L.PolylineOptions).addTo(map);
 
     // A world-sized polygon with the supported region punched out of it.
     const mask = L.polygon([toLatLng(WORLD_RING), toLatLng(COVERAGE_OUTLINE)], {
@@ -1056,6 +1133,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     return () => {
       try { map.removeLayer(mask); } catch { /* detached */ }
+      try { map.removeLayer(matte); } catch { /* detached */ }
       try { map.removeLayer(renderer); } catch { /* never attached */ }
     };
   }, [isMapReady]);
@@ -1679,6 +1757,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const group = L.layerGroup([], { pane: 'reportPane' });
       records.forEach((record) => {
         if (typeof record.latitude !== 'number' || typeof record.longitude !== 'number') return;
+        // Same rule as the alerts and the fires: no icon on the grey.
+        if (!isWithinCoverage(record.latitude, record.longitude)) return;
         const style = hazardReportStyle(record.kind);
         const marker = L.marker([record.latitude, record.longitude], {
           pane: 'reportPane',
@@ -2062,9 +2142,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      *   icon at the centre. Tapping it opens the warning in the bottom card.
      *
      * Alerts the feed gave no geometry for are counted, never pinned to a guess.
+     *
+     * NOTHING IS DRAWN OUTSIDE THE COVERAGE AREA. The weather feeds are wider
+     * than this app is: a viewport near the border pulls back marine zones out
+     * in the Atlantic, Mexican border counties, whole territories north of
+     * 60°. Those were landing as icons and clouds on top of the grey — a
+     * "Storm" chip floating over an area the map has just finished saying it
+     * knows nothing about. The alert is still in `hazards` state, so a pin near
+     * the line still reports it in its card; it just doesn't get drawn out
+     * there.
      */
     const render = (alerts: HazardAlert[]) => {
-      const placeable = alerts.filter((a) => Array.isArray(a.centroid) && a.geometry);
+      const placeable = alerts.filter(
+        (a) =>
+          Array.isArray(a.centroid) &&
+          a.geometry &&
+          isWithinCoverage(a.centroid[0], a.centroid[1])
+      );
 
       const group = L.layerGroup([]);
       const present = new Set<AlertBadge>();
@@ -2366,6 +2460,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const group = L.layerGroup();
       for (const fire of fires) {
         /**
+         * Nothing burns on the grey. The national feeds cover more ground
+         * than this app does — Alaska, the territories, northern Mexico —
+         * and a flame drawn out there is a claim about an area the map has
+         * just said it doesn't cover.
+         */
+        if (!isWithinCoverage(fire.centroid.lat, fire.centroid.lon)) continue;
+        /**
          * ONE BAD RECORD MUST NOT COST THE WHOLE LAYER.
          *
          * These loops build every fire into a group that is added to the map
@@ -2500,9 +2601,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       map.createPane('admin1Pane');
       const pane = map.getPane('admin1Pane');
       if (pane) {
-        // Above boundariesPane (440) and coveragePane, below warnings
-        // (460) and fires (560). The line is a context, so it sits
-        // visually behind the safety layers.
+        // Above boundariesPane (440), below warnings (460) and fires
+        // (560). The line is a context, so it sits visually behind the
+        // safety layers — and, like all of them, under the grey
+        // coverage mask at 645.
         pane.style.zIndex = '450';
       }
     }
@@ -2795,7 +2897,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       iconAnchor: [8, 8]
     });
 
-    userMarkerRef.current = L.marker(userLocation, { icon }).addTo(map);
+    /**
+     * The one thing the grey mask is not allowed to dim.
+     *
+     * Every data layer sits under the coverage mask (645), which is the
+     * point — nothing claims to know about the grey. "You are here" is
+     * not a claim about the land, though, it's the user's own position,
+     * and it has to stay legible when they're standing outside the
+     * coverage area. Its own pane, above the mask, below popups.
+     */
+    if (!map.getPane('mePane')) {
+      map.createPane('mePane');
+      const pane = map.getPane('mePane');
+      if (pane) { pane.style.zIndex = '660'; pane.style.pointerEvents = 'none'; }
+    }
+
+    userMarkerRef.current = L.marker(userLocation, { icon, pane: 'mePane' }).addTo(map);
   }, [userLocation, isMapReady]);
 
   /* ------------------------------------------------------------------ */
