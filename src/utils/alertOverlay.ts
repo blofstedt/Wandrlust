@@ -322,9 +322,13 @@ export const segmentsToRings = (
   const used = new Set<number>();
   const rings: [number, number][][] = [];
 
-  // Walk from any unused segment. If a chain doesn't close, drop the
-  // partial ring — better than producing a malformed polygon that
-  // confuses Leaflet's renderer.
+  // Walk from any unused segment. A chain that doesn't close is still
+  // kept — we close it by appending the first vertex. Real-world data
+  // has the occasional near-miss where two adjacent parcels' shared
+  // edge differs by a fraction of a degree at one end, and dropping
+  // the ring entirely means that whole group loses its fill. The
+  // small straight line back to the start is invisible against the
+  // heavy outline blur that draws the same group's edge.
   for (let start = 0; start < segments.length; start += 1) {
     if (used.has(start)) continue;
 
@@ -335,7 +339,6 @@ export const segmentsToRings = (
     used.add(start);
 
     const startKey = keyOf([a0[0], a0[1]]);
-    let closed = false;
     // Hard cap on chain length. A chain that goes on for thousands of
     // vertices has gone wrong somewhere (a segment that double-counts,
     // a self-intersection) and we should bail rather than lock up the
@@ -345,24 +348,24 @@ export const segmentsToRings = (
 
     while (safety-- > 0) {
       const ck = keyOf(current);
-      if (ck === startKey && ring.length > 2) {
-        ring.push([a0[0], a0[1]]);
-        closed = true;
-        break;
-      }
+      if (ck === startKey && ring.length > 2) break;
       const candidates = hash.get(ck) ?? [];
       // Find the first candidate whose segment hasn't been used.
       let next: [number, number, number] | null = null;
       for (const c of candidates) {
         if (!used.has(c[2])) { next = c; break; }
       }
-      if (!next) break; // dead end — partial ring, discard below
+      if (!next) break; // dead end — close below
       used.add(next[2]);
       ring.push([current[0], current[1]]);
       current = [next[0], next[1]];
     }
 
-    if (closed) rings.push(ring);
+    // Close the ring by appending the first vertex. If the chain
+    // didn't loop back, this is a near-miss; if it did loop, this is
+    // the conventional duplicate of the first point.
+    ring.push([a0[0], a0[1]]);
+    rings.push(ring);
   }
 
   return rings;
@@ -372,30 +375,37 @@ export const segmentsToRings = (
  * The dissolved fill of a set of same-org, same-rule parcels.
  *
  * Walks every feature, finds its ring(s), and returns one GeoJSON
- * Polygon (or MultiPolygon if the merge produced disjoint pieces) per
- * dissolve group, ready to hand to L.geoJSON as the fill.
+ * Feature per dissolve group, ready to hand to L.geoJSON as the fill.
+ * A group whose merge produces several disjoint pieces (common when
+ * the same agency manages land in two valleys with a strip of
+ * private land between them) becomes a MultiPolygon with each piece
+ * as its own Polygon — a group dissolves to one Feature, but that
+ * Feature's geometry may be a MultiPolygon.
  *
  * The dissolve KEY is the caller-supplied grouping. The standard
  * grouping is `dissolveKey(properties)` (same org, same rules), so
  * adjacent Crown-land blocks that share every rule become one fill.
  * A private-inholding stays a separate group (different dissolve key)
- * and shows up as a hole in the outer ring.
+ * and shows up as a different Feature drawn on top in its own colour.
+ *
+ * `snap` defaults to 1e-3 (about 100m at the equator). This is loose
+ * enough to catch vertex mismatches between two adjacent parcels
+ * from different source layers (rasterised vector tiles, the usual
+ * culprit, are routinely off by 30-80m), and tight enough that two
+ * real neighbouring parcels with a genuine ~100m gap are not
+ * accidentally merged.
  *
  * `minRingArea` drops any ring smaller than this in raw degrees. It
  * is a safety valve against degenerate loops (a single segment that
  * closed on itself, two segments that share a vertex) producing a
- * sliver-shape that draws as a hairline. Default is well below the
- * ~30m sliver cut-off used elsewhere, so legitimate small parcels
- * still pass.
+ * sliver-shape that draws as a hairline.
  */
 export const dissolvedFill = (
   features: { properties?: Record<string, any>; geometry: Geometry }[],
   keyOf: (p: Record<string, any> | undefined) => string,
-  snap = 3e-4,
+  snap = 1e-3,
   minRingArea = 1e-9
 ): GeoJSON.Feature[] => {
-  // Group features by key, dissolve each group, build rings, drop
-  // rings that are too small to draw.
   const groups = new Map<string, typeof features>();
   features.forEach((f) => {
     const k = keyOf(f.properties);
@@ -410,9 +420,6 @@ export const dissolvedFill = (
     if (segments.length === 0) return;
     const rings = segmentsToRings(segments, snap);
     const keptRings = rings.filter((r) => {
-      // Bounding-box area in degrees² as a rough proxy. Cheap, and
-      // any ring with zero extent is certainly a degenerate loop.
-      // `r` is a single ring of [lon, lat] points.
       let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
       for (const point of r) {
         const lon = point[0];
@@ -427,42 +434,19 @@ export const dissolvedFill = (
     });
     if (keptRings.length === 0) return;
 
-    // First ring is the outer boundary; any subsequent rings are holes
-    // (genuine no-go zones the merged area surrounds, e.g. a private
-    // inholding inside a Crown-land block). The convention in GeoJSON
-    // is "outer ring, then its holes" — same shape repeated for each
-    // polygon in a MultiPolygon.
-    //
-    // For now we ship a single Polygon (outer + holes) per group. If
-    // a group dissolves into disjoint pieces, the first piece's outer
-    // ring wins and the others are dropped — uncommon in practice
-    // (one org's land is usually one connected mass) and acceptable
-    // for a build-phase app.
-    const first = keptRings[0];
-    if (keptRings.length === 1) {
-      out.push({
-        type: 'Feature',
-        properties: groupFeatures[0].properties ?? {},
-        geometry: { type: 'Polygon', coordinates: [first] }
-      } as any);
-    } else {
-      // Outer + holes. Treat the first as the outer and the rest as
-      // holes. In practice the segments we drop are the "internal
-      // shared edges" between the no-go zone and the surrounding
-      // same-org land, so the no-go zone's perimeter (which is part
-      // of the outer dissolved ring) is replaced by the surrounding
-      // land's perimeter — and the no-go zone is missing. The
-      // workaround is to also build a fill for each non-merged
-      // (i.e. genuinely different) parcel inside, but for a build
-      // app shipping the outer-only shape is the right balance: a
-      // single solid region, no internal seams, no cutouts drawn.
-      // Cutouts can come later if the visual demands it.
-      out.push({
-        type: 'Feature',
-        properties: groupFeatures[0].properties ?? {},
-        geometry: { type: 'Polygon', coordinates: [first] }
-      } as any);
-    }
+    // Every kept ring becomes its own Polygon, and the group as a whole
+    // becomes a MultiPolygon. This is what fixes the "yellow fill
+    // missing" case: a group that dissolves into three disjoint
+    // pieces previously shipped only the first ring; the other two
+    // were silently dropped, and the user saw outlines with no fill.
+    const polygons = keptRings.map((r) => [r]);
+    out.push({
+      type: 'Feature',
+      properties: groupFeatures[0].properties ?? {},
+      geometry: polygons.length === 1
+        ? { type: 'Polygon', coordinates: polygons[0] }
+        : { type: 'MultiPolygon', coordinates: polygons }
+    } as any);
   });
 
   return out;

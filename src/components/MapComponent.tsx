@@ -957,9 +957,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // Drop the seams shared by two parcels in the same group, so abutting
         // Crown/BLM/PLUZ land draws as one outline instead of a web of internal
         // lines. What survives is the true outer edge of the merged shape.
-        // ~30 m snap: merges same-type parcels split only by a razor-thin gap, so
-        // adjacent Crown/BLM/PLUZ land of one designation reads as a single shape.
-        const segments = dissolveSegments(features, 3e-4);
+        // ~100 m snap: merges same-type parcels split only by a small
+        // vertex mismatch (rasterised vector tiles are routinely off by
+        // 30-80 m at shared edges), so adjacent Crown/BLM/PLUZ land of
+        // one designation reads as a single shape. Tighter than 100m and
+        // the doubled outline shows up where two parcels' shared edge
+        // doesn't quite align; looser than 200m and parcels with a real
+        // gap of that size start to merge by accident.
+        const segments = dissolveSegments(features, 1e-3);
         if (segments.length === 0) return;
         const line = { type: 'MultiLineString', coordinates: segments } as any;
 
@@ -1105,16 +1110,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * sitting on top in its own colour, rather than fifty-one abutting
        * outlines that look like a topological map.
        *
-       * Groups are sorted by area, smallest first, so the larger surrounds
-       * are on the bottom of the layer stack and any smaller inclusions
-       * (no-go zones, different agencies) paint on top. The natural stack
-       * then is: large BLM/USFS mass on the bottom, smaller private parcel
-       * on top — which is what the visual calls for without a Z-order knob.
+       * Groups are sorted by area, LARGEST first, so the larger surrounds
+       * go on the BOTTOM of the layer stack and any smaller inclusions
+       * (no-go zones, different agencies) paint on top. The previous
+       * version sorted smallest first, which inverted the stack and
+       * covered smaller groups with larger ones — the visual read as
+       * "the green and yellow are merging", which was the larger group
+       * painting over the smaller one.
        */
       const dissolved = dissolvedFill(
         collection.features as { properties?: Record<string, any>; geometry: unknown }[],
         dissolveKey,
-        3e-4
+        1e-3
       );
       const dissolvedSorted = [...dissolved].sort((a, b) => {
         const ea = a.geometry as { type: string; coordinates: any };
@@ -1136,7 +1143,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           });
           return (maxLon - minLon) * (maxLat - minLat);
         };
-        return bboxArea(ringA) - bboxArea(ringB);
+        return bboxArea(ringB) - bboxArea(ringA);
       });
 
       const fill = L.geoJSON(
