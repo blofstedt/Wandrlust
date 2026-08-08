@@ -23,21 +23,21 @@ import {
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import { fetchActiveFires, isUnderControl, ActiveFire } from '../services/fireService';
-import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
+import { fetchAdmin1, Admin1, primeAdmin1, findAdmin1At } from '../services/admin1Service';
 import { isOnLand, primeLandMask } from '../services/landService';
 import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
   AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, alertBadge,
-  hazardCloudHtml, preciseMarkerHtml, isDiffuse, warningGlyphPattern,
+  hazardCloudHtml, preciseMarkerHtml, isDiffuse, warningGlyphPattern, explodeToFeatures,
   WARNING_EMOJI, WARNING_LABEL,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
-  COVERAGE_LABEL, isWithinCoverage
+  COVERAGE_LABEL, isWithinCoverage, landDataGap
 } from '../config/coverage';
 import {
   fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts
@@ -413,6 +413,72 @@ const cloudEllipse = (
   };
 };
 
+/**
+ * A cheap content fingerprint for a boundary collection.
+ *
+ * Answers one question: is this the same set of parcels the map is already
+ * drawing? A refetch — triggered by panning past the edge of the loaded box —
+ * hands back a brand new response object, and comparing object identity says
+ * "different" even when every parcel in it is one already on screen. Acting on
+ * that meant rebuilding the entire layer for no visible change, which is what
+ * made panning feel like the map was constantly redrawing itself.
+ *
+ * A parcel is identified by its source, name and designation plus its first
+ * vertex rounded to about a metre. Two genuinely different parcels sharing all
+ * four is not a thing the feeds produce; two responses describing the same
+ * parcel always agree on all four. The order the server returns them in is not
+ * guaranteed, so the parts are sorted before joining.
+ *
+ * Cost is one pass over the features with no geometry maths — trivial next to
+ * the dissolve pass and layer rebuild it exists to avoid.
+ */
+const fingerprintCache = new WeakMap<BoundaryCollection, string>();
+
+const parcelFingerprint = (collection: BoundaryCollection): string => {
+  const memo = fingerprintCache.get(collection);
+  if (memo !== undefined) return memo;
+
+  const parts = collection.features.map((f) => {
+    const p = f.properties ?? ({} as BoundaryFeature['properties']);
+    const g = f.geometry as { coordinates?: unknown };
+
+    // Walk to the first coordinate pair, whatever the nesting depth, and
+    // count the vertices on the way past.
+    let vertices = 0;
+    let first = '';
+    const walk = (node: unknown): void => {
+      if (!Array.isArray(node)) return;
+      if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+        vertices += 1;
+        if (!first) first = `${(node[0] as number).toFixed(5)},${(node[1] as number).toFixed(5)}`;
+        return;
+      }
+      node.forEach(walk);
+    };
+    walk(g?.coordinates);
+
+    /**
+     * The vertex count is the part that stops this being too clever.
+     *
+     * Zooming in refetches the same parcels at FINER generalisation — same
+     * source, same name, same first vertex, more detail. Without the count
+     * they fingerprint identically, the rebuild is skipped as "no change",
+     * and the map keeps drawing the coarse outline it already had while
+     * claiming to be at full detail. Edges that are more approximate than the
+     * app says they are is exactly the failure this codebase refuses to ship.
+     */
+    return `${p._source ?? ''}~${p._name ?? ''}~${p._designation ?? ''}~${first}~${vertices}`;
+  });
+  parts.sort();
+  const out = `${parts.length}#${parts.join('|')}`;
+
+  // Memoised per response object: `fetchBoundaries` hands back the same object
+  // for a cache hit, so a settled pan costs a WeakMap lookup rather than a
+  // fresh walk over every vertex on screen.
+  fingerprintCache.set(collection, out);
+  return out;
+};
+
 /* ------------------------------------------------------------------ */
 /* Active fire rendering                                                */
 /* ------------------------------------------------------------------ */
@@ -678,6 +744,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const overviewTierRef = useRef<number>(0);
   const renderSignatureRef = useRef<string>('');
   const renderedCollectionRef = useRef<BoundaryCollection | null>(null);
+  /**
+   * Content fingerprint of the parcels currently drawn.
+   *
+   * Separate from `renderedCollectionRef` because a refetch hands back a
+   * different object holding the same land, and rebuilding the whole layer
+   * for that is the redraw-on-pan the fingerprint exists to skip.
+   */
+  const renderedFingerprintRef = useRef<string | null>(null);
   const fillLayerRef = useRef<L.GeoJSON | null>(null);
   const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
@@ -773,6 +847,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [glowingBadge, setGlowingBadge] = useState<AlertBadge | null>(null);
   /** Camper-filed reports currently on screen — counted in the status chip. */
   const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
+  /**
+   * The state or province under the middle of the screen.
+   *
+   * Used for one thing: telling a camper in a province this app has no Crown
+   * land data for that the empty map is a gap in the data, not an absence of
+   * public land. Null while the outlines load, or outside the US and Canada.
+   */
+  const [viewJurisdiction, setViewJurisdiction] = useState<Admin1 | null>(null);
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -1202,6 +1284,47 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
+  /* Which state or province is on screen                                */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Kept only so the status chip can name a province that has no Crown land
+   * data. Cheap: the admin-1 outlines are a prebuilt file already loaded for
+   * the boundary lines, and this is one point-in-polygon test against a
+   * bbox-prefiltered list, debounced, per settled view.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+
+    const check = () => {
+      const c = map.getCenter();
+      void findAdmin1At(c.lat, c.lng).then((hit) => {
+        if (cancelled) return;
+        // Compare by code so an identical result never re-renders.
+        setViewJurisdiction((prev) =>
+          prev?.isoCode === hit?.isoCode ? prev : hit
+        );
+      });
+    };
+
+    const schedule = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(check, 300);
+    };
+
+    schedule();
+    map.on('moveend', schedule);
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend', schedule);
+    };
+  }, [isMapReady]);
+
+  /* ------------------------------------------------------------------ */
   /* Public land boundaries                                              */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
@@ -1216,6 +1339,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       haloLayerRef.current = null;
       renderSignatureRef.current = '';
       renderedCollectionRef.current = null;
+      renderedFingerprintRef.current = null;
     };
 
     const forget = () => {
@@ -1465,16 +1589,39 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // fill look the same at zoom 3 as at zoom 6, so zooming inside the
       // overview redraws nothing at all.
       const zoomKey = overview ? 'ov' : String(Math.round(currentZoom));
-      const signature = `${detail}|${zoomKey}|${collection.features.length}|${
-        collection.features[0]?.properties?._name ?? ''
-      }`;
+      const fingerprint = parcelFingerprint(collection);
+      const signature = `${detail}|${zoomKey}|${fingerprint}`;
 
-      // Compared against what is ON THE MAP, not against what was last
-      // fetched — those are the same object right after a fetch, and confusing
-      // them would let new data slip through the cheap zoom-only path below
-      // and never actually reach the screen.
-      const sameData = renderedCollectionRef.current === collection;
-      if (sameData && signature === renderSignatureRef.current && boundaryLayerRef.current) return;
+      /**
+       * Is this the same PARCEL SET that is already drawn?
+       *
+       * Object identity catches the cheap case — panning inside one grid cell
+       * resolves to the same request URL, the cache hands back the same
+       * object, and nothing is touched.
+       *
+       * The FINGERPRINT catches the case that was making panning feel clunky.
+       * Crossing a grid cell means a new request and a new response object,
+       * and that used to force a full teardown and rebuild of every parcel:
+       * the dissolve pass over every polygon, a fresh Leaflet layer per
+       * group, a fresh canvas repaint. But the neighbouring box almost always
+       * holds the SAME parcels — public land does not change between two
+       * overlapping requests — so nearly all of that work was spent redrawing
+       * exactly what was already on screen. Comparing content instead of
+       * identity means a rebuild happens when the land actually differs, and
+       * panning across a cell boundary costs nothing.
+       */
+      const sameData =
+        renderedCollectionRef.current === collection ||
+        (renderedFingerprintRef.current !== null &&
+          renderedFingerprintRef.current === fingerprint);
+
+      if (sameData && signature === renderSignatureRef.current && boundaryLayerRef.current) {
+        // Point the refs at the live object so the zoom-only path below still
+        // recognises it after a refetch that returned equal data.
+        renderedCollectionRef.current = collection;
+        renderedFingerprintRef.current = fingerprint;
+        return;
+      }
 
       /**
        * Pre-compute the per-feature sliver test for THIS render.
@@ -1510,6 +1657,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (pane) pane.style.filter = widest > 0 ? `blur(${edgeBlurPx(widest).toFixed(1)}px)` : '';
         renderSignatureRef.current = signature;
         renderedCollectionRef.current = collection;
+        renderedFingerprintRef.current = fingerprint;
         return;
       }
 
@@ -1598,6 +1746,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       haloLayerRef.current = halo ? halo.group : null;
       renderSignatureRef.current = signature;
       renderedCollectionRef.current = collection;
+      renderedFingerprintRef.current = fingerprint;
     };
 
     const run = async () => {
@@ -1668,12 +1817,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const myId = ++requestId;
       controller?.abort();
       controller = new AbortController();
-      setIsLoadingBoundaries(true);
+      // The spinner is for a camper waiting on an EMPTY map. Once parcels are
+      // drawn, a top-up fetch for the next box along is background work they
+      // did not ask about, and flipping the status chip to "Loading
+      // boundaries…" and back on every pan is a large part of what made this
+      // feel busy. Say nothing while there is already something to look at.
+      const showsProgress = !boundaryLayerRef.current;
+      if (showsProgress) setIsLoadingBoundaries(true);
 
       const collection = await fetchBoundaries(box, controller.signal, detail, currentZoom);
       if (cancelled || myId !== requestId) return;
 
-      setIsLoadingBoundaries(false);
+      if (showsProgress) setIsLoadingBoundaries(false);
       // `null` means the request was superseded. Keep what is on screen rather
       // than blanking the map between one viewport and the next.
       if (!collection) return;
@@ -2294,7 +2449,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           // The per-path CSS blur (12px) is a small additional softness
           // — it feathers the polygon's hard edge so the gradient's
           // "fully transparent" stops are not seen as a visible cutoff.
-          const cloudGeo = L.geoJSON(alert.geometry as any, {
+          // Exploded into one Feature per piece FIRST. A merged multi-zone
+          // warning is a MultiPolygon, and Leaflet would draw all of its
+          // scattered blocks into a single <path> sharing a single fill —
+          // which means a single gradient spread across the gaps between
+          // them, leaving the blocks themselves untinted. One path per
+          // piece is what lets `paintClouds` size a gradient to each one.
+          const pieces = explodeToFeatures(alert.geometry);
+          const cloudGeo = L.geoJSON(pieces as any, {
             pane: 'warningPane',
             renderer: warningRenderer,
             interactive: false,
@@ -2310,7 +2472,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           // The same area, filled with the tiled family glyph — thermometers
           // for heat — in the crisp glyph pane above the blur. Wired to its
           // pattern in <defs> below.
-          const glyphGeo = L.geoJSON(alert.geometry as any, {
+          const glyphGeo = L.geoJSON(pieces as any, {
             pane: 'warningGlyphPane',
             renderer: glyphRenderer,
             interactive: false,
@@ -2535,15 +2697,37 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (pane) pane.style.zIndex = '560';
     }
 
-    /** Bbox, padded out so a small pan reuses what's drawn. */
-    const padded = (): BoundingBox => requestBoxFor({
+    /** The raw viewport — what has to be COVERED by loaded data. */
+    const viewBox = (): BoundingBox => ({
       minLat: map.getBounds().getSouth(),
       minLon: map.getBounds().getWest(),
       maxLat: map.getBounds().getNorth(),
       maxLon: map.getBounds().getEast()
-    }, map.getZoom());
+    });
 
-    let loadedBox: L.LatLngBounds | null = null;
+    /**
+     * The area the drawn fires were fetched for, and a fingerprint of the
+     * fires themselves.
+     *
+     * BOTH OF THESE EXIST TO STOP THE LAYER REDRAWING ON EVERY PAN.
+     *
+     * The box used to be compared padded-against-padded: the loaded box was
+     * the padded viewport, and the next gesture's padded viewport was tested
+     * against it. A padded box shifts whenever the viewport shifts, so that
+     * test failed on essentially every pan — and each failure tore down every
+     * flame marker, every perimeter and every popup binding and rebuilt them.
+     * That is the flicker. The test is now the RAW viewport against the loaded
+     * box, so the 60% pad `requestBoxFor` adds is real slack: you can pan more
+     * than half a screen in any direction before anything is refetched.
+     *
+     * The fingerprint covers the rest. Crossing the edge of the loaded box
+     * refetches, but the national fire feed almost always returns the same
+     * incidents for the neighbouring box — and redrawing identical fires is
+     * pure churn. If nothing about the set changed, the layer on the map is
+     * left exactly as it is.
+     */
+    let loadedBox: BoundingBox | null = null;
+    let drawnSignature: string | null = null;
     let requestId = 0;
     let debounce: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
@@ -2621,21 +2805,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
 
     const run = async (): Promise<void> => {
-      const b = padded();
-      const ll = L.latLngBounds([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
-      if (loadedBox && loadedBox.contains(ll)) return;
+      const view = viewBox();
+      // Everything on screen is inside data we already hold. Nothing to do —
+      // no fetch, and above all no redraw.
+      if (loadedBox && boxContains(loadedBox, view)) return;
 
+      const box = requestBoxFor(view, map.getZoom());
       const myId = ++requestId;
       controller?.abort();
       controller = new AbortController();
 
-      const data = await fetchActiveFires(b, controller.signal);
+      const data = await fetchActiveFires(box, controller.signal);
       if (cancelled || myId !== requestId) return;
       // Only NOW is this area loaded. Marking it before the fetch meant a
       // failed or aborted request still counted as "we have this area", so
       // the layer stayed empty until the user panned somewhere new.
-      loadedBox = ll;
-      renderFires(data.features.map((f) => f.properties));
+      loadedBox = box;
+
+      const fires = data.features.map((f) => f.properties);
+      // Identity plus the one property that changes how a fire is drawn.
+      // Sorted, because feed ordering is not stable between requests and an
+      // order-sensitive fingerprint would report a change on every fetch.
+      const signature = fires
+        .map((f) => `${f.id}:${isUnderControl(f) ? 'c' : 'r'}`)
+        .sort()
+        .join('|');
+      if (signature === drawnSignature && fireLayerRef.current) return;
+      drawnSignature = signature;
+      renderFires(fires);
     };
 
     const schedule = (): void => {
@@ -3179,10 +3376,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }, 2400);
   }, [hazards]);
 
+  /**
+   * Set when the province on screen has no Crown land layer behind it.
+   *
+   * Drives both the status chip and the note under it. Held as one value so
+   * the two can never disagree about whether the map is blank for a reason.
+   */
+  const dataGapNote = showBoundaries && !zoomTooFar
+    ? landDataGap(viewJurisdiction?.isoCode)
+    : null;
+
   const statusText = useCallback((): string => {
     if (!showBoundaries) return 'Land boundaries hidden';
     if (zoomTooFar) return 'Zoom in for land boundaries';
     if (isLoadingBoundaries) return 'Loading boundaries…';
+    /**
+     * A BLANK MAP MUST NEVER SAY "NOTHING HERE" WHEN IT MEANS "NO DATA".
+     *
+     * Only Alberta and Ontario publish a queryable layer of campable Crown
+     * land. In British Columbia, Saskatchewan, Manitoba, Quebec and Atlantic
+     * Canada this app draws nothing — and until now it captioned that with
+     * "No mapped public land in view", which reads as a statement that there
+     * is nowhere to camp in provinces that are mostly Crown land. Naming the
+     * province and the gap turns a wrong answer into an honest one.
+     */
+    if (dataGapNote && boundaries.features.length === 0) {
+      return `${viewJurisdiction?.name} — no Crown land data`;
+    }
     // The overview shows only the big parcels, so it has to say so. Otherwise
     // a camper zoomed out over a region full of small BLM sections would read
     // a near-empty map as "nothing here", which is the exact misreading this
@@ -3198,7 +3418,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       return `${boundaries.features.length} parcels · edges approximate`;
     }
     return 'No mapped public land in view';
-  }, [showBoundaries, zoomTooFar, isLoadingBoundaries, isOverviewTier, boundaries.features.length]);
+  }, [
+    showBoundaries, zoomTooFar, isLoadingBoundaries, isOverviewTier,
+    boundaries.features.length, viewJurisdiction, dataGapNote
+  ]);
 
   /** Only worth expanding when there is a per-source breakdown to show. */
   const hasLegend = !isOfflineMode && showBoundaries && boundaries.features.length > 0;
@@ -3282,6 +3505,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 />
               )}
             </button>
+
+            {/*
+              The blank-province note.
+
+              Shown whenever the map has no Crown land layer for the province
+              under the middle of the screen. It is deliberately not a
+              collapsible legend row: the whole point is that a camper looking
+              at an empty map in British Columbia reads WHY it is empty without
+              tapping anything.
+            */}
+            {dataGapNote && boundaries.features.length === 0 && (
+              <div className="px-3 pb-2 pt-0.5 border-t border-slate-700/60">
+                <p className="text-[10px] leading-tight text-amber-300/90">
+                  No Crown land layer for {viewJurisdiction?.name} yet — only
+                  Alberta and Ontario publish one this app can read. A blank map
+                  here means missing data, not missing public land.
+                </p>
+              </div>
+            )}
 
             {hasLegend && showLegend && (
               <div className="px-3 pb-2 pt-0.5 border-t border-slate-700/60 anim-in-down">

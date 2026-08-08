@@ -350,6 +350,12 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     reason: 'Manitoba operates a geoportal, but no confirmed open REST layer delineating campable Crown land.'
   },
   {
+    jurisdiction: 'CA-SK',
+    region: 'Saskatchewan',
+    reason:
+      'Crown land is administered through the Saskatchewan Land Information Services portal and the Crown land listings are sale/lease dispositions, not a layer of land open to camping. No confirmed open REST endpoint. Recorded here because it was previously absent from this list entirely — an unlisted gap is indistinguishable from covered ground, which is the failure this table exists to prevent.'
+  },
+  {
     jurisdiction: 'CA-QC',
     region: 'Quebec',
     reason:
