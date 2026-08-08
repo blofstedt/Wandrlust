@@ -22,6 +22,7 @@ import {
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
+import { fetchActiveFires, ActiveFire } from '../services/fireService';
 import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
@@ -377,6 +378,96 @@ const centroidAndRadius = (ring: [number, number][]): { cx: number; cy: number; 
   };
 };
 
+/* ------------------------------------------------------------------ */
+/* Active fire rendering                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Orange flame dot for a Canadian reported fire location.
+ *
+ * Inline SVG so a single divIcon is one DOM node. The colour is the
+ * existing "fire" warning family colour, so a flame on the map reads
+ * the same regardless of which side of the border it came from.
+ */
+const buildFirePointHtml = (): string => `
+  <div class="wl-fire-dot">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <path d="M12 2c-1 3-4 5-4 9a4 4 0 0 0 8 0c0-2-1-3-2-4 0 2-1 3-2 3 0-3 0-5 0-8z"
+        fill="#F97316" stroke="#7C2D12" stroke-width="1" stroke-linejoin="round" />
+    </svg>
+  </div>
+`;
+
+/**
+ * Escape user-supplied text before it goes into a popup. The fire name
+ * is from the issuing agency (WFIGS or FireRadar), so the worst case is
+ * a misformatted upstream record, but a stray `<script>` tag in a name
+ * would land in innerHTML; escape it.
+ */
+const escapeHtml = (s: string): string => s
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const formatSize = (fire: ActiveFire): string => {
+  // Prefer hectares (CA reports in ha, US in acres). The other field is
+  // a derived approximation, so a single number with a unit is the
+  // honest thing to show.
+  if (fire.sizeHa != null && fire.sizeHa >= 0.1) {
+    return `${fire.sizeHa.toFixed(fire.sizeHa < 10 ? 1 : 0)} ha`;
+  }
+  if (fire.sizeAcres != null && fire.sizeAcres >= 0.1) {
+    return `${Math.round(fire.sizeAcres).toLocaleString()} acres`;
+  }
+  if (fire.sizeHa != null) return '< 0.1 ha';
+  if (fire.sizeAcres != null) return '< 0.1 acres';
+  return 'size unknown';
+};
+
+/**
+ * Popup body for a fire — what the user gets when they tap a perimeter
+ * outline or a flame dot. Two lines of header (name + region), then a
+ * small table of attributes, all from the upstream record.
+ */
+const buildFirePopupHtml = (fire: ActiveFire): string => {
+  const rows: Array<[string, string]> = [];
+  rows.push(['Size', formatSize(fire)]);
+  if (fire.contained != null) {
+    rows.push(['Contained', `${Math.round(fire.contained)}%`]);
+  }
+  if (fire.status) {
+    rows.push(['Status', escapeHtml(fire.status)]);
+  }
+  if (fire.discovered) {
+    const d = new Date(fire.discovered);
+    if (Number.isFinite(d.getTime())) {
+      rows.push(['Discovered', d.toISOString().slice(0, 10)]);
+    }
+  }
+  if (fire.cause) {
+    rows.push(['Cause', escapeHtml(fire.cause)]);
+  }
+  const source = fire.country === 'US' ? 'WFIGS / NIFC' : 'FireRadar (provincial feeds)';
+
+  const rowsHtml = rows.map(([k, v]) =>
+    `<div class="flex justify-between text-[11px] py-0.5">
+       <span class="text-slate-400">${escapeHtml(k)}</span>
+       <span class="text-slate-100 font-semibold">${v}</span>
+     </div>`
+  ).join('');
+
+  return `
+    <div class="font-sans text-slate-100 min-w-[180px]">
+      <div class="text-[13px] font-bold leading-tight">${escapeHtml(fire.name)}</div>
+      <div class="text-[10px] uppercase tracking-wider text-slate-400 mb-2">${escapeHtml(fire.region)}</div>
+      <div class="border-t border-slate-700 pt-1.5">${rowsHtml}</div>
+      <div class="text-[9px] text-slate-500 mt-1.5">Source: ${source}</div>
+    </div>
+  `;
+};
+
 /** Pull the fields we show from a boundary feature's properties. */
 const landFromFeature = (properties: Record<string, any> | undefined): DestinationLand | undefined => {
   const p = properties;
@@ -505,6 +596,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
+  /** Active-fire layer (perimeters + points). Cleared when `showFires` is off. */
+  const fireLayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
   const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
@@ -2038,6 +2131,159 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     };
   }, [isMapReady, isOfflineMode, showWarnings]);
+
+  /* ------------------------------------------------------------------ */
+  /* Active fires (WFIGS US perimeters + FireRadar CA points)           */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Fetch and draw the active-fire layer.
+   *
+   *   - Off by default (`showFires`); when off we clear what is drawn and
+   *     skip the fetch. The per-pin card reads from this same data
+   *     independently of the toggle, so a hidden layer still surfaces
+   *     "fire X km away" on the pin.
+   *   - Perimeters (US, WFIGS) get a thin red stroke and a faint red
+   *     fill. The fire's actual size is in `sizeAcres`; we do not try to
+   *     scale the stroke by acreage, because the user wants "there is a
+   *     fire here", not "this fire is bigger than that fire".
+   *   - Points (CA, FireRadar) get an orange dot using the existing
+   *     flame icon path the warnings use, so a fire pin reads the same
+   *     regardless of which side of the border it's on.
+   *   - Pane above the boundary fills, below the campsite pins. A flame
+   *     marker on the map is worth more than the pin beneath it and has
+   *     to be tappable to open its popup, same as a warning icon.
+   *   - The fetch is debounced 250 ms, refetched on `moveend zoomend`
+   *     when the new viewport is outside the loaded box. Cancel the
+   *     in-flight request on the next move, the same requestId guard
+   *     the warning and boundary effects use, so a slow older fetch
+   *     does not overwrite a newer one (the "shows up then disappears"
+   *     flicker).
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = (): void => {
+      if (!fireLayerRef.current) return;
+      try { map.removeLayer(fireLayerRef.current); } catch { /* detached */ }
+      fireLayerRef.current = null;
+    };
+
+    if (isOfflineMode) {
+      clear();
+      return;
+    }
+
+    if (!showFires) {
+      // Layer off: clear what's drawn but leave the cached fetch in
+      // place, so flipping the layer back on is instant.
+      clear();
+      return;
+    }
+
+    // One pane, above the boundary fills. The user can tap the perim /
+    // point to read details, so the pane must be interactive.
+    if (!map.getPane('firePane')) {
+      map.createPane('firePane');
+      const pane = map.getPane('firePane');
+      if (pane) pane.style.zIndex = '560';
+    }
+
+    /** Bbox, padded out so a small pan reuses what's drawn. */
+    const padded = (): BoundingBox => requestBoxFor({
+      minLat: map.getBounds().getSouth(),
+      minLon: map.getBounds().getWest(),
+      maxLat: map.getBounds().getNorth(),
+      maxLon: map.getBounds().getEast()
+    }, map.getZoom());
+
+    let loadedBox: L.LatLngBounds | null = null;
+    let requestId = 0;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    let controller: AbortController | null = null;
+
+    const renderFires = (fires: ActiveFire[]): void => {
+      const group = L.layerGroup();
+      for (const fire of fires) {
+        if (fire.kind === 'perimeter') {
+          const poly = L.geoJSON(
+            { type: 'Feature', geometry: fire.geometry, properties: {} } as GeoJSON.Feature,
+            {
+              pane: 'firePane',
+              style: {
+                color: '#DC2626',       // red-600 — the perimeter outline
+                weight: 1.5,
+                opacity: 0.85,
+                fillColor: '#DC2626',
+                fillOpacity: 0.12,
+                // The polyline joins mustn't be smoothed — the data is
+                // a satellite-derived footprint and the joins are
+                // already the right shape.
+                lineJoin: 'miter'
+              }
+            }
+          );
+          poly.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
+          group.addLayer(poly);
+        } else {
+          // Point: orange flame icon at the reported location.
+          const marker = L.marker([fire.centroid.lat, fire.centroid.lon], {
+            pane: 'firePane',
+            icon: L.divIcon({
+              className: 'wl-fire-marker',
+              html: buildFirePointHtml(),
+              iconSize: [22, 22],
+              iconAnchor: [11, 11]
+            })
+          });
+          marker.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
+          group.addLayer(marker);
+        }
+      }
+      // Swap in the new layer; the old one was already removed by `clear`.
+      const previous = fireLayerRef.current;
+      fireLayerRef.current = group.addTo(map);
+      if (previous) {
+        try { map.removeLayer(previous); } catch { /* detached */ }
+      }
+    };
+
+    const run = async (): Promise<void> => {
+      const b = padded();
+      const ll = L.latLngBounds([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
+      if (loadedBox && loadedBox.contains(ll)) return;
+      loadedBox = ll;
+
+      const myId = ++requestId;
+      controller?.abort();
+      controller = new AbortController();
+
+      const data = await fetchActiveFires(b, controller.signal);
+      if (cancelled || myId !== requestId) return;
+      renderFires(data.features.map((f) => f.properties));
+    };
+
+    const schedule = (): void => {
+      if (debounce) clearTimeout(debounce);
+      // Same debounce as the boundary effect — 250 ms is short enough
+      // to feel instant and long enough to merge a flurry of moveends
+      // into a single fetch.
+      debounce = setTimeout(() => { run().catch(() => undefined); }, 250);
+    };
+
+    map.on('moveend zoomend', schedule);
+    // Initial fetch on (re-)enable.
+    schedule();
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend zoomend', schedule);
+      clear();
+    };
+  }, [isMapReady, isOfflineMode, showFires]);
 
   /* ------------------------------------------------------------------ */
   /* Markers                                                             */

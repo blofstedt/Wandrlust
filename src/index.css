@@ -348,6 +348,47 @@
 .leaflet-control-zoom a:active { transform: scale(0.92); }
 
 /* ====================================================================
+   Active-fire layer.
+
+   The flame dot is a div with a single SVG inside, so the only style
+   needed is the white halo that lifts it off the satellite and
+   street-layer basemaps. Without it, an orange flame on a
+   brown/orange satellite image is hard to spot at a glance.
+   ==================================================================== */
+.wl-fire-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(124, 45, 18, 0.4);
+}
+.wl-fire-dot svg {
+  display: block;
+}
+
+/* Popup: tone the Leaflet default chrome so the fire card matches
+   the rest of the app's bottom-sheet dark surface. */
+.wl-fire-popup .leaflet-popup-content-wrapper {
+  background: rgb(15 23 42);
+  color: rgb(241 245 249);
+  border: 1px solid rgb(51 65 85);
+  border-radius: 12px;
+}
+.wl-fire-popup .leaflet-popup-tip {
+  background: rgb(15 23 42);
+  border: 1px solid rgb(51 65 85);
+}
+.wl-fire-popup .leaflet-popup-content {
+  margin: 10px 12px;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+/* ====================================================================
    Reduced motion — everything above collapses here.
 
    Users who set this at OS level often do so because motion makes them
