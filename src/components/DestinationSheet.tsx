@@ -9,6 +9,7 @@ import type { RouteResult } from '../services/routingService';
 import { CellCoverageCard, ArrivalWeatherCard } from './TripConditions';
 import { HazardAlertPanel } from './HazardAlertPanel';
 import { NearbyFiresCard } from './NearbyFiresCard';
+import { Admin1Line } from './Admin1Line';
 import { haptic } from '../utils/animation';
 import { directionsAppName } from '../utils/handoff';
 
@@ -161,6 +162,16 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
                 {site ? site.name : land?.name ?? 'This spot'}
               </h2>
               <p className="text-[11px] text-slate-400 truncate">{coords}</p>
+              {/* Country + state/province under the coords. The user
+                  is reading the lat/lon, then the "what country and
+                  state is that", in that order. Renders nothing while
+                  the lookup is in flight or on a failed lookup
+                  (Mexico, mid-ocean, etc.) so a quiet area is a quiet
+                  line, not a "we don't know" message. */}
+              <Admin1Line
+                latitude={destination.latitude}
+                longitude={destination.longitude}
+              />
             </div>
 
             <button

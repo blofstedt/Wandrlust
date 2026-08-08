@@ -19,6 +19,7 @@ import { fetchRulesAtPoint, fetchHazardsAtPoint, checkIn, PointRules, PointHazar
 import { HazardAlertPanel } from './HazardAlertPanel';
 import { CellCoverageCard } from './TripConditions';
 import { NearbyFiresCard } from './NearbyFiresCard';
+import { Admin1Line } from './Admin1Line';
 import { SubmissionChip } from './SubmissionChip';
 import { ReportContentSheet } from './ReportContentSheet';
 import { useAuth } from '../contexts/AuthContext';
@@ -155,6 +156,20 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 {campsite.address.nearestCity}
                 {campsite.address.stateProvince && `, ${campsite.address.stateProvince}`}
               </p>
+              {/*
+                Country + state/province confirmed from the dataset,
+                not from the address field. The address can say
+                "Yellowstone NP" with no state, or have a stale
+                province; the admin-1 lookup is authoritative and
+                matches what the on-map state lines draw. Renders
+                nothing if the point is outside US+CA — a Mexican or
+                ocean tap is a quiet line, not a "we don't know"
+                message.
+              */}
+              <Admin1Line
+                latitude={campsite.latitude}
+                longitude={campsite.longitude}
+              />
               {/* The full version with its explanation — this sheet has the
                   room the card doesn't. */}
               <div className="mt-1.5">
