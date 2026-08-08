@@ -11,6 +11,7 @@ import { registerRouteRoutes } from './server/routeRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
 import { registerAdmin1Routes } from './server/admin1Routes';
+import { registerLandRoutes } from './server/landRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -67,6 +68,13 @@ const startServer = async (): Promise<void> => {
   // The dataset is Natural Earth 1:10m admin-1, US+CA only, cached
   // on first request. No key, no rate limit, no SLA to break.
   registerAdmin1Routes(app);
+
+  // Land-vs-water hit test. Used to refuse a pin that lands in a
+  // lake, a bay, or the open ocean. The dataset is Natural Earth
+  // 1:110m land polygons, 127 features, ~150 KB, cached on first
+  // request. Coarse but the right level for the question
+  // (sub-100m is the limit of a touchscreen pick anyway).
+  registerLandRoutes(app);
 
   // Unknown API routes must return JSON, not the SPA's index.html — otherwise
   // a typo in a fetch URL shows up in the client as "unexpected token <".
