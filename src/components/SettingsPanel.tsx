@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
   Settings, Flame, Waves, CloudLightning, Bell, Eye, Ruler,
-  Coffee, Loader2, Check, ExternalLink, Shield, FileText
+  Coffee, Loader2, Check, ExternalLink, Shield, FileText, RefreshCw
 } from 'lucide-react';
 import { fetchSettings, saveSettings, UserSettings } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { PushSettings } from './PushSettings';
 import { AlertSourcePanel } from './AlertSourcePanel';
 import type { LegalDocKind } from '../types';
+import { checkForUpdate } from '../services/updateService';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -97,6 +98,33 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   if (!isOpen) return null;
 
+  /**
+   * A manual update check, with three states. The button is here, not in the
+   * chrome on the map, because tapping it is a settings concern, not a map
+   * one — and the result matters more when the user is looking at it.
+   *
+   * On an installed mobile PWA, the automatic background check is heavily
+   * throttled by the OS and may not surface an update for hours. This
+   * button bypasses the throttle, so a user who suspects a fix has shipped
+   * can get the toast in seconds instead of waiting for the next background
+   * refresh window.
+   */
+  const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'up-to-date' | 'error'>('idle');
+  const handleCheckUpdate = async () => {
+    setUpdateState('checking');
+    try {
+      const ready = await checkForUpdate();
+      setUpdateState(ready ? 'up-to-date' : 'up-to-date');
+      // Note: 'up-to-date' is the message either way. If a worker is waiting,
+      // the UpdatePrompt toast surfaces it; if not, the user knows they are
+      // current. There's no separate "update found" message here because the
+      // toast handles it the same way it would for an automatic check.
+    } catch {
+      setUpdateState('error');
+    }
+    setTimeout(() => setUpdateState((s) => (s === 'idle' ? s : 'idle')), 2500);
+  };
+
   return (
     <div
       className="fixed inset-0 z-[1800] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 anim-backdrop"
@@ -125,6 +153,40 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </header>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scroll-soft">
+          {/* Shown to everyone, signed in or not: a manual "check for
+              updates" is the only way to force a fresh check on an installed
+              mobile PWA, where the OS throttles the background poll. The
+              automatic path catches most updates; this is the escape hatch. */}
+          <section>
+            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+              App
+            </h3>
+            <button
+              onClick={handleCheckUpdate}
+              disabled={updateState === 'checking'}
+              className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-slate-800/50 text-left disabled:opacity-50"
+            >
+              {updateState === 'checking' ? (
+                <Loader2 className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+              ) : updateState === 'up-to-date' ? (
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              ) : updateState === 'error' ? (
+                <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+              )}
+              <span className="text-xs text-slate-300 flex-1">
+                {updateState === 'checking'
+                  ? 'Checking for updates…'
+                  : updateState === 'up-to-date'
+                  ? 'You are on the latest version'
+                  : updateState === 'error'
+                  ? 'Could not check — try again later'
+                  : 'Check for updates'}
+              </span>
+            </button>
+          </section>
+
           {/* Shown whether or not anyone is signed in: a camper needs to know
               who issues the warnings and whether we are still hearing them,
               and that is not a per-account preference. */}
@@ -292,4 +354,4 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       </div>
     </div>
   );
-};
+};

@@ -16,7 +16,8 @@
  * Never throws. With no server, no key, or no signal of our own, this returns
  * `ok: false` and a note explaining which.
  */
-import type { CellCoverage, CellTower } from '../types';
+import localforage from 'localforage';
+import type { CellCoverage } from '../types';
 
 export const UNKNOWN_COVERAGE: CellCoverage = {
   ok: false,
@@ -27,14 +28,72 @@ export const UNKNOWN_COVERAGE: CellCoverage = {
 };
 
 /**
- * Cached by rough position, because this answer is rough by construction.
+ * Two-layer cache for cell coverage.
  *
- * Two decimal places is about a kilometre — far finer than the estimate
- * deserves, and enough that panning around a valley does not re-query.
+ *   1. In-memory `Map` — 24 hours. Panning back across a recently-tapped
+ *      spot in the same session is instant.
+ *   2. localforage `wandrlust_coverage` — 7 days. Survives reloads and
+ *      cold starts, so a returning user reads the same answer they got a
+ *      week ago without spending a round trip.
+ *
+ * Towers do not move and 4G/5G upgrades are months-scale events, so 7 days
+ * of staleness is well within what the answer can support. The server-side
+ * cache (in `server/cellRoutes.ts`) is the longer one — 30 days — and is
+ * what the in-memory and disk caches both fall through to.
  */
-const cache = new Map<string, { at: number; data: CellCoverage }>();
-const CACHE_TTL_MS = 30 * 60 * 1000;
-const CACHE_MAX_ENTRIES = 60;
+const coverageStore = localforage.createInstance({
+  name: 'wandrlust',
+  storeName: 'wandrlust_coverage',
+  description: 'Cached cell coverage lookups by rounded point'
+});
+
+const memCache = new Map<string, { at: number; data: CellCoverage }>();
+const MEM_TTL_MS = 24 * 60 * 60 * 1000;
+const DISK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MEM_MAX_ENTRIES = 80;
+
+interface DiskEntry { at: number; data: CellCoverage }
+
+const memGet = (key: string): CellCoverage | null => {
+  const hit = memCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > MEM_TTL_MS) {
+    memCache.delete(key);
+    return null;
+  }
+  return hit.data;
+};
+
+const memPut = (key: string, data: CellCoverage): void => {
+  if (memCache.size >= MEM_MAX_ENTRIES) {
+    const oldest = memCache.keys().next().value;
+    if (oldest) memCache.delete(oldest);
+  }
+  memCache.set(key, { at: Date.now(), data });
+};
+
+const diskGet = async (key: string): Promise<CellCoverage | null> => {
+  try {
+    const hit = await coverageStore.getItem<DiskEntry>(key);
+    if (!hit) return null;
+    if (Date.now() - hit.at > DISK_TTL_MS) {
+      coverageStore.removeItem(key).catch(() => { /* noop */ });
+      return null;
+    }
+    return hit.data;
+  } catch {
+    return null;
+  }
+};
+
+const diskPut = async (key: string, data: CellCoverage): Promise<void> => {
+  try {
+    await coverageStore.setItem<DiskEntry>(key, { at: Date.now(), data });
+  } catch {
+    // localforage failures are never fatal. The in-memory layer is still
+    // warm for this session.
+  }
+};
 
 export const fetchCellCoverage = async (
   latitude: number,
@@ -42,8 +101,15 @@ export const fetchCellCoverage = async (
   signal?: AbortSignal
 ): Promise<CellCoverage> => {
   const key = `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
+
+  const fromMem = memGet(key);
+  if (fromMem) return fromMem;
+
+  const fromDisk = await diskGet(key);
+  if (fromDisk) {
+    memPut(key, fromDisk);
+    return fromDisk;
+  }
 
   try {
     const res = await fetch(
@@ -55,12 +121,11 @@ export const fetchCellCoverage = async (
     }
 
     const data = (await res.json()) as CellCoverage;
-
-    if (cache.size >= CACHE_MAX_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest) cache.delete(oldest);
-    }
-    cache.set(key, { at: Date.now(), data });
+    memPut(key, data);
+    // Fire-and-forget. We do not block the caller on IndexedDB — the
+    // in-memory layer is already warm, and the disk write is purely a
+    // session bonus for the next reload.
+    void diskPut(key, data);
     return data;
   } catch {
     return { ...UNKNOWN_COVERAGE, note: 'Coverage lookup unavailable offline.' };
@@ -79,77 +144,3 @@ export const bestCarrier = (coverage: CellCoverage) => {
   if (known.length === 0) return null;
   return known.reduce((best, c) => ((c.bars ?? 0) > (best.bars ?? 0) ? c : best));
 };
-
-/* ------------------------------------------------------------------ *
- * Towers for the map layer
- * ------------------------------------------------------------------ */
-
-export interface CellTowerResult {
-  ok: boolean;
-  towers: CellTower[];
-  note?: string;
-}
-
-const EMPTY_TOWERS: CellTowerResult = { ok: false, towers: [] };
-
-/**
- * Every surveyed transmitter in a viewport.
- *
- * Cached per rounded bounding box: masts do not move, and an ordinary pan
- * should not cost an Overpass query. Returns an empty list rather than
- * throwing, so a mirror being down costs the layer and nothing else.
- */
-const towerCache = new Map<string, { at: number; data: CellTowerResult }>();
-const TOWER_TTL_MS = 60 * 60 * 1000;
-const TOWER_MAX_ENTRIES = 40;
-
-export const fetchCellTowers = async (
-  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
-  signal?: AbortSignal
-): Promise<CellTowerResult> => {
-  const params = new URLSearchParams({
-    minLat: bbox.minLat.toFixed(3),
-    minLon: bbox.minLon.toFixed(3),
-    maxLat: bbox.maxLat.toFixed(3),
-    maxLon: bbox.maxLon.toFixed(3)
-  });
-
-  const key = params.toString();
-  const hit = towerCache.get(key);
-  if (hit && Date.now() - hit.at < TOWER_TTL_MS) return hit.data;
-
-  try {
-    const res = await fetch(`/api/cell-towers?${params}`, { signal });
-    if (!res.ok) return EMPTY_TOWERS;
-
-    const data = (await res.json()) as CellTowerResult;
-    const result: CellTowerResult = {
-      ok: Boolean(data?.ok),
-      towers: Array.isArray(data?.towers) ? data.towers : [],
-      note: data?.note
-    };
-
-    if (towerCache.size >= TOWER_MAX_ENTRIES) {
-      const oldest = towerCache.keys().next().value;
-      if (oldest) towerCache.delete(oldest);
-    }
-    towerCache.set(key, { at: Date.now(), data: result });
-    return result;
-  } catch {
-    return EMPTY_TOWERS;
-  }
-};
-
-/**
- * How far a mast plausibly reaches, in metres, for the ring drawn around it.
- *
- * A single number standing in for transmit power, band, antenna height, sector
- * orientation and the shape of the ground — none of which we know. It is drawn
- * soft-edged and unlabelled for that reason: it is the rough area a mast might
- * serve on open ground, and the legend says so. A rural macrocell commonly
- * reaches somewhere in this range; a ridge between you and it reaches nothing.
- */
-export const TOWER_REACH_M: Record<'strong' | 'usable', number> = {
-  strong: 5_000,
-  usable: 20_000
-};

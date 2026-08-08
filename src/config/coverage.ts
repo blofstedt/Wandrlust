@@ -146,12 +146,3 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
   return 150;
 };
 
-/**
- * Minimum zoom at which the cell layer loads.
- *
- * Lower than this the reach rings around each mast overlap into one wash of
- * colour across a whole state, which reads as "there is coverage everywhere"
- * — the opposite of what the data says. The layer stays off and the status
- * chip says to zoom in, exactly as the boundary layer does.
- */
-export const CELL_MIN_ZOOM = 9;
