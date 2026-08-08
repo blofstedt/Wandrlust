@@ -31,15 +31,28 @@ export interface BoundingBox {
 /**
  * Fast rejection test before the more expensive polygon check.
  *
- * Also the Leaflet `maxBounds` rectangle — the box the user can pan
- * inside and cannot pan out of. Trimmed at -130° (was -139.5) so
- * Alaska's panhandle doesn't pull the bounding box across the
- * Pacific; everything else is the same as before. St John's at
- * ~-52.7 still sits inside this rectangle (the east edge is -52.0).
+ * THIS RECTANGLE MUST CONTAIN `COVERAGE_OUTLINE`. It is a cheap
+ * pre-filter, nothing more — the outline is the authority on what is
+ * covered. When the box is tighter than the outline it silently
+ * rejects places the outline says are in scope, and it drags the
+ * viewing frame in with it so the corner of the coverage area is
+ * clipped off the edge of the screen.
+ *
+ * That is exactly what the old -130° west edge did. It was trimmed
+ * there to keep Alaska's panhandle from pulling the box across the
+ * Pacific, but the outline still ran out to -139° along the 60th
+ * parallel, so the whole northwest corner of British Columbia — Atlin,
+ * the Stikine, Haida Gwaii — tested as "outside coverage" and the map
+ * could never be panned or zoomed far enough west to show it.
+ *
+ * The west edge now matches the outline's own westernmost point: the
+ * BC / Yukon / Alaska corner at roughly -139°. Nothing about what the
+ * app claims to know has changed; the polygon test below still decides
+ * that, and it still excludes Alaska.
  */
 export const COVERAGE_BBOX: BoundingBox = {
   minLat: 24.4,
-  minLon: -130.0,
+  minLon: -139.1,
   maxLat: 60.1,
   // Pushed east to -52.0 so the box no longer clips the Avalon Peninsula —
   // St John's sits at ~-52.7 and was falling just outside the old -52.6 edge.
@@ -137,13 +150,52 @@ export const COVERAGE_OUTLINE: [number, number][] = [
   [-52.2, 51.6],   // up the east coast
   [-55.6, 51.7],   // Strait of Belle Isle
   // The 60th parallel: the southern edge of the three territories.
-  [-56.0, 60.0], [-139.0, 60.0],
-  [-130.0, 54.0], [-125.0, 48.4]
+  [-56.0, 60.0], [-139.1, 60.0],
+  /*
+   * DOWN THE BC COAST, not straight across it.
+   *
+   * The old outline hopped from (-139, 60) to (-130, 54) in one
+   * segment. That line is a diagonal drawn through British Columbia:
+   * it cut the corner off the northwest of the province, sliced
+   * Haida Gwaii off entirely and left Prince Rupert sitting in the
+   * grey. The coast is followed properly now — south along the
+   * Alaska panhandle border, out around Haida Gwaii, then down the
+   * outer edge of Vancouver Island.
+   */
+  [-136.4, 59.4],   // panhandle border, Yakutat side
+  [-134.6, 58.5],
+  [-133.0, 57.4],
+  [-131.6, 56.4],
+  [-130.1, 55.3],   // head of the Portland Canal
+  [-130.2, 54.7],   // Dixon Entrance, north of Prince Rupert
+  [-133.4, 54.2],   // Haida Gwaii, north tip
+  [-133.1, 52.9],   // Haida Gwaii, west shore
+  [-131.0, 51.9],   // Cape St James, south tip
+  [-128.4, 51.0],   // central mainland coast
+  [-128.6, 50.7],   // Cape Scott, north end of Vancouver Island
+  [-126.3, 49.2],   // Vancouver Island, west shore
+  [-125.1, 48.5]    // Barkley Sound, closing to Cape Flattery
 ];
 
 /** World ring used as the outer boundary of the grey mask. */
 export const WORLD_RING: [number, number][] = [
   [-180, -85], [180, -85], [180, 85], [-180, 85]
+];
+
+/**
+ * `MAP_VIEW_BBOX` as a ring, for the solid backdrop outside the frame.
+ *
+ * Map tiles are only fetched inside the frame, so on a screen whose
+ * shape doesn't match the frame's there is a band along two edges with
+ * no imagery in it at all. Filling that band with the same flat colour
+ * the map container uses turns "tiles that failed to load" into a clean
+ * matte around the map, which is what it actually is.
+ */
+export const VIEW_RING: [number, number][] = [
+  [MAP_VIEW_BBOX.minLon, MAP_VIEW_BBOX.minLat],
+  [MAP_VIEW_BBOX.maxLon, MAP_VIEW_BBOX.minLat],
+  [MAP_VIEW_BBOX.maxLon, MAP_VIEW_BBOX.maxLat],
+  [MAP_VIEW_BBOX.minLon, MAP_VIEW_BBOX.maxLat]
 ];
 
 /** Ray-casting point-in-polygon test. */
