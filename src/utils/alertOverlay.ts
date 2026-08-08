@@ -639,6 +639,61 @@ export const cloudMarkerHtml = (badge: AlertBadge, reduced = false): string =>
   });
 
 /**
+ * Split a warning's geometry into its separate pieces, one GeoJSON Feature
+ * each, ready to hand to `L.geoJSON` as a FeatureCollection.
+ *
+ * WHY THIS EXISTS. Environment Canada publishes a warning once per forecast
+ * region, and the server merges those rows back into one alert whose geometry
+ * is a MultiPolygon — a heat warning over the prairies arrives as a dozen
+ * scattered blocks. Handed a MultiPolygon, Leaflet draws every piece into ONE
+ * `<path>` element, and a `<path>` can only carry one fill.
+ *
+ * That broke the tint badly. The cloud's radial gradient is measured from the
+ * drawn path, so a MultiPolygon got a single gradient stretched across the
+ * bounding box of all its pieces — bright in the empty middle, and fully
+ * transparent out at the actual blocks. A camper parked under one of those
+ * blocks saw the tiled thermometers with no colour behind them at all, which
+ * looks exactly like a warning that failed to load.
+ *
+ * One Feature per piece means one `<path>` per piece, so every block gets its
+ * own gradient sized to itself and every block is actually tinted.
+ *
+ * Holes are preserved: a Polygon's inner rings stay attached to their outer
+ * ring, so a warned area with a genuine gap in the middle keeps the gap.
+ * Anything that is not a Polygon or MultiPolygon is passed through untouched
+ * rather than dropped — an unexpected geometry type should still draw.
+ */
+export const explodeToFeatures = (geometry: unknown): GeoJSON.FeatureCollection => {
+  const g = geometry as { type?: string; coordinates?: any; geometries?: unknown[] };
+  const features: GeoJSON.Feature[] = [];
+
+  const push = (geom: unknown): void => {
+    const node = geom as { type?: string; coordinates?: any; geometries?: unknown[] };
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'MultiPolygon' && Array.isArray(node.coordinates)) {
+      node.coordinates.forEach((polygon: unknown) => {
+        features.push({
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Polygon', coordinates: polygon as any }
+        } as GeoJSON.Feature);
+      });
+      return;
+    }
+    if (node.type === 'GeometryCollection' && Array.isArray(node.geometries)) {
+      node.geometries.forEach(push);
+      return;
+    }
+    features.push({
+      type: 'Feature', properties: {}, geometry: node as any
+    } as GeoJSON.Feature);
+  };
+
+  push(g);
+  return { type: 'FeatureCollection', features };
+};
+
+/**
  * The glyph tiled across a DIFFUSE warning's cloud.
  *
  * A thermometer for heat (the redesign asks for it by name), a puff for smoke,

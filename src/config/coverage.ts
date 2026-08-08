@@ -268,3 +268,45 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
   return 150;
 };
 
+
+/* -------------------------------------------------------------------------- */
+/* Which jurisdictions actually have parcel data behind them                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The provinces whose Crown land this app can actually draw.
+ *
+ * Two, at the time of writing: Alberta (the Green Area, plus Public Land Use
+ * Zones) and Ontario (CLUPA General Use Areas). Those are the only Canadian
+ * jurisdictions publishing a queryable open layer that delineates land a
+ * camper may actually use — see COVERAGE_GAPS in `scripts/landSources.ts` for
+ * what each of the others publishes instead and why it doesn't qualify.
+ *
+ * The United States is not listed because its coverage is federal and
+ * national: BLM and the US Forest Service publish one layer each covering
+ * every state, so there is no state-by-state gap to declare. State trust and
+ * state forest land is a separate gap, recorded in COVERAGE_GAPS.
+ */
+const MAPPED_CA_PROVINCES = new Set<string>(['CA-AB', 'CA-ON']);
+
+/**
+ * Why a province is blank, in a camper's words — or null when the blankness
+ * genuinely means "we looked and there is nothing here".
+ *
+ * THIS IS THE HOUSE RULE IN ONE FUNCTION. An empty map inside the coverage
+ * outline is the single most dangerous thing this app can show, because "no
+ * public land in view" and "no data for this province" look identical and mean
+ * opposite things. Someone in British Columbia — a province that is largely
+ * Crown land — was being shown an empty map and a chip reading "No mapped
+ * public land in view". That is the app stating, wrongly and confidently, that
+ * there is nowhere to camp.
+ *
+ * Pass the ISO code of the state or province under the middle of the screen.
+ * Null means the usual message is safe to show.
+ */
+export const landDataGap = (isoCode: string | null | undefined): string | null => {
+  if (!isoCode) return null;
+  if (!isoCode.startsWith('CA-')) return null;
+  if (MAPPED_CA_PROVINCES.has(isoCode)) return null;
+  return 'no Crown land data yet';
+};
