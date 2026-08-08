@@ -184,21 +184,27 @@
 }
 
 /**
- * The tracer that runs around a warning's perimeter when the user taps
- * its chip in the legend. The path is set up with stroke-dasharray equal
- * to its full length and stroke-dashoffset equal to the same value, so
- * it draws as nothing at frame 0. The animation then sweeps the offset
- * to 0, "drawing" the line over 1.5s. A 200ms hold at full opacity
- * gives the eye a beat to land on it before the fade.
+ * The glow that swells over a warning's area when the user taps its chip
+ * in the legend. Two breaths in 2.4s: up, part-way down, up again, then
+ * out. Only `opacity` moves — the coloured halo itself is a static
+ * drop-shadow filter set on the path in MapComponent, because animating
+ * a blur radius repaints the whole shape every frame and a warning
+ * polygon can cover half the screen.
  *
- * The animation is `forwards` so the final state (offset 0, full
- * visibility) is held at the end — but the MapComponent removes the
- * tracer layer entirely after 2.4s, so the user never sees a stale
- * outline sitting on the map.
+ * The keyframes stop at 0, so if the layer outlives its removal timeout
+ * for a frame or two the user never sees it snap back to full strength.
+ * MapComponent removes the layer at 2.4s regardless.
+ *
+ * Under prefers-reduced-motion MapComponent skips this animation and
+ * holds the area at a steady highlight instead — the shape is what
+ * carries the answer, and it does that without pulsing.
  */
-@keyframes wl-tracer-sweep {
-  0%   { stroke-dashoffset: 0; opacity: 0.95; }
-  100% { stroke-dashoffset: var(--tracer-offset, -1000); opacity: 0; }
+@keyframes wl-warning-glow {
+  0%   { opacity: 0; }
+  14%  { opacity: 1; }
+  42%  { opacity: 0.42; }
+  68%  { opacity: 0.95; }
+  100% { opacity: 0; }
 }
 
 /* ====================================================================

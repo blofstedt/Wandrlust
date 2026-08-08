@@ -364,37 +364,52 @@ const readRingFromPath = (path: SVGPathElement): [number, number][] | null => {
 };
 
 /**
- * Centroid (mean of vertices) and radius (half the smaller bbox
- * dimension, in degrees) for a ring of [lon, lat] points.
+ * Centre and semi-axes of the ELLIPSE that covers a drawn ring, in the SVG
+ * renderer's own units (screen pixels at the current zoom, not degrees —
+ * the ring was read back out of a projected `d` attribute).
  *
- * The radius is the input to a userSpaceOnUse radialGradient, so it
- * needs to be in the same units as the coordinates (degrees). Half the
- * smaller bbox dimension gives a circle that fits inside the polygon's
- * bbox, which means the gradient's 0%-opacity stop lands at or just
- * inside the polygon's edge — the cloud fades to nothing right at the
- * polygon's boundary, not before it and not well after.
+ * WHY AN ELLIPSE AND NOT A CIRCLE. This feeds a userSpaceOnUse
+ * radialGradient that tints the warned area. The previous version used a
+ * single radius of half the SMALLER bbox dimension, which on a wide
+ * warning — a heat advisory spanning several counties east to west but
+ * only one or two north to south — drew a small circle of colour in the
+ * middle of a very long polygon. The tiled thermometers filled the whole
+ * shape while the red only reached a fraction of it, so the colour and
+ * the icons disagreed about how big the warning was.
+ *
+ * Sizing the gradient to BOTH bbox dimensions makes the tint cover the
+ * same ground the glyphs do. The centre is the bbox centre rather than
+ * the mean of the vertices: vertex density varies wildly in agency
+ * polygons (a coastline edge carries hundreds of points, a straight
+ * county line carries two), and a mean pulled toward the busy edge puts
+ * the bright part of the cloud off to one side of the area it describes.
+ *
+ * The 1.14 pad pushes the fully transparent stop just past the bbox, so
+ * the polygon's corners still carry colour instead of falling outside
+ * the ellipse and reading as clipped-off patches. The edge stays soft
+ * because the last third of the gradient is already nearly transparent
+ * by the time it reaches the boundary, and the per-path blur feathers
+ * whatever is left.
  */
-const centroidAndRadius = (ring: [number, number][]): { cx: number; cy: number; r: number } => {
-  let sumLon = 0;
-  let sumLat = 0;
-  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-  for (const [lon, lat] of ring) {
-    sumLon += lon;
-    sumLat += lat;
-    if (lon < minLon) minLon = lon;
-    if (lon > maxLon) maxLon = lon;
-    if (lat < minLat) minLat = lat;
-    if (lat > maxLat) maxLat = lat;
+const cloudEllipse = (
+  ring: [number, number][]
+): { cx: number; cy: number; rx: number; ry: number } => {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of ring) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
   }
-  const n = ring.length;
+  const PAD = 1.14;
   return {
-    cx: sumLon / n,
-    cy: sumLat / n,
-    // Pad the radius slightly (1.05x) so the 100% transparent stop lands
-    // just outside the polygon's actual edge — the polygon outline is
-    // hidden under the 0-opacity tail, and the visible cloud extends
-    // right to the polygon boundary without a hard ring.
-    r: 1.05 * Math.min(maxLon - minLon, maxLat - minLat) / 2
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
+    // A degenerate ring (every vertex on one line) would give a zero
+    // axis, which makes the gradient transform non-invertible and the
+    // fill vanish. Floor both axes at a sub-pixel value.
+    rx: Math.max(0.5, (PAD * (maxX - minX)) / 2),
+    ry: Math.max(0.5, (PAD * (maxY - minY)) / 2)
   };
 };
 
@@ -675,12 +690,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
   /**
-   * The one-shot tracer drawn when the user taps a warning chip row. Held
-   * by ref so the animation handler can clear it without re-running any
-   * effect; the layer itself is the only piece of Leaflet state the
-   * animation owns.
+   * The one-shot glow drawn over a warning's area when the user taps its
+   * chip row. Held by ref so the animation handler can clear it without
+   * re-running any effect; the layer itself is the only piece of Leaflet
+   * state the animation owns.
    */
-  const tracerRef = useRef<L.Layer | null>(null);
+  const glowRef = useRef<L.Layer | null>(null);
 
   /**
    * Callbacks reached through refs, not through effect dependencies.
@@ -749,13 +764,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /** Which warning families are drawn in view — drives the top-left legend. */
   const [warningBadges, setWarningBadges] = useState<AlertBadge[]>([]);
   /**
-   * The badge whose tracer is currently animating. Set when the user taps a
-   * chip row in the warnings legend; cleared when the tracer finishes (or
+   * The badge whose area is currently glowing. Set when the user taps a
+   * chip row in the warnings legend; cleared when the glow finishes (or
    * when a new fetch changes the warnings, whichever comes first). Lives in
    * state rather than a ref because the legend needs to re-render to show
-   * which row is "active" while its tracer is running.
+   * which row is "active" while its glow is running.
    */
-  const [tracingBadge, setTracingBadge] = useState<AlertBadge | null>(null);
+  const [glowingBadge, setGlowingBadge] = useState<AlertBadge | null>(null);
   /** Camper-filed reports currently on screen — counted in the status chip. */
   const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
 
@@ -2151,29 +2166,54 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           if (!el) return;
           const ring = readRingFromPath(el);
           if (!ring) return;
-          const { cx, cy, r } = centroidAndRadius(ring);
+          const { cx, cy, rx, ry } = cloudEllipse(ring);
 
           const id = `wl-cloud-${nextId++}`;
           const grad = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
           grad.setAttribute('id', id);
           grad.setAttribute('cx', String(cx));
           grad.setAttribute('cy', String(cy));
-          grad.setAttribute('r', String(r));
+          grad.setAttribute('r', String(rx));
           grad.setAttribute('gradientUnits', 'userSpaceOnUse');
-          const stop0 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-          stop0.setAttribute('offset', '0%');
-          stop0.setAttribute('stop-color', color);
-          stop0.setAttribute('stop-opacity', '0.55');
-          const stop100 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-          stop100.setAttribute('offset', '100%');
-          stop100.setAttribute('stop-color', color);
-          stop100.setAttribute('stop-opacity', '0');
-          grad.appendChild(stop0);
-          grad.appendChild(stop100);
+          // SVG radial gradients are circles. Squashing the y axis about the
+          // centre turns this one into an ellipse with semi-axes rx and ry,
+          // so the tint stretches the full length AND width of the warned
+          // area instead of sitting in a circle in the middle of it.
+          if (Math.abs(ry - rx) > 0.5) {
+            const k = ry / rx;
+            grad.setAttribute(
+              'gradientTransform',
+              `translate(0 ${cy * (1 - k)}) scale(1 ${k})`
+            );
+          }
+          // The middle two thirds stay near full strength so the colour
+          // reads as a mass over the whole warning, and the fade is spent
+          // in the outer third — a plateau, not a spotlight. Without it a
+          // gradient this large would be visibly brighter at one point,
+          // which looks like the warning is centred somewhere it isn't.
+          const STOPS: [string, string][] = [
+            ['0%', '0.5'],
+            ['45%', '0.46'],
+            ['70%', '0.32'],
+            ['88%', '0.12'],
+            ['100%', '0']
+          ];
+          for (const [offset, opacity] of STOPS) {
+            const stop = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+            stop.setAttribute('offset', offset);
+            stop.setAttribute('stop-color', color);
+            stop.setAttribute('stop-opacity', opacity);
+            grad.appendChild(stop);
+          }
           cdefs!.appendChild(grad);
 
           el.setAttribute('fill', `url(#${id})`);
-          el.style.filter = 'blur(12px)';
+          // Blur scales with the cloud so a county-sized warning gets a
+          // proportionally soft rim rather than the same 12px hairline
+          // feather a small one gets. Capped so the biggest warnings do
+          // not turn into an expensive full-screen blur.
+          const softness = Math.round(Math.min(28, Math.max(10, Math.min(rx, ry) * 0.18)));
+          el.style.filter = `blur(${softness}px)`;
         });
       }
     };
@@ -3013,7 +3053,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [center, zoom, isMapReady]);
 
   /**
-   * Center the map on a warning of `badge` and trace its perimeter once.
+   * Centre the map on a warning of `badge` and make that area glow.
    *
    * WHAT IT DOES, IN ORDER:
    *   1. Pick the most prominent alert of that family in the current view.
@@ -3021,14 +3061,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    *      most plausibly meant by tapping its chip.
    *   2. Pan the map to the alert's centroid at the current zoom (no zoom
    *      change — that's the user's choice).
-   *   3. Draw the alert's actual perimeter as a stroked SVG path, with
-   *      `stroke-dasharray` set to its full length and `stroke-dashoffset`
-   *      animated from that length to 0 over 1.5s. The line "draws itself"
-   *      around the alert, then is removed.
+   *   3. Fill the alert's actual footprint in the family colour and breathe
+   *      it in and out twice — a soft glow that swells and settles, then
+   *      clears itself.
    *
-   * The tracer uses the same colour as the cloud (BADGE_COLOR) so the
-   * user's eye links the chip they tapped to the area on the map without
-   * having to read a label.
+   * WHY A GLOW AND NOT A TRACER. This used to run a comet head around the
+   * perimeter. On a warning shaped like a real advisory — long, ragged,
+   * often several disjoint pieces — the eye followed the moving dot and
+   * never took in the shape it was drawing. A soft pulse of the whole area
+   * answers the only question the tap asks ("where is this?") in one beat,
+   * and the shape is legible for the entire animation instead of one
+   * moving 90px of it.
+   *
+   * The glow uses the same colour as the cloud (BADGE_COLOR), so the eye
+   * links the chip that was tapped to the area on the map without reading
+   * a label. It sits just above the warning fill and below every marker,
+   * so it reads as the ground lighting up rather than a sheet dropped over
+   * the pins.
+   *
+   * Under prefers-reduced-motion nothing pulses: the area is held at a
+   * steady highlight for the same beat and then removed.
    */
   const focusWarning = useCallback((badge: AlertBadge) => {
     const map = mapRef.current;
@@ -3051,105 +3103,79 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const chosen = candidates[0]?.alert;
     if (!chosen || !chosen.centroid || !chosen.geometry) return;
 
-    // Clear any in-flight tracer from a previous tap. New tap wins, no
+    // Clear any in-flight glow from a previous tap. New tap wins, no
     // overlapping animations.
-    if (tracerRef.current) {
-      try { map.removeLayer(tracerRef.current); } catch { /* detached */ }
-      tracerRef.current = null;
+    if (glowRef.current) {
+      try { map.removeLayer(glowRef.current); } catch { /* detached */ }
+      glowRef.current = null;
     }
 
     // Pan, but only if it actually moves the map. The flyTo guard above
     // would not help here because the user explicitly asked for a pan.
     map.panTo(chosen.centroid, { animate: true, duration: 0.5 });
 
-    // Build the tracer as a non-interactive SVG layer in its own pane
-    // above the cloud so the line is visible over the blurred fill.
-    if (!map.getPane('tracerPane')) {
-      map.createPane('tracerPane');
-      const pane = map.getPane('tracerPane');
+    // The glow lives in its own non-interactive pane directly above the
+    // warning fill and its glyphs (460/461) and below the fire perimeters
+    // and every marker, so nothing the camper can tap gets washed out.
+    if (!map.getPane('warningGlowPane')) {
+      map.createPane('warningGlowPane');
+      const pane = map.getPane('warningGlowPane');
       if (pane) {
-        pane.style.zIndex = '620';
+        pane.style.zIndex = '462';
         pane.style.pointerEvents = 'none';
       }
     }
-    const tracerGeo = L.geoJSON(chosen.geometry as any, {
-      pane: 'tracerPane',
-      renderer: L.svg({ pane: 'tracerPane', padding: 0.2 }),
+    const color = BADGE_COLOR[badge];
+    const glowGeo = L.geoJSON(chosen.geometry as any, {
+      pane: 'warningGlowPane',
+      renderer: L.svg({ pane: 'warningGlowPane', padding: 0.2 }),
       interactive: false,
       style: {
-        stroke: BADGE_COLOR[badge],
-        weight: 3,
-        opacity: 0.9,
-        fill: false,
-        // lineCap/Join matter for the visual: a rounded line reads as a
-        // continuous tracer sweep, while butt caps look like a dashed line
-        // marching in.
+        // A soft wash inside a defined edge. The fill says how far the
+        // warning reaches; the stroke keeps the shape readable where the
+        // fill sits over bright terrain.
+        color,
+        weight: 2.5,
+        opacity: 0.85,
+        fill: true,
+        fillColor: color,
+        fillOpacity: 0.28,
         lineCap: 'round',
-        lineJoin: 'round',
-        // We will set stroke-dasharray and animate stroke-dashoffset
-        // imperatively once the path exists (see below).
+        lineJoin: 'round'
       }
     } as unknown as RenderedGeoJSONOptions).addTo(map);
 
-    // Compute the perimeter in screen pixels to set the dash pattern.
-    // The tracer is a COMET, not a full-perimeter line: a small head of
-    // `HEAD_LENGTH` (about 90px on screen — long enough to read as a
-    // deliberate sweep, short enough to feel like a tracer rather than
-    // an outline being drawn) followed by a gap so large that the rest
-    // of the path is invisible. The head is animated by sliding the
-    // dash offset; the gap is what hides the trailing perimeter.
-    let perimeter = 0;
-    tracerGeo.eachLayer((sub) => {
+    const reduced = prefersReducedMotion();
+    glowGeo.eachLayer((sub) => {
       const el = (sub as unknown as { _path?: SVGPathElement })._path;
       if (!el) return;
-      try {
-        const len = el.getTotalLength();
-        if (len > perimeter) perimeter = len;
-      } catch { /* non-renderable path; skip */ }
+      // The halo. Two drop-shadows in the family colour — a tight one to
+      // thicken the edge and a wide one to bleed light onto the terrain
+      // around it. Static, because animating a blur radius repaints the
+      // whole path every frame; the pulse is carried by opacity instead,
+      // which the compositor handles.
+      el.style.filter =
+        `drop-shadow(0 0 6px ${color}) drop-shadow(0 0 18px ${color})`;
+      if (reduced) {
+        el.style.opacity = '0.8';
+        return;
+      }
+      // Two breaths over 2.4s: swell, settle, swell, fade out. Slow
+      // enough to read as breathing rather than blinking.
+      el.style.animation = 'wl-warning-glow 2.4s var(--ease-standard) both';
     });
 
-    if (perimeter > 0) {
-      const HEAD_LENGTH = 90;
-      // The gap must be longer than the path, otherwise the head's "tail"
-      // would butt up against the next iteration of the head as the offset
-      // animates. A gap of (perimeter + 100) is comfortably beyond the path
-      // length, so only the head is ever visible.
-      const gap = perimeter + 100;
-      // Two full loops so the user has time to register the tracer's path
-      // around the alert. Anything less than 1.5 loops reads as a quick
-      // flicker; more than 2.5 reads as indecisive. Two is the sweet spot
-      // for the size of warning a camper is most likely tracing — a
-      // county-wide heat advisory fits one full sweep in about a second.
-      const loops = 2;
-      const totalOffset = -loops * perimeter;
+    glowRef.current = glowGeo;
+    setGlowingBadge(badge);
 
-      tracerGeo.eachLayer((sub) => {
-        const el = (sub as unknown as { _path?: SVGPathElement })._path;
-        if (!el) return;
-        el.style.setProperty('--tracer-head', String(HEAD_LENGTH));
-        el.style.setProperty('--tracer-gap', String(gap));
-        el.style.setProperty('--tracer-offset', String(totalOffset));
-        el.style.strokeDasharray = `${HEAD_LENGTH} ${gap}`;
-        el.style.strokeDashoffset = '0';
-        // 2.2s for two loops, ease-in-out so the head accelerates
-        // smoothly out of the start point and decelerates as it
-        // approaches the end. A linear timing would feel mechanical;
-        // a strong ease-in-out is what reads as "intentional".
-        el.style.animation = 'wl-tracer-sweep 2.2s ease-in-out forwards';
-      });
-    }
-
-    tracerRef.current = tracerGeo;
-    setTracingBadge(badge);
-
-    // One-shot: clear the tracer after the animation finishes. Keeping it
-    // on screen would be visual noise; the user already saw where to look.
+    // One-shot: clear the glow after the animation finishes. Leaving it on
+    // screen would be visual noise; the user already saw where to look.
     window.setTimeout(() => {
-      if (tracerRef.current === tracerGeo && mapRef.current) {
-        try { mapRef.current.removeLayer(tracerGeo); } catch { /* detached */ }
-        tracerRef.current = null;
+      if (glowRef.current === glowGeo && mapRef.current) {
+        try { mapRef.current.removeLayer(glowGeo); } catch { /* detached */ }
+        glowRef.current = null;
       }
-      setTracingBadge((current) => (current === badge ? null : current));
+      setGlowingBadge((current) => (current === badge ? null : current));
     }, 2400);
   }, [hazards]);
 
@@ -3334,17 +3360,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             </div>
             <ul className="space-y-1">
               {warningBadges.map((b) => {
-                const isTracing = tracingBadge === b;
+                const isGlowing = glowingBadge === b;
                 return (
                   <li key={b}>
                     <button
                       type="button"
                       onClick={() => focusWarning(b)}
-                      aria-label={`Centre the map on ${WARNING_LABEL[b]} warning and trace it`}
+                      aria-label={`Centre the map on the ${WARNING_LABEL[b]} warning and highlight its area`}
+                      /*
+                        While the area is glowing the row wears the SAME
+                        colour, so the chip and the shape on the map are
+                        obviously the same thing. Inline because the colour
+                        comes from the alert family, not from the palette.
+                      */
+                      style={
+                        isGlowing
+                          ? {
+                              background: `${BADGE_COLOR[b]}26`,
+                              boxShadow: `inset 0 0 0 1px ${BADGE_COLOR[b]}66`
+                            }
+                          : undefined
+                      }
                       className={`w-full flex items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-moook ${
-                        isTracing
-                          ? 'bg-amber-500/15 ring-1 ring-amber-400/40'
-                          : 'hover:bg-slate-800/60'
+                        isGlowing ? '' : 'hover:bg-slate-800/60'
                       }`}
                     >
                       <span
@@ -3357,9 +3395,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                       <span className="text-[10px] text-slate-200 font-semibold flex-1">
                         {WARNING_LABEL[b]}
                       </span>
-                      {isTracing && (
-                        <span className="text-[9px] text-amber-300 font-bold uppercase tracking-wider">
-                          tracing
+                      {isGlowing && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wider"
+                          style={{ color: BADGE_COLOR[b] }}
+                        >
+                          on map
                         </span>
                       )}
                     </button>
