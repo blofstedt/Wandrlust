@@ -2,7 +2,6 @@
  * Cell coverage.
  *
  *   GET /api/cell-coverage?lat=&lon=          what signal to expect at a point
- *   GET /api/cell-towers?minLat=&minLon=…     transmitters in a viewport
  *
  * ---------------------------------------------------------------------------
  * READ THIS BEFORE YOU CHANGE ANYTHING HERE
@@ -23,12 +22,20 @@
  *
  * What is still true: a carrier nobody has data for is reported MISSING, never
  * as zero bars. Absent data is not a measurement of nothing.
+ *
+ * CACHING: positions are essentially static (OSM masts do not move, OpenCellID
+ * masts are remounted in place when replaced), and the technology field is
+ * months-scale to change for a given site. The cache is keyed to two decimal
+ * places of lat/lon — about a kilometre, which is far finer than the answer
+ * deserves — and held for 30 days. A returning user reads the same answer
+ * they got the previous weekend without spending a round trip; the rare
+ * upgrade is at most a month late.
  */
 import type { Express, Request, Response } from 'express';
 // `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
 import {
   CARRIERS, distanceKm, barsForKm, strengthForBars, bestTechnology,
-  fetchOsmMastsNear, fetchOsmMastsInBbox, fetchOpenCellIdFor,
+  fetchOsmMastsNear, fetchOpenCellIdFor,
   type CellTower, type CellTechnology, type SignalStrength
 } from './cellSources.js';
 import { looksUS } from './alertSources.js';
@@ -44,17 +51,16 @@ const SEARCH_RADIUS_KM = 45;
 /** OpenCellID caps the area one request may cover; half a degree is ~55 km. */
 const OPENCELLID_SPAN_DEG = 0.5;
 
-/** Beyond this the viewport holds more masts than anyone can read. */
-const MAX_TOWER_BBOX_DEG = 3;
-
 /* ------------------------------------------------------------------ */
 /* Cache                                                               */
 /* ------------------------------------------------------------------ */
 
 interface CacheEntry { at: number; body: unknown; }
 const cache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // Towers do not move.
-const CACHE_MAX_ENTRIES = 400;
+// Positions are static and 4G/5G changes are months-scale, so a 30-day
+// cache is well within what the answer can support. See the file header.
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 600;
 
 const cached = (key: string): unknown | null => {
   const hit = cache.get(key);
@@ -325,54 +331,4 @@ export const registerCellRoutes = (app: Express): void => {
     store(cacheKey, body);
     return res.json(body);
   });
-
-  /**
-   * Transmitters in a viewport, for the map layer.
-   *
-   * OSM only. OpenCellID's bounding-box endpoint is capped and metered per
-   * carrier, which is fine for one tapped point and wrong for a layer that
-   * refetches on every pan.
-   */
-  app.get('/api/cell-towers', async (req: Request, res: Response) => {
-    const coords = readCoords(req, ['minLat', 'minLon', 'maxLat', 'maxLon']);
-    if (!coords) {
-      return res.status(400).json({ error: 'minLat, minLon, maxLat, maxLon are required.' });
-    }
-    const [minLat, minLon, maxLat, maxLon] = coords;
-
-    if (
-      Math.abs(maxLat - minLat) > MAX_TOWER_BBOX_DEG ||
-      Math.abs(maxLon - minLon) > MAX_TOWER_BBOX_DEG
-    ) {
-      return res.json({
-        ok: false,
-        towers: [],
-        note: 'Zoom in to load cell towers.'
-      });
-    }
-
-    const cacheKey = `towers:${coords.map((n) => n.toFixed(2)).join(',')}`;
-    const hit = cached(cacheKey);
-    if (hit) return res.json(hit);
-
-    const masts = await fetchOsmMastsInBbox(minLat, minLon, maxLat, maxLon);
-
-    const centreLat = (minLat + maxLat) / 2;
-    const centreLon = (minLon + maxLon) / 2;
-
-    const body = {
-      ok: masts !== null,
-      source: 'OpenStreetMap mast register',
-      towers: masts ? shapeTowers(dedupe(masts), centreLat, centreLon).slice(0, 400) : [],
-      note: masts === null
-        ? 'Could not reach the mast register just now.'
-        : masts.length === 0
-        ? 'No masts are recorded in this view. That means nobody has surveyed ' +
-          'one here, not that there is no coverage.'
-        : undefined
-    };
-
-    store(cacheKey, body);
-    return res.json(body);
-  });
-};
+};

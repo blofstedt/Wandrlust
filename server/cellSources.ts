@@ -322,25 +322,6 @@ export const fetchOsmMastsNear = async (
   );
 };
 
-/** Masts inside a bounding box, for the map layer. Null when every mirror failed. */
-export const fetchOsmMastsInBbox = async (
-  minLat: number, minLon: number, maxLat: number, maxLon: number,
-  timeoutMs = 12_000
-): Promise<CellTower[] | null> => {
-  const bbox =
-    `(${minLat.toFixed(5)},${minLon.toFixed(5)},${maxLat.toFixed(5)},${maxLon.toFixed(5)})`;
-
-  const clauses = MAST_FILTERS.flatMap((filter) => [
-    `node${filter}${bbox};`,
-    `way${filter}${bbox};`
-  ]).join('');
-
-  return runOverpass(
-    `[out:json][timeout:20];(${clauses});${outStatement(500)}`,
-    timeoutMs
-  );
-};
-
 /* ------------------------------------------------------------------ */
 /* OpenCellID                                                          */
 /* ------------------------------------------------------------------ */
@@ -412,4 +393,4 @@ export const fetchOpenCellIdFor = async (
   }
 
   return anyResponse ? towers : null;
-};
+};

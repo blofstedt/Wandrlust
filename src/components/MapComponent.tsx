@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 
 import type {
-  Campsite, CellTower, DestinationLand, MapDestination, MapTileLayer
+  Campsite, DestinationLand, MapDestination, MapTileLayer
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
@@ -34,12 +34,11 @@ import {
 import {
   BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
   BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
-  COVERAGE_LABEL, isWithinCoverage, CELL_MIN_ZOOM
+  COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
   fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts
 } from '../services/weatherService';
-import { fetchCellTowers, TOWER_REACH_M } from '../services/cellCoverageService';
 import { prefersReducedMotion } from '../utils/animation';
 
 /** 1x1 transparent GIF, shown where no offline tile has been cached. */
@@ -243,35 +242,6 @@ const buildDestinationIcon = (): L.DivIcon =>
   });
 
 /**
- * A surveyed mobile mast.
- *
- * Small and cool-toned on purpose. These are supporting information, not the
- * point of the map — a camper is looking for somewhere to sleep, and a tower
- * icon that competes with the campsite pins would be reading the room wrong.
- */
-const buildTowerIcon = (tower: CellTower): L.DivIcon => {
-  const named = Boolean(tower.carrier);
-
-  return L.divIcon({
-    className: 'cell-tower-marker',
-    html: `
-      <div class="flex items-center justify-center w-full h-full">
-        <svg viewBox="0 0 16 16" class="w-3.5 h-3.5 drop-shadow" aria-hidden="true">
-          <path d="M8 6.4a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2z" fill="${
-            named ? '#7DD3FC' : '#94A3B8'
-          }"/>
-          <path d="M8 6.4 6.2 14h3.6L8 6.4z" fill="${named ? '#7DD3FC' : '#94A3B8'}"/>
-          <path d="M4.6 1.8a6 6 0 0 0 0 6.4M11.4 1.8a6 6 0 0 1 0 6.4"
-                stroke="${named ? '#38BDF8' : '#64748B'}" stroke-width="1.3"
-                fill="none" stroke-linecap="round"/>
-        </svg>
-      </div>`,
-    iconSize: [16, 16],
-    iconAnchor: [8, 14]
-  });
-};
-
-/**
  * Rough size of a shape, as the area of its bounding box in square degrees.
  *
  * Only ever used to rank two overlapping parcels against each other, so the
@@ -468,7 +438,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
-  const cellLayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
   const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
@@ -498,14 +467,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
   const [showBoundaries, setShowBoundaries] = useState(true);
-  /**
-   * Off by default. It is genuinely useful and it is also a second wash of
-   * colour over a map whose first job is public land — a camper who wants it
-   * turns it on, and it stays on for the session.
-   */
-  const [showCellTowers, setShowCellTowers] = useState(false);
-  const [cellTowerCount, setCellTowerCount] = useState<number | null>(null);
-  const [cellZoomTooFar, setCellZoomTooFar] = useState(false);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
@@ -1393,156 +1354,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady, isOfflineMode]);
 
   /* ------------------------------------------------------------------ */
-  /* Cell coverage                                                       */
-  /* ------------------------------------------------------------------ */
-  /**
-   * Where the masts are, and roughly how far each one might reach.
-   *
-   * ---------------------------------------------------------------------
-   * WHY THIS IS DRAWN THE WAY IT IS
-   * ---------------------------------------------------------------------
-   *
-   * The honest thing to draw would be carrier-filed coverage polygons. Those
-   * exist — the FCC holds them — behind a registered, tokened API this project
-   * has no credentials for, and the carriers' own maps are marketing. What is
-   * openly available is where the transmitters ARE, from OpenStreetMap's mast
-   * register, and this layer draws exactly that plus an inference from it.
-   *
-   * The rings are the inference and they are drawn to look like one: two soft,
-   * unlabelled, low-opacity circles, no hard edge, no legend claiming metres.
-   * A crisp boundary would say "coverage stops here", which would be a lie in
-   * both directions — the ring ignores terrain entirely, and in the mountains
-   * terrain is the whole story. A mast 4 km away behind a ridge gives you
-   * nothing; one 30 km away across a flat valley may give you three bars.
-   *
-   * ABSENCE MEANS NOBODY SURVEYED IT. An empty area here is not "no coverage",
-   * and the status chip says so rather than leaving the blank to speak.
-   */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-
-    const clear = () => {
-      if (!cellLayerRef.current) return;
-      try { map.removeLayer(cellLayerRef.current); } catch { /* detached */ }
-      cellLayerRef.current = null;
-    };
-
-    if (!showCellTowers || isOfflineMode) {
-      clear();
-      setCellTowerCount(null);
-      setCellZoomTooFar(false);
-      return;
-    }
-
-    if (!map.getPane('cellPane')) {
-      map.createPane('cellPane');
-      const pane = map.getPane('cellPane');
-      // Under the campsite pins and the hazard triangles. This layer is
-      // context; it must never sit on top of something tappable.
-      if (pane) pane.style.zIndex = '450';
-    }
-
-    let cancelled = false;
-    let debounce: ReturnType<typeof setTimeout> | null = null;
-
-    const render = (towers: CellTower[]) => {
-      clear();
-      if (towers.length === 0) return;
-
-      const group = L.layerGroup([], { pane: 'cellPane' });
-
-      towers.forEach((tower) => {
-        const centre: [number, number] = [tower.latitude, tower.longitude];
-        const named = Boolean(tower.carrier);
-
-        // The wider, fainter ring first, so the inner one reads as denser
-        // rather than as a separate object.
-        group.addLayer(
-          L.circle(centre, {
-            pane: 'cellPane',
-            radius: TOWER_REACH_M.usable,
-            interactive: false,
-            stroke: false,
-            fillColor: '#38BDF8',
-            fillOpacity: 0.055
-          })
-        );
-        group.addLayer(
-          L.circle(centre, {
-            pane: 'cellPane',
-            radius: TOWER_REACH_M.strong,
-            interactive: false,
-            stroke: false,
-            fillColor: '#38BDF8',
-            fillOpacity: 0.1
-          })
-        );
-
-        /**
-         * The tooltip is where the uncertainty gets spelled out, because the
-         * circle cannot carry a sentence. Everything in it is what the
-         * register actually recorded — an untagged mast says "carrier not
-         * recorded", never a guess.
-         */
-        const lines = [
-          named ? tower.operator : 'Mast, carrier not recorded',
-          tower.technology ?? null,
-          'Surveyed position — reach is an estimate, not coverage'
-        ].filter(Boolean);
-
-        group.addLayer(
-          L.marker(centre, {
-            pane: 'cellPane',
-            icon: buildTowerIcon(tower),
-            interactive: true,
-            keyboard: false
-          }).bindTooltip(lines.join(' · '), { direction: 'top', offset: [0, -12] })
-        );
-      });
-
-      cellLayerRef.current = group.addTo(map);
-    };
-
-    const run = async () => {
-      if (map.getZoom() < CELL_MIN_ZOOM) {
-        clear();
-        setCellZoomTooFar(true);
-        setCellTowerCount(null);
-        return;
-      }
-      setCellZoomTooFar(false);
-
-      const bounds = map.getBounds();
-      const result = await fetchCellTowers({
-        minLat: bounds.getSouth(),
-        minLon: bounds.getWest(),
-        maxLat: bounds.getNorth(),
-        maxLon: bounds.getEast()
-      });
-      if (cancelled) return;
-
-      setCellTowerCount(result.towers.length);
-      render(result.towers);
-    };
-
-    const load = () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(run, 600);
-    };
-
-    load();
-    map.on('moveend zoomend', load);
-
-    return () => {
-      cancelled = true;
-      if (debounce) clearTimeout(debounce);
-      map.off('moveend zoomend', load);
-      clear();
-    };
-  }, [isMapReady, showCellTowers, isOfflineMode]);
-
-  /* ------------------------------------------------------------------ */
   /* The dropped destination pin                                         */
   /* ------------------------------------------------------------------ */
   /**
@@ -2365,29 +2176,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
 
         {/*
-          The cell layer's own status.
-
-          It exists because a blank map with the layer ON is ambiguous, and the
-          ambiguity runs the dangerous way: "no masts drawn" reads as "no
-          signal here" when it actually means "nobody has surveyed one here".
-          The chip is the only thing that can tell those two apart.
-        */}
-        {showCellTowers && !isOfflineMode && (
-          <div className="bg-sky-950/85 backdrop-blur-md border border-sky-700/60 rounded-xl px-3 py-1.5 shadow-xl anim-in-up flex items-center gap-2">
-            <Info className="w-3.5 h-3.5 text-sky-300 shrink-0" />
-            <span className="text-[10px] text-sky-100 font-semibold min-w-0">
-              {cellZoomTooFar
-                ? 'Zoom in for cell masts'
-                : cellTowerCount === null
-                ? 'Looking for cell masts…'
-                : cellTowerCount === 0
-                ? 'No surveyed masts here — not the same as no signal'
-                : `${cellTowerCount} mast${cellTowerCount === 1 ? '' : 's'} · reach is a guess`}
-            </span>
-          </div>
-        )}
-
-        {/*
           The weather-warning legend. The overlays themselves cannot be tapped,
           so this is what tells a camper what the coloured, animated clouds mean
           — a colour swatch and an icon per active family. Tapping a campsite
@@ -2497,28 +2285,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 className="accent-emerald-500 w-3.5 h-3.5"
               />
             </label>
-            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
-              <span>Cell masts</span>
-              <input
-                type="checkbox"
-                checked={showCellTowers}
-                onChange={(e) => setShowCellTowers(e.target.checked)}
-                className="accent-emerald-500 w-3.5 h-3.5"
-              />
-            </label>
-            {/*
-              The caveat sits in the menu next to the switch, not only in a
-              tooltip you have to find. Turning this on should come with
-              knowing what it is: surveyed mast positions and a guess at their
-              reach, not a coverage map.
-            */}
-            {showCellTowers && (
-              <p className="px-2 pb-1.5 text-[9px] text-slate-500 leading-snug">
-                Surveyed mast positions. The rings are a rough guess at reach on
-                open ground — they ignore terrain, and blank areas mean nobody
-                has surveyed one, not that there's no signal.
-              </p>
-            )}
             {/* Only listed when the optional vector tileset is actually
                 configured. A toggle that explains why it can't work is a
                 developer's note sitting in a camper's map menu. */}
