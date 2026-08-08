@@ -949,7 +949,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const buildHalo = (
       collection: BoundaryCollection,
       centreLat: number,
-      currentZoom: number
+      currentZoom: number,
+      minDim: (g: unknown) => number
     ): { group: L.LayerGroup; widest: number } => {
       const rings = ringBudget(collection.features.length);
       const renderer = boundaryRenderer();
@@ -963,7 +964,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // A razor-thin sliver is narrower than a couple of pixels on its short
         // side. Drop it — outline and all — so leftover hairline splinters from
         // the source data don't draw. Real parcels are wide on both axes.
-        if (featureMinDimPx(map, feature.geometry) < SLIVER_PX) return;
+        if (minDim(feature.geometry) < SLIVER_PX) return;
         const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
         const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
         const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
@@ -1074,13 +1075,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const sameData = renderedCollectionRef.current === collection;
       if (sameData && signature === renderSignatureRef.current && boundaryLayerRef.current) return;
 
+      /**
+       * Pre-compute the per-feature sliver test for THIS render.
+       *
+       * `featureMinDimPx` calls `latLngToLayerPoint`, which is fine once but
+       * the fill's `filter` callback runs it for every feature in the
+       * collection on every redraw, and so does `buildHalo`. That is two
+       * `latLngToLayerPoint` calls per feature per render — a few hundred
+       * features at every zoom step. Computing it once and reusing the
+       * result cuts the work in half and lets the filter be a Map lookup
+       * rather than a function call.
+       */
+      const minDimCache = new Map<unknown, number>();
+      const minDim = (g: unknown): number => {
+        const cached = minDimCache.get(g);
+        if (cached !== undefined) return cached;
+        const v = featureMinDimPx(map, g);
+        minDimCache.set(g, v);
+        return v;
+      };
+      const sliverCutoff = overview ? 3 : SLIVER_PX;
+
       /* -- Zoom-only change: rebuild the halo, keep the parcels ---------- */
       if (sameData && fillLayerRef.current && boundaryLayerRef.current && !overview) {
         const group = boundaryLayerRef.current;
         if (haloLayerRef.current) {
           try { group.removeLayer(haloLayerRef.current); } catch { /* gone */ }
         }
-        const { group: halo, widest } = buildHalo(collection, centreLat, currentZoom);
+        const { group: halo, widest } = buildHalo(collection, centreLat, currentZoom, minDim);
         haloLayerRef.current = halo;
         group.addLayer(halo);
         fillLayerRef.current.setStyle((f: any) => parcelStyle(f, centreLat, currentZoom, false));
@@ -1096,7 +1118,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // No uncertainty band in the overview. At zoom 4 a ±200 m band is a
       // fraction of a pixel, so it would draw as a slightly thicker line that
       // says nothing — while costing one extra pass over every polygon.
-      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom);
+      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom, minDim);
 
       const fill = L.geoJSON(collection as any, {
         pane: 'boundariesPane',
@@ -1106,8 +1128,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         interactive: false,
         // Razor-thin slivers are filtered out here too, so the fill never draws
         // a hairline splinter the halo already refused to outline.
-        filter: (feature: any) =>
-          featureMinDimPx(map, feature.geometry) >= (overview ? 3 : SLIVER_PX),
+        filter: (feature: any) => minDim(feature.geometry) >= sliverCutoff,
         style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview)
       } as RenderedGeoJSONOptions);
 
@@ -1673,12 +1694,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (wpane) {
         wpane.style.zIndex = '460';
         wpane.style.pointerEvents = 'none';
-        // The soft edge. Blurring the whole pane feathers the cloud's outline
-        // AND smears over the hairline seams between an alert's forecast-region
-        // sub-polygons, so the red area reads as ONE cloud rather than a grid of
-        // parcels. The thermometer glyphs live in their own un-blurred pane so
-        // they stay crisp.
-        wpane.style.filter = 'blur(6px)';
+        // The soft edge used to be a CSS filter on this whole pane. That forced
+        // the compositor to re-rasterize the blurred output on every paint, and
+        // during a pan or zoom that meant every animation frame: a six-pixel
+        // blur over an area that moves with the map is the most expensive thing
+        // the GPU can be asked to do. We now do the blur on each cloud path
+        // instead, via an SVG <feGaussianBlur> the renderer owns (see below).
+        // The browser can cache the filter output per element, and a pan
+        // becomes a translate of already-rasterized layers rather than a
+        // full re-blur of the pane every tick.
       }
     }
     // The tiled family glyph (thermometer / smoke / snowflake …) over each cloud.
@@ -1707,6 +1731,38 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // Non-null: just created above if missing.
     const warningRenderer = warningRendererRef.current!;
     const glyphRenderer = warningGlyphRendererRef.current!;
+
+    /**
+     * Inject the per-cloud soft edge into the cloud renderer's <defs> ONCE.
+     *
+     * The old CSS `filter: blur(6px)` on the whole warningPane forced the
+     * compositor to re-rasterize the blurred output on every paint, and during
+     * a pan or zoom that meant every animation frame. An SVG <feGaussianBlur>
+     * defined in the renderer's own <defs> and referenced from each cloud
+     * path gets cached by the browser: a pan becomes a translate of an
+     * already-rasterized layer rather than a full re-blur of the pane every
+     * tick. The look is identical.
+     *
+     * The filter id is stable so re-running the effect on every alert fetch
+     * does not stack a new <defs> every time — we set the contents in place
+     * if the <defs> already exists.
+     */
+    const warningSvg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
+    if (warningSvg) {
+      let defs = warningSvg.querySelector('defs');
+      if (!defs) {
+        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        warningSvg.insertBefore(defs, warningSvg.firstChild);
+      }
+      // Only set innerHTML if the filter is missing. The id is fixed, so the
+      // effect can run any number of times without churning the DOM.
+      if (!defs.querySelector('#wl-cloud-soft')) {
+        defs.innerHTML =
+          '<filter id="wl-cloud-soft" x="-10%" y="-10%" width="120%" height="120%">' +
+          '<feGaussianBlur stdDeviation="6" />' +
+          '</filter>';
+      }
+    }
 
     let cancelled = false;
     let controller: AbortController | null = null;
@@ -1748,16 +1804,31 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (isDiffuse(badge)) {
           // ONE red (or grey / cyan) cloud over the whole warned area. No stroke,
           // so the internal seams between the alert's forecast-region polygons
-          // never draw; the pane's blur feathers the outer edge and hides any
-          // hairline sliver between them — the area reads as a single cloud.
-          group.addLayer(
-            L.geoJSON(alert.geometry as any, {
-              pane: 'warningPane',
-              renderer: warningRenderer,
-              interactive: false,
-              style: { stroke: false, fill: true, fillColor: color, fillOpacity: 0.3 }
-            } as RenderedGeoJSONOptions)
-          );
+          // never draw; the per-path SVG blur in defs (see above) feathers the
+          // outer edge and hides any hairline sliver between them — the area
+          // reads as a single cloud. The blur is applied per path so the
+          // browser can cache the filter output and a pan/zoom becomes a
+          // translate of the rasterized cloud rather than a full re-blur every
+          // animation frame.
+          const cloudGeo = L.geoJSON(alert.geometry as any, {
+            pane: 'warningPane',
+            renderer: warningRenderer,
+            interactive: false,
+            style: {
+              stroke: false,
+              fill: true,
+              fillColor: color,
+              fillOpacity: 0.3
+            }
+          } as RenderedGeoJSONOptions);
+          // Leaflet's style API doesn't expose SVG `filter`, so we set the
+          // attribute on each path directly. Paths are created synchronously
+          // above, so they exist by the time we get here.
+          cloudGeo.eachLayer((sub) => {
+            const el = (sub as unknown as { _path?: SVGPathElement })._path;
+            if (el) el.setAttribute('filter', 'url(#wl-cloud-soft)');
+          });
+          group.addLayer(cloudGeo);
           // The same area, filled with the tiled family glyph — thermometers for
           // heat — in the crisp glyph pane above the blur. Wired to its pattern
           // in <defs> below.
@@ -2009,6 +2080,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * rebuilding the whole marker cluster that often would stutter. This only
    * swaps the icon on markers that already exist — the same trick the selection
    * effect above uses.
+   *
+   * Updated to diff against the previous badge set. The previous version called
+   * `setIcon` on every marker whenever `hazards` changed, and the cluster
+   * plugin treats any change to a child's icon as a reason to recompute that
+   * cluster's wrapper — so a few hundred pins across a few dozen clusters
+   * became a few hundred DOM mutations and a few dozen cluster icon rebuilds
+   * every time the alert view changed, which is what the panning jank was
+   * actually composed of. We now walk the diff and only touch the markers
+   * whose badge list actually changed; the cluster wrapper is left alone
+   * because the cluster badge never depended on the child icon.
    */
   useEffect(() => {
     const next = new Map<string, AlertBadge[]>();
@@ -2018,9 +2099,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         : [];
       if (badges.length) next.set(site.id, badges);
     }
+    const prev = badgesByIdRef.current;
     badgesByIdRef.current = next;
     if (!isMapReady) return;
-    markersRef.current.forEach((marker, id) => marker.setIcon(iconForId(id)));
+
+    /** A marker has changed only if its badge set has changed. */
+    const sameBadges = (a: AlertBadge[] | undefined, b: AlertBadge[]): boolean => {
+      if (!a) return b.length === 0;
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
+
+    // Markers that USED to have a badge but no longer do.
+    prev.forEach((badges, id) => {
+      if (!next.has(id) && markersRef.current.has(id)) {
+        markersRef.current.get(id)!.setIcon(iconForId(id));
+      }
+    });
+    // Markers whose badge set changed.
+    next.forEach((badges, id) => {
+      if (!sameBadges(prev.get(id), badges) && markersRef.current.has(id)) {
+        markersRef.current.get(id)!.setIcon(iconForId(id));
+      }
+    });
   }, [hazards, pinnedCampsites, isMapReady, iconForId]);
 
   /* ------------------------------------------------------------------ */
@@ -2067,6 +2169,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapReady) return;
+
+    // No-op if we are already at the requested view. Without this guard the
+    // effect runs on every render where `center` or `zoom` identity changes,
+    // including the round trip App does after the user pans: App updates its
+    // own `center` state from a `moveend` handler, which re-fires this effect,
+    // which fires another `flyTo` (which is a no-op visually but schedules an
+    // animated pan that emits its own `moveend`, which can queue more work in
+    // the debounced loaders). Skipping when already at the view breaks the
+    // loop.
+    const current = map.getCenter();
+    const currentZoom = map.getZoom();
+    const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+    if (
+      close(current.lat, center[0]) &&
+      close(current.lng, center[1]) &&
+      close(currentZoom, zoom)
+    ) {
+      return;
+    }
+
     // Leaflet clamps to minZoom and maxBounds internally, so a request to fly
     // somewhere outside the world simply lands at the nearest valid view.
     try {
@@ -2511,4 +2633,4 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       )}
     </div>
   );
-};
+};
