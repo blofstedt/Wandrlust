@@ -10,6 +10,7 @@ import { registerCellRoutes } from './server/cellRoutes';
 import { registerRouteRoutes } from './server/routeRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
+import { registerAdmin1Routes } from './server/admin1Routes';
 
 /**
  * One process serves both the API and the client.
@@ -60,6 +61,12 @@ const startServer = async (): Promise<void> => {
   // client can style as two distinct things (perimeters in red, points
   // in orange) without needing to know which country a fire came from.
   registerFireRoutes(app);
+
+  // State and province boundary lines, plus a per-point lookup for
+  // the pin card ("United States — Montana" or "Canada — Alberta").
+  // The dataset is Natural Earth 1:10m admin-1, US+CA only, cached
+  // on first request. No key, no rate limit, no SLA to break.
+  registerAdmin1Routes(app);
 
   // Unknown API routes must return JSON, not the SPA's index.html — otherwise
   // a typo in a fetch URL shows up in the client as "unexpected token <".

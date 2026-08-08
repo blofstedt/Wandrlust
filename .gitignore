@@ -16,4 +16,6 @@ Thumbs.db
 
 # Logs
 *.log
-npm-debug.log*
+npm-debug.log*
+# Generated data caches (large, regenerate on first request)
+/data/
