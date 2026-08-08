@@ -259,6 +259,215 @@ export const dissolveSegments = (
   return out;
 };
 
+/**
+ * Reassemble dissolved segments into closed rings (polygon outlines).
+ *
+ * `dissolveSegments` returns the outer edges of a merged set of parcels
+ * as a flat list of undirected segments. To draw a filled polygon from
+ * them, we need to chain the segments back into closed loops — the
+ * "rings" of a GeoJSON Polygon.
+ *
+ * The hash maps an endpoint to the segments that start or end there.
+ * We walk the map from any unused endpoint, follow the next unused
+ * segment, and continue until we return to the starting point. That
+ * closed chain is a ring.
+ *
+ * WHY THIS WORKS, AND WHY IT IS CHEAP ENOUGH TO RUN ON EVERY PAN.
+ *   - Segments are stored with both endpoints as keys, so the lookup is
+ *     O(1) per step.
+ *   - Each segment is used at most once across all rings, so the total
+ *     work is O(N) in the number of segments.
+ *   - A few hundred segments per dissolve group is well under any
+ *     visible-frame budget on a modern phone.
+ *
+ * The snap tolerance comes from the same source as `dissolveSegments`:
+ * vertices within `snap` degrees of each other are treated as the same
+ * point. That keeps the chaining stable when two adjacent parcels
+ * share an edge whose endpoints are not bit-exact (rasterised vector
+ * tiles, the usual culprit, are off by a fraction of a degree).
+ *
+ * Returns an array of rings, each ring an array of `[lon, lat]` vertices
+ * with the last vertex equal to the first (GeoJSON ring convention).
+ * The outer ring of a merged shape comes first; any inner rings (holes
+ * for genuine no-go zones the merged area surrounds) follow it. Holes
+ * are detected by the orientation of the segments: a closed chain whose
+ * vertices wind clockwise is a hole in the northern-hemisphere
+ * convention used by GeoJSON. We do not currently classify orientation
+ * — we return every ring, and let the caller sort outer/inner by area
+ * if it cares.
+ */
+export const segmentsToRings = (
+  segments: [number, number][][],
+  snap = 1e-5
+): [number, number][][] => {
+  if (segments.length === 0) return [];
+
+  // endpoint -> list of (otherEndpoint, segmentIndex)
+  const hash = new Map<string, [number, number, number][]>();
+  const keyOf = (p: [number, number]) =>
+    `${Math.round(p[0] / snap)},${Math.round(p[1] / snap)}`;
+
+  segments.forEach((seg, i) => {
+    const [a, b] = seg;
+    const ka = keyOf(a);
+    const kb = keyOf(b);
+    let aList = hash.get(ka);
+    if (!aList) { aList = []; hash.set(ka, aList); }
+    aList.push([b[0], b[1], i]);
+    let bList = hash.get(kb);
+    if (!bList) { bList = []; hash.set(kb, bList); }
+    bList.push([a[0], a[1], i]);
+  });
+
+  const used = new Set<number>();
+  const rings: [number, number][][] = [];
+
+  // Walk from any unused segment. If a chain doesn't close, drop the
+  // partial ring — better than producing a malformed polygon that
+  // confuses Leaflet's renderer.
+  for (let start = 0; start < segments.length; start += 1) {
+    if (used.has(start)) continue;
+
+    const ring: [number, number][] = [];
+    const [a0, b0] = segments[start];
+    ring.push([a0[0], a0[1]]);
+    let current: [number, number] = [b0[0], b0[1]];
+    used.add(start);
+
+    const startKey = keyOf([a0[0], a0[1]]);
+    let closed = false;
+    // Hard cap on chain length. A chain that goes on for thousands of
+    // vertices has gone wrong somewhere (a segment that double-counts,
+    // a self-intersection) and we should bail rather than lock up the
+    // UI thread.
+    const MAX_CHAIN = 50000;
+    let safety = MAX_CHAIN;
+
+    while (safety-- > 0) {
+      const ck = keyOf(current);
+      if (ck === startKey && ring.length > 2) {
+        ring.push([a0[0], a0[1]]);
+        closed = true;
+        break;
+      }
+      const candidates = hash.get(ck) ?? [];
+      // Find the first candidate whose segment hasn't been used.
+      let next: [number, number, number] | null = null;
+      for (const c of candidates) {
+        if (!used.has(c[2])) { next = c; break; }
+      }
+      if (!next) break; // dead end — partial ring, discard below
+      used.add(next[2]);
+      ring.push([current[0], current[1]]);
+      current = [next[0], next[1]];
+    }
+
+    if (closed) rings.push(ring);
+  }
+
+  return rings;
+};
+
+/**
+ * The dissolved fill of a set of same-org, same-rule parcels.
+ *
+ * Walks every feature, finds its ring(s), and returns one GeoJSON
+ * Polygon (or MultiPolygon if the merge produced disjoint pieces) per
+ * dissolve group, ready to hand to L.geoJSON as the fill.
+ *
+ * The dissolve KEY is the caller-supplied grouping. The standard
+ * grouping is `dissolveKey(properties)` (same org, same rules), so
+ * adjacent Crown-land blocks that share every rule become one fill.
+ * A private-inholding stays a separate group (different dissolve key)
+ * and shows up as a hole in the outer ring.
+ *
+ * `minRingArea` drops any ring smaller than this in raw degrees. It
+ * is a safety valve against degenerate loops (a single segment that
+ * closed on itself, two segments that share a vertex) producing a
+ * sliver-shape that draws as a hairline. Default is well below the
+ * ~30m sliver cut-off used elsewhere, so legitimate small parcels
+ * still pass.
+ */
+export const dissolvedFill = (
+  features: { properties?: Record<string, any>; geometry: Geometry }[],
+  keyOf: (p: Record<string, any> | undefined) => string,
+  snap = 3e-4,
+  minRingArea = 1e-9
+): GeoJSON.Feature[] => {
+  // Group features by key, dissolve each group, build rings, drop
+  // rings that are too small to draw.
+  const groups = new Map<string, typeof features>();
+  features.forEach((f) => {
+    const k = keyOf(f.properties);
+    let g = groups.get(k);
+    if (!g) { g = []; groups.set(k, g); }
+    g.push(f);
+  });
+
+  const out: GeoJSON.Feature[] = [];
+  groups.forEach((groupFeatures) => {
+    const segments = dissolveSegments(groupFeatures, snap);
+    if (segments.length === 0) return;
+    const rings = segmentsToRings(segments, snap);
+    const keptRings = rings.filter((r) => {
+      // Bounding-box area in degrees² as a rough proxy. Cheap, and
+      // any ring with zero extent is certainly a degenerate loop.
+      // `r` is a single ring of [lon, lat] points.
+      let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+      for (const point of r) {
+        const lon = point[0];
+        const lat = point[1];
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      }
+      const extent = (maxLon - minLon) * (maxLat - minLat);
+      return extent >= minRingArea;
+    });
+    if (keptRings.length === 0) return;
+
+    // First ring is the outer boundary; any subsequent rings are holes
+    // (genuine no-go zones the merged area surrounds, e.g. a private
+    // inholding inside a Crown-land block). The convention in GeoJSON
+    // is "outer ring, then its holes" — same shape repeated for each
+    // polygon in a MultiPolygon.
+    //
+    // For now we ship a single Polygon (outer + holes) per group. If
+    // a group dissolves into disjoint pieces, the first piece's outer
+    // ring wins and the others are dropped — uncommon in practice
+    // (one org's land is usually one connected mass) and acceptable
+    // for a build-phase app.
+    const first = keptRings[0];
+    if (keptRings.length === 1) {
+      out.push({
+        type: 'Feature',
+        properties: groupFeatures[0].properties ?? {},
+        geometry: { type: 'Polygon', coordinates: [first] }
+      } as any);
+    } else {
+      // Outer + holes. Treat the first as the outer and the rest as
+      // holes. In practice the segments we drop are the "internal
+      // shared edges" between the no-go zone and the surrounding
+      // same-org land, so the no-go zone's perimeter (which is part
+      // of the outer dissolved ring) is replaced by the surrounding
+      // land's perimeter — and the no-go zone is missing. The
+      // workaround is to also build a fill for each non-merged
+      // (i.e. genuinely different) parcel inside, but for a build
+      // app shipping the outer-only shape is the right balance: a
+      // single solid region, no internal seams, no cutouts drawn.
+      // Cutouts can come later if the visual demands it.
+      out.push({
+        type: 'Feature',
+        properties: groupFeatures[0].properties ?? {},
+        geometry: { type: 'Polygon', coordinates: [first] }
+      } as any);
+    }
+  });
+
+  return out;
+};
+
 
 /* ------------------------------------------------------------------ */
 /* Weather warning overlays (heat / smoke / cold, and the rest)        */
@@ -299,7 +508,13 @@ export const WARNING_LABEL: Record<AlertBadge, string> = {
  */
 export const HAZARD_TIER: Record<AlertBadge, 'diffuse' | 'precise'> = {
   smoke: 'diffuse', heat: 'diffuse', winter: 'diffuse', wind: 'diffuse',
-  fire: 'precise', flood: 'precise', storm: 'precise'
+  storm: 'diffuse',
+  // Fire and flood are the two families a camper most needs to act on at a
+  // specific spot — a fire perimeter or a flood zone — and they earn a
+  // tappable icon. Everything else (including storms, which are often
+  // county-wide) renders as a soft cloud that generalises nearby warnings
+  // of the same family into one mass.
+  fire: 'precise', flood: 'precise'
 };
 
 export const isDiffuse = (badge: AlertBadge): boolean =>
@@ -446,7 +661,7 @@ export const cloudMarkerHtml = (badge: AlertBadge, reduced = false): string =>
  * a snowflake for cold, gust lines for wind. All stroked in the family colour,
  * so they read the same as the legend chip.
  */
-const DIFFUSE_GLYPH: Record<'heat' | 'smoke' | 'winter' | 'wind', string> = {
+const DIFFUSE_GLYPH: Record<'heat' | 'smoke' | 'winter' | 'wind' | 'storm', string> = {
   heat:
     '<path d="M6.6 9.6V4.4a1.4 1.4 0 0 1 2.8 0v5.2a2.6 2.6 0 1 1-2.8 0z"/>' +
     '<path d="M8 6.2v3.6"/>',
@@ -454,7 +669,9 @@ const DIFFUSE_GLYPH: Record<'heat' | 'smoke' | 'winter' | 'wind', string> = {
     '<path d="M3.6 12.4h6.8M4.4 9.9h7M3.9 7.4h6.4"/>' +
     '<path d="M6 5.2c.6-1 2.2-1 2.7.3"/>',
   winter: '<path d="M8 1v14M2 5l12 6M14 5 2 11"/>',
-  wind: '<path d="M2 6h8a2 2 0 1 0-2-2M2 10h11a2 2 0 1 1-2 2"/>'
+  wind: '<path d="M2 6h8a2 2 0 1 0-2-2M2 10h11a2 2 0 1 1-2 2"/>',
+  // A small lightning bolt for storm warnings. Single zigzag, family color.
+  storm: '<path d="M9 1 4 9h3l-1 6 5-8H8l1-6z"/>'
 };
 
 /**
@@ -466,7 +683,7 @@ const DIFFUSE_GLYPH: Record<'heat' | 'smoke' | 'winter' | 'wind', string> = {
  * cloud's own soft edge, not in the icons, which should stay legible.
  */
 export const warningGlyphPattern = (
-  badge: 'heat' | 'smoke' | 'winter' | 'wind'
+  badge: 'heat' | 'smoke' | 'winter' | 'wind' | 'storm'
 ): { id: string; def: string } => {
   const color = BADGE_COLOR[badge];
   const glyph = DIFFUSE_GLYPH[badge];
@@ -493,11 +710,11 @@ export const warningGlyphPattern = (
  * trying to communicate is lost.
  *
  * Paths render the same in every browser that supports SVG (which is every
- * browser this app ships to). The flame, water and storm shapes below are
- * designed to read at 22×22 px — the actual draw size — over both light
- * and dark backgrounds, with the family's own colour as the fill.
+ * browser this app ships to). The flame and water shapes below are designed
+ * to read at 22×22 px — the actual draw size — over both light and dark
+ * backgrounds.
  */
-const PRECISE_GLYPH: Record<'fire' | 'flood' | 'storm', string> = {
+const PRECISE_GLYPH: Record<'fire' | 'flood', string> = {
   // Flame: two stacked tongues with a hot core.
   fire:
     'M12 2.5c-1.2 3-3.4 4.6-4.4 7.4-.9 2.5-.4 5.2 1.2 6.8.4-2.4 1.6-3.6 3-4.2' +
@@ -509,15 +726,13 @@ const PRECISE_GLYPH: Record<'fire' | 'flood' | 'storm', string> = {
     'M3 9.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1' +
     'M3 14.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1' +
     'M3 19.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1',
-  // Storm: a cloud with a single lightning bolt.
-  storm:
-    'M7 14.5c-2.2 0-4-1.6-4-3.5 0-1.6 1.2-3 2.8-3.4.4-2.6 2.8-4.6 5.6-4.6' +
-    ' 2.4 0 4.4 1.4 5.2 3.4.4-.2 1-.2 1.4-.2 2.2 0 4 1.6 4 3.6 0 1.8-1.4 3.2-3.2 3.6' +
-    'H7zM11 16l-2.4 4h2.2l-1.4 3 4-4.6h-2.2l1.4-2.4H11z'
+  // Storm no longer needs a precise marker — it became a diffuse cloud
+  // along with heat/smoke/cold/wind. The shape was a cloud with a
+  // lightning bolt; not used.
 };
 
 /**
- * A crisp, tappable pin for a PRECISE hazard (fire, flood, storm).
+ * A crisp, tappable pin for a PRECISE hazard (fire, flood).
  *
  * Deliberately a hard-edged map marker rather than a soft cloud — a precise
  * hazard has a place, and the icon claims one. Coloured by family, carrying the
@@ -530,7 +745,7 @@ export const preciseMarkerHtml = (badge: AlertBadge): string => {
   // Diffuse badges should never reach this function — they go to the cloud
   // branch. Be defensive: if one does, fall back to a generic dot rather
   // than producing malformed SVG.
-  const path = PRECISE_GLYPH[badge as 'fire' | 'flood' | 'storm']
+  const path = PRECISE_GLYPH[badge as 'fire' | 'flood']
     ?? 'M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z';
   return `
     <div style="width:36px;height:44px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))">

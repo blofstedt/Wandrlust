@@ -29,7 +29,7 @@ import {
   AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, alertBadge,
   hazardCloudHtml, preciseMarkerHtml, isDiffuse, warningGlyphPattern,
   WARNING_EMOJI, WARNING_LABEL,
-  dissolveKey, dissolveSegments
+  dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
   BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
@@ -441,6 +441,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const warningRendererRef = useRef<L.Renderer | null>(null);
   const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
+  /**
+   * The one-shot tracer drawn when the user taps a warning chip row. Held
+   * by ref so the animation handler can clear it without re-running any
+   * effect; the layer itself is the only piece of Leaflet state the
+   * animation owns.
+   */
+  const tracerRef = useRef<L.Layer | null>(null);
 
   /**
    * Callbacks reached through refs, not through effect dependencies.
@@ -476,6 +483,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [unmappableHazards, setUnmappableHazards] = useState(0);
   /** Which warning families are drawn in view — drives the top-left legend. */
   const [warningBadges, setWarningBadges] = useState<AlertBadge[]>([]);
+  /**
+   * The badge whose tracer is currently animating. Set when the user taps a
+   * chip row in the warnings legend; cleared when the tracer finishes (or
+   * when a new fetch changes the warnings, whichever comes first). Lives in
+   * state rather than a ref because the legend needs to re-render to show
+   * which row is "active" while its tracer is running.
+   */
+  const [tracingBadge, setTracingBadge] = useState<AlertBadge | null>(null);
   /** Camper-filed reports currently on screen — counted in the status chip. */
   const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
 
@@ -1081,17 +1096,63 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // says nothing — while costing one extra pass over every polygon.
       const halo = overview ? null : buildHalo(collection, centreLat, currentZoom, minDim);
 
-      const fill = L.geoJSON(collection as any, {
-        pane: 'boundariesPane',
-        renderer,
-        // Taps pass straight through to the map, which drops the destination
-        // pin and reads this parcel's rules out of the collection in memory.
-        interactive: false,
-        // Razor-thin slivers are filtered out here too, so the fill never draws
-        // a hairline splinter the halo already refused to outline.
-        filter: (feature: any) => minDim(feature.geometry) >= sliverCutoff,
-        style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview)
-      } as RenderedGeoJSONOptions);
+      /**
+       * DISSOLVED FILL. Same-org, same-rule parcels are merged into a single
+       * filled polygon, with a different group's polygons (private land, a
+       * water body, a different agency) drawn on top as their own dissolved
+       * fills. A 50-parcel Crown-land mass with a private inholding in the
+       * middle now draws as one big Crown-land shape with the inholding
+       * sitting on top in its own colour, rather than fifty-one abutting
+       * outlines that look like a topological map.
+       *
+       * Groups are sorted by area, smallest first, so the larger surrounds
+       * are on the bottom of the layer stack and any smaller inclusions
+       * (no-go zones, different agencies) paint on top. The natural stack
+       * then is: large BLM/USFS mass on the bottom, smaller private parcel
+       * on top — which is what the visual calls for without a Z-order knob.
+       */
+      const dissolved = dissolvedFill(
+        collection.features as { properties?: Record<string, any>; geometry: unknown }[],
+        dissolveKey,
+        3e-4
+      );
+      const dissolvedSorted = [...dissolved].sort((a, b) => {
+        const ea = a.geometry as { type: string; coordinates: any };
+        const eb = b.geometry as { type: string; coordinates: any };
+        const ringOf = (g: { type: string; coordinates: any }): number[][] => {
+          if (g.type === 'Polygon') return g.coordinates[0] as number[][];
+          if (g.type === 'MultiPolygon') return (g.coordinates[0] as number[][][])[0];
+          return [];
+        };
+        const ringA = ringOf(ea);
+        const ringB = ringOf(eb);
+        const bboxArea = (r: number[][]): number => {
+          let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+          r.forEach(([lon, lat]) => {
+            if (lon < minLon) minLon = lon;
+            if (lon > maxLon) maxLon = lon;
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+          });
+          return (maxLon - minLon) * (maxLat - minLat);
+        };
+        return bboxArea(ringA) - bboxArea(ringB);
+      });
+
+      const fill = L.geoJSON(
+        { type: 'FeatureCollection', features: dissolvedSorted } as any,
+        {
+          pane: 'boundariesPane',
+          renderer,
+          // Taps pass straight through to the map, which drops the destination
+          // pin and reads this parcel's rules out of the collection in memory.
+          interactive: false,
+          // Razor-thin slivers are filtered out here too, so the fill never draws
+          // a hairline splinter the halo already refused to outline.
+          filter: (feature: any) => minDim(feature.geometry) >= sliverCutoff,
+          style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview)
+        } as RenderedGeoJSONOptions
+      );
 
       if (pane) {
         pane.style.filter =
@@ -1605,7 +1666,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const group = L.layerGroup([]);
       const present = new Set<AlertBadge>();
       // Diffuse glyph layers, wired to their patterns once the paths exist.
-      const glyphTargets: { geo: L.GeoJSON; badge: 'heat' | 'smoke' | 'winter' | 'wind' }[] = [];
+      const glyphTargets: { geo: L.GeoJSON; badge: 'heat' | 'smoke' | 'winter' | 'wind' | 'storm' }[] = [];
 
       placeable.forEach((alert) => {
         const badge = alertBadge(alert);
@@ -1614,14 +1675,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         const color = BADGE_COLOR[badge];
 
         if (isDiffuse(badge)) {
-          // ONE red (or grey / cyan) cloud over the whole warned area. No
-          // stroke, so the internal seams between the alert's forecast-region
-          // polygons never draw; the per-path CSS blur (set on `_path` AFTER
-          // the layer is in the map, see below) feathers the outer edge and
-          // hides any hairline sliver between them — the area reads as a
-          // single cloud. The blur is per element so the browser caches each
-          // cloud as its own compositing layer, and a pan/zoom becomes a
-          // translate of those layers rather than a full re-blur every frame.
+          // The cloud is a heavily-blurred fill of the alert's actual
+          // polygon. Two things that look like one in the result:
+          //
+          //   1. SOFT EDGES. The 22px CSS blur feathers the polygon edge
+          //      out so far that the original boundary is no longer visible.
+          //      A heat advisory that used to draw as a coloured overlay
+          //      with hard corners now reads as a soft wash — atmospheric,
+          //      not cartographic. fillOpacity is bumped to 0.45 to keep
+          //      the centre of the cloud readable after the blur spreads
+          //      the colour across a much larger screen area.
+          //
+          //   2. JOINING NEARBY ALERTS. Two heat polygons that are within
+          //      ~50 screen pixels of each other (zoomed out enough that
+          //      the blur radius covers the gap) merge into one mass. This
+          //      is the "generalised" view the legend now describes: a
+          //      single big heat region instead of three small ones.
+          //      Zooming in separates them again as the blur no longer
+          //      covers the gap.
+          //
+          // The blur is per element via inline style (not on the pane),
+          // so the browser caches each cloud as its own compositing layer
+          // and a pan/zoom is a translate of those layers rather than a
+          // full re-blur every frame.
           const cloudGeo = L.geoJSON(alert.geometry as any, {
             pane: 'warningPane',
             renderer: warningRenderer,
@@ -1630,20 +1706,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               stroke: false,
               fill: true,
               fillColor: color,
-              fillOpacity: 0.3
+              fillOpacity: 0.45
             }
           } as RenderedGeoJSONOptions);
           group.addLayer(cloudGeo);
-          // The path elements now exist. Apply the per-element blur via
-          // inline style. Doing it HERE — after the layer is in the group,
-          // and crucially before the group is added to the map (so paths
-          // are in their final state when the first paint happens) — is
-          // what keeps the cold-start case working. The previous attempt
-          // walked `_path` before the layer was added and silently set
-          // nothing.
           cloudGeo.eachLayer((sub) => {
             const el = (sub as unknown as { _path?: SVGPathElement })._path;
-            if (el) el.style.filter = 'blur(6px)';
+            if (el) el.style.filter = 'blur(22px)';
           });
           // The same area, filled with the tiled family glyph — thermometers
           // for heat — in the crisp glyph pane above the blur. Wired to its
@@ -1655,7 +1724,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             style: { stroke: false, fill: true, fillOpacity: 1 }
           } as RenderedGeoJSONOptions);
           group.addLayer(glyphGeo);
-          glyphTargets.push({ geo: glyphGeo, badge: badge as 'heat' | 'smoke' | 'winter' | 'wind' });
+          glyphTargets.push({ geo: glyphGeo, badge: badge as 'heat' | 'smoke' | 'winter' | 'wind' | 'storm' });
         } else {
           // A faint hint of the area, so the icon has context, and the tappable
           // icon itself in the interactive pane above.
@@ -2015,6 +2084,124 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [center, zoom, isMapReady]);
 
+  /**
+   * Center the map on a warning of `badge` and trace its perimeter once.
+   *
+   * WHAT IT DOES, IN ORDER:
+   *   1. Pick the most prominent alert of that family in the current view.
+   *      "Most prominent" = largest bbox area, which is the alert the user
+   *      most plausibly meant by tapping its chip.
+   *   2. Pan the map to the alert's centroid at the current zoom (no zoom
+   *      change — that's the user's choice).
+   *   3. Draw the alert's actual perimeter as a stroked SVG path, with
+   *      `stroke-dasharray` set to its full length and `stroke-dashoffset`
+   *      animated from that length to 0 over 1.5s. The line "draws itself"
+   *      around the alert, then is removed.
+   *
+   * The tracer uses the same colour as the cloud (BADGE_COLOR) so the
+   * user's eye links the chip they tapped to the area on the map without
+   * having to read a label.
+   */
+  const focusWarning = useCallback((badge: AlertBadge) => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Pick the largest alert of this family in view. The bbox area is a
+    // rough proxy for "the one that matters most" without going through a
+    // full polygon-area calculation.
+    const candidates = hazards
+      .filter((a) => alertBadge(a) === badge && a.centroid && a.geometry)
+      .map((a) => {
+        const bbox = geometryBbox(a.geometry);
+        const extent = bbox
+          ? (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+          : 0;
+        return { alert: a, extent };
+      })
+      .sort((a, b) => b.extent - a.extent);
+
+    const chosen = candidates[0]?.alert;
+    if (!chosen || !chosen.centroid || !chosen.geometry) return;
+
+    // Clear any in-flight tracer from a previous tap. New tap wins, no
+    // overlapping animations.
+    if (tracerRef.current) {
+      try { map.removeLayer(tracerRef.current); } catch { /* detached */ }
+      tracerRef.current = null;
+    }
+
+    // Pan, but only if it actually moves the map. The flyTo guard above
+    // would not help here because the user explicitly asked for a pan.
+    map.panTo(chosen.centroid, { animate: true, duration: 0.5 });
+
+    // Build the tracer as a non-interactive SVG layer in its own pane
+    // above the cloud so the line is visible over the blurred fill.
+    if (!map.getPane('tracerPane')) {
+      map.createPane('tracerPane');
+      const pane = map.getPane('tracerPane');
+      if (pane) {
+        pane.style.zIndex = '620';
+        pane.style.pointerEvents = 'none';
+      }
+    }
+    const tracerGeo = L.geoJSON(chosen.geometry as any, {
+      pane: 'tracerPane',
+      renderer: L.svg({ pane: 'tracerPane', padding: 0.2 }),
+      interactive: false,
+      style: {
+        stroke: BADGE_COLOR[badge],
+        weight: 3,
+        opacity: 0.9,
+        fill: false,
+        // lineCap/Join matter for the visual: a rounded line reads as a
+        // continuous tracer sweep, while butt caps look like a dashed line
+        // marching in.
+        lineCap: 'round',
+        lineJoin: 'round',
+        // We will set stroke-dasharray and animate stroke-dashoffset
+        // imperatively once the path exists (see below).
+      }
+    } as unknown as RenderedGeoJSONOptions).addTo(map);
+
+    // Compute the perimeter in screen pixels to set stroke-dasharray. The
+    // exact value doesn't matter much for the visual — it just needs to be
+    // at least as long as the longest path in the alert, so a 0 → -L
+    // sweep fully reveals it.
+    let perimeter = 0;
+    tracerGeo.eachLayer((sub) => {
+      const el = (sub as unknown as { _path?: SVGPathElement })._path;
+      if (!el) return;
+      try {
+        const len = el.getTotalLength();
+        if (len > perimeter) perimeter = len;
+      } catch { /* non-renderable path; skip */ }
+    });
+
+    if (perimeter > 0) {
+      tracerGeo.eachLayer((sub) => {
+        const el = (sub as unknown as { _path?: SVGPathElement })._path;
+        if (!el) return;
+        el.style.setProperty('--tracer-len', String(perimeter));
+        el.style.strokeDasharray = `${perimeter}`;
+        el.style.strokeDashoffset = `${perimeter}`;
+        el.style.animation = 'wl-tracer-sweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+      });
+    }
+
+    tracerRef.current = tracerGeo;
+    setTracingBadge(badge);
+
+    // One-shot: clear the tracer after the animation finishes. Keeping it
+    // on screen would be visual noise; the user already saw where to look.
+    window.setTimeout(() => {
+      if (tracerRef.current === tracerGeo && mapRef.current) {
+        try { mapRef.current.removeLayer(tracerGeo); } catch { /* detached */ }
+        tracerRef.current = null;
+      }
+      setTracingBadge((current) => (current === badge ? null : current));
+    }, 1700);
+  }, [hazards]);
+
   const statusText = useCallback((): string => {
     if (!showBoundaries) return 'Land boundaries hidden';
     if (zoomTooFar) return 'Zoom in for land boundaries';
@@ -2195,20 +2382,39 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               </span>
             </div>
             <ul className="space-y-1">
-              {warningBadges.map((b) => (
-                <li key={b} className="flex items-center gap-2">
-                  <span
-                    className="w-3.5 h-3.5 rounded-sm shrink-0 border border-slate-950/50"
-                    style={{ background: BADGE_COLOR[b] }}
-                  />
-                  <span className="text-xs leading-none" aria-hidden="true">
-                    {WARNING_EMOJI[b]}
-                  </span>
-                  <span className="text-[10px] text-slate-200 font-semibold">
-                    {WARNING_LABEL[b]}
-                  </span>
-                </li>
-              ))}
+              {warningBadges.map((b) => {
+                const isTracing = tracingBadge === b;
+                return (
+                  <li key={b}>
+                    <button
+                      type="button"
+                      onClick={() => focusWarning(b)}
+                      aria-label={`Centre the map on ${WARNING_LABEL[b]} warning and trace it`}
+                      className={`w-full flex items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-moook ${
+                        isTracing
+                          ? 'bg-amber-500/15 ring-1 ring-amber-400/40'
+                          : 'hover:bg-slate-800/60'
+                      }`}
+                    >
+                      <span
+                        className="w-3.5 h-3.5 rounded-sm shrink-0 border border-slate-950/50"
+                        style={{ background: BADGE_COLOR[b] }}
+                      />
+                      <span className="text-xs leading-none" aria-hidden="true">
+                        {WARNING_EMOJI[b]}
+                      </span>
+                      <span className="text-[10px] text-slate-200 font-semibold flex-1">
+                        {WARNING_LABEL[b]}
+                      </span>
+                      {isTracing && (
+                        <span className="text-[9px] text-amber-300 font-bold uppercase tracking-wider">
+                          tracing
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
             {unmappableHazards > 0 && (
               <p className="text-[9px] text-amber-300/80 leading-tight mt-1.5">
@@ -2218,7 +2424,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             )}
             <p className="text-[9px] text-slate-500 leading-tight mt-1">
               Shaded, animated clouds are area warnings — tap a spot inside one for
-              details. Fire, flood and storm show a tappable icon instead.
+              details. Fire and flood show a tappable icon instead. Tap a row above to
+              centre the map on that warning.
             </p>
           </div>
         )}

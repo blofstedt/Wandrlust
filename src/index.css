@@ -183,6 +183,26 @@
   to   { opacity: 0; transform: translateY(-10px) scale(0.96); }
 }
 
+/**
+ * The tracer that runs around a warning's perimeter when the user taps
+ * its chip in the legend. The path is set up with stroke-dasharray equal
+ * to its full length and stroke-dashoffset equal to the same value, so
+ * it draws as nothing at frame 0. The animation then sweeps the offset
+ * to 0, "drawing" the line over 1.5s. A 200ms hold at full opacity
+ * gives the eye a beat to land on it before the fade.
+ *
+ * The animation is `forwards` so the final state (offset 0, full
+ * visibility) is held at the end — but the MapComponent removes the
+ * tracer layer entirely after 1.7s, so the user never sees a stale
+ * outline sitting on the map.
+ */
+@keyframes wl-tracer-sweep {
+  0%   { stroke-dashoffset: var(--tracer-len, 1000); opacity: 0.9; }
+  10%  { opacity: 0.9; }
+  90%  { stroke-dashoffset: 0; opacity: 0.9; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
 /* ====================================================================
    Utilities
    ==================================================================== */
@@ -368,4 +388,4 @@
   .border-slate-700 { border-color: rgb(148 163 184) !important; }
   .border-slate-800 { border-color: rgb(100 116 139) !important; }
   .text-slate-500   { color: rgb(148 163 184) !important; }
-}
+}
