@@ -44,7 +44,10 @@
  * viewports share the same answer.
  */
 import type { Express, Request, Response } from 'express';
-import { bboxIntersectsCoverage } from '../src/config/coverage';
+// The `.js` here is load-bearing, same as in weatherRoutes.ts: under strict
+// ESM on Vercel an extensionless relative import throws ERR_MODULE_NOT_FOUND
+// at load time, which takes the whole fire endpoint down with it.
+import { bboxIntersectsCoverage } from '../src/config/coverage.js';
 import { distanceKm } from './cellSources.js';
 
 interface CacheEntry { at: number; body: unknown; }
@@ -159,6 +162,16 @@ const fetchWfigsPerimeters = async (
   // bbox-vs-bbox filter, accepting a few extra perimeters that just
   // touch the edge — over-inclusion here is fine, the client clips.
   const params = new URLSearchParams({
+    /**
+     * `where` IS NOT OPTIONAL, EVEN WITH A GEOMETRY FILTER.
+     *
+     * An ArcGIS FeatureServer query with a geometry but no where clause is
+     * rejected outright — "Unable to perform query" — and the reply is a 200
+     * with an `error` object inside it, which this code reads as "no fires".
+     * Every US perimeter request came back empty for that reason. The other
+     * ArcGIS callers in this repo (server/boundaryRoutes.ts) all send `1=1`.
+     */
+    where: '1=1',
     geometry: JSON.stringify({
       xmin: minLon, ymin: minLat, xmax: maxLon, ymax: maxLat,
       spatialReference: { wkid: 4326 }
@@ -169,9 +182,13 @@ const fetchWfigsPerimeters = async (
     outSR: '4326',
     f: 'json',
     returnGeometry: 'true',
-    outFields: 'attr_IncidentName,attr_IncidentSize,attr_PercentContained,' +
-               'attr_POOState,attr_POOCounty,attr_FireDiscoveryDateTime,' +
-               'attr_InitialLatitude,attr_InitialLongitude,OBJECTID,GlobalID',
+    /**
+     * All fields, not a named list. NIFC renames and re-prefixes columns
+     * between service versions, and one stale name in an explicit `outFields`
+     * makes the whole query fail — which looks exactly like "there are no
+     * fires". The extra attributes cost a fraction of what the geometry does.
+     */
+    outFields: '*',
     resultRecordCount: '500'
   });
   const url = `${WFIGS_PERIMETERS}?${params.toString()}`;
@@ -183,7 +200,11 @@ const fetchWfigsPerimeters = async (
     throw new Error(`WFIGS responded ${res.status}`);
   }
   const data = await res.json() as EsriQueryResponse;
-  if (data.error || !Array.isArray(data.features)) return [];
+  // ArcGIS reports query errors inside a 200. Swallowing that reads as "no
+  // fires burning", which is the one answer this app must never give by
+  // accident — surface it so it lands in the response's `meta.errors`.
+  if (data.error) throw new Error(`WFIGS query rejected: ${data.error.message}`);
+  if (!Array.isArray(data.features)) return [];
 
   const out: FireFeatureProps[] = [];
   for (const f of data.features) {

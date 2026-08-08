@@ -47,6 +47,19 @@ export interface HazardAlert {
   /** `[lat, lon]` centre of `geometry`. Present exactly when `geometry` is. */
   centroid?: [number, number];
   /**
+   * What `geometry` actually is.
+   *
+   *   'polygon' — the agency drew this shape for this alert. A storm-based
+   *               warning: the area is the hazard.
+   *   'zone'    — the alert named forecast zones and we drew those zones'
+   *               published outlines. Heat, cold, smoke and wind products are
+   *               all issued this way. The shape is the region under warning,
+   *               NOT the edge of the hazard, and the UI says so.
+   *
+   * Absent when the alert could not be placed at all.
+   */
+  areaSource?: 'polygon' | 'zone';
+  /**
    * How many separate forecast regions this one alert covers.
    *
    * Environment Canada publishes an alert once PER REGION, so a snowfall

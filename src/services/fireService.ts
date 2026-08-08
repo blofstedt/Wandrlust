@@ -67,6 +67,60 @@ interface FireResponse {
   meta: FireResponseMeta;
 }
 
+/**
+ * THE WIRE FORMAT IS NOT THE APP FORMAT. NORMALISE, DON'T ASSUME.
+ *
+ * `/api/fires` speaks GeoJSON, so its centroid is a `[lon, lat]` pair — the
+ * order GeoJSON uses. `ActiveFire.centroid` is `{ lat, lon }`, because callers
+ * read it by name and `centroid[0]` at a call site is how you end up plotting a
+ * fire in the Pacific.
+ *
+ * Nothing translated between the two. Every consumer read `centroid.lat` off an
+ * array and got `undefined`: the proximity check compared NaN and found no
+ * fires ever, and the map handed Leaflet `[undefined, undefined]` for the first
+ * Canadian fire in view, which threw and took the WHOLE fire layer down with
+ * it — perimeters included. That is why no fires appeared.
+ *
+ * Fires without a usable position are dropped rather than placed at [0,0].
+ */
+const empty = (errors: string[]): FireResponse => ({
+  type: 'FeatureCollection',
+  features: [],
+  meta: { fetchedAt: new Date().toISOString(), errors }
+});
+
+const readCentroid = (raw: unknown): { lat: number; lon: number } | null => {
+  if (Array.isArray(raw) && raw.length >= 2) {
+    const [lon, lat] = raw as [number, number];
+    if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+    return null;
+  }
+  if (raw && typeof raw === 'object') {
+    const { lat, lon } = raw as { lat?: number; lon?: number };
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      return { lat: lat as number, lon: lon as number };
+    }
+  }
+  return null;
+};
+
+const normalise = (data: FireResponse): FireResponse => {
+  const features: FireResponse['features'] = [];
+  for (const feature of data.features) {
+    const props = feature?.properties;
+    const geometry = feature?.geometry ?? props?.geometry;
+    if (!props || !geometry) continue;
+    const centroid = readCentroid((props as unknown as { centroid: unknown }).centroid);
+    if (!centroid) continue;
+    features.push({
+      type: 'Feature',
+      geometry,
+      properties: { ...props, centroid, geometry }
+    });
+  }
+  return { ...data, features };
+};
+
 /* ------------------------------------------------------------------ */
 /* Cache                                                               */
 /* ------------------------------------------------------------------ */
@@ -126,18 +180,17 @@ export const fetchActiveFires = async (
 
   try {
     const res = await fetch(`/api/fires?${params.toString()}`, { signal });
-    if (!res.ok) return { type: 'FeatureCollection', features: [], meta: { fetchedAt: new Date().toISOString(), errors: [`HTTP ${res.status}`] } };
+    if (!res.ok) return empty([`HTTP ${res.status}`]);
     const data = await res.json() as FireResponse;
     if (data?.type !== 'FeatureCollection' || !Array.isArray(data.features)) {
-      return { type: 'FeatureCollection', features: [], meta: { fetchedAt: new Date().toISOString(), errors: ['malformed response'] } };
+      return empty(['malformed response']);
     }
-    memPut(key, data);
-    return data;
+    const normalised = normalise(data);
+    memPut(key, normalised);
+    return normalised;
   } catch (error) {
-    if ((error as Error)?.name === 'AbortError') {
-      return { type: 'FeatureCollection', features: [], meta: { fetchedAt: new Date().toISOString(), errors: ['aborted'] } };
-    }
-    return { type: 'FeatureCollection', features: [], meta: { fetchedAt: new Date().toISOString(), errors: [(error as Error).message] } };
+    if ((error as Error)?.name === 'AbortError') return empty(['aborted']);
+    return empty([(error as Error).message]);
   }
 };
 

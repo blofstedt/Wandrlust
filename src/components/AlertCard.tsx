@@ -86,6 +86,22 @@ export const AlertCard: React.FC<AlertCardProps> = ({ alert, onClose }) => {
           </div>
         )}
 
+        {/*
+          What the shape on the map actually means.
+
+          Heat, cold, smoke and wind products name forecast REGIONS rather than
+          drawing a boundary around the hazard, so the area shown is the whole
+          region under warning — the hazard inside it is not evenly spread and
+          its real edge is not known. Saying so is the difference between
+          reporting a warning and implying a measurement.
+        */}
+        {alert.areaSource === 'zone' && (
+          <p className="px-3.5 pb-2 text-[10px] text-slate-500 leading-snug">
+            The shaded area is the forecast region this warning names, not a
+            measured edge of the hazard itself.
+          </p>
+        )}
+
         <div className="flex items-center justify-between gap-2 px-3.5 py-2 border-t border-slate-800 text-[10px] text-slate-500">
           <span className="truncate">{alert.sender}</span>
           {until && (

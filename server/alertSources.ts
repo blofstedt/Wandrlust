@@ -41,6 +41,23 @@ export interface NormalisedAlert {
   geometry?: unknown;
   centroid?: [number, number];
   /**
+   * Where `geometry` came from.
+   *
+   *   'polygon' — the agency drew this exact shape for this exact alert.
+   *   'zone'    — the alert named forecast zones instead, and we fetched those
+   *               zones' published outlines. Still the agency's own geometry,
+   *               but it is the shape of the ZONE, not of the hazard inside it.
+   *
+   * The UI must say which, because a zone outline is a coarser claim and the
+   * user is entitled to know that before deciding where to sleep.
+   */
+  areaSource?: 'polygon' | 'zone';
+  /**
+   * NWS zone ids this alert names (`CAZ070`, `MTC031`, …), kept so the
+   * geometry can be resolved in one batched lookup after the alerts are in.
+   */
+  zoneIds?: string[];
+  /**
    * How many separate forecast regions this one alert covers.
    *
    * Only ECCC sets it, because only ECCC fans a single alert out into one row
@@ -167,9 +184,29 @@ export const alertLocation = (
   return { geometry, centroid: [sumLat / count, sumLon / count] };
 };
 
+/**
+ * The zone ids an NWS alert names, pulled out of `affectedZones`.
+ *
+ * The feed gives full URLs — `https://api.weather.gov/zones/forecast/CAZ070` —
+ * and the batch zone lookup wants bare ids.
+ */
+const zoneIdsOf = (p: any): string[] => {
+  const zones = p?.affectedZones;
+  if (!Array.isArray(zones)) return [];
+  const out: string[] = [];
+  for (const url of zones) {
+    if (typeof url !== 'string') continue;
+    const id = url.split('/').pop()?.trim();
+    // Zone ids are six characters: two-letter state, Z or C, three digits.
+    if (id && /^[A-Z]{2}[ZC]\d{3}$/.test(id)) out.push(id);
+  }
+  return out;
+};
+
 export const nwsAlertToHazard = (feature: any): NormalisedAlert => {
   const p = feature?.properties ?? {};
   const event = p.event ?? 'Weather alert';
+  const located = alertLocation(feature);
   return {
     id: String(p.id ?? feature?.id ?? `${event}-${p.effective ?? ''}`),
     family: classifyHazard(event),
@@ -185,8 +222,176 @@ export const nwsAlertToHazard = (feature: any): NormalisedAlert => {
     effective: p.effective ?? p.onset ?? null,
     expires: p.expires ?? p.ends ?? null,
     source: 'nws',
-    ...(alertLocation(feature) ?? {})
+    zoneIds: zoneIdsOf(p),
+    ...(located ?? {}),
+    ...(located ? { areaSource: 'polygon' as const } : {})
   };
+};
+
+/* ---------------------------------------------------------------------------
+ * NWS ZONE GEOMETRY — the reason heat, smoke and cold never reached the map
+ * ---------------------------------------------------------------------------
+ *
+ * NWS issues two kinds of product:
+ *
+ *   Storm-based  Tornado, Severe Thunderstorm, Flash Flood. A polygon is drawn
+ *                for the specific storm, and it arrives in the alert's
+ *                `geometry`.
+ *
+ *   Zone-based   Heat Advisory, Excessive Heat Warning, Wind Chill / Extreme
+ *                Cold, Winter Storm, Air Quality, Red Flag, Freeze, High Wind.
+ *                `geometry` is NULL. The alert names the forecast zones it
+ *                covers, by URL, in `affectedZones`.
+ *
+ * Every diffuse family this map draws as a cloud — smoke, heat, cold, wind —
+ * is zone-based, so every one of them arrived with a null geometry, was
+ * correctly refused a guessed position, and was silently counted as
+ * "unplaceable". The map showed almost nothing while the feed was working
+ * perfectly.
+ *
+ * The fix is not to invent a location. It is to go and fetch the zones the
+ * alert itself names. `api.weather.gov/zones?id=…&include_geometry=true`
+ * returns the published outline of each zone in one batched request, so an
+ * alert over twenty counties costs one lookup, not twenty.
+ *
+ * The result is flagged `areaSource: 'zone'` all the way to the UI. A zone
+ * outline is a coarser claim than a drawn polygon and the app says so out loud
+ * rather than letting the two look identical.
+ */
+
+/** Zone outlines, cached hard — zone boundaries change on a scale of years. */
+const zoneGeometryCache = new Map<string, { at: number; geometry: unknown | null }>();
+const ZONE_TTL_MS = 24 * 60 * 60 * 1000;
+const ZONE_CACHE_MAX = 4000;
+/** The API takes a list; 50 keeps the URL comfortably short. */
+const ZONE_BATCH = 50;
+/**
+ * Most zone lookups a single request will do.
+ *
+ * A winter morning across six states can name well over a thousand distinct
+ * zones. Fetching all of them would blow the 30-second serverless budget and
+ * hammer NWS, so we take the first 300 and leave the rest unresolved — they
+ * stay in the response as alerts the app could not place, which the UI already
+ * reports, and the cache means the next viewport picks up where this one
+ * stopped rather than starting over.
+ */
+const ZONE_MAX_BATCHES = 6;
+
+const rememberZone = (id: string, geometry: unknown | null): void => {
+  if (zoneGeometryCache.size >= ZONE_CACHE_MAX) {
+    const oldest = zoneGeometryCache.keys().next().value;
+    if (oldest) zoneGeometryCache.delete(oldest);
+  }
+  zoneGeometryCache.set(id, { at: Date.now(), geometry });
+};
+
+const cachedZone = (id: string): { geometry: unknown | null } | null => {
+  const hit = zoneGeometryCache.get(id);
+  if (!hit) return null;
+  if (Date.now() - hit.at > ZONE_TTL_MS) { zoneGeometryCache.delete(id); return null; }
+  return hit;
+};
+
+/**
+ * Outlines for a set of zone ids, batched.
+ *
+ * A zone that cannot be fetched is cached as `null` so a feed outage does not
+ * turn into a lookup storm on every pan. Never throws.
+ */
+const fetchZoneGeometries = async (ids: string[]): Promise<Map<string, unknown>> => {
+  const found = new Map<string, unknown>();
+  const missing: string[] = [];
+
+  for (const id of ids) {
+    const hit = cachedZone(id);
+    if (hit) {
+      if (hit.geometry) found.set(id, hit.geometry);
+    } else {
+      missing.push(id);
+    }
+  }
+  if (missing.length === 0) return found;
+
+  const batches: string[][] = [];
+  for (let i = 0; i < missing.length && batches.length < ZONE_MAX_BATCHES; i += ZONE_BATCH) {
+    batches.push(missing.slice(i, i + ZONE_BATCH));
+  }
+  const requested = new Set(batches.flat());
+
+  const results = await Promise.all(batches.map((batch) => getJson(
+    `${NWS_BASE}/zones?id=${batch.join(',')}&include_geometry=true&limit=${ZONE_BATCH}`,
+    12000
+  )));
+
+  const seen = new Set<string>();
+  for (const data of results) {
+    if (!Array.isArray(data?.features)) continue;
+    for (const feature of data.features) {
+      const id = feature?.properties?.id;
+      if (typeof id !== 'string' || !feature?.geometry) continue;
+      seen.add(id);
+      rememberZone(id, feature.geometry);
+      found.set(id, feature.geometry);
+    }
+  }
+  /**
+   * A zone we ASKED for and did not get back is remembered as "no outline
+   * available", so we ask once rather than on every viewport change. A zone we
+   * never got round to asking about (past the batch cap) is deliberately NOT
+   * cached — it is unresolved, not unavailable, and the next request should
+   * still try it.
+   */
+  for (const id of requested) if (!seen.has(id)) rememberZone(id, null);
+
+  return found;
+};
+
+/** Every polygon ring in a geometry, flattened for merging. */
+const polygonParts = (geometry: any): any[] => {
+  if (!geometry) return [];
+  if (geometry.type === 'Polygon') return [geometry.coordinates];
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates;
+  return [];
+};
+
+/**
+ * Give zone-based alerts the outline of the zones they name.
+ *
+ * Alerts that already carry a polygon are returned untouched. Alerts we still
+ * cannot place — no zones, or a zone lookup that failed — are returned
+ * unplaced, and the UI keeps counting them as unplaceable. That count staying
+ * honest is the point; this just makes it small.
+ */
+export const resolveNwsZoneGeometry = async (
+  alerts: NormalisedAlert[]
+): Promise<NormalisedAlert[]> => {
+  const needsGeometry = alerts.filter((a) => !a.geometry && (a.zoneIds?.length ?? 0) > 0);
+  if (needsGeometry.length === 0) return alerts;
+
+  const wanted = [...new Set(needsGeometry.flatMap((a) => a.zoneIds ?? []))];
+  const outlines = await fetchZoneGeometries(wanted);
+  if (outlines.size === 0) return alerts;
+
+  return alerts.map((alert) => {
+    if (alert.geometry || !alert.zoneIds?.length) return alert;
+
+    const parts = alert.zoneIds.flatMap((id) => polygonParts(outlines.get(id)));
+    if (parts.length === 0) return alert;
+
+    const geometry = { type: 'MultiPolygon', coordinates: parts };
+    const placed = alertLocation({ geometry });
+    if (!placed) return alert;
+
+    return {
+      ...alert,
+      geometry,
+      centroid: placed.centroid,
+      areaSource: 'zone' as const,
+      // How many zones this alert actually covers, so the UI can say
+      // "6 forecast zones" the same way it does for Environment Canada.
+      zoneCount: alert.zoneCount ?? alert.zoneIds.length
+    };
+  });
 };
 
 /**
@@ -259,6 +464,7 @@ export const isEndedEcccAlert = (feature: any): boolean => {
 
 export const ecccAlertToHazard = (feature: any): NormalisedAlert => {
   const p = feature?.properties ?? {};
+  const located = alertLocation(feature);
 
   const event = pick(p, ['alert_name_en', 'alert_short_name_en']) ??
     // Last resort only. If we ever land here the title reads like the old bug,
@@ -293,7 +499,11 @@ export const ecccAlertToHazard = (feature: any): NormalisedAlert => {
     effective: pick(p, ['effective_datetime', 'event_start_datetime', 'effective']) ?? null,
     expires: pick(p, ['expiration_datetime', 'event_end_datetime', 'expires']) ?? null,
     source: 'eccc',
-    ...(alertLocation(feature) ?? {})
+    ...(located ?? {}),
+    // ECCC publishes the forecast region's own outline with every alert, which
+    // is the same kind of claim as an NWS zone: the region warned, not a shape
+    // drawn around the hazard.
+    ...(located ? { areaSource: 'zone' as const } : {})
   };
 };
 
@@ -374,6 +584,29 @@ const SEVERITY_ORDER: Record<string, number> = {
 /** Alerts active at a single point (used by the per-site weather lookup). */
 export const fetchNwsAlertsAtPoint = async (lat: number, lon: number): Promise<NormalisedAlert[]> => {
   const data = await getJson(`${NWS_BASE}/alerts/active?point=${lat.toFixed(4)},${lon.toFixed(4)}`);
+  return Array.isArray(data?.features) ? data.features.map(nwsAlertToHazard) : [];
+};
+
+/**
+ * Every actual alert in force across a set of states.
+ *
+ * The NWS API has no bbox query — it answers for one point, or for a list of
+ * states. Asking by state is how a viewport gets the alerts that are on screen
+ * but not directly under its centre; the caller filters the result back down to
+ * the real viewport once the geometry is attached.
+ *
+ * Returns an empty list (never throws) when the feed cannot be reached; the
+ * caller reports the outage rather than rendering silence as "all clear".
+ */
+export const fetchNwsAlertsForStates = async (
+  states: string[]
+): Promise<NormalisedAlert[]> => {
+  if (states.length === 0) return [];
+  const data = await getJson(
+    `${NWS_BASE}/alerts/active?status=actual&message_type=alert` +
+    `&area=${states.join(',')}&limit=500`,
+    15000
+  );
   return Array.isArray(data?.features) ? data.features.map(nwsAlertToHazard) : [];
 };
 
