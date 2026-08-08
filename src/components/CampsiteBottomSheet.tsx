@@ -18,6 +18,7 @@ import type { CellCoverage } from '../types';
 import { fetchRulesAtPoint, fetchHazardsAtPoint, checkIn, PointRules, PointHazard } from '../services/dataService';
 import { HazardAlertPanel } from './HazardAlertPanel';
 import { CellCoverageCard } from './TripConditions';
+import { NearbyFiresCard } from './NearbyFiresCard';
 import { SubmissionChip } from './SubmissionChip';
 import { ReportContentSheet } from './ReportContentSheet';
 import { useAuth } from '../contexts/AuthContext';
@@ -234,6 +235,19 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
               <HazardAlertPanel alerts={weather.alerts} pointHazards={hazards} compact />
             </section>
 
+            {/*
+              Active fire proximity. Same component the destination
+              sheet uses — a saved campsite is a pin too, and the
+              user who is opening this card deserves the same
+              "fire X km away" line. The card renders nothing if
+              there are no fires in range, so a quiet area is a
+              quiet section, not a "no fires found" message.
+            */}
+            <NearbyFiresCard
+              latitude={campsite.latitude}
+              longitude={campsite.longitude}
+            />
+
             <section>
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                 Are you here? Report capacity
@@ -440,4 +454,4 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
       />
     </div>
   );
-};
+};

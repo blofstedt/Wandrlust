@@ -8,6 +8,7 @@ import type { WeatherSnapshot } from '../services/weatherService';
 import type { RouteResult } from '../services/routingService';
 import { CellCoverageCard, ArrivalWeatherCard } from './TripConditions';
 import { HazardAlertPanel } from './HazardAlertPanel';
+import { NearbyFiresCard } from './NearbyFiresCard';
 import { haptic } from '../utils/animation';
 import { directionsAppName } from '../utils/handoff';
 
@@ -228,6 +229,20 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
             )}
 
             {/*
+              Active fire proximity. Reads from the same fire service
+              the map uses, but the bbox is a small one around this
+              point and the result is filtered to 25 km. The user
+              gets the heads-up regardless of the showFires layer
+              state — the whole point of the layer being a toggle is
+              that the on-map marker is optional, but the safety
+              context on a pin the user is considering is not.
+            */}
+            <NearbyFiresCard
+              latitude={destination.latitude}
+              longitude={destination.longitude}
+            />
+
+            {/*
               The land, and what it permits.
 
               Read from the boundary polygon already on screen, which is why
@@ -403,4 +418,4 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
       </div>
     </div>
   );
-};
+};
