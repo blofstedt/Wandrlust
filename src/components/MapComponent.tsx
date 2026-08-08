@@ -34,7 +34,7 @@ import {
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
-  BoundingBox, COVERAGE_OUTLINE, WORLD_RING, BOUNDARY_MIN_ZOOM,
+  BoundingBox, COVERAGE_BBOX, COVERAGE_OUTLINE, BOUNDARY_MIN_ZOOM,
   BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
@@ -115,6 +115,37 @@ const UNDERLAY_NATIVE_ZOOM = 8;
  * copy while the others sat there unmasked.
  */
 const WORLD_BOUNDS = L.latLngBounds([-85.05, -180], [85.05, 180]);
+
+/**
+ * The rectangle the user can pan inside and cannot pan out of.
+ *
+ * Reads from the same `COVERAGE_BBOX` that gates data fetches, so
+ * the pannable area and the data area are the same thing — the
+ * user cannot drag to a spot that says "no data here" because
+ * there is no spot to drag to. The result is fewer tile fetches
+ * (everything outside the box is unreachable, the tile layer
+ * never sees a request for it), no need for the gray-outside
+ * mask, and a cleaner mental model: the map shows the area the
+ * app is about, full stop.
+ */
+const PAN_BOUNDS = L.latLngBounds(
+  [COVERAGE_BBOX.minLat, COVERAGE_BBOX.minLon],
+  [COVERAGE_BBOX.maxLat, COVERAGE_BBOX.maxLon]
+);
+
+/**
+ * Smallest zoom the user is allowed to zoom out to.
+ *
+ * Without this, panning to an empty area was possible at any
+ * zoom; the map would let you zoom out to "the whole world" and
+ * tile-fetch every continent to do it. Picking a number that
+ * shows the box filling a phone screen (zoom 3) cuts off
+ * everything below it and makes the box feel like the only map
+ * there is. A wider monitor still sees a sensible view because
+ * the world-fill zoom is computed from the container width, not
+ * hard-coded.
+ */
+const MIN_ZOOM = 3;
 
 /**
  * Smallest zoom at which the world still fills the viewport width.
@@ -691,11 +722,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       zoom,
       zoomControl: false,
       attributionControl: false,
-      // One Earth, not three. `maxBounds` with full viscosity stops the user
-      // dragging past the edge of the world into empty space.
+      // The user cannot pan outside the supported coverage rectangle.
+      // `maxBoundsViscosity: 1.0` makes the edge hard — a drag past the
+      // edge rubber-bands the map back, the GPU never has to composite
+      // anything outside the box, and the tile layer never sees a
+      // request for a region we have no data for. The earlier
+      // world-wide bounds were a workaround for "we can pan anywhere
+      // but we don't have data there" — `maxBounds` replaces the
+      // workaround at the source.
       worldCopyJump: false,
-      maxBounds: WORLD_BOUNDS,
-      maxBoundsViscosity: 1.0
+      maxBounds: PAN_BOUNDS,
+      maxBoundsViscosity: 1.0,
+      // Same reasoning as maxBounds: the user has no business
+      // zooming out to "the whole world" because there is no
+      // whole world to show. A pin dropped at zoom 0 would be a
+      // pin dropped on a tile we never fetched.
+      minZoom: MIN_ZOOM
     });
     /**
      * NO LEAFLET CONTROLS. Zoom and attribution are React, below.
@@ -920,52 +962,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       try { map.removeLayer(vectorLayer); } catch { /* already detached */ }
     };
   }, [isMapReady, showCrownLand]);
-
-  /* ------------------------------------------------------------------ */
-  /* Grey mask outside the supported coverage area                       */
-  /* ------------------------------------------------------------------ */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-
-    if (!map.getPane('coveragePane')) {
-      map.createPane('coveragePane');
-      const pane = map.getPane('coveragePane');
-      if (pane) { pane.style.zIndex = '450'; pane.style.pointerEvents = 'none'; }
-    }
-
-    const toLatLng = (ring: [number, number][]) =>
-      ring.map(([lon, lat]) => [lat, lon] as [number, number]);
-
-    /**
-     * Draw the mask once and then just move it.
-     *
-     * This shape never changes — it is the same thirty-odd coordinates for the
-     * life of the app — but as an SVG path Leaflet re-projected and re-emitted
-     * it on the end of every pan and zoom, and a world-sized path is a lot of
-     * geometry to hand the browser for a shape that hasn't moved. On a canvas
-     * with a generous padding it is rasterised once into a surface three times
-     * the size of the screen, and an ordinary pan or two just slides that
-     * surface around without redrawing anything at all.
-     *
-     * The padding is what buys that. It costs one oversized canvas of memory
-     * and removes the grey edge flickering as you scroll.
-     */
-    const renderer = L.canvas({ pane: 'coveragePane', padding: 1 });
-
-    // A world-sized polygon with the supported region punched out of it. Now
-    // that the tile layer no longer repeats, this covers everything outside
-    // coverage exactly once.
-    const mask = L.polygon([toLatLng(WORLD_RING), toLatLng(COVERAGE_OUTLINE)], {
-      pane: 'coveragePane', renderer, interactive: false, stroke: true,
-      color: '#64748B', weight: 1, fillColor: '#0F172A', fillOpacity: 0.72
-    } as L.PolylineOptions).addTo(map);
-
-    return () => {
-      try { map.removeLayer(mask); } catch { /* detached */ }
-      try { map.removeLayer(renderer); } catch { /* never attached */ }
-    };
-  }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Public land boundaries                                              */

@@ -28,10 +28,18 @@ export interface BoundingBox {
   maxLon: number;
 }
 
-/** Fast rejection test before the more expensive polygon check. */
+/**
+ * Fast rejection test before the more expensive polygon check.
+ *
+ * Also the Leaflet `maxBounds` rectangle — the box the user can pan
+ * inside and cannot pan out of. Trimmed at -130° (was -139.5) so
+ * Alaska's panhandle doesn't pull the bounding box across the
+ * Pacific; everything else is the same as before. St John's at
+ * ~-52.7 still sits inside this rectangle (the east edge is -52.0).
+ */
 export const COVERAGE_BBOX: BoundingBox = {
   minLat: 24.4,
-  minLon: -139.5,
+  minLon: -130.0,
   maxLat: 60.1,
   // Pushed east to -52.0 so the box no longer clips the Avalon Peninsula —
   // St John's sits at ~-52.7 and was falling just outside the old -52.6 edge.
