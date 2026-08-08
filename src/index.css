@@ -193,14 +193,12 @@
  *
  * The animation is `forwards` so the final state (offset 0, full
  * visibility) is held at the end — but the MapComponent removes the
- * tracer layer entirely after 1.7s, so the user never sees a stale
+ * tracer layer entirely after 2.4s, so the user never sees a stale
  * outline sitting on the map.
  */
 @keyframes wl-tracer-sweep {
-  0%   { stroke-dashoffset: var(--tracer-len, 1000); opacity: 0.9; }
-  10%  { opacity: 0.9; }
-  90%  { stroke-dashoffset: 0; opacity: 0.9; }
-  100% { stroke-dashoffset: 0; opacity: 0; }
+  0%   { stroke-dashoffset: 0; opacity: 0.95; }
+  100% { stroke-dashoffset: var(--tracer-offset, -1000); opacity: 0; }
 }
 
 /* ====================================================================

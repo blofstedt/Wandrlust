@@ -1,3 +1,4 @@
+import localforage from 'localforage';
 import {
   BoundingBox, bboxIntersectsCoverage, clampToCoverage, overviewMinAreaSqKm
 } from '../config/coverage';
@@ -157,10 +158,17 @@ const gridSize = (zoom: number): number =>
 /**
  * Turn a viewport into the box we actually ask for: padded, so a short pan
  * stays inside data we already hold, then snapped out to the grid.
+ *
+ * The pad is 0.6 (60% on each side — total ~2.2x the viewport) so a small
+ * pan on a phone does not invalidate the loaded box and trigger a
+ * refetch. The earlier 0.25 (1.5x total) was tight enough that a
+ * one-centimetre pan on the device showed a "Loading boundaries…"
+ * spinner and a brief gap where the old layer was off the map but the
+ * new one had not landed.
  */
 export const requestBoxFor = (view: BoundingBox, zoom: number): BoundingBox => {
-  const padLat = (view.maxLat - view.minLat) * 0.25;
-  const padLon = (view.maxLon - view.minLon) * 0.25;
+  const padLat = (view.maxLat - view.minLat) * 0.6;
+  const padLon = (view.maxLon - view.minLon) * 0.6;
   const cell = gridSize(zoom);
 
   return {
@@ -214,9 +222,35 @@ export const overviewBoxFor = (view: BoundingBox, zoom: number): BoundingBox => 
 /* Fetching                                                                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Two-layer cache for boundary responses.
+ *
+ *   1. In-memory `Map` — short TTL (5 min for full, 12 h for overview).
+ *      Panning back across a recently-tapped region in the same session
+ *      is free, and the wide-zoom borders survive a long browse.
+ *
+ *   2. localforage `wandrlust_boundaries` — long TTL (7 days). Survives
+ *      reloads and cold starts, so a returning user reads the same data
+ *      they got a week ago without a round trip. The data does not
+ *      change at parcel scale (BLM/USFS boundaries are static), so 7
+ *      days is well within what the answer can support.
+ *
+ * The disk key is rounded to 2 decimal places (~1.1 km) — coarser
+ * than the request (5 decimals, ~1 m) so two slightly different
+ * bboxes hit the same entry, but fine enough that you don't fetch a
+ * whole region for a one-cell pan.
+ */
+const boundaryStore = localforage.createInstance({
+  name: 'wandrlust',
+  storeName: 'wandrlust_boundaries',
+  description: 'Cached boundary responses by rounded viewport'
+});
+
 /** Recently fetched viewports, so panning back somewhere is free. */
 const responseCache = new Map<string, { at: number; collection: BoundaryCollection }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/** Disk cache TTL — 7 days. Public-land boundaries are static. */
+const DISK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * Overview tiles are kept for the whole session.
  *
@@ -228,6 +262,20 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
  */
 const OVERVIEW_TTL_MS = 12 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 40;
+
+interface DiskEntry { at: number; collection: BoundaryCollection }
+
+const diskKey = (query: string): string => {
+  // The query is a sorted URLSearchParams string; round each numeric
+  // value to 2 decimals so a slightly larger/smaller box hits the
+  // same disk entry.
+  const params = new URLSearchParams(query);
+  for (const k of ['minLat', 'minLon', 'maxLat', 'maxLon']) {
+    const v = params.get(k);
+    if (v) params.set(k, Number(v).toFixed(2));
+  }
+  return params.toString();
+};
 
 /**
  * Fetch land boundaries intersecting a viewport.
@@ -263,6 +311,22 @@ export const fetchBoundaries = async (
   const cached = responseCache.get(query);
   if (cached && Date.now() - cached.at < ttl) return cached.collection;
 
+  // Disk cache: warm the in-memory layer from a coarser, longer-lived
+  // localforage entry before going to the network. The key is rounded
+  // to 2 decimals so a one-cell pan that lands in the same ~1.1 km
+  // region hits the same entry without a fetch.
+  const dk = diskKey(query);
+  try {
+    const disk = await boundaryStore.getItem<DiskEntry>(dk);
+    if (disk && Date.now() - disk.at < DISK_TTL_MS) {
+      responseCache.set(query, { at: Date.now(), collection: disk.collection });
+      return disk.collection;
+    }
+  } catch {
+    // localforage failures are never fatal — the in-memory layer is
+    // still warm for this session.
+  }
+
   try {
     const response = await fetch(`/api/boundaries?${query}`, { signal });
     if (!response.ok) return EMPTY_BOUNDARIES;
@@ -284,10 +348,14 @@ export const fetchBoundaries = async (
       if (oldest) responseCache.delete(oldest);
     }
     responseCache.set(query, { at: Date.now(), collection });
+    // Fire-and-forget disk write. We do not block the caller on
+    // IndexedDB — the in-memory layer is already warm, and the disk
+    // write is purely a session bonus for next reload.
+    boundaryStore.setItem<DiskEntry>(dk, { at: Date.now(), collection }).catch(() => undefined);
 
     return collection;
   } catch (error) {
     if (signal?.aborted || (error as Error)?.name === 'AbortError') return null;
     return EMPTY_BOUNDARIES;
   }
-};
+};

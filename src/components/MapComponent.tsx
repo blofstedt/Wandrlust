@@ -310,6 +310,73 @@ const featureMinDimPx = (map: L.Map, geometry: unknown): number => {
   return Math.min(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
 };
 
+/**
+ * Read an SVG path's `d` attribute back into a list of [lon, lat] points.
+ *
+ * For the cloud's radial gradient we need a centroid per ring, and the
+ * ring is owned by an SVG <path> rendered by Leaflet's geoJSON layer.
+ * We don't have a back-reference to the source geometry from the path,
+ * so we walk the `d` attribute and pull out every coordinate pair. This
+ * skips arcs (we only care about point locations for the centroid) —
+ * the resulting list is good enough for a mean-and-bbox.
+ *
+ * Returns null if the path's `d` is missing or unparseable. Callers
+ * must handle that — a missing centroid means no gradient for that ring,
+ * which is fine, the polygon's solid fill still draws.
+ */
+const readRingFromPath = (path: SVGPathElement): [number, number][] | null => {
+  const d = path.getAttribute('d');
+  if (!d) return null;
+  const out: [number, number][] = [];
+  // Match all coordinate pairs in the `d` attribute. Each pair is
+  // either "x y" or "x,y" depending on the serializer; the regex
+  // tolerates both. We don't care which sub-path or which command —
+  // any point on the path is a valid input to a centroid.
+  const re = /(-?\d+(?:\.\d+)?)[ ,]+(-?\d+(?:\.\d+)?)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(d)) !== null) {
+    const lon = Number(m[1]);
+    const lat = Number(m[2]);
+    if (Number.isFinite(lon) && Number.isFinite(lat)) out.push([lon, lat]);
+  }
+  return out.length > 0 ? out : null;
+};
+
+/**
+ * Centroid (mean of vertices) and radius (half the smaller bbox
+ * dimension, in degrees) for a ring of [lon, lat] points.
+ *
+ * The radius is the input to a userSpaceOnUse radialGradient, so it
+ * needs to be in the same units as the coordinates (degrees). Half the
+ * smaller bbox dimension gives a circle that fits inside the polygon's
+ * bbox, which means the gradient's 0%-opacity stop lands at or just
+ * inside the polygon's edge — the cloud fades to nothing right at the
+ * polygon's boundary, not before it and not well after.
+ */
+const centroidAndRadius = (ring: [number, number][]): { cx: number; cy: number; r: number } => {
+  let sumLon = 0;
+  let sumLat = 0;
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const [lon, lat] of ring) {
+    sumLon += lon;
+    sumLat += lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  const n = ring.length;
+  return {
+    cx: sumLon / n,
+    cy: sumLat / n,
+    // Pad the radius slightly (1.05x) so the 100% transparent stop lands
+    // just outside the polygon's actual edge — the polygon outline is
+    // hidden under the 0-opacity tail, and the visible cloud extends
+    // right to the polygon boundary without a hard ring.
+    r: 1.05 * Math.min(maxLon - minLon, maxLat - minLat) / 2
+  };
+};
+
 /** Pull the fields we show from a boundary feature's properties. */
 const landFromFeature = (properties: Record<string, any> | undefined): DestinationLand | undefined => {
   const p = properties;
@@ -1653,6 +1720,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // blink out and back on every gesture. Warnings do not depend on zoom, so
     // only leaving the loaded area triggers a refetch.
     let loadedAlertBox: L.LatLngBounds | null = null;
+    // The latest fetch's request id. A slow older fetch that returns after
+    // a newer one must NOT overwrite the newer data — without this guard,
+    // a storm in Ontario can flicker when a slow refetch from a Calgary
+    // pan lands after a fast Ontario refetch. The boundary effect uses the
+    // same pattern; doing it here too is what stops the "shows up then
+    // disappears" flicker on the cloud layer.
+    let requestId = 0;
 
     /**
      * Draw the active warnings, split by tier.
@@ -1674,6 +1748,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const present = new Set<AlertBadge>();
       // Diffuse glyph layers, wired to their patterns once the paths exist.
       const glyphTargets: { geo: L.GeoJSON; badge: 'heat' | 'smoke' | 'winter' | 'wind' | 'storm' }[] = [];
+      // Diffuse cloud paths, with the centroid and radius they need for
+      // their per-polygon radial gradient. Filled in below; the gradients
+      // are written to the cloud renderer's <defs> AFTER the layer is on
+      // the map, so the renderer's container is guaranteed to exist.
+      const cloudTargetsList: {
+        targets: { path: SVGPathElement; cx: number; cy: number; r: number }[];
+        color: string;
+      }[] = [];
 
       placeable.forEach((alert) => {
         const badge = alertBadge(alert);
@@ -1682,29 +1764,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         const color = BADGE_COLOR[badge];
 
         if (isDiffuse(badge)) {
-          // The cloud is a heavily-blurred fill of the alert's actual
-          // polygon. Two things that look like one in the result:
+          // The cloud is a per-polygon radial gradient — opaque in the
+          // middle, fully transparent at the polygon's bounding box edge —
+          // plus a small per-path blur to soften the polygon outline itself.
+          // The gradient does most of the work: a polygon filled with a
+          // radial fade-out has no perceptible boundary, which is what
+          // reads as "atmospheric" rather than "cartographic overlay".
           //
-          //   1. SOFT EDGES. The 22px CSS blur feathers the polygon edge
-          //      out so far that the original boundary is no longer visible.
-          //      A heat advisory that used to draw as a coloured overlay
-          //      with hard corners now reads as a soft wash — atmospheric,
-          //      not cartographic. fillOpacity is bumped to 0.45 to keep
-          //      the centre of the cloud readable after the blur spreads
-          //      the colour across a much larger screen area.
+          // Why per-polygon gradients, not a single pane-level gradient:
+          // two adjacent heat polygons are separate <path> elements with
+          // different bounding boxes, and a single gradient stretched
+          // across both would make one of them peak where the other should.
+          // Each polygon gets its own gradient centred on its own
+          // centroid, so the centre of each cloud is solid colour and
+          // each edge fades independently. The gradients live in the
+          // cloud renderer's <defs> and are rebuilt every render — a few
+          // dozen small elements, the cost is invisible.
           //
-          //   2. JOINING NEARBY ALERTS. Two heat polygons that are within
-          //      ~50 screen pixels of each other (zoomed out enough that
-          //      the blur radius covers the gap) merge into one mass. This
-          //      is the "generalised" view the legend now describes: a
-          //      single big heat region instead of three small ones.
-          //      Zooming in separates them again as the blur no longer
-          //      covers the gap.
-          //
-          // The blur is per element via inline style (not on the pane),
-          // so the browser caches each cloud as its own compositing layer
-          // and a pan/zoom is a translate of those layers rather than a
-          // full re-blur every frame.
+          // The per-path CSS blur (12px) is a small additional softness
+          // — it feathers the polygon's hard edge so the gradient's
+          // "fully transparent" stops are not seen as a visible cutoff.
           const cloudGeo = L.geoJSON(alert.geometry as any, {
             pane: 'warningPane',
             renderer: warningRenderer,
@@ -1713,14 +1792,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               stroke: false,
               fill: true,
               fillColor: color,
-              fillOpacity: 0.45
+              fillOpacity: 1
             }
           } as RenderedGeoJSONOptions);
           group.addLayer(cloudGeo);
+          // Build a centroid + bbox per path so the gradient is sized to
+          // the actual ring, not the whole alert polygon (a MultiPolygon
+          // has disjoint pieces, each with its own centroid).
+          const cloudTargets: { path: SVGPathElement; cx: number; cy: number; r: number }[] = [];
           cloudGeo.eachLayer((sub) => {
             const el = (sub as unknown as { _path?: SVGPathElement })._path;
-            if (el) el.style.filter = 'blur(22px)';
+            if (!el) return;
+            const ring = readRingFromPath(el);
+            if (!ring) return;
+            const { cx, cy, r } = centroidAndRadius(ring);
+            cloudTargets.push({ path: el, cx, cy, r });
+            // Light blur on the polygon's hard edge. The gradient does
+            // most of the softening; this just feathers the cutoff.
+            el.style.filter = 'blur(12px)';
           });
+          cloudTargetsList.push({ targets: cloudTargets, color });
           // The same area, filled with the tiled family glyph — thermometers
           // for heat — in the crisp glyph pane above the blur. Wired to its
           // pattern in <defs> below.
@@ -1764,6 +1855,53 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const previous = hazardLayerRef.current;
       hazardLayerRef.current = group.addTo(map);
       if (previous) { try { map.removeLayer(previous); } catch { /* detached */ } }
+
+      /**
+       * Cloud radial gradients. Each polygon got a centroid + radius
+       * computed from its own vertices; now that the layer is on the
+       * map (and the renderer's container is guaranteed to exist), we
+       * inject one <radialGradient> per cloud into the cloud renderer's
+       * <defs> and point the polygon at it. Defs are wiped on every
+       * render, so no accumulation.
+       */
+      const csvg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
+      if (csvg && cloudTargetsList.length) {
+        let cdefs = csvg.querySelector('defs');
+        if (!cdefs) {
+          cdefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+          csvg.insertBefore(cdefs, csvg.firstChild);
+        }
+        cdefs.innerHTML = '';
+        let nextId = 0;
+        for (const { targets, color } of cloudTargetsList) {
+          for (const t of targets) {
+            const id = `wl-cloud-${nextId++}`;
+            // userSpaceOnUse so cx/cy/r are in the renderer's
+            // coordinate space (lat/lon of the geometry), not the
+            // polygon's bounding box. A gradient that scales to the
+            // polygon's bbox would clip to a rectangle and look boxy;
+            // user-space keeps it a true circle.
+            const grad = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
+            grad.setAttribute('id', id);
+            grad.setAttribute('cx', String(t.cx));
+            grad.setAttribute('cy', String(t.cy));
+            grad.setAttribute('r', String(t.r));
+            grad.setAttribute('gradientUnits', 'userSpaceOnUse');
+            const stop0 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+            stop0.setAttribute('offset', '0%');
+            stop0.setAttribute('stop-color', color);
+            stop0.setAttribute('stop-opacity', '0.55');
+            const stop100 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+            stop100.setAttribute('offset', '100%');
+            stop100.setAttribute('stop-color', color);
+            stop100.setAttribute('stop-opacity', '0');
+            grad.appendChild(stop0);
+            grad.appendChild(stop100);
+            cdefs.appendChild(grad);
+            t.path.setAttribute('fill', `url(#${id})`);
+          }
+        }
+      }
 
       // Leaflet's style API has no pattern option, so each glyph pattern is
       // defined in the glyph renderer's <defs> and the cloud's glyph path is
@@ -1816,11 +1954,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (loadedAlertBox && loadedAlertBox.contains(b)) return;
 
       controller?.abort();
+      const myId = ++requestId;
       controller = new AbortController();
 
-      // Fetch a padded box, bigger than the viewport, so a short pan afterwards
-      // stays inside it and needs nothing.
-      const padded = b.pad(0.4);
+      // Fetch a generously padded box — three times the viewport in each
+      // dimension — so a zoom-out from a centred view still sits inside
+      // the loaded area and reuses the data. The 0.4 pad (a 1.4x box) was
+      // tight enough that zooming out a level invalidated the loaded box
+      // and triggered a refetch that, in the worst case, returned the
+      // same alert with `centroid: null` for a moment and the cloud
+      // disappeared mid-pan. 1.0 is the floor that keeps a multi-zoom-out
+      // gesture from churning the layer.
+      const padded = b.pad(1.0);
       const alerts = await fetchAreaAlerts(
         {
           minLat: padded.getSouth(), minLon: padded.getWest(),
@@ -1828,7 +1973,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         },
         controller.signal
       );
-      if (cancelled) return;
+      // A newer fetch has started, OR the effect is unmounted. Either
+      // way, do not write over fresher data.
+      if (cancelled || myId !== requestId) return;
 
       loadedAlertBox = padded;
       const sorted = sortAlerts(alerts);
@@ -2170,10 +2317,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     } as unknown as RenderedGeoJSONOptions).addTo(map);
 
-    // Compute the perimeter in screen pixels to set stroke-dasharray. The
-    // exact value doesn't matter much for the visual — it just needs to be
-    // at least as long as the longest path in the alert, so a 0 → -L
-    // sweep fully reveals it.
+    // Compute the perimeter in screen pixels to set the dash pattern.
+    // The tracer is a COMET, not a full-perimeter line: a small head of
+    // `HEAD_LENGTH` (about 90px on screen — long enough to read as a
+    // deliberate sweep, short enough to feel like a tracer rather than
+    // an outline being drawn) followed by a gap so large that the rest
+    // of the path is invisible. The head is animated by sliding the
+    // dash offset; the gap is what hides the trailing perimeter.
     let perimeter = 0;
     tracerGeo.eachLayer((sub) => {
       const el = (sub as unknown as { _path?: SVGPathElement })._path;
@@ -2185,13 +2335,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     });
 
     if (perimeter > 0) {
+      const HEAD_LENGTH = 90;
+      // The gap must be longer than the path, otherwise the head's "tail"
+      // would butt up against the next iteration of the head as the offset
+      // animates. A gap of (perimeter + 100) is comfortably beyond the path
+      // length, so only the head is ever visible.
+      const gap = perimeter + 100;
+      // Two full loops so the user has time to register the tracer's path
+      // around the alert. Anything less than 1.5 loops reads as a quick
+      // flicker; more than 2.5 reads as indecisive. Two is the sweet spot
+      // for the size of warning a camper is most likely tracing — a
+      // county-wide heat advisory fits one full sweep in about a second.
+      const loops = 2;
+      const totalOffset = -loops * perimeter;
+
       tracerGeo.eachLayer((sub) => {
         const el = (sub as unknown as { _path?: SVGPathElement })._path;
         if (!el) return;
-        el.style.setProperty('--tracer-len', String(perimeter));
-        el.style.strokeDasharray = `${perimeter}`;
-        el.style.strokeDashoffset = `${perimeter}`;
-        el.style.animation = 'wl-tracer-sweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+        el.style.setProperty('--tracer-head', String(HEAD_LENGTH));
+        el.style.setProperty('--tracer-gap', String(gap));
+        el.style.setProperty('--tracer-offset', String(totalOffset));
+        el.style.strokeDasharray = `${HEAD_LENGTH} ${gap}`;
+        el.style.strokeDashoffset = '0';
+        // 2.2s for two loops, ease-in-out so the head accelerates
+        // smoothly out of the start point and decelerates as it
+        // approaches the end. A linear timing would feel mechanical;
+        // a strong ease-in-out is what reads as "intentional".
+        el.style.animation = 'wl-tracer-sweep 2.2s ease-in-out forwards';
       });
     }
 
@@ -2206,7 +2376,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         tracerRef.current = null;
       }
       setTracingBadge((current) => (current === badge ? null : current));
-    }, 1700);
+    }, 2400);
   }, [hazards]);
 
   const statusText = useCallback((): string => {
