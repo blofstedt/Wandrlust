@@ -661,13 +661,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const [showWarnings, setShowWarnings] = useState(true);
   /**
-   * Active-fire layer. OFF by default — there is no active fire data
-   * source yet (WFIGS/CIFFC integration is a separate feature), so the
-   * toggle is wired but does nothing visible until the data lands. The
-   * pin card already lists fire bans and NWS fire warnings; this
-   * toggle is the on/off for the on-map marker layer when it ships.
+   * Active-fire layer. ON by default.
+   *
+   * The comment here used to say the toggle did nothing because there was no
+   * fire data source yet. There is one — /api/fires merges the US WFIGS
+   * perimeters with the Canadian FireRadar points — and defaulting the layer
+   * off meant a camper had to know the toggle existed before the app would
+   * show them a fire burning where they were headed. Same reasoning as the
+   * warning layer above: this is the safety feature, so it starts on.
    */
-  const [showFires, setShowFires] = useState(false);
+  const [showFires, setShowFires] = useState(true);
   /**
    * State / province boundary lines. OFF by default — a state line is
    * a context, not a highlight, and the user who wants it knows they
@@ -1974,6 +1977,80 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let requestId = 0;
 
     /**
+     * The diffuse cloud layers currently on the map, with the colour each one
+     * paints. Kept so the gradients can be re-measured after a zoom.
+     */
+    let drawnClouds: { geo: L.GeoJSON; color: string }[] = [];
+
+    /**
+     * TURN THE CLOUD POLYGONS INTO CLOUDS.
+     *
+     * MUST run with the layers already added to the MAP. Leaflet mints a
+     * Path's `_path` element in `onAdd`; adding a layer to a detached
+     * LayerGroup creates nothing. The previous version measured `_path` at
+     * build time, always found `undefined`, and so every cloud kept its flat
+     * `fillOpacity: 1` fill — an opaque slab with a hard edge, which is not
+     * what a smoke plume or a heat mass is supposed to look like.
+     *
+     * Each drawn ring gets its own radial gradient: solid at the centre, fully
+     * transparent at the rim, in the renderer's own coordinate space so it
+     * stays a true circle rather than stretching to the polygon's bounding
+     * box. A MultiPolygon's pieces are disjoint, so each piece is measured
+     * separately — one gradient across all of them would peak in the gap
+     * between two of them. A light per-path blur feathers the polygon edge so
+     * the gradient's transparent stop is never seen as a cutoff.
+     *
+     * Re-run on zoom: Leaflet re-projects each path's `d` when the zoom
+     * settles, so the coordinates the gradients were built from are stale and
+     * the soft centre would drift off the warned area.
+     */
+    const paintClouds = (): void => {
+      const csvg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
+      if (!csvg) return;
+
+      let cdefs = csvg.querySelector('defs');
+      if (!cdefs) {
+        cdefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        csvg.insertBefore(cdefs, csvg.firstChild);
+      }
+      // Rebuilt from scratch every time, so gradients never accumulate.
+      cdefs.innerHTML = '';
+      let nextId = 0;
+
+      for (const { geo, color } of drawnClouds) {
+        geo.eachLayer((sub) => {
+          const el = (sub as unknown as { _path?: SVGPathElement })._path;
+          if (!el) return;
+          const ring = readRingFromPath(el);
+          if (!ring) return;
+          const { cx, cy, r } = centroidAndRadius(ring);
+
+          const id = `wl-cloud-${nextId++}`;
+          const grad = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
+          grad.setAttribute('id', id);
+          grad.setAttribute('cx', String(cx));
+          grad.setAttribute('cy', String(cy));
+          grad.setAttribute('r', String(r));
+          grad.setAttribute('gradientUnits', 'userSpaceOnUse');
+          const stop0 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+          stop0.setAttribute('offset', '0%');
+          stop0.setAttribute('stop-color', color);
+          stop0.setAttribute('stop-opacity', '0.55');
+          const stop100 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+          stop100.setAttribute('offset', '100%');
+          stop100.setAttribute('stop-color', color);
+          stop100.setAttribute('stop-opacity', '0');
+          grad.appendChild(stop0);
+          grad.appendChild(stop100);
+          cdefs!.appendChild(grad);
+
+          el.setAttribute('fill', `url(#${id})`);
+          el.style.filter = 'blur(12px)';
+        });
+      }
+    };
+
+    /**
      * Draw the active warnings, split by tier.
      *
      *   DIFFUSE (smoke / heat / cold / wind) — a tinted area fill plus a slowly
@@ -1993,14 +2070,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const present = new Set<AlertBadge>();
       // Diffuse glyph layers, wired to their patterns once the paths exist.
       const glyphTargets: { geo: L.GeoJSON; badge: 'heat' | 'smoke' | 'winter' | 'wind' | 'storm' }[] = [];
-      // Diffuse cloud paths, with the centroid and radius they need for
-      // their per-polygon radial gradient. Filled in below; the gradients
-      // are written to the cloud renderer's <defs> AFTER the layer is on
-      // the map, so the renderer's container is guaranteed to exist.
-      const cloudTargetsList: {
-        targets: { path: SVGPathElement; cx: number; cy: number; r: number }[];
-        color: string;
-      }[] = [];
+      /**
+       * The diffuse cloud layers, paired with the colour their gradient uses.
+       *
+       * ONLY THE LAYER IS COLLECTED HERE — NOT ITS PATHS.
+       *
+       * Leaflet mints a Path's `_path` element in `onAdd`, which does not run
+       * until the layer is on the MAP. Adding it to a LayerGroup that is itself
+       * still detached creates nothing. The previous version walked `_path`
+       * right here, always got undefined, and so every cloud silently kept its
+       * flat `fillOpacity: 1` fill with no gradient and no blur — a hard opaque
+       * slab instead of a soft cloud. The walk now happens after
+       * `group.addTo(map)` below, where the elements actually exist.
+       */
+      const cloudLayers: { geo: L.GeoJSON; color: string }[] = [];
 
       placeable.forEach((alert) => {
         const badge = alertBadge(alert);
@@ -2041,22 +2124,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             }
           } as RenderedGeoJSONOptions);
           group.addLayer(cloudGeo);
-          // Build a centroid + bbox per path so the gradient is sized to
-          // the actual ring, not the whole alert polygon (a MultiPolygon
-          // has disjoint pieces, each with its own centroid).
-          const cloudTargets: { path: SVGPathElement; cx: number; cy: number; r: number }[] = [];
-          cloudGeo.eachLayer((sub) => {
-            const el = (sub as unknown as { _path?: SVGPathElement })._path;
-            if (!el) return;
-            const ring = readRingFromPath(el);
-            if (!ring) return;
-            const { cx, cy, r } = centroidAndRadius(ring);
-            cloudTargets.push({ path: el, cx, cy, r });
-            // Light blur on the polygon's hard edge. The gradient does
-            // most of the softening; this just feathers the cutoff.
-            el.style.filter = 'blur(12px)';
-          });
-          cloudTargetsList.push({ targets: cloudTargets, color });
+          cloudLayers.push({ geo: cloudGeo, color });
           // The same area, filled with the tiled family glyph — thermometers
           // for heat — in the crisp glyph pane above the blur. Wired to its
           // pattern in <defs> below.
@@ -2101,52 +2169,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       hazardLayerRef.current = group.addTo(map);
       if (previous) { try { map.removeLayer(previous); } catch { /* detached */ } }
 
-      /**
-       * Cloud radial gradients. Each polygon got a centroid + radius
-       * computed from its own vertices; now that the layer is on the
-       * map (and the renderer's container is guaranteed to exist), we
-       * inject one <radialGradient> per cloud into the cloud renderer's
-       * <defs> and point the polygon at it. Defs are wiped on every
-       * render, so no accumulation.
-       */
-      const csvg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
-      if (csvg && cloudTargetsList.length) {
-        let cdefs = csvg.querySelector('defs');
-        if (!cdefs) {
-          cdefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-          csvg.insertBefore(cdefs, csvg.firstChild);
-        }
-        cdefs.innerHTML = '';
-        let nextId = 0;
-        for (const { targets, color } of cloudTargetsList) {
-          for (const t of targets) {
-            const id = `wl-cloud-${nextId++}`;
-            // userSpaceOnUse so cx/cy/r are in the renderer's
-            // coordinate space (lat/lon of the geometry), not the
-            // polygon's bounding box. A gradient that scales to the
-            // polygon's bbox would clip to a rectangle and look boxy;
-            // user-space keeps it a true circle.
-            const grad = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
-            grad.setAttribute('id', id);
-            grad.setAttribute('cx', String(t.cx));
-            grad.setAttribute('cy', String(t.cy));
-            grad.setAttribute('r', String(t.r));
-            grad.setAttribute('gradientUnits', 'userSpaceOnUse');
-            const stop0 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-            stop0.setAttribute('offset', '0%');
-            stop0.setAttribute('stop-color', color);
-            stop0.setAttribute('stop-opacity', '0.55');
-            const stop100 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-            stop100.setAttribute('offset', '100%');
-            stop100.setAttribute('stop-color', color);
-            stop100.setAttribute('stop-opacity', '0');
-            grad.appendChild(stop0);
-            grad.appendChild(stop100);
-            cdefs.appendChild(grad);
-            t.path.setAttribute('fill', `url(#${id})`);
-          }
-        }
-      }
+      // Give the clouds their gradients now that their paths exist.
+      drawnClouds = cloudLayers;
+      paintClouds();
 
       // Leaflet's style API has no pattern option, so each glyph pattern is
       // defined in the glyph renderer's <defs> and the cloud's glyph path is
@@ -2234,14 +2259,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       debounce = setTimeout(run, 600);
     };
 
+    /**
+     * A zoom re-projects every path, so the cloud gradients — which are built
+     * in the renderer's coordinate space — have to be measured again or the
+     * soft centre of each cloud slides off the area it belongs to. Cheap: it
+     * touches only the clouds already drawn, and never refetches.
+     */
+    const repaint = (): void => { if (drawnClouds.length) paintClouds(); };
+
     load();
     map.on('moveend zoomend', load);
+    map.on('zoomend', repaint);
 
     return () => {
       cancelled = true;
       controller?.abort();
       if (debounce) clearTimeout(debounce);
       map.off('moveend zoomend', load);
+      map.off('zoomend', repaint);
+      drawnClouds = [];
       clear();
       // Drop the SVG renderers too, so a remount does not stack a second one.
       if (warningRendererRef.current) {
@@ -2329,40 +2365,50 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const renderFires = (fires: ActiveFire[]): void => {
       const group = L.layerGroup();
       for (const fire of fires) {
-        if (fire.kind === 'perimeter') {
-          const poly = L.geoJSON(
-            { type: 'Feature', geometry: fire.geometry, properties: {} } as GeoJSON.Feature,
-            {
-              pane: 'firePane',
-              style: {
-                color: '#DC2626',       // red-600 — the perimeter outline
-                weight: 1.5,
-                opacity: 0.85,
-                fillColor: '#DC2626',
-                fillOpacity: 0.12,
-                // The polyline joins mustn't be smoothed — the data is
-                // a satellite-derived footprint and the joins are
-                // already the right shape.
-                lineJoin: 'miter'
+        /**
+         * ONE BAD RECORD MUST NOT COST THE WHOLE LAYER.
+         *
+         * These loops build every fire into a group that is added to the map
+         * at the end, so anything that throws mid-loop threw away every fire
+         * already built — the entire layer vanished because a single feed
+         * record was malformed. Skip the bad one and draw the rest.
+         */
+        try {
+          if (fire.kind === 'perimeter') {
+            const poly = L.geoJSON(
+              { type: 'Feature', geometry: fire.geometry, properties: {} } as GeoJSON.Feature,
+              {
+                pane: 'firePane',
+                style: {
+                  color: '#DC2626',       // red-600 — the perimeter outline
+                  weight: 1.5,
+                  opacity: 0.85,
+                  fillColor: '#DC2626',
+                  fillOpacity: 0.12,
+                  // The polyline joins mustn't be smoothed — the data is
+                  // a satellite-derived footprint and the joins are
+                  // already the right shape.
+                  lineJoin: 'miter'
+                }
               }
-            }
-          );
-          poly.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
-          group.addLayer(poly);
-        } else {
-          // Point: orange flame icon at the reported location.
-          const marker = L.marker([fire.centroid.lat, fire.centroid.lon], {
-            pane: 'firePane',
-            icon: L.divIcon({
-              className: 'wl-fire-marker',
-              html: buildFirePointHtml(),
-              iconSize: [22, 22],
-              iconAnchor: [11, 11]
-            })
-          });
-          marker.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
-          group.addLayer(marker);
-        }
+            );
+            poly.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
+            group.addLayer(poly);
+          } else {
+            // Point: orange flame icon at the reported location.
+            const marker = L.marker([fire.centroid.lat, fire.centroid.lon], {
+              pane: 'firePane',
+              icon: L.divIcon({
+                className: 'wl-fire-marker',
+                html: buildFirePointHtml(),
+                iconSize: [22, 22],
+                iconAnchor: [11, 11]
+              })
+            });
+            marker.bindPopup(buildFirePopupHtml(fire), { className: 'wl-fire-popup' });
+            group.addLayer(marker);
+          }
+        } catch { /* unusable geometry from the feed — draw the others */ }
       }
       // Swap in the new layer; the old one was already removed by `clear`.
       const previous = fireLayerRef.current;
@@ -2376,7 +2422,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const b = padded();
       const ll = L.latLngBounds([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
       if (loadedBox && loadedBox.contains(ll)) return;
-      loadedBox = ll;
 
       const myId = ++requestId;
       controller?.abort();
@@ -2384,6 +2429,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
       const data = await fetchActiveFires(b, controller.signal);
       if (cancelled || myId !== requestId) return;
+      // Only NOW is this area loaded. Marking it before the fetch meant a
+      // failed or aborted request still counted as "we have this area", so
+      // the layer stayed empty until the user panned somewhere new.
+      loadedBox = ll;
       renderFires(data.features.map((f) => f.properties));
     };
 

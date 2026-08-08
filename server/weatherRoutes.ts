@@ -23,9 +23,11 @@ import type { Express, Request, Response } from 'express';
  * every campsite, in production, while working perfectly in dev.
  */
 import {
-  NWS_BASE, getJson, nwsAlertToHazard, fetchNwsAlertsAtPoint, fetchEcccAlerts, looksUS
+  NWS_BASE, getJson, fetchNwsAlertsAtPoint, fetchEcccAlerts, looksUS,
+  fetchNwsAlertsForStates, resolveNwsZoneGeometry
 } from './alertSources.js';
 import { fetchOpenMeteo } from './openMeteo.js';
+import { statesInBbox } from './usStates.js';
 
 const POINT_TTL_MS = 24 * 60 * 60 * 1000;
 const FORECAST_TTL_MS = 10 * 60 * 1000;
@@ -48,6 +50,36 @@ const store = (key: string, body: unknown): void => {
     if (oldest) cache.delete(oldest);
   }
   cache.set(key, { at: Date.now(), body });
+};
+
+/**
+ * Does an alert's area overlap the requested viewport?
+ *
+ * Bounding box against bounding box, deliberately. It over-includes an alert
+ * whose box clips the view while its polygon does not, and over-including a
+ * warning is the safe direction to be wrong in.
+ */
+const intersectsBox = (
+  geometry: any,
+  minLat: number, minLon: number, maxLat: number, maxLon: number
+): boolean => {
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  const walk = (node: any): void => {
+    if (!Array.isArray(node)) return;
+    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+      const [lon, lat] = node as [number, number];
+      if (lon < w) w = lon;
+      if (lon > e) e = lon;
+      if (lat < s) s = lat;
+      if (lat > n) n = lat;
+      return;
+    }
+    node.forEach(walk);
+  };
+  walk(geometry?.coordinates);
+  // No usable coordinates: keep it rather than drop it.
+  if (!Number.isFinite(w) || !Number.isFinite(s)) return true;
+  return !(e < minLon || w > maxLon || n < minLat || s > maxLat);
 };
 
 const fetchNwsPoint = async (lat: number, lon: number) => {
@@ -234,24 +266,57 @@ export const registerWeatherRoutes = (app: Express): void => {
 
     const collected: any[] = [];
 
-    if (looksUS(centreLat, centreLon) || looksUS(minLat, minLon) || looksUS(maxLat, maxLon)) {
-      const data = await getJson(
-        `${NWS_BASE}/alerts/active?point=${centreLat.toFixed(4)},${centreLon.toFixed(4)}`
-      );
-      if (Array.isArray(data?.features)) collected.push(...data.features.map(nwsAlertToHazard));
+    /**
+     * ASK BY STATE, NOT BY POINT.
+     *
+     * This used to ask NWS for alerts at the single coordinate in the middle of
+     * the viewport. Everything the user could see but was not centred on — the
+     * heat advisory over the next range, the smoke two counties north — was
+     * never requested, so it could never be drawn. States are the coarsest
+     * thing the NWS API will answer for, and one request covers the screen.
+     */
+    const states = statesInBbox(minLon, minLat, maxLon, maxLat);
+    if (states.length > 0) {
+      // Zone-based products (heat, cold, smoke, wind, red flag) arrive with a
+      // null geometry and a list of the zones they cover. Fetch those outlines
+      // before anything else looks at the alerts.
+      collected.push(...(await resolveNwsZoneGeometry(await fetchNwsAlertsForStates(states))));
     }
 
-    if (maxLat > 48.0) {
+    /**
+     * Canada does not start at the 49th parallel everywhere.
+     *
+     * The old test was `maxLat > 48.0`, which is right west of the lakes and
+     * wrong for exactly the places this app supports best: southern Ontario
+     * sits at 42–44°N, so every Environment Canada warning around Toronto,
+     * Windsor and the north shore of Lake Erie was skipped outright.
+     */
+    const touchesCanada = maxLat > 48.5 || (maxLat > 41.6 && maxLon > -95.5);
+    if (touchesCanada) {
       collected.push(...(await fetchEcccAlerts(centreLat, centreLon, Math.max(span, 1.5))));
     }
 
     // De-duplicate by id; the two feeds overlap near the border.
     const seen = new Set<string>();
-    const alerts = collected.filter((a) => {
+    const deduped = collected.filter((a) => {
       if (seen.has(a.id)) return false;
       seen.add(a.id);
       return true;
     });
+
+    /**
+     * Back down to what is actually on screen.
+     *
+     * A state-wide query returns warnings from corners of the state the user is
+     * nowhere near. Anything we could place is kept only if its area really
+     * overlaps the requested box. Anything we could NOT place is kept as-is —
+     * the client counts those and tells the user how many alerts it could not
+     * position, and quietly dropping them would turn an honest gap into a
+     * silent one.
+     */
+    const alerts = deduped.filter((a) => !a.geometry || intersectsBox(
+      a.geometry, minLat, minLon, maxLat, maxLon
+    ));
 
     const payload = { alerts, fetchedAt: new Date().toISOString() };
     store(key, payload);

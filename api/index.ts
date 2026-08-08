@@ -134,6 +134,36 @@ await safeRegister(
   'registerWeatherRoutes'
 );
 
+/**
+ * Active fires: WFIGS perimeters (US) + FireRadar points (Canada).
+ *
+ * THIS WAS MISSING, AND THAT IS WHY NO FIRE EVER APPEARED IN PRODUCTION.
+ * `server.ts` registers it for `npm run dev`, so the layer worked locally and
+ * every deployed request to /api/fires fell through to the 404 below. The map
+ * asked, got "Unknown endpoint", and — exactly as designed — degraded to
+ * drawing no fires. A pure HTTP proxy to two public feeds; no keys.
+ */
+await safeRegister(
+  'fires',
+  () => import('../server/fireRoutes.js'),
+  'registerFireRoutes'
+);
+
+/**
+ * Alert feed status. Also missing, which is why the "who is behind these
+ * warnings" panel could never tell the user whether the feed was live — the
+ * 404 handler below already had a rule for /api/alerts, but nothing had ever
+ * registered the routes it was describing.
+ *
+ * The routes only. The background ingest timer that `server.ts` starts has no
+ * meaning in a serverless function that is torn down between requests.
+ */
+await safeRegister(
+  'alerts',
+  () => import('../server/alertIngest.js'),
+  'registerAlertRoutes'
+);
+
 // Cell coverage: an OpenCellID proxy. Loads with or without a key — without
 // one it answers "not configured", which is a valid answer the UI renders.
 await safeRegister(
@@ -177,7 +207,8 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/cell-/, 'cellCoverage'],
   [/^\/api\/route/, 'routing'],
   [/^\/api\/push/, 'push'],
-  [/^\/api\/alerts/, 'alerts']
+  [/^\/api\/alerts/, 'alerts'],
+  [/^\/api\/fires/, 'fires']
 ];
 
 // Unknown /api routes return JSON, not the SPA's HTML. A typo in a fetch URL
