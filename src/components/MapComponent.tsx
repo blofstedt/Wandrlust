@@ -29,11 +29,13 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  AlertBadge, BADGE_LABEL, BADGE_COLOR, badgesForPoint, alertBadge,
+  AlertBadge, BADGE_COLOR, badgesForPoint, alertBadge,
   hazardCloudHtml, preciseMarkerHtml, isDiffuse, warningGlyphPattern, explodeToFeatures,
-  WARNING_EMOJI, WARNING_LABEL,
-  dissolveKey, dissolveSegments, dissolvedFill
+  WARNING_LABEL, dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
+import {
+  MarkerDot, amenityDots, hazardDots, COLLAPSED_DOT_LIMIT
+} from '../utils/amenityDots';
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
@@ -107,6 +109,16 @@ const TILE_PERFORMANCE = {
 const UNDERLAY_NATIVE_ZOOM = 8;
 
 /**
+ * How close the camera comes when a camper taps a pin.
+ *
+ * Close enough that the tapped pin's expanded chips have the screen to
+ * themselves and the roads in to the spot are drawn; not so close that the
+ * surroundings vanish and the camper loses the sense of where the spot sits.
+ * Never zooms OUT to reach it — see the effect that uses it.
+ */
+const CAMPSITE_FOCUS_ZOOM = 14;
+
+/**
  * The frame the map lives in — the box the user pans inside and cannot
  * drag out of, with an equal margin on all four sides.
  *
@@ -165,38 +177,75 @@ const TILE_BOUNDS = PAN_BOUNDS;
  * Official alerts keep their warning triangles. That's the whole set.
  */
 
-/** A spot a camper added themselves. */
-const buildCampsiteIcon = (isSelected: boolean, badges: AlertBadge[] = []): L.DivIcon => {
-  // A small word-chip per active alert, stacked just above the pin. Fire, Flood,
-  // Smoke — the same words a camper reads in the alert panel, in the family
-  // colour, so the map says what's wrong here without opening anything.
-  const chips = badges
-    .map(
-      (b) =>
-        `<span style="background:${BADGE_COLOR[b]};color:#0b1120;font-size:9px;` +
-        `font-weight:800;line-height:1;padding:2px 5px;border-radius:5px;` +
-        `border:1px solid rgba(2,6,23,.55);white-space:nowrap;` +
-        `box-shadow:0 1px 3px rgba(0,0,0,.45)">${BADGE_LABEL[b]}</span>`
-    )
-    .join('');
-  const chipStack = badges.length
-    ? `<div style="position:absolute;bottom:100%;left:50%;transform:translateX(-50%);` +
-      `margin-bottom:3px;display:flex;flex-direction:column;gap:2px;align-items:center;` +
-      `pointer-events:none">${chips}</div>`
-    : '';
+const TENT_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
+  '<path d="M19 20 12 4 5 20"/><path d="M12 4v16"/><path d="M2 20h20"/></svg>';
+
+/**
+ * A spot a camper added themselves.
+ *
+ * TWO STATES, AND THE WHOLE INTERFACE HANGS OFF THE DIFFERENCE.
+ *
+ * HOLLOW is the resting state: a ring, not a blob. A screenful of solid
+ * discs is a screenful of paint over the terrain a camper is trying to read,
+ * and every one of them shouts equally hard. A ring lets the ground through
+ * and still reads as "a spot is here" at a glance.
+ *
+ * FILLED is the tapped state: the ring floods with colour and pops once, so
+ * "the one I chose" is unmistakable among its neighbours without the others
+ * having to dim.
+ *
+ * Above the pin, either way, sits a row of small coloured dots — one per fact
+ * recorded about the spot, hazards first. That row is what used to be a
+ * legend in the corner of the map. Tapped, each dot expands into the words it
+ * stood for, so the key to the colours is on the thing the colours describe.
+ *
+ * A dot only ever stands for something somebody recorded. See `amenityDots`.
+ */
+const buildCampsiteIcon = (isSelected: boolean, dots: MarkerDot[] = []): L.DivIcon => {
+  const overflow = Math.max(0, dots.length - COLLAPSED_DOT_LIMIT);
+
+  /** Resting: colour only, no words. The pin is the label. */
+  const collapsedRow = (): string => {
+    const shown = dots.slice(0, COLLAPSED_DOT_LIMIT);
+    const cells = shown
+      .map(
+        (d) =>
+          `<i class="wl-dot${d.tone === 'bad' ? ' wl-dot-bad' : ''}" ` +
+          `style="background:${d.color}"></i>`
+      )
+      .join('');
+    const more = overflow
+      ? `<i class="wl-dot wl-dot-more" style="background:#475569"></i>`
+      : '';
+    return `<div class="wl-dots">${cells}${more}</div>`;
+  };
+
+  /** Tapped: the same dots, each grown into the fact it stood for. */
+  const expandedRow = (): string => {
+    const chips = dots
+      .map(
+        (d, i) =>
+          `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}" ` +
+          `style="--wl-chip-color:${d.color};animation-delay:${i * 26}ms">` +
+          `<i class="wl-chip-dot" style="background:${d.color}"></i>` +
+          `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
+          `${escapeHtml(d.label)}</span>`
+      )
+      .join('');
+    return `<div class="wl-chips">${chips}</div>`;
+  };
+
+  const row = dots.length ? (isSelected ? expandedRow() : collapsedRow()) : '';
+
   return L.divIcon({
     className: 'custom-campsite-marker',
-    html: `
-      <div class="relative flex items-center justify-center ${isSelected ? 'scale-125 z-50' : 'z-10'}">
-        ${chipStack}
-        <div class="w-8 h-8 rounded-full flex items-center justify-center shadow-xl border-2 bg-emerald-500 ${
-          isSelected ? 'border-white ring-4 ring-emerald-400/50' : 'border-slate-900'
-        }">
-          <svg class="w-4 h-4 text-slate-950 stroke-[2.5]" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path d="M19 20 12 4 5 20" /><path d="M12 4v16" /><path d="M2 20h20" />
-          </svg>
-        </div>
-      </div>`,
+    html:
+      `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}">` +
+      row +
+      `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
+      `</div>`,
     iconSize: [32, 32],
     iconAnchor: [16, 16]
   });
@@ -733,6 +782,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const selectedIdRef = useRef<string | null>(null);
   /** Alert badges affecting each pinned campsite, keyed by id. */
   const badgesByIdRef = useRef<Map<string, AlertBadge[]>>(new Map());
+  /**
+   * The destination the camera has already closed in on.
+   *
+   * Compared by identity, so re-parking the pin as the panel is dragged
+   * between snaps never re-runs the zoom.
+   */
+  const focusedDestRef = useRef<MapDestination | null>(null);
 
   // What boundary data we already hold, so a pan inside it costs nothing.
   const loadedBoxRef = useRef<BoundingBox | null>(null);
@@ -763,13 +819,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const warningRendererRef = useRef<L.Renderer | null>(null);
   const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
-  /**
-   * The one-shot glow drawn over a warning's area when the user taps its
-   * chip row. Held by ref so the animation handler can clear it without
-   * re-running any effect; the layer itself is the only piece of Leaflet
-   * state the animation owns.
-   */
-  const glowRef = useRef<L.Layer | null>(null);
 
   /**
    * Callbacks reached through refs, not through effect dependencies.
@@ -837,14 +886,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [unmappableHazards, setUnmappableHazards] = useState(0);
   /** Which warning families are drawn in view — drives the top-left legend. */
   const [warningBadges, setWarningBadges] = useState<AlertBadge[]>([]);
-  /**
-   * The badge whose area is currently glowing. Set when the user taps a
-   * chip row in the warnings legend; cleared when the glow finishes (or
-   * when a new fetch changes the warnings, whichever comes first). Lives in
-   * state rather than a ref because the legend needs to re-render to show
-   * which row is "active" while its glow is running.
-   */
-  const [glowingBadge, setGlowingBadge] = useState<AlertBadge | null>(null);
   /** Camper-filed reports currently on screen — counted in the status chip. */
   const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
   /**
@@ -2108,16 +2149,47 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           bottomEdge - 12
         );
 
-        const pin = map.latLngToContainerPoint([destination.latitude, destination.longitude]);
-        const centre = map.containerPointToLatLng([pin.x, pin.y + (size.y / 2 - targetY)]);
+        /**
+         * Tapping a pin also moves the camera IN.
+         *
+         * A tapped pin has just unfolded its dots into a stack of labelled
+         * chips, and at the zoom you were browsing at those chips overlap
+         * the pins around them. Closing in gives the expanded pin the room
+         * it needs and answers the question the tap asked — "what is this
+         * place?" — with the ground around it, not just a card.
+         *
+         * Only ever in, never out: the zoom you chose to browse at is yours,
+         * and yanking the view back out from under a camper who had zoomed
+         * to a road junction would be worse than not moving at all. And only
+         * once per selection, so dragging the panel between its snaps
+         * afterwards re-parks the pin without re-zooming.
+         */
+        const first = focusedDestRef.current !== destination;
+        focusedDestRef.current = destination;
+        const zoomTo = first && destination.campsite
+          ? Math.max(map.getZoom(), CAMPSITE_FOCUS_ZOOM)
+          : map.getZoom();
+
+        // Projected at the zoom we are GOING to, not the one we are at:
+        // the pixel offset that parks the pin above the panel is only
+        // correct in the scale it is measured in.
+        const pin = map.project([destination.latitude, destination.longitude], zoomTo);
+        const centre = map.unproject(
+          pin.add(L.point(0, size.y / 2 - targetY)),
+          zoomTo
+        );
 
         // Already close enough that moving would just look twitchy.
         const shift = map.latLngToContainerPoint(centre).distanceTo(map.getSize().divideBy(2));
-        if (shift < 8) return;
+        if (shift < 8 && zoomTo === map.getZoom()) return;
 
-        map.panTo(centre, prefersReducedMotion()
-          ? { animate: false }
-          : { animate: true, duration: 0.45 });
+        if (prefersReducedMotion()) {
+          map.setView(centre, zoomTo, { animate: false });
+        } else if (zoomTo !== map.getZoom()) {
+          map.flyTo(centre, zoomTo, { duration: 0.7 });
+        } else {
+          map.panTo(centre, { animate: true, duration: 0.45 });
+        }
       } catch { /* map torn down mid-timeout */ }
     }, 70);
 
@@ -3024,10 +3096,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     [campsites]
   );
 
-  /** Icon for a pinned site, given its current selection and alert badges. */
+  /**
+   * The dots for each pinned site, worked out once per list change.
+   *
+   * Held in a ref as well so `iconForId` can stay a stable callback — it is a
+   * dependency of the cluster effect, and giving it a new identity on every
+   * render would tear down and rebuild every marker on the map.
+   */
+  const amenityDotsById = React.useMemo(() => {
+    const byId = new Map<string, MarkerDot[]>();
+    for (const site of pinnedCampsites) byId.set(site.id, amenityDots(site.amenities));
+    return byId;
+  }, [pinnedCampsites]);
+  const amenityDotsRef = useRef(amenityDotsById);
+  amenityDotsRef.current = amenityDotsById;
+
+  /**
+   * Icon for a pinned site: hollow or filled, with its dot row.
+   *
+   * Hazards lead the row. A heat warning or smoke over the spot changes
+   * whether to go at all, which outranks anything about the spot itself.
+   */
   const iconForId = useCallback(
     (id: string) =>
-      buildCampsiteIcon(selectedIdRef.current === id, badgesByIdRef.current.get(id) ?? []),
+      buildCampsiteIcon(selectedIdRef.current === id, [
+        ...hazardDots(badgesByIdRef.current.get(id) ?? []),
+        ...(amenityDotsRef.current.get(id) ?? [])
+      ]),
     []
   );
 
@@ -3104,8 +3199,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (previousId === nextId) return;
     // Update the ref first: iconForId reads it, and both pins need the new state.
     selectedIdRef.current = nextId;
-    if (previousId) markersRef.current.get(previousId)?.setIcon(iconForId(previousId));
-    if (nextId) markersRef.current.get(nextId)?.setIcon(iconForId(nextId));
+    if (previousId) {
+      const marker = markersRef.current.get(previousId);
+      marker?.setIcon(iconForId(previousId));
+      marker?.setZIndexOffset(0);
+    }
+    if (nextId) {
+      const marker = markersRef.current.get(nextId);
+      marker?.setIcon(iconForId(nextId));
+      // Leaflet stacks markers by latitude, so a selected pin's expanded
+      // chips would otherwise slide under any pin north of it.
+      marker?.setZIndexOffset(800);
+    }
   }, [selectedCampsite, iconForId]);
 
   /**
@@ -3249,132 +3354,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [center, zoom, isMapReady]);
 
-  /**
-   * Centre the map on a warning of `badge` and make that area glow.
-   *
-   * WHAT IT DOES, IN ORDER:
-   *   1. Pick the most prominent alert of that family in the current view.
-   *      "Most prominent" = largest bbox area, which is the alert the user
-   *      most plausibly meant by tapping its chip.
-   *   2. Pan the map to the alert's centroid at the current zoom (no zoom
-   *      change — that's the user's choice).
-   *   3. Fill the alert's actual footprint in the family colour and breathe
-   *      it in and out twice — a soft glow that swells and settles, then
-   *      clears itself.
-   *
-   * WHY A GLOW AND NOT A TRACER. This used to run a comet head around the
-   * perimeter. On a warning shaped like a real advisory — long, ragged,
-   * often several disjoint pieces — the eye followed the moving dot and
-   * never took in the shape it was drawing. A soft pulse of the whole area
-   * answers the only question the tap asks ("where is this?") in one beat,
-   * and the shape is legible for the entire animation instead of one
-   * moving 90px of it.
-   *
-   * The glow uses the same colour as the cloud (BADGE_COLOR), so the eye
-   * links the chip that was tapped to the area on the map without reading
-   * a label. It sits just above the warning fill and below every marker,
-   * so it reads as the ground lighting up rather than a sheet dropped over
-   * the pins.
-   *
-   * Under prefers-reduced-motion nothing pulses: the area is held at a
-   * steady highlight for the same beat and then removed.
-   */
-  const focusWarning = useCallback((badge: AlertBadge) => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    // Pick the largest alert of this family in view. The bbox area is a
-    // rough proxy for "the one that matters most" without going through a
-    // full polygon-area calculation.
-    const candidates = hazards
-      .filter((a) => alertBadge(a) === badge && a.centroid && a.geometry)
-      .map((a) => {
-        const bbox = geometryBbox(a.geometry);
-        const extent = bbox
-          ? (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-          : 0;
-        return { alert: a, extent };
-      })
-      .sort((a, b) => b.extent - a.extent);
-
-    const chosen = candidates[0]?.alert;
-    if (!chosen || !chosen.centroid || !chosen.geometry) return;
-
-    // Clear any in-flight glow from a previous tap. New tap wins, no
-    // overlapping animations.
-    if (glowRef.current) {
-      try { map.removeLayer(glowRef.current); } catch { /* detached */ }
-      glowRef.current = null;
-    }
-
-    // Pan, but only if it actually moves the map. The flyTo guard above
-    // would not help here because the user explicitly asked for a pan.
-    map.panTo(chosen.centroid, { animate: true, duration: 0.5 });
-
-    // The glow lives in its own non-interactive pane directly above the
-    // warning fill and its glyphs (460/461) and below the fire perimeters
-    // and every marker, so nothing the camper can tap gets washed out.
-    if (!map.getPane('warningGlowPane')) {
-      map.createPane('warningGlowPane');
-      const pane = map.getPane('warningGlowPane');
-      if (pane) {
-        pane.style.zIndex = '462';
-        pane.style.pointerEvents = 'none';
-      }
-    }
-    const color = BADGE_COLOR[badge];
-    const glowGeo = L.geoJSON(chosen.geometry as any, {
-      pane: 'warningGlowPane',
-      renderer: L.svg({ pane: 'warningGlowPane', padding: 0.2 }),
-      interactive: false,
-      style: {
-        // A soft wash inside a defined edge. The fill says how far the
-        // warning reaches; the stroke keeps the shape readable where the
-        // fill sits over bright terrain.
-        color,
-        weight: 2.5,
-        opacity: 0.85,
-        fill: true,
-        fillColor: color,
-        fillOpacity: 0.28,
-        lineCap: 'round',
-        lineJoin: 'round'
-      }
-    } as unknown as RenderedGeoJSONOptions).addTo(map);
-
-    const reduced = prefersReducedMotion();
-    glowGeo.eachLayer((sub) => {
-      const el = (sub as unknown as { _path?: SVGPathElement })._path;
-      if (!el) return;
-      // The halo. Two drop-shadows in the family colour — a tight one to
-      // thicken the edge and a wide one to bleed light onto the terrain
-      // around it. Static, because animating a blur radius repaints the
-      // whole path every frame; the pulse is carried by opacity instead,
-      // which the compositor handles.
-      el.style.filter =
-        `drop-shadow(0 0 6px ${color}) drop-shadow(0 0 18px ${color})`;
-      if (reduced) {
-        el.style.opacity = '0.8';
-        return;
-      }
-      // Two breaths over 2.4s: swell, settle, swell, fade out. Slow
-      // enough to read as breathing rather than blinking.
-      el.style.animation = 'wl-warning-glow 2.4s var(--ease-standard) both';
-    });
-
-    glowRef.current = glowGeo;
-    setGlowingBadge(badge);
-
-    // One-shot: clear the glow after the animation finishes. Leaving it on
-    // screen would be visual noise; the user already saw where to look.
-    window.setTimeout(() => {
-      if (glowRef.current === glowGeo && mapRef.current) {
-        try { mapRef.current.removeLayer(glowGeo); } catch { /* detached */ }
-        glowRef.current = null;
-      }
-      setGlowingBadge((current) => (current === badge ? null : current));
-    }, 2400);
-  }, [hazards]);
 
   /**
    * Set when the province on screen has no Crown land layer behind it.
@@ -3587,79 +3566,40 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
 
         {/*
-          The weather-warning legend. The overlays themselves cannot be tapped,
-          so this is what tells a camper what the coloured, animated clouds mean
-          — a colour swatch and an icon per active family. Tapping a campsite
-          pin inside a warning is what surfaces the detail, in the bottom card.
+          WHAT REPLACED THE WEATHER LEGEND.
+
+          There used to be a colour key here: a swatch, an icon and a word per
+          warning family, which asked the camper to look away from the map,
+          learn a code, and carry it back. The pins carry it now — a coloured
+          dot per warning sits over any spot a warning covers, and tapping the
+          spot spells each one out in words.
+
+          What a legend was still needed for is what is left: saying that the
+          animated clouds are warnings at all, naming which kinds are on
+          screen, and admitting to the ones that arrived with no geometry and
+          so are not drawn anywhere. No colour key, no tappable rows.
         */}
-        {warningBadges.length > 0 && (
+        {(warningBadges.length > 0 || unmappableHazards > 0) && (
           <div className="bg-slate-900/92 backdrop-blur-md border border-amber-600/50 rounded-xl px-3 py-2 shadow-xl anim-in-up max-w-[15rem]">
-            <div className="flex items-center gap-1.5 mb-1.5">
+            <div className="flex items-center gap-1.5">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span className="text-[11px] font-bold text-amber-100">
-                Weather warnings here
+                {warningBadges.length > 0
+                  ? `${warningBadges.map((b) => WARNING_LABEL[b]).join(', ')} in view`
+                  : 'Warnings in view'}
               </span>
             </div>
-            <ul className="space-y-1">
-              {warningBadges.map((b) => {
-                const isGlowing = glowingBadge === b;
-                return (
-                  <li key={b}>
-                    <button
-                      type="button"
-                      onClick={() => focusWarning(b)}
-                      aria-label={`Centre the map on the ${WARNING_LABEL[b]} warning and highlight its area`}
-                      /*
-                        While the area is glowing the row wears the SAME
-                        colour, so the chip and the shape on the map are
-                        obviously the same thing. Inline because the colour
-                        comes from the alert family, not from the palette.
-                      */
-                      style={
-                        isGlowing
-                          ? {
-                              background: `${BADGE_COLOR[b]}26`,
-                              boxShadow: `inset 0 0 0 1px ${BADGE_COLOR[b]}66`
-                            }
-                          : undefined
-                      }
-                      className={`w-full flex items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-moook ${
-                        isGlowing ? '' : 'hover:bg-slate-800/60'
-                      }`}
-                    >
-                      <span
-                        className="w-3.5 h-3.5 rounded-sm shrink-0 border border-slate-950/50"
-                        style={{ background: BADGE_COLOR[b] }}
-                      />
-                      <span className="text-xs leading-none" aria-hidden="true">
-                        {WARNING_EMOJI[b]}
-                      </span>
-                      <span className="text-[10px] text-slate-200 font-semibold flex-1">
-                        {WARNING_LABEL[b]}
-                      </span>
-                      {isGlowing && (
-                        <span
-                          className="text-[9px] font-bold uppercase tracking-wider"
-                          style={{ color: BADGE_COLOR[b] }}
-                        >
-                          on map
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
             {unmappableHazards > 0 && (
-              <p className="text-[9px] text-amber-300/80 leading-tight mt-1.5">
-                {unmappableHazards} more with no mapped area — tap a spot to read
+              <p className="text-[9px] text-amber-300/80 leading-tight mt-1">
+                {unmappableHazards} more came with no mapped area, so
+                {unmappableHazards === 1 ? ' it is' : ' they are'} not drawn
+                anywhere — tap a spot to read
                 {unmappableHazards === 1 ? ' it' : ' them'}.
               </p>
             )}
             <p className="text-[9px] text-slate-500 leading-tight mt-1">
-              Shaded, animated clouds are area warnings — tap a spot inside one for
-              details. Fire and flood show a tappable icon instead. Tap a row above to
-              centre the map on that warning.
+              Shaded, animated clouds are the area an agency warned about. A pin
+              inside one carries a coloured dot per warning — tap it to read them.
             </p>
           </div>
         )}

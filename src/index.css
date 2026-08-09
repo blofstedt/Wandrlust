@@ -304,7 +304,9 @@
  * any stagger delay, but nothing left applied afterwards, so the hover and
  * selected-pin transforms below are free to take over.
  */
-.custom-campsite-marker > div {
+/* Only a resting pin drops in. A tapped one pops instead (see .wl-pin-on),
+   and playing both at once on the same rebuild reads as a stutter. */
+.custom-campsite-marker > div:not(.wl-pin-wrap-on) {
   animation: pin-drop var(--dur-panel) var(--ease-moook) backwards;
 }
 .custom-cluster-icon > div,
@@ -312,13 +314,136 @@
   animation: moook-expand var(--dur-base) var(--ease-moook) backwards;
 }
 
-.custom-campsite-marker > div,
 .camper-presence-marker > div,
 .custom-cluster-icon > div {
   transition: transform var(--dur-base) var(--ease-moook);
 }
-.custom-campsite-marker:hover > div { transform: scale(1.12); }
 .custom-cluster-icon:hover > div { transform: scale(1.1); }
+
+/* ====================================================================
+   Campsite pins: hollow until tapped, with their facts above them.
+
+   THIS IS WHAT REPLACED THE LEGEND. A ring, a row of coloured dots over
+   it, and — once tapped — those same dots grown into the words they
+   stood for. The key to the colours is attached to the thing the
+   colours are about, so nothing on this map means something you can
+   only learn by reading a panel in the corner.
+
+   Sizes are in px rather than Tailwind classes because these elements
+   are built as an HTML string inside a Leaflet divIcon, where a class
+   Tailwind never sees in a template would be purged from the build.
+   ==================================================================== */
+
+.wl-pin-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+}
+
+/* The ring. Transparent middle so the terrain under a spot still reads. */
+.wl-pin {
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2.5px solid #34d399;
+  background: rgba(2, 6, 23, 0.34);
+  color: #6ee7b7;
+  box-shadow: 0 1px 5px rgba(2, 6, 23, 0.55), inset 0 0 0 1px rgba(2, 6, 23, 0.5);
+  transition: transform var(--dur-base) var(--ease-moook),
+              background-color var(--dur-base) var(--ease-standard),
+              color var(--dur-base) var(--ease-standard);
+}
+.custom-campsite-marker:hover .wl-pin { transform: scale(1.12); }
+
+/* Tapped: the ring floods, and pops once so the choice is unmistakable. */
+.wl-pin-on {
+  background: #10b981;
+  border-color: #ffffff;
+  color: #022c22;
+  box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.26), 0 5px 16px rgba(2, 6, 23, 0.6);
+  animation: moook-pop var(--dur-base) var(--ease-moook);
+}
+/* A selected pin's chips must sit over its neighbours, not under them. */
+.wl-pin-wrap-on { z-index: 5; }
+
+/* The resting row: colour only, no words, tight enough not to collide
+   with the row over the next pin along. */
+.wl-dots {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 3px;
+  display: flex;
+  gap: 3px;
+  pointer-events: none;
+}
+.wl-dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 1px rgba(2, 6, 23, 0.7), 0 1px 2px rgba(2, 6, 23, 0.5);
+}
+/* Something wrong here — a warning, or a recorded absence. It breathes,
+   so a hazard is noticeable on a map full of resting pins. */
+.wl-dot-bad { animation: wl-dot-breathe 1.8s var(--ease-standard) infinite; }
+.wl-dot-more { opacity: 0.85; }
+
+@keyframes wl-dot-breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.45); opacity: 0.75; }
+}
+
+/* Tapped: the dots become the facts. */
+.wl-chips {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.wl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  padding: 2px 7px 2px 5px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid color-mix(in srgb, var(--wl-chip-color) 55%, transparent);
+  box-shadow: 0 2px 8px rgba(2, 6, 23, 0.55);
+  animation: moook-in-up var(--dur-base) var(--ease-moook) backwards;
+}
+/* Hazards and recorded absences wear their colour, not just a dot of it. */
+.wl-chip-bad {
+  color: #f8fafc;
+  background: color-mix(in srgb, var(--wl-chip-color) 26%, rgba(15, 23, 42, 0.94));
+  border-color: var(--wl-chip-color);
+}
+.wl-chip-dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 1px rgba(2, 6, 23, 0.6);
+}
+.wl-chip-glyph { font-size: 9px; line-height: 1; }
 
 .leaflet-popup-content-wrapper {
   background: rgb(248 250 252);
