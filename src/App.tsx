@@ -632,6 +632,26 @@ export default function App() {
     [filteredCampsites]
   );
 
+  /**
+   * What the MAP draws pins for: every camper-submitted spot, filters or not.
+   *
+   * The list's filters answer "which of these would suit me"; a pin answers
+   * "somebody camped here". Running the second through the first meant a spot
+   * you had just submitted disappeared as soon as it fell outside the
+   * distance slider, or the moment any amenity filter was on — because a spot
+   * added in thirty seconds on a phone records almost nothing, and an
+   * unrecorded fact does not satisfy a requirement. It looked like the
+   * submission had been lost. Submitted pins now stay on the map; the list
+   * still filters exactly as before.
+   */
+  const mapSites = useMemo(() => {
+    const seen = new Set(visibleSites.map((site) => site.id));
+    const extras = campsites.filter(
+      (site) => site.source === 'user_submitted' && !seen.has(site.id)
+    );
+    return extras.length ? [...visibleSites, ...extras] : visibleSites;
+  }, [visibleSites, campsites]);
+
   const activeFilterCount = useMemo(() => countActiveFilters(filterState), [filterState]);
 
   const resetFilters = useCallback(
@@ -712,7 +732,7 @@ export default function App() {
               <div className="flex-1 relative min-h-0">
                 <ErrorBoundary fallbackLabel="The map failed to load">
                   <MapComponent
-                    campsites={visibleSites}
+                    campsites={mapSites}
                     selectedCampsite={selectedCampsite}
                     onSelectCampsite={handleSelectMapCampsite}
                     center={center}

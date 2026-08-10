@@ -419,6 +419,26 @@
   50%      { transform: scale(1.45); opacity: 0.75; }
 }
 
+/* ---------------------------------------------------------------------------
+   Anything hung off a pin is centred with translateX(-50%), so it cannot use
+   the plain moook entrances: a CSS animation REPLACES the transform for as
+   long as it runs, which threw the row half its own width to the right for
+   the first frames and then snapped it back. These carry the centring
+   through every keyframe.
+   ------------------------------------------------------------------------- */
+@keyframes moook-in-up-centred {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(14px); }
+  55%  { opacity: 1; transform: translateX(-50%) translateY(-2px); }
+  75%  { transform: translateX(-50%) translateY(1px); }
+  100% { transform: translateX(-50%) translateY(0); }
+}
+@keyframes moook-in-down-centred {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(-14px); }
+  55%  { opacity: 1; transform: translateX(-50%) translateY(2px); }
+  75%  { transform: translateX(-50%) translateY(-1px); }
+  100% { transform: translateX(-50%) translateY(0); }
+}
+
 /* Tapped: the dots become the facts. */
 .wl-chips {
   position: absolute;
@@ -431,7 +451,18 @@
   align-items: center;
   gap: 3px;
   pointer-events: none;
+  /* Stepping aside for the fire tour, and back again afterwards. */
+  transition: opacity var(--dur-base) var(--ease-moook);
 }
+/* The row arrives as ONE thing, on the tap only. Chips that land later —
+   the fires, the weather, a toilet up the road — are added underneath a row
+   that is already sitting still, rather than restarting the whole stack. */
+.wl-chips-in {
+  animation: moook-in-down-centred var(--dur-base) var(--ease-moook) backwards;
+}
+/* While the camera is away at the fires, the pin's own labels get out of the
+   way of the thing they sent you to look at. */
+.wl-touring .wl-chips { opacity: 0; }
 .wl-chip {
   display: inline-flex;
   align-items: center;
@@ -446,7 +477,6 @@
   background: rgba(15, 23, 42, 0.94);
   border: 1px solid color-mix(in srgb, var(--wl-chip-color) 55%, transparent);
   box-shadow: 0 2px 8px rgba(2, 6, 23, 0.55);
-  animation: moook-in-up var(--dur-base) var(--ease-moook) backwards;
 }
 /* Hazards and recorded absences wear their colour, not just a dot of it. */
 .wl-chip-bad {
@@ -506,7 +536,7 @@
   align-items: center;
   gap: 4px;
   pointer-events: auto;
-  animation: moook-in-up var(--dur-base) var(--ease-moook) backwards;
+  animation: moook-in-up-centred var(--dur-base) var(--ease-moook) backwards;
 }
 .wl-pin-action {
   display: inline-flex;
@@ -573,7 +603,7 @@
   background: rgba(249, 115, 22, 0.9);
   border: 1px solid #fb923c;
   box-shadow: 0 2px 10px rgba(2, 6, 23, 0.6);
-  animation: moook-in-up var(--dur-base) var(--ease-moook) backwards;
+  animation: moook-in-up-centred var(--dur-base) var(--ease-moook) backwards;
 }
 .wl-fire-stop-label-hot {
   background: rgba(239, 68, 68, 0.92);

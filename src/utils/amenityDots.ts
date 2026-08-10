@@ -46,8 +46,21 @@ export interface MarkerDot {
   /** Stable within one pin; used only as a React-free render key. */
   key: string;
   color: string;
-  /** The words the dot expands into. Full sentence case, no abbreviations. */
+  /**
+   * The words on the chip. SHORT — two or three, and the glyph carries the
+   * subject. A chip is read at a glance over a map, so anything longer stops
+   * being a label and starts being a paragraph lying across the terrain.
+   */
   label: string;
+  /**
+   * The whole, hedged truth, for the chip's tooltip and screen readers.
+   *
+   * This is where the caveats live now that the chip itself is short: which
+   * reading "under control" is, that a signal estimate is a distance to a
+   * mast rather than anything measured, what the router actually said. The
+   * short label is never allowed to say more than this does.
+   */
+  full?: string;
   /** Shown in the expanded chip, never in the collapsed dot. */
   glyph: string;
   tone: DotTone;
@@ -179,7 +192,9 @@ export const fireDots = (
   return [{
     key: 'fire-near',
     color: running ? COLOR.fireRunning : COLOR.fireHeld,
-    label: `${count} ${distance} away${running ? '' : ' — reported under control'}`,
+    label: near.length > 1 ? `${near.length} · ${distance}` : distance,
+    full: `${count} ${distance} away${running ? '' : ' — reported under control'}` +
+      ' — tap to see them',
     glyph: '\u{1F525}',
     tone: 'bad',
     urgent: true,
@@ -191,6 +206,31 @@ export const fireDots = (
  * Every one of these is hedged, because the number behind it is a distance to
  * a mast rather than a reading off a phone.
  */
+const SIGNAL_SHORT: Record<string, string> = {
+  strong: 'Strong',
+  good: 'Signal',
+  weak: 'Weak',
+  none: 'No signal'
+};
+
+/**
+ * The sky in one character, so the chip beside it only has to carry the
+ * temperature. Matched loosely on the forecast wording because every feed
+ * words it differently; anything unrecognised falls back to the thermometer,
+ * which claims nothing about the sky at all.
+ */
+const skyGlyph = (forecast: string): string => {
+  const f = forecast.toLowerCase();
+  if (/thunder|storm/.test(f)) return '\u26C8\uFE0F';
+  if (/snow|flurr|ice|freezing/.test(f)) return '\u{1F328}\uFE0F';
+  if (/rain|shower|drizzle/.test(f)) return '\u{1F327}\uFE0F';
+  if (/fog|haze|mist|smoke/.test(f)) return '\u{1F32B}\uFE0F';
+  if (/partly|mostly sunny|few clouds/.test(f)) return '\u26C5';
+  if (/cloud|overcast/.test(f)) return '\u2601\uFE0F';
+  if (/clear|sunny|fair/.test(f)) return '\u2600\uFE0F';
+  return '\u{1F321}\uFE0F';
+};
+
 const SIGNAL_COPY: Record<string, string> = {
   strong: 'Strong signal likely',
   good: 'Usable signal likely',
@@ -231,20 +271,33 @@ export const conditionDots = (
   if (route?.ok) {
     const hrs = Math.floor(route.durationMin / 60);
     const mins = Math.round(route.durationMin % 60);
-    const drive = hrs ? `${hrs} h ${mins} min` : `${mins} min`;
-    const gap = route.gapToDestinationKm > 0.15
-      ? ` \u2014 road ends ${route.gapToDestinationKm.toFixed(1)} km short`
-      : '';
-    const worst = route.warnings.find((w) => w.severity === 'critical');
+    const drive = hrs ? `${hrs} h ${mins} m` : `${mins} min`;
+    const worst = route.warnings.find((w) => w.severity === 'critical')
+      ?? route.warnings.find((w) => w.severity === 'caution');
 
     dots.push({
       key: 'route',
-      color: gap || worst ? COLOR.rough : COLOR.route,
-      label: `${drive} drive, ${Math.round(route.distanceKm)} km${gap}` +
+      color: COLOR.route,
+      label: `${drive} \u00B7 ${Math.round(route.distanceKm)} km`,
+      full: `${drive} drive, ${Math.round(route.distanceKm)} km by road` +
         (worst ? ` \u2014 ${worst.message}` : ''),
       glyph: '\u{1F697}',
-      tone: worst ? 'bad' : 'neutral'
+      tone: 'neutral'
     });
+
+    // The gap is its own chip because it is its own problem: the drive is
+    // fine and then it simply stops, and that is the bit worth a second look.
+    if (route.gapToDestinationKm > 0.15) {
+      dots.push({
+        key: 'route-gap',
+        color: COLOR.rough,
+        label: `${route.gapToDestinationKm.toFixed(1)} km short`,
+        full: `The road this router carries ends ${route.gapToDestinationKm.toFixed(1)} km ` +
+          'from the spot \u2014 usually an unmapped track, sometimes nothing at all',
+        glyph: '\u{1F6A7}',
+        tone: 'bad'
+      });
+    }
   }
 
   // A fire ban is a rule in force now, so it leads and it breathes.
@@ -264,9 +317,11 @@ export const conditionDots = (
     dots.push({
       key: 'weather-now',
       color: COLOR.weather,
-      label: `${now.temperature}\u00B0${now.temperatureUnit}, ${now.shortForecast}` +
+      // The sky is the glyph's job, so the chip only carries the number.
+      label: `${now.temperature}\u00B0${now.temperatureUnit}`,
+      full: `${now.temperature}\u00B0${now.temperatureUnit}, ${now.shortForecast}` +
         (now.windSpeed ? `, wind ${now.windSpeed}` : ''),
-      glyph: '\u{1F321}\uFE0F',
+      glyph: skyGlyph(now.shortForecast),
       tone: 'neutral'
     });
   }
@@ -277,7 +332,8 @@ export const conditionDots = (
       key: 'coverage',
       color: COLOR.signal,
       hollow: overall.strength === 'none',
-      label: `${SIGNAL_COPY[overall.strength]} \u2014 nearest mast ` +
+      label: SIGNAL_SHORT[overall.strength],
+      full: `${SIGNAL_COPY[overall.strength]} \u2014 nearest mast ` +
         `${overall.nearestTowerKm} km, terrain ignored`,
       glyph: '\u{1F4F6}',
       tone: overall.strength === 'none' ? 'bad'
@@ -295,10 +351,24 @@ export const conditionDots = (
     dots.push({
       key: 'land',
       color: COLOR.land,
-      label: detail ? `${land.name} \u2014 ${detail}` : land.name,
+      label: land.name,
+      full: detail ? `${land.name} \u2014 ${detail}` : land.name,
       glyph: '\u{1F6E1}\uFE0F',
       tone: 'neutral'
     });
+
+    // A permit is a thing to go and get before leaving, so it is not allowed
+    // to hide at the end of a sentence about the name of the forest.
+    if (land.permitRequired) {
+      dots.push({
+        key: 'permit',
+        color: COLOR.warn,
+        label: 'Permit',
+        full: `${land.permitName ?? 'A permit'} is required here`,
+        glyph: '\u{1F3AB}',
+        tone: 'bad'
+      });
+    }
   }
 
   return dots;
@@ -455,7 +525,8 @@ export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
   facilities.map((f) => ({
     key: `near-${f.id}`,
     color: FACILITY_COLOR[f.kind],
-    label: `${FACILITY_LABEL[f.kind]} ${f.distanceKm} km away`,
+    label: `${f.distanceKm} km`,
+    full: `${FACILITY_LABEL[f.kind]} ${f.distanceKm} km away \u2014 tap for a route`,
     glyph: FACILITY_GLYPH[f.kind],
     tone: 'good' as const,
     facility: f
