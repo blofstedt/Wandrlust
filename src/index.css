@@ -372,17 +372,33 @@
 /* A selected pin's chips must sit over its neighbours, not under them. */
 .wl-pin-wrap-on { z-index: 5; }
 
-/* The resting row: colour only, no words, tight enough not to collide
-   with the row over the next pin along. */
+/* The resting ring: colour only, no words, hung on the edge of the pin.
+   It was a row above the marker, which ran out of width after four dots and
+   turned the rest into a grey "+n"; the circumference has room for the lot.
+   Overflow is deliberately visible on the icon so a bead can sit outside the
+   32px box the pin is anchored in. */
 .wl-dots {
   position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  margin-bottom: 3px;
-  display: flex;
-  gap: 3px;
+  inset: 0;
   pointer-events: none;
+  overflow: visible;
+}
+/* A zero-size anchor at the pin's centre, moved out to its place on the ring.
+   The dot lives INSIDE it because an urgent dot breathes with a transform,
+   which would otherwise overwrite the position and pile every hazard dot in
+   the middle of the pin. */
+.wl-dot-slot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  display: block;
+}
+.wl-dot-slot > .wl-dot {
+  position: absolute;
+  left: -3.5px;
+  top: -3.5px;
 }
 /* Each dot glows in its own colour. The dark hairline is what keeps it
    legible over snow, sand and pale desert — the glow alone disappears
@@ -448,25 +464,15 @@
   transition: opacity var(--dur-base) var(--ease-moook);
 }
 /* Boop, boop, boop: each chip pops in after the one before it.
-   ONLY on the tap. Chips that land later — the fires, the weather, a toilet
-   up the road — join a row that is already sitting still, rather than
-   restarting the whole stack every time a lookup comes back.
-   The delays are nth-child rather than inline so that a chip's position in
-   the stack, not the order the answers happened to arrive in, decides when
-   it lands. Past the tenth the stack is taller than a phone anyway, so they
-   share the last beat instead of trailing off. */
-.wl-chips-in .wl-chip {
+   The class and the delay are put on the chip by the marker builder, and only
+   on a chip this pin has never shown — so opening a pin plays the whole stack
+   from nothing, an answer that lands two seconds later pops on its own, and
+   chips already sitting there are never restarted (the popcorn).
+   `backwards` is what keeps a chip invisible during its delay; without it the
+   first frame of an opening pin has the whole stack already drawn. */
+.wl-chip-in {
   animation: wl-chip-pop var(--dur-base) var(--ease-moook) backwards;
 }
-.wl-chips-in .wl-chip:nth-child(1) { animation-delay: 0ms; }
-.wl-chips-in .wl-chip:nth-child(2) { animation-delay: 55ms; }
-.wl-chips-in .wl-chip:nth-child(3) { animation-delay: 110ms; }
-.wl-chips-in .wl-chip:nth-child(4) { animation-delay: 165ms; }
-.wl-chips-in .wl-chip:nth-child(5) { animation-delay: 220ms; }
-.wl-chips-in .wl-chip:nth-child(6) { animation-delay: 275ms; }
-.wl-chips-in .wl-chip:nth-child(7) { animation-delay: 330ms; }
-.wl-chips-in .wl-chip:nth-child(8) { animation-delay: 385ms; }
-.wl-chips-in .wl-chip:nth-child(n+9) { animation-delay: 440ms; }
 
 /* A chip's own arrival: up from nothing, past its size, and back — the
    moook overshoot, scaled rather than travelled, because a chip in a
@@ -718,6 +724,9 @@
 
   .skeleton { animation: none; background: rgb(30 41 59); }
   .anim-pulse, .anim-pulse-danger, .wl-dot-urgent { animation: none; }
+  /* The chips' stagger is a delay, not a duration, so shortening the
+     animation above would still leave a chip blank for half a second. */
+  .wl-chip-in { animation-delay: 0ms !important; }
 }
 
 /* High-contrast preference: strengthen borders. */

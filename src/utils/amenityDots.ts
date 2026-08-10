@@ -581,9 +581,11 @@ export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
 /**
  * How many dots a collapsed pin shows before it stops.
  *
- * Six 6px dots and their gaps come to about 52px — a shade wider than the pin
- * itself, which is as far as a row can spread before two neighbouring pins'
- * rows start colliding. Anything past that is a "+n" dot, and tapping the pin
- * shows the lot.
+ * Ten, now that they are beads on a ring around the pin rather than a row
+ * above it. The row ran out of width at four or five — past that it was wider
+ * than the pin and colliding with the next spot's row — so most pins showed a
+ * grey "+n" instead of the facts. A 19px ring seats ten 7px dots with a clear
+ * gap between each; past ten they merge into a necklace, so the eleventh
+ * onwards is still one "+n" and tapping the pin shows the lot.
  */
-export const COLLAPSED_DOT_LIMIT = 6;
+export const COLLAPSED_DOT_LIMIT = 10;
