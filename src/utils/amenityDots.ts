@@ -1,4 +1,8 @@
-import type { CampsiteAmenities, NearbyFacility, NearbyFacilityKind } from '../types';
+import type {
+  CampsiteAmenities, CellCoverage, DestinationLand, NearbyFacility, NearbyFacilityKind
+} from '../types';
+import type { WeatherSnapshot } from '../services/weatherService';
+import type { RouteResult } from '../services/routingService';
 import {
   ROAD_ACCESS_LABEL, SHADE_LABEL, TOILET_LABEL, WATER_LABEL, bestCellSignal
 } from './amenities';
@@ -72,6 +76,14 @@ export interface MarkerDot {
    * chips tappable and routes to the coordinate.
    */
   facility?: NearbyFacility;
+  /**
+   * Something the chip DOES when tapped, rather than something it says.
+   *
+   * `fires` takes the camera out to the fires the dot is counting, names each
+   * one, and comes back. Only set where the map has somewhere to take you:
+   * a chip with no action is a label and swallows no taps.
+   */
+  action?: 'fires';
 }
 
 /**
@@ -101,7 +113,10 @@ const COLOR = {
   /* The two fire colours the map's flame layer used, kept so the dot above a
      pin says exactly what the flame used to. */
   fireRunning: '#EF4444',
-  fireHeld: '#F97316'
+  fireHeld: '#F97316',
+  weather: '#7DD3FC',
+  route: '#93C5FD',
+  land: '#A78BFA'
 } as const;
 
 /** The colour a nearby facility's dot and its route line are drawn in. */
@@ -167,8 +182,126 @@ export const fireDots = (
     label: `${count} ${distance} away${running ? '' : ' — reported under control'}`,
     glyph: '\u{1F525}',
     tone: 'bad',
-    urgent: true
+    urgent: true,
+    action: 'fires'
   }];
+};
+
+/**
+ * Every one of these is hedged, because the number behind it is a distance to
+ * a mast rather than a reading off a phone.
+ */
+const SIGNAL_COPY: Record<string, string> = {
+  strong: 'Strong signal likely',
+  good: 'Usable signal likely',
+  weak: 'Weak signal at best',
+  none: 'Probably no signal'
+};
+
+/**
+ * What it is LIKE here right now: weather, signal, and the land underneath.
+ *
+ * These used to be tiles in a panel over the bottom half of the screen, which
+ * meant the answer to "what is this place?" was always somewhere other than
+ * the place. They are the same three answers, moved onto the pin they are
+ * about, in the same row as everything else it has to say.
+ *
+ * Each one is skipped rather than guessed. No forecast, no mast in range and
+ * no boundary polygon all produce no chip — an unknown never becomes a chip
+ * saying "none", because "we could not find a mast" and "there is no signal"
+ * are different claims and only the first one is ours to make.
+ */
+export const conditionDots = (
+  weather: WeatherSnapshot,
+  coverage: CellCoverage,
+  land: DestinationLand | undefined,
+  route?: RouteResult | null
+): MarkerDot[] => {
+  const dots: MarkerDot[] = [];
+
+  /*
+   * The drive, and where it stops being a drive.
+   *
+   * The router almost never reaches the pin itself, and the gap is the part
+   * worth saying out loud: it is the walk, or the two-track, between the last
+   * road anybody has mapped and the spot. Said here rather than buried under
+   * a duration, because arriving to find 4 km of it left is the surprise this
+   * chip exists to prevent.
+   */
+  if (route?.ok) {
+    const hrs = Math.floor(route.durationMin / 60);
+    const mins = Math.round(route.durationMin % 60);
+    const drive = hrs ? `${hrs} h ${mins} min` : `${mins} min`;
+    const gap = route.gapToDestinationKm > 0.15
+      ? ` \u2014 road ends ${route.gapToDestinationKm.toFixed(1)} km short`
+      : '';
+    const worst = route.warnings.find((w) => w.severity === 'critical');
+
+    dots.push({
+      key: 'route',
+      color: gap || worst ? COLOR.rough : COLOR.route,
+      label: `${drive} drive, ${Math.round(route.distanceKm)} km${gap}` +
+        (worst ? ` \u2014 ${worst.message}` : ''),
+      glyph: '\u{1F697}',
+      tone: worst ? 'bad' : 'neutral'
+    });
+  }
+
+  // A fire ban is a rule in force now, so it leads and it breathes.
+  if (land?.fireBanActive) {
+    dots.push({
+      key: 'fire-ban',
+      color: COLOR.fireRunning,
+      label: 'Fire ban in effect',
+      glyph: '\u{1F6AB}',
+      tone: 'bad',
+      urgent: true
+    });
+  }
+
+  const now = weather.periods[0];
+  if (now) {
+    dots.push({
+      key: 'weather-now',
+      color: COLOR.weather,
+      label: `${now.temperature}\u00B0${now.temperatureUnit}, ${now.shortForecast}` +
+        (now.windSpeed ? `, wind ${now.windSpeed}` : ''),
+      glyph: '\u{1F321}\uFE0F',
+      tone: 'neutral'
+    });
+  }
+
+  const overall = coverage.overall;
+  if (overall) {
+    dots.push({
+      key: 'coverage',
+      color: COLOR.signal,
+      hollow: overall.strength === 'none',
+      label: `${SIGNAL_COPY[overall.strength]} \u2014 nearest mast ` +
+        `${overall.nearestTowerKm} km, terrain ignored`,
+      glyph: '\u{1F4F6}',
+      tone: overall.strength === 'none' ? 'bad'
+        : overall.strength === 'weak' ? 'neutral' : 'good'
+    });
+  }
+
+  if (land) {
+    const detail = [
+      land.designation,
+      land.stayLimitDays != null ? `${land.stayLimitDays}-day limit` : null,
+      land.permitRequired ? land.permitName ?? 'permit required' : null
+    ].filter(Boolean).join(' \u00B7 ');
+
+    dots.push({
+      key: 'land',
+      color: COLOR.land,
+      label: detail ? `${land.name} \u2014 ${detail}` : land.name,
+      glyph: '\u{1F6E1}\uFE0F',
+      tone: 'neutral'
+    });
+  }
+
+  return dots;
 };
 
 /**

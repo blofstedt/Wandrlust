@@ -27,7 +27,6 @@ import { ScoutModePanel } from './components/ScoutModePanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
-import { DestinationSheet } from './components/DestinationSheet';
 import { HazardReportCard } from './components/HazardReportCard';
 import { AlertCard } from './components/AlertCard';
 import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
@@ -87,7 +86,6 @@ export default function App() {
   // Where the user wants to go: a pin they dropped, or a spot they tapped.
   const [destination, setDestination] = useState<MapDestination | null>(null);
   const [route, setRoute] = useState<RouteResult | null>(null);
-  const [isRouting, setIsRouting] = useState(false);
   const [selectedReport, setSelectedReport] = useState<HazardRecord | null>(null);
   /** An official warning (fire/flood/storm) tapped on the map. */
   const [selectedAlert, setSelectedAlert] = useState<HazardAlert | null>(null);
@@ -106,16 +104,6 @@ export default function App() {
   // Conditions at the destination, shared by every panel that asks about it.
   const [destWeather, setDestWeather] = useState<WeatherSnapshot>(EMPTY_WEATHER);
   const [destCoverage, setDestCoverage] = useState<CellCoverage>(UNKNOWN_COVERAGE);
-  const [isLoadingConditions, setIsLoadingConditions] = useState(false);
-
-  /**
-   * How much of the map the destination sheet is currently sitting on, 0–1.
-   *
-   * Lives up here because the panel that knows the number and the map that
-   * needs it are siblings. The map uses it to park the chosen pin in the strip
-   * still showing, rather than underneath the panel describing it.
-   */
-  const [sheetCoverFraction, setSheetCoverFraction] = useState(0);
 
   // Panels & modals
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -378,7 +366,6 @@ export default function App() {
    * the user has to be able to tell which they're reading.
    */
   const origin: [number, number] = userLocation ?? center;
-  const originLabel = userLocation ? 'your location' : currentLocationName;
 
   /**
    * Work out the drive as soon as somewhere is picked.
@@ -394,7 +381,6 @@ export default function App() {
     if (!destination) { setRoute(null); return; }
 
     let cancelled = false;
-    setIsRouting(true);
     setRoute(null);
 
     calculateRoute({
@@ -404,7 +390,6 @@ export default function App() {
     }).then((result) => {
       if (cancelled) return;
       setRoute(result);
-      setIsRouting(false);
     });
 
     return () => { cancelled = true; };
@@ -422,14 +407,12 @@ export default function App() {
     if (!destination) {
       setDestWeather(EMPTY_WEATHER);
       setDestCoverage(UNKNOWN_COVERAGE);
-      setIsLoadingConditions(false);
       return;
     }
 
     const controller = new AbortController();
     let cancelled = false;
     const { latitude, longitude } = destination;
-    setIsLoadingConditions(true);
 
     // Settled, not all — one failing must not hide the other, and neither of
     // these services rejects in the first place.
@@ -440,7 +423,7 @@ export default function App() {
       fetchCellCoverage(latitude, longitude, controller.signal).then((c) => {
         if (!cancelled) setDestCoverage(c);
       })
-    ]).then(() => { if (!cancelled) setIsLoadingConditions(false); });
+    ]);
 
     return () => { cancelled = true; controller.abort(); };
   }, [destination]);
@@ -744,7 +727,12 @@ export default function App() {
                     onPinRefused={handlePinRefused}
                     onSelectHazardReport={(r) => { setSelectedReport(r); setSelectedAlert(null); }}
                     onSelectAlert={(a) => { setSelectedAlert(a); setSelectedReport(null); }}
-                    bottomCoverFraction={sheetCoverFraction}
+                    weather={destWeather}
+                    coverage={destCoverage}
+                    route={route}
+                    onOpenDirections={handleOpenDirections}
+                    onClearDestination={handleClearDestination}
+                    onAddSpotHere={handleAddSpotAt}
                   />
                 </ErrorBoundary>
 
@@ -926,36 +914,6 @@ export default function App() {
         onToggleSave={handleToggleSave}
         onRequireAuth={() => setIsAuthOpen(true)}
       />
-
-      {/*
-        One panel at a time along the bottom edge. The full detail sheet
-        outranks the destination sheet, and a hazard report card outranks
-        everything because you tapped it most recently.
-      */}
-      {activeView === 'map' && !sheetSite && !selectedReport && !selectedAlert && (
-        <DestinationSheet
-          destination={destination}
-          route={route}
-          isRouting={isRouting}
-          originLabel={originLabel}
-          weather={destWeather}
-          coverage={destCoverage}
-          isLoadingConditions={isLoadingConditions}
-          onClose={handleClearDestination}
-          onOpenDirections={handleOpenDirections}
-          onOpenDetail={
-            destination?.campsite ? () => setSheetSite(destination.campsite!) : undefined
-          }
-          /* Only a bare dropped pin can become a new spot: a pin that is
-             already a campsite is one somebody has submitted. */
-          onAddSpotHere={
-            destination && !destination.campsite
-              ? () => handleAddSpotAt(destination.latitude, destination.longitude)
-              : undefined
-          }
-          onCoverageFractionChange={setSheetCoverFraction}
-        />
-      )}
 
       <HazardReportCard
         record={selectedReport}
