@@ -167,7 +167,9 @@ export const Navbar: React.FC<NavbarProps> = ({
     { key: 'settings', label: 'Settings', short: 'Settings', icon: SettingsIcon, iconClass: 'text-slate-400', onClick: onOpenSettings },
     { key: 'offline', label: 'Download offline maps', short: 'Offline maps', icon: Download, iconClass: 'text-teal-400', onClick: onOpenOfflineManager },
     { key: 'guide', label: 'Camping rules and safety', short: 'Guide', icon: BookOpen, iconClass: 'text-amber-400', onClick: onOpenGuideModal },
-    { key: 'add', label: 'Submit a new free spot', short: 'Add a spot', icon: PlusCircle, iconClass: 'text-emerald-400', onClick: onOpenAddModal }
+    /* Adds the ground under your feet, after asking. Adding somewhere else
+       starts on the map: drop a pin, and its card has the button. */
+    { key: 'add', label: 'Submit the spot you are standing in', short: 'Add here', icon: PlusCircle, iconClass: 'text-emerald-400', onClick: onOpenAddModal }
   ];
 
   // Collapsed onto the mobile "more" button, so a filter left on or campers

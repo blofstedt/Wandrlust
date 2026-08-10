@@ -203,6 +203,14 @@ export const AddCampsiteModal: React.FC<AddCampsiteModalProps> = ({
                 onChange={(e) => setLon(e.target.value)} className={inputClass}
               />
             </div>
+            {/* Filled in from wherever this form was opened — the pin on the
+                map, or the camper's own position — because nobody types a
+                latitude from memory. Still editable: the fix may be a few
+                dozen metres off the pullout. */}
+            <p className="col-span-2 -mt-1 text-[10px] text-slate-500">
+              Taken from the point you picked. Adjust if the site sits a little
+              off from it.
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
