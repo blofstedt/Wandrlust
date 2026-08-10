@@ -54,12 +54,28 @@ const isApplePlatform = (): boolean => {
  * `dirflg=d` asks Apple Maps for driving rather than whatever the user last
  * used, which for a camper towing a trailer should never be walking.
  */
-export const getDirectionsUrl = (latitude: number, longitude: number): string => {
+export const getDirectionsUrl = (
+  latitude: number,
+  longitude: number,
+  /**
+   * Where to start, when it is somewhere other than the driver.
+   *
+   * Used for the short hop from a spot to a facility near it: the camper is
+   * asking "how do I get from this pin to that toilet", and starting that
+   * route at their current position — which may be a day's drive away — would
+   * answer a different question. Left out for the main Directions button,
+   * where the maps app should use wherever the phone actually is.
+   */
+  from?: [number, number]
+): string => {
   const destination = `${latitude},${longitude}`;
+  const origin = from ? `${from[0]},${from[1]}` : null;
 
   return isApplePlatform()
-    ? `https://maps.apple.com/?daddr=${destination}&dirflg=d`
-    : `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+    ? `https://maps.apple.com/?daddr=${destination}&dirflg=d` +
+        (origin ? `&saddr=${origin}` : '')
+    : `https://www.google.com/maps/dir/?api=1&destination=${destination}` +
+        (origin ? `&origin=${origin}` : '');
 };
 
 /** Which app the Directions button is about to open, so the label can say so. */
@@ -72,7 +88,11 @@ export const directionsAppName = (): string =>
  * `noopener` because the opened page gets a handle on `window.opener`
  * otherwise, and a maps URL is still a third-party page.
  */
-export const openDirections = (latitude: number, longitude: number): void => {
+export const openDirections = (
+  latitude: number,
+  longitude: number,
+  from?: [number, number]
+): void => {
   if (typeof window === 'undefined') return;
-  window.open(getDirectionsUrl(latitude, longitude), '_blank', 'noopener,noreferrer');
+  window.open(getDirectionsUrl(latitude, longitude, from), '_blank', 'noopener,noreferrer');
 };
