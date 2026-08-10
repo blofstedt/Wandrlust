@@ -2,7 +2,8 @@ import { distanceKm } from '../utils/geo';
 import type { NearbyFacility, NearbyFacilityKind } from '../types';
 
 /**
- * The nearest toilet, shower, tap, dump station or fuel pump to a spot.
+ * The nearest toilet, shower, tap, dump station, fuel pump, trailhead,
+ * fishing spot, boat ramp or bin to a spot.
  *
  * WHY OPENSTREETMAP. It is the only source covering the continental US and
  * Canada that is free to query, has no key, and lets anybody correct it. Every
@@ -72,6 +73,21 @@ const KIND_QUERY: Record<NearbyFacilityKind, string[]> = {
   groceries: [
     'node["shop"="supermarket"]', 'way["shop"="supermarket"]',
     'node["shop"="convenience"]', 'way["shop"="convenience"]'
+  ],
+  /* Where a walk STARTS — the trailhead — rather than the path itself. A
+     hiking route is a line hundreds of km long whose nearest point to a
+     campsite is meaningless; the head is a place you drive to and park. */
+  trail: [
+    'node["highway"="trailhead"]',
+    'node["information"="guidepost"]["hiking"="yes"]'
+  ],
+  fishing: ['node["leisure"="fishing"]', 'way["leisure"="fishing"]'],
+  /* A slipway is the ramp itself. Marinas are excluded on purpose: a marina
+     is a business with a gate, not somewhere to put a canoe in. */
+  boat: ['node["leisure"="slipway"]', 'way["leisure"="slipway"]'],
+  waste: [
+    'node["amenity"="waste_disposal"]', 'way["amenity"="waste_disposal"]',
+    'node["amenity"="recycling"]["recycling_type"="centre"]'
   ]
 };
 
@@ -81,7 +97,11 @@ export const FACILITY_LABEL: Record<NearbyFacilityKind, string> = {
   water: 'Drinking water',
   dump: 'Dump station',
   fuel: 'Fuel',
-  groceries: 'Groceries'
+  groceries: 'Groceries',
+  trail: 'Trailhead',
+  fishing: 'Fishing spot',
+  boat: 'Boat ramp',
+  waste: 'Rubbish disposal'
 };
 
 export const FACILITY_GLYPH: Record<NearbyFacilityKind, string> = {
@@ -90,7 +110,11 @@ export const FACILITY_GLYPH: Record<NearbyFacilityKind, string> = {
   water: '🚰',
   dump: '🚽',
   fuel: '⛽',
-  groceries: '🛒'
+  groceries: '🛒',
+  trail: '🥾',
+  fishing: '🎣',
+  boat: '🛶',
+  waste: '🗑️'
 };
 
 /** Which kind an element is, from the tags it came back with. */
@@ -101,6 +125,10 @@ const kindOf = (tags: Record<string, string>): NearbyFacilityKind | null => {
   if (tags.amenity === 'sanitary_dump_station') return 'dump';
   if (tags.amenity === 'fuel') return 'fuel';
   if (tags.shop === 'supermarket' || tags.shop === 'convenience') return 'groceries';
+  if (tags.highway === 'trailhead' || tags.information === 'guidepost') return 'trail';
+  if (tags.leisure === 'fishing') return 'fishing';
+  if (tags.leisure === 'slipway') return 'boat';
+  if (tags.amenity === 'waste_disposal' || tags.amenity === 'recycling') return 'waste';
   return null;
 };
 
@@ -126,7 +154,7 @@ export const fetchNearbyFacilities = async (
     .map((selector) => `  ${selector}${around};`)
     .join('\n');
 
-  const query = `[out:json][timeout:15];\n(\n${clauses}\n);\nout center 120;`;
+  const query = `[out:json][timeout:15];\n(\n${clauses}\n);\nout center 240;`;
 
   for (const mirror of OVERPASS_MIRRORS) {
     try {
@@ -141,7 +169,7 @@ export const fetchNearbyFacilities = async (
       const data = await res.json();
       if (!Array.isArray(data?.elements)) continue;
 
-      /** Nearest wins, per kind: six dots at most, whatever the mirror sends. */
+      /** Nearest wins, per kind: one dot each, whatever the mirror sends. */
       const nearest = new Map<NearbyFacilityKind, NearbyFacility>();
 
       for (const element of data.elements as OverpassElement[]) {

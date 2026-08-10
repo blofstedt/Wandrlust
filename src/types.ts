@@ -358,7 +358,8 @@ export interface GuideSection {
  * ------------------------------------------------------------------ */
 
 export type NearbyFacilityKind =
-  | 'toilet' | 'shower' | 'water' | 'dump' | 'fuel' | 'groceries';
+  | 'toilet' | 'shower' | 'water' | 'dump' | 'fuel' | 'groceries'
+  | 'trail' | 'fishing' | 'boat' | 'waste';
 
 export interface NearbyFacility {
   id: string;

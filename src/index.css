@@ -432,13 +432,6 @@
   75%  { transform: translateX(-50%) translateY(1px); }
   100% { transform: translateX(-50%) translateY(0); }
 }
-@keyframes moook-in-down-centred {
-  0%   { opacity: 0; transform: translateX(-50%) translateY(-14px); }
-  55%  { opacity: 1; transform: translateX(-50%) translateY(2px); }
-  75%  { transform: translateX(-50%) translateY(-1px); }
-  100% { transform: translateX(-50%) translateY(0); }
-}
-
 /* Tapped: the dots become the facts. */
 .wl-chips {
   position: absolute;
@@ -454,12 +447,37 @@
   /* Stepping aside for the fire tour, and back again afterwards. */
   transition: opacity var(--dur-base) var(--ease-moook);
 }
-/* The row arrives as ONE thing, on the tap only. Chips that land later —
-   the fires, the weather, a toilet up the road — are added underneath a row
-   that is already sitting still, rather than restarting the whole stack. */
-.wl-chips-in {
-  animation: moook-in-down-centred var(--dur-base) var(--ease-moook) backwards;
+/* Boop, boop, boop: each chip pops in after the one before it.
+   ONLY on the tap. Chips that land later — the fires, the weather, a toilet
+   up the road — join a row that is already sitting still, rather than
+   restarting the whole stack every time a lookup comes back.
+   The delays are nth-child rather than inline so that a chip's position in
+   the stack, not the order the answers happened to arrive in, decides when
+   it lands. Past the tenth the stack is taller than a phone anyway, so they
+   share the last beat instead of trailing off. */
+.wl-chips-in .wl-chip {
+  animation: wl-chip-pop var(--dur-base) var(--ease-moook) backwards;
 }
+.wl-chips-in .wl-chip:nth-child(1) { animation-delay: 0ms; }
+.wl-chips-in .wl-chip:nth-child(2) { animation-delay: 55ms; }
+.wl-chips-in .wl-chip:nth-child(3) { animation-delay: 110ms; }
+.wl-chips-in .wl-chip:nth-child(4) { animation-delay: 165ms; }
+.wl-chips-in .wl-chip:nth-child(5) { animation-delay: 220ms; }
+.wl-chips-in .wl-chip:nth-child(6) { animation-delay: 275ms; }
+.wl-chips-in .wl-chip:nth-child(7) { animation-delay: 330ms; }
+.wl-chips-in .wl-chip:nth-child(8) { animation-delay: 385ms; }
+.wl-chips-in .wl-chip:nth-child(n+9) { animation-delay: 440ms; }
+
+/* A chip's own arrival: up from nothing, past its size, and back — the
+   moook overshoot, scaled rather than travelled, because a chip in a
+   centred column has nowhere to travel from without leaning. */
+@keyframes wl-chip-pop {
+  0%   { opacity: 0; transform: scale(0.6); }
+  55%  { opacity: 1; transform: scale(1.1); }
+  78%  { transform: scale(0.97); }
+  100% { transform: scale(1); }
+}
+
 /* While the camera is away at the fires, the pin's own labels get out of the
    way of the thing they sent you to look at. */
 .wl-touring .wl-chips { opacity: 0; }
@@ -536,7 +554,8 @@
   align-items: center;
   gap: 4px;
   pointer-events: auto;
-  animation: moook-in-up-centred var(--dur-base) var(--ease-moook) backwards;
+  /* After the stack above the pin has finished popping in. */
+  animation: moook-in-up-centred var(--dur-base) var(--ease-moook) 140ms backwards;
 }
 .wl-pin-action {
   display: inline-flex;

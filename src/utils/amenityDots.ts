@@ -122,6 +122,10 @@ const COLOR = {
   dump: '#A3E635',
   fuel: '#FB7185',
   groceries: '#F0ABFC',
+  trail: '#86EFAC',
+  fishing: '#67E8F9',
+  boat: '#7DD3FC',
+  waste: '#FCD34D',
   warn: '#FB7185',
   /* The two fire colours the map's flame layer used, kept so the dot above a
      pin says exactly what the flame used to. */
@@ -139,7 +143,11 @@ export const FACILITY_COLOR: Record<NearbyFacilityKind, string> = {
   water: COLOR.water,
   dump: COLOR.dump,
   fuel: COLOR.fuel,
-  groceries: COLOR.groceries
+  groceries: COLOR.groceries,
+  trail: COLOR.trail,
+  fishing: COLOR.fishing,
+  boat: COLOR.boat,
+  waste: COLOR.waste
 };
 
 /**
@@ -522,15 +530,21 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
  * costs an Overpass query per spot.
  */
 export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
-  facilities.map((f) => ({
-    key: `near-${f.id}`,
-    color: FACILITY_COLOR[f.kind],
-    label: `${f.distanceKm} km`,
-    full: `${FACILITY_LABEL[f.kind]} ${f.distanceKm} km away \u2014 tap for a route`,
-    glyph: FACILITY_GLYPH[f.kind],
-    tone: 'good' as const,
-    facility: f
-  }));
+  facilities
+    // Nearest six. Ten kinds are looked up now, and a stack of ten chips over
+    // the pin is taller than the phone it is on — so the row shows the six
+    // closest and the rest stay out of the way. Nothing is being hidden that
+    // the camper is closer to.
+    .slice(0, 6)
+    .map((f) => ({
+      key: `near-${f.id}`,
+      color: FACILITY_COLOR[f.kind],
+      label: `${f.distanceKm} km`,
+      full: `${FACILITY_LABEL[f.kind]} ${f.distanceKm} km away \u2014 tap for a route`,
+      glyph: FACILITY_GLYPH[f.kind],
+      tone: 'good' as const,
+      facility: f
+    }));
 
 /**
  * How many dots a collapsed pin shows before it stops.
