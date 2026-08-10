@@ -36,7 +36,7 @@ import {
 } from '../utils/alertOverlay';
 import {
   MarkerDot, amenityDots, conditionDots, facilityDots, fireDots, hazardDots,
-  COLLAPSED_DOT_LIMIT, FACILITY_COLOR
+  FACILITY_COLOR
 } from '../utils/amenityDots';
 import {
   fetchNearbyFacilities, fetchNearestDriveableRoad, ROAD_RADIUS_KM,
@@ -220,13 +220,18 @@ const TENT_SVG =
  * or freezing right now.
  */
 /**
- * THEY GO ROUND THE PIN, NOT ABOVE IT.
+ * THEY GO ROUND THE PIN, NOT ABOVE IT — AND EVERY FACT GETS ONE.
  *
  * A row above the marker could only ever hold four or five dots before it was
  * wider than the pin and colliding with the row over the next spot along, so
- * everything past the fourth fact became a grey "+n" that said nothing. A ring
- * has the whole circumference to work with: the pin is round, so the dots sit
- * on it like beads and a spot with eight recorded facts shows eight.
+ * everything past the fourth fact became a grey "+n" that said nothing. There
+ * is no cap now: a spot with nine recorded facts shows nine beads, because the
+ * count itself is information — a pin wearing a full ring is a well-equipped
+ * spot at a glance.
+ *
+ * The ring GROWS to fit rather than the beads crowding: at the base radius the
+ * circumference seats about twelve dots with air between them, and past that
+ * the radius is widened so the gap stays constant however many there are.
  *
  * Placed with a translate rather than a rotate so the dot itself is never
  * rotated — and on an outer slot rather than on the dot, because the urgent
@@ -234,29 +239,25 @@ const TENT_SVG =
  * position.
  */
 const RING_RADIUS_PX = 19;
+/** Dot plus the gap after it — the arc one bead is allowed to occupy. */
+const RING_BEAD_PITCH_PX = 10;
 
 const collapsedDotRing = (dots: MarkerDot[]): string => {
-  const shown = dots.slice(0, COLLAPSED_DOT_LIMIT);
-  const overflow = Math.max(0, dots.length - COLLAPSED_DOT_LIMIT);
-  const beads = overflow
-    ? [...shown, { key: 'more', color: '#94A3B8', label: '', glyph: '', tone: 'good' as const }]
-    : shown;
-
-  const step = 360 / Math.max(beads.length, 1);
-  const cells = beads
+  if (!dots.length) return '';
+  // Widen the ring rather than let beads touch once the circle is full.
+  const radius = Math.max(RING_RADIUS_PX, (dots.length * RING_BEAD_PITCH_PX) / (2 * Math.PI));
+  const step = 360 / dots.length;
+  const cells = dots
     .map((d, i) => {
-      // Anticlockwise from the top, so the first fact — always the most
-      // urgent one, since hazards lead the list — sits at twelve o'clock.
+      // Clockwise from the top, so the first fact — always the most urgent
+      // one, since hazards lead the list — sits at twelve o'clock.
       const angle = ((-90 + i * step) * Math.PI) / 180;
-      const x = (Math.cos(angle) * RING_RADIUS_PX).toFixed(1);
-      const y = (Math.sin(angle) * RING_RADIUS_PX).toFixed(1);
-      const urgent = 'urgent' in d && d.urgent;
-      const hollow = 'hollow' in d && d.hollow;
+      const x = (Math.cos(angle) * radius).toFixed(1);
+      const y = (Math.sin(angle) * radius).toFixed(1);
       return (
         `<i class="wl-dot-slot" style="transform:translate(${x}px,${y}px)">` +
-        `<i class="wl-dot${urgent ? ' wl-dot-urgent' : ''}` +
-        `${hollow ? ' wl-dot-hollow' : ''}` +
-        `${d.key === 'more' ? ' wl-dot-more' : ''}" ` +
+        `<i class="wl-dot${d.urgent ? ' wl-dot-urgent' : ''}` +
+        `${d.hollow ? ' wl-dot-hollow' : ''}" ` +
         `style="--wl-dot-color:${d.color}"></i></i>`
       );
     })
@@ -317,32 +318,120 @@ const CHIP_STAGGER_MS = 55;
  */
 const CHIP_LEAD_MS = 70;
 
+/**
+ * Everything about a chip that is visible, as one string.
+ *
+ * Compared before a chip is touched, so a lookup landing with the same answer
+ * leaves the existing element — and any pop it is halfway through — alone.
+ */
+const chipSignature = (d: MarkerDot): string => [
+  d.color, d.label, d.full ?? '', d.glyph, d.tone,
+  d.hollow ? 'h' : '', d.action ?? '', d.facility?.id ?? ''
+].join('\u0001');
+
+const chipHtml = (d: MarkerDot, fresh: boolean, delay: number): string => {
+  const go = d.facility;
+  const tappable = Boolean(go) || Boolean(d.action);
+  const full = d.full ?? d.label;
+  return (
+    `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
+    `${tappable ? ' wl-chip-go' : ''}${fresh ? ' wl-chip-in' : ''}" ` +
+    `data-key="${escapeHtml(d.key)}" data-sig="${escapeHtml(chipSignature(d))}" ` +
+    `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
+    `${d.action ? `data-action="${d.action}" ` : ''}` +
+    `${tappable ? 'role="button" tabindex="0" ' : ''}` +
+    `title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}" ` +
+    `style="--wl-chip-color:${d.color}` +
+    `${fresh ? `;animation-delay:${delay}ms` : ''}">` +
+    `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
+    `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
+    `${escapeHtml(d.label)}` +
+    `${tappable ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
+  );
+};
+
 const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string => {
   let arriving = 0;
   const chips = dots
     .map((d) => {
       const fresh = animateKeys.has(d.key);
-      const delay = fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0;
-      const go = d.facility;
-      const tappable = Boolean(go) || Boolean(d.action);
-      const full = d.full ?? d.label;
-      return (
-        `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
-        `${tappable ? ' wl-chip-go' : ''}${fresh ? ' wl-chip-in' : ''}" ` +
-        `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
-        `${d.action ? `data-action="${d.action}" ` : ''}` +
-        `${tappable ? 'role="button" tabindex="0" ' : ''}` +
-        `title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}" ` +
-        `style="--wl-chip-color:${d.color}` +
-        `${fresh ? `;animation-delay:${delay}ms` : ''}">` +
-        `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
-        `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
-        `${escapeHtml(d.label)}` +
-        `${tappable ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
-      );
+      return chipHtml(d, fresh, fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0);
     })
     .join('');
   return `<div class="wl-chips">${chips}</div>`;
+};
+
+/**
+ * Add the chips that are new, leave the ones already there completely alone.
+ *
+ * THIS IS WHY THE PIN NO LONGER FLICKERS. Leaflet's own way to change a
+ * marker is `setIcon`, which throws the marker's whole DOM away and builds it
+ * again — the pin, the buttons and every chip. A pin answers in four or five
+ * instalments (the tap, the fires, the weather, the facilities, the road), so
+ * that was four or five full rebuilds in a couple of seconds: the pin blinked
+ * each time, and any chip mid-pop was destroyed and replaced by a finished
+ * one, which is exactly "some of them just appear".
+ *
+ * So updates are patched into the existing row instead, keyed by chip. A chip
+ * whose wording has not changed keeps its element, its animation and its
+ * place; a chip that has gone is removed; a chip that is new is built with
+ * the pop on it and slotted into position. Nothing else in the marker is
+ * touched, so the pin itself never redraws.
+ *
+ * Returns false if the marker is not on screen (clustered away, or not yet
+ * added), in which case the caller falls back to rebuilding the icon.
+ */
+const patchChipRow = (
+  root: HTMLElement | null | undefined,
+  dots: MarkerDot[],
+  animateKeys: Set<string>
+): boolean => {
+  const wrap = root?.firstElementChild;
+  if (!wrap) return false;
+
+  let row = wrap.querySelector(':scope > .wl-chips');
+  if (!row) {
+    if (!dots.length) return true;
+    row = document.createElement('div');
+    row.className = 'wl-chips';
+    wrap.insertBefore(row, wrap.firstChild);
+  }
+
+  const existing = new Map<string, Element>();
+  row.querySelectorAll(':scope > .wl-chip').forEach((el) => {
+    const key = el.getAttribute('data-key');
+    if (key) existing.set(key, el);
+  });
+
+  const wanted = new Set<string>();
+  let arriving = 0;
+  let placed: Element | null = null;
+
+  for (const d of dots) {
+    wanted.add(d.key);
+    const fresh = animateKeys.has(d.key);
+    const delay = fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0;
+    let node = existing.get(d.key) ?? null;
+
+    if (!node || fresh || node.getAttribute('data-sig') !== chipSignature(d)) {
+      const holder = document.createElement('template');
+      holder.innerHTML = chipHtml(d, fresh, delay);
+      const next = holder.content.firstElementChild;
+      if (!next) continue;
+      if (node) node.replaceWith(next);
+      node = next;
+    }
+
+    // Only move a chip that is genuinely out of order: re-inserting an
+    // element restarts its animation, which is the popcorn all over again.
+    const slot = placed ? placed.nextElementSibling : row.firstElementChild;
+    if (node !== slot) row.insertBefore(node, slot);
+    placed = node;
+  }
+
+  existing.forEach((el, key) => { if (!wanted.has(key)) el.remove(); });
+  if (!dots.length) row.remove();
+  return true;
 };
 
 /**
@@ -2275,11 +2364,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const marker = destinationMarkerRef.current;
     if (!marker) return;
+    const fresh = freshChipKeys(destinationChipKeysRef.current, destinationDots);
+    // Patched in place for the same reason a submitted pin is: rebuilding the
+    // icon would drop the teardrop again and cut the chips off mid-pop.
+    if (patchChipRow(marker.getElement(), destinationDots, fresh)) return;
     const icon = buildDestinationIcon(
-      destinationDots,
-      DIRECTIONS_LABEL,
-      'Add spot here',
-      freshChipKeys(destinationChipKeysRef.current, destinationDots)
+      destinationDots, DIRECTIONS_LABEL, 'Add spot here', fresh
     );
     const html = (icon.options.html as string) ?? '';
     if (html === destinationHtmlRef.current) return;
@@ -3110,11 +3200,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * Hazards lead the row. A heat warning or smoke over the spot changes
    * whether to go at all, which outranks anything about the spot itself.
    */
-  const iconForId = useCallback((id: string, animate = false) => {
+  const dotsForId = useCallback((id: string): MarkerDot[] => {
     const isSelected = selectedIdRef.current === id;
-    // A fresh tap forgets what the last one showed, so the stack replays.
-    if (animate) shownChipKeysRef.current = new Set();
-    const dots = [
+    return [
       ...hazardDots(badgesByIdRef.current.get(id) ?? []),
       // A fire burning up the valley, for the open pin only — it is one
       // request per selection, and it is where the map's flame layer went.
@@ -3128,34 +3216,60 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // looked up for the spot being read.
       ...(isSelected ? facilityDots(facilitiesRef.current) : [])
     ];
+  }, []);
 
+  const iconForId = useCallback((id: string, animate = false) => {
+    const isSelected = selectedIdRef.current === id;
+    // A fresh tap forgets what the last one showed, so the stack replays.
+    if (animate) shownChipKeysRef.current = new Set();
+    const dots = dotsForId(id);
     return buildCampsiteIcon(
       isSelected,
       dots,
       isSelected ? DIRECTIONS_LABEL : undefined,
       isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined
     );
-  }, []);
+  }, [dotsForId]);
 
   /**
-   * Give a marker its icon, but only if the HTML actually changed.
+   * Bring a marker up to date with the least DOM possible.
    *
    * A pin's row grows in stages — the tap, then the fires, then the weather,
-   * then whatever OpenStreetMap has up the road — and each stage used to
-   * replace the icon's DOM whether or not it had anything new to say, which
-   * is the flicker. Comparing the built HTML makes the no-op stages free, and
-   * the entrance animation is asked for only on the tap itself, so the chips
-   * already on screen stay put while later ones arrive underneath them.
+   * then whatever OpenStreetMap has up the road. Rebuilding the icon for each
+   * stage is what made the pin blink and cut chips off mid-pop, so an open
+   * pin that is already on screen has the new chips PATCHED into the row it
+   * already has (`patchChipRow`) and is never redrawn.
+   *
+   * The full rebuild is kept for the two cases that really do change the
+   * marker: the tap itself, which fills the ring and grows the buttons under
+   * it, and a marker that is not currently rendered.
    */
   const refreshIcon = useCallback((id: string, animate = false) => {
     const marker = markersRef.current.get(id);
     if (!marker) return;
+    const isSelected = selectedIdRef.current === id;
+    const open = marker.getElement()?.firstElementChild?.classList.contains('wl-pin-wrap-on');
+
+    if (isSelected && !animate && open) {
+      const dots = dotsForId(id);
+      if (patchChipRow(
+        marker.getElement(),
+        dots,
+        freshChipKeys(shownChipKeysRef.current, dots)
+      )) {
+        // The cached HTML no longer describes the DOM, so the next full
+        // rebuild must not be skipped as a no-op.
+        iconHtmlRef.current.delete(id);
+        return;
+      }
+    }
+
     const icon = iconForId(id, animate);
     const html = (icon.options.html as string) ?? '';
     if (!animate && iconHtmlRef.current.get(id) === html) return;
     iconHtmlRef.current.set(id, html);
     marker.setIcon(icon);
-  }, [iconForId]);
+  }, [iconForId, dotsForId]);
 
   // Rebuilt only when the campsite list changes. Selection is handled
   // separately below — previously changing the selection tore down and rebuilt

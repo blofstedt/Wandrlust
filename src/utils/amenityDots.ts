@@ -578,14 +578,11 @@ export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
       };
     });
 
-/**
- * How many dots a collapsed pin shows before it stops.
+/*
+ * There is deliberately no cap on collapsed dots any more.
  *
- * Ten, now that they are beads on a ring around the pin rather than a row
- * above it. The row ran out of width at four or five — past that it was wider
- * than the pin and colliding with the next spot's row — so most pins showed a
- * grey "+n" instead of the facts. A 19px ring seats ten 7px dots with a clear
- * gap between each; past ten they merge into a necklace, so the eleventh
- * onwards is still one "+n" and tapping the pin shows the lot.
+ * A pin used to show the first few and roll the rest into a grey "+n", which
+ * hid the very thing the dots are for: how much is known about a spot. The
+ * dots are now beads on a ring that widens to fit, so every recorded fact
+ * gets one. See `collapsedDotRing` in MapComponent.
  */
-export const COLLAPSED_DOT_LIMIT = 10;
