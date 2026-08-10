@@ -52,14 +52,6 @@ const STRENGTH_COPY: Record<SignalStrength, { label: string; className: string }
   none: { label: 'Probably no signal', className: 'text-rose-300' }
 };
 
-/** Short form for the per-carrier rows, where the carrier name carries context. */
-const STRENGTH_SHORT: Record<SignalStrength, string> = {
-  strong: 'Strong',
-  good: 'Usable',
-  weak: 'Weak',
-  none: 'Likely none'
-};
-
 const TechnologyChip: React.FC<{ technology: CellTechnology }> = ({ technology }) => (
   <span className="px-1.5 py-px rounded bg-slate-700/70 border border-slate-600/60 text-[9px] font-bold text-slate-200 tracking-wide">
     {technology}
@@ -71,7 +63,6 @@ export const CellCoverageCard: React.FC<{
   isLoading?: boolean;
 }> = ({ coverage, isLoading }) => {
   const overall = coverage?.overall;
-  const named = coverage?.carriers.filter((c) => typeof c.bars === 'number').length ?? 0;
 
   return (
     <section>
@@ -112,51 +103,29 @@ export const CellCoverageCard: React.FC<{
             </div>
           )}
 
-          {coverage.carriers.length > 0 && (
-            <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 divide-y divide-slate-700/50">
-              {coverage.carriers.map((c) => (
-                <div key={c.carrier} className="flex items-center gap-2.5 px-3 py-2">
-                  <span className="text-[11px] font-semibold text-slate-200 w-20 shrink-0">
-                    {c.label}
-                  </span>
+          {/*
+            No per-carrier breakdown, deliberately.
 
-                  {typeof c.bars === 'number' && c.strength ? (
-                    <>
-                      <Bars bars={c.bars} />
-                      {c.technology && <TechnologyChip technology={c.technology} />}
-                      <span className="text-[10px] text-slate-400 ml-auto text-right">
-                        {STRENGTH_SHORT[c.strength]}
-                        {c.nearestTowerKm != null && (
-                          <span className="block text-slate-500">
-                            nearest {c.nearestTowerKm} km
-                          </span>
-                        )}
-                      </span>
-                    </>
-                  ) : (
-                    /* The distinction the whole file exists for: nothing is
-                       known about this carrier here, which is not the same as
-                       this carrier having no coverage here. */
-                    <span className="text-[10px] text-slate-500 ml-auto italic">
-                      No data for this carrier
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+            It used to list Rogers / Telus / Bell / etc., and for almost every
+            spot in the app most of those rows read "no data for this carrier"
+            — because the survey data records an operator on only a fraction of
+            masts. Four rows of nothing, under a headline that already answered
+            the question, is noise dressed as detail. The overall estimate
+            above is built from every transmitter found, named or not, which is
+            the honest resolution of this data.
+          */}
 
-          {!overall && coverage.carriers.length === 0 && (
+          {!overall && (
             <p className="text-[11px] text-slate-400 rounded-xl border border-slate-700/60 bg-slate-800/50 px-3 py-2.5">
               {coverage.note ?? 'No coverage information for this point.'}
             </p>
           )}
 
           {/* The caveat travels with the numbers, always, in every branch. */}
-          {coverage.basis && (overall || named > 0) && (
+          {coverage.basis && overall && (
             <p className="text-[9px] text-slate-500 leading-tight mt-1.5">{coverage.basis}</p>
           )}
-          {coverage.note && (overall || coverage.carriers.length > 0) && (
+          {coverage.note && overall && (
             <p className="text-[9px] text-slate-500 leading-tight mt-1">{coverage.note}</p>
           )}
         </>
