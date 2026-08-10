@@ -1,8 +1,9 @@
-import type { CampsiteAmenities } from '../types';
+import type { CampsiteAmenities, NearbyFacility, NearbyFacilityKind } from '../types';
 import {
   ROAD_ACCESS_LABEL, SHADE_LABEL, TOILET_LABEL, WATER_LABEL, bestCellSignal
 } from './amenities';
 import { AlertBadge, BADGE_COLOR, WARNING_EMOJI, WARNING_LABEL } from './alertOverlay';
+import { FACILITY_GLYPH, FACILITY_LABEL } from '../services/nearbyAmenityService';
 
 /**
  * THE COLOURED DOTS THAT SIT ABOVE A PIN.
@@ -17,11 +18,22 @@ import { AlertBadge, BADGE_COLOR, WARNING_EMOJI, WARNING_LABEL } from './alertOv
  * recorded. Every field on `CampsiteAmenities` is optional and absent means
  * "nobody has checked", so an unknown produces NO dot — never a grey one,
  * which would read as a checked "no". A recorded absence ("no water here")
- * is a real fact, so it gets a slate dot and says so in words when expanded.
+ * is a real fact, so it gets a hollow ring in that subject's colour and says
+ * so in words when expanded.
  *
  *   good    — something the camper gains. Coloured.
  *   neutral — a recorded limit or constraint (road, stay limit, rig length).
  *   bad     — a live hazard, or a recorded absence / requirement.
+ *
+ * COLOUR CARRIES THE SUBJECT, FILL CARRIES THE ANSWER. Every dot wears the
+ * colour of the thing it is about — water is always blue, a toilet always
+ * violet — and says yes or no by being solid or a ring. Grey used to do that
+ * job: a recorded "no water here" came out slate, next to a slate stay limit
+ * and a slate rough road, so a pin's row of dots was mostly the same dull
+ * pebble repeated and the colours that were left had nothing to contrast
+ * against. Hollow-for-absent keeps the honesty (a recorded no is still
+ * visibly different from a yes, and an unknown still draws nothing at all)
+ * and gives the row back its palette.
  */
 export type DotTone = 'good' | 'neutral' | 'bad';
 
@@ -34,8 +46,28 @@ export interface MarkerDot {
   /** Shown in the expanded chip, never in the collapsed dot. */
   glyph: string;
   tone: DotTone;
+  /**
+   * Solid, or a ring of the same colour.
+   *
+   * A ring means "somebody checked and the answer was no" — never "unknown",
+   * which produces no dot at all. Defaults to solid.
+   */
+  hollow?: boolean;
+  /**
+   * A facility near the spot rather than a fact about it.
+   *
+   * Present only on the dots produced by `facilityDots`. The map makes these
+   * chips tappable and routes to the coordinate.
+   */
+  facility?: NearbyFacility;
 }
 
+/**
+ * One hue per subject, all of them at the same brightness so no single dot
+ * shouts louder than its neighbour for reasons of palette rather than
+ * meaning. Hazards are excluded — they come from `BADGE_COLOR`, so a dot
+ * matches the cloud it is standing in.
+ */
 const COLOR = {
   water: '#38BDF8',
   toilet: '#C084FC',
@@ -46,10 +78,25 @@ const COLOR = {
   free: '#34D399',
   trash: '#FBBF24',
   road: '#FDE047',
-  limit: '#94A3B8',
-  absent: '#64748B',
+  rough: '#F59E0B',
+  rig: '#818CF8',
+  stay: '#2DD4BF',
+  shower: '#60A5FA',
+  dump: '#A3E635',
+  fuel: '#FB7185',
+  groceries: '#F0ABFC',
   warn: '#FB7185'
 } as const;
+
+/** The colour a nearby facility's dot and its route line are drawn in. */
+export const FACILITY_COLOR: Record<NearbyFacilityKind, string> = {
+  toilet: COLOR.toilet,
+  shower: COLOR.shower,
+  water: COLOR.water,
+  dump: COLOR.dump,
+  fuel: COLOR.fuel,
+  groceries: COLOR.groceries
+};
 
 /**
  * A live hazard over this spot — smoke, a heat warning, a fire.
@@ -81,7 +128,7 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
     const rough = a.roadAccess === 'high_clearance' || a.roadAccess === '4x4_only';
     dots.push({
       key: 'road',
-      color: rough ? COLOR.limit : COLOR.road,
+      color: rough ? COLOR.rough : COLOR.road,
       label: `${ROAD_ACCESS_LABEL[a.roadAccess]} road`,
       glyph: '🛣️',
       tone: rough ? 'neutral' : 'good'
@@ -92,7 +139,8 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
     const none = a.water === 'none';
     dots.push({
       key: 'water',
-      color: none ? COLOR.absent : COLOR.water,
+      color: COLOR.water,
+      hollow: none,
       label: WATER_LABEL[a.water],
       glyph: '💧',
       tone: none ? 'bad' : 'good'
@@ -103,7 +151,8 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
     const none = a.toilet === 'none';
     dots.push({
       key: 'toilet',
-      color: none ? COLOR.absent : COLOR.toilet,
+      color: COLOR.toilet,
+      hollow: none,
       label: TOILET_LABEL[a.toilet],
       glyph: '🚻',
       tone: none ? 'bad' : 'good'
@@ -113,7 +162,8 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
   if (a.fireRing !== undefined) {
     dots.push({
       key: 'fire-ring',
-      color: a.fireRing ? COLOR.fire : COLOR.absent,
+      color: COLOR.fire,
+      hollow: !a.fireRing,
       label: a.fireRing ? 'Fire ring' : 'No fire ring',
       glyph: '🔥',
       tone: a.fireRing ? 'good' : 'bad'
@@ -123,7 +173,8 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
   if (a.shade) {
     dots.push({
       key: 'shade',
-      color: a.shade === 'none' ? COLOR.absent : COLOR.shade,
+      color: COLOR.shade,
+      hollow: a.shade === 'none',
       label: SHADE_LABEL[a.shade],
       glyph: '🌲',
       tone: a.shade === 'none' ? 'bad' : 'good'
@@ -134,7 +185,8 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
   if (bars !== undefined) {
     dots.push({
       key: 'signal',
-      color: bars > 0 ? COLOR.signal : COLOR.absent,
+      color: COLOR.signal,
+      hollow: bars === 0,
       label: bars > 0 ? `${bars}-bar signal, best carrier` : 'No signal recorded here',
       glyph: '📶',
       tone: bars > 0 ? 'good' : 'bad'
@@ -144,7 +196,8 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
   if (a.petFriendly !== undefined) {
     dots.push({
       key: 'pet',
-      color: a.petFriendly ? COLOR.pet : COLOR.absent,
+      color: COLOR.pet,
+      hollow: !a.petFriendly,
       label: a.petFriendly ? 'Pet friendly' : 'No pets',
       glyph: '🐾',
       tone: a.petFriendly ? 'good' : 'bad'
@@ -160,7 +213,7 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
   if (a.maxRvLengthFeet !== undefined) {
     dots.push({
       key: 'rv',
-      color: COLOR.limit,
+      color: COLOR.rig,
       label: `Rigs up to ${a.maxRvLengthFeet} ft`,
       glyph: '🚐',
       tone: 'neutral'
@@ -170,7 +223,7 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
   if (a.stayLimitDays !== undefined) {
     dots.push({
       key: 'stay',
-      color: COLOR.limit,
+      color: COLOR.stay,
       label: `${a.stayLimitDays}-day stay limit`,
       glyph: '🗓️',
       tone: 'neutral'
@@ -181,6 +234,7 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
     dots.push({
       key: 'free',
       color: a.isFree ? COLOR.free : COLOR.warn,
+      hollow: !a.isFree,
       label: a.isFree ? 'Free' : 'Fee charged',
       glyph: '💲',
       tone: a.isFree ? 'good' : 'bad'
@@ -195,6 +249,28 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
 
   return dots;
 };
+
+/**
+ * Facilities near the spot, as dots you can tap.
+ *
+ * These are NOT facts about the spot — they are a toilet somebody mapped a
+ * couple of kilometres up the road — so they carry the distance in their
+ * label and never merge with the site's own dots visually: they sit last in
+ * the row, always solid (they exist; the question of "is there one HERE" is
+ * answered by the site's own dot), and tapping one routes to it.
+ *
+ * They are only ever produced for a SELECTED pin, because looking them up
+ * costs an Overpass query per spot.
+ */
+export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
+  facilities.map((f) => ({
+    key: `near-${f.id}`,
+    color: FACILITY_COLOR[f.kind],
+    label: `${FACILITY_LABEL[f.kind]} ${f.distanceKm} km away`,
+    glyph: FACILITY_GLYPH[f.kind],
+    tone: 'good' as const,
+    facility: f
+  }));
 
 /**
  * How many dots a collapsed pin shows before it stops.

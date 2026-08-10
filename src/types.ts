@@ -347,4 +347,28 @@ export interface GuideSection {
   source?: string;
   subsections: GuideSubsection[];
   links?: GuideLink[];
-}
+}
+/* ---------------------------------------------------------------------
+ * NEARBY FACILITIES
+ *
+ * A toilet, tap or fuel pump somebody mapped in OpenStreetMap near a spot.
+ * See `services/nearbyAmenityService.ts` for what its coverage does and does
+ * not mean — the short version is that finding nothing is an absence of
+ * survey, never an absence of facilities.
+ * ------------------------------------------------------------------ */
+
+export type NearbyFacilityKind =
+  | 'toilet' | 'shower' | 'water' | 'dump' | 'fuel' | 'groceries';
+
+export interface NearbyFacility {
+  id: string;
+  kind: NearbyFacilityKind;
+  /** Only when OSM carries one; most pit toilets are nameless. */
+  name?: string;
+  latitude: number;
+  longitude: number;
+  /** Straight-line distance from the spot, in km, to one decimal. */
+  distanceKm: number;
+  /** Undefined when nobody recorded whether it costs anything. */
+  fee?: boolean;
+}

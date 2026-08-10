@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   X, Navigation, Loader2, ShieldCheck, Copy, Check, Eye, ChevronLeft,
-  TriangleAlert, MapPin, Signal, ThermometerSun, Clock, Flame
+  TriangleAlert, MapPin, Signal, ThermometerSun, Flame
 } from 'lucide-react';
 import type { CellCoverage, MapDestination } from '../types';
 import type { WeatherSnapshot } from '../services/weatherService';
@@ -34,6 +34,15 @@ import { directionsAppName } from '../utils/handoff';
  * repetition — the same caveat restated in three sections — and long-form
  * detail that already has a home: the warning list opens on top of the grid
  * when tapped, and everything about the site itself is behind "Details".
+ *
+ * SIX CELLS, THREE ROWS, HARD CEILING. The first cut of this grid let tiles
+ * accumulate — warnings, fires, signal, now, arrival, land, road — which on a
+ * phone came to four rows sharing about 250 px, and text was cut off inside
+ * the tiles. So the count is capped by design rather than by luck: the two
+ * weather tiles are one tile with both temperatures in it, and the road
+ * warning moved up beside the drive time it belongs to. Worst case is now
+ * warnings + fire + signal + weather + land = three rows; the common case,
+ * with nothing wrong anywhere, is two big ones.
  *
  * NOT built on ui/Sheet, and that is deliberate rather than an oversight. That
  * primitive is a modal: it lays a backdrop over everything and traps focus,
@@ -103,15 +112,15 @@ const Tile: React.FC<{
 
   const body = (
     <>
-      <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1 shrink-0">
-        {icon}
-        {label}
+      <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1 shrink-0 min-w-0">
+        <span className="shrink-0 flex">{icon}</span>
+        <span className="truncate">{label}</span>
       </p>
       <div className="min-h-0 overflow-hidden mt-0.5">{children}</div>
     </>
   );
 
-  const className = `rounded-xl border ${toneClass} px-2.5 py-2 flex flex-col min-h-0 ${
+  const className = `rounded-xl border ${toneClass} px-2.5 py-1.5 flex flex-col min-h-0 min-w-0 ${
     span ? 'col-span-2' : ''
   }`;
 
@@ -232,9 +241,10 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
               <h2 className="text-base font-bold text-slate-100 truncate mt-0.5">
                 {site ? site.name : land?.name ?? 'This spot'}
               </h2>
-              {/* Coordinates, country and province on one line each, small:
-                  they are reference, not the headline. */}
-              <p className="text-[10px] text-slate-400 truncate">{coords}</p>
+              {/* Country and province, small: reference, not the headline.
+                  The coordinates are on the copy button in the footer rather
+                  than repeated here — a line of digits twice over was costing
+                  the grid a row it could not spare. */}
               <Admin1Line
                 latitude={destination.latitude}
                 longitude={destination.longitude}
@@ -281,6 +291,28 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
               <span className="italic">{route?.message ?? 'No route worked out yet'}</span>
             )}
           </div>
+
+          {/*
+            What the road does, beside how long it takes.
+
+            This was a tile of its own, which cost the grid a whole row for one
+            sentence about the drive — and the drive is what the line above is
+            already about. Only the worst warning is shown; the rest are on the
+            route itself, which is drawn on the map.
+          */}
+          {worstRouteWarning && (
+            <p
+              className={`mt-1 text-[10px] leading-tight flex items-start gap-1.5 ${
+                worstRouteWarning.severity === 'critical' ? 'text-rose-300' : 'text-amber-300'
+              }`}
+            >
+              <TriangleAlert className="w-3 h-3 shrink-0 mt-px" />
+              <span className="line-clamp-2">
+                {worstRouteWarning.message}
+                {routeWarnings.length > 1 && ` (+${routeWarnings.length - 1} more)`}
+              </span>
+            </p>
+          )}
         </div>
 
         {/* --------------------------------------------------------- bento */}
@@ -343,7 +375,13 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
             )}
           </Tile>
 
-          <Tile icon={<ThermometerSun className="w-3 h-3" />} label="Right now">
+          {/*
+            Now and on arrival in one tile, because they are the same question
+            asked twice and reading them side by side is how you tell whether
+            the drive is worth starting. Two tiles for this was a row of the
+            grid spent on a duplicated layout.
+          */}
+          <Tile icon={<ThermometerSun className="w-3 h-3" />} label="Weather">
             {isLoadingConditions ? (
               <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -351,44 +389,35 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
               </p>
             ) : now ? (
               <>
-                <p className="text-lg font-bold text-slate-100 leading-none">
-                  {now.temperature}°{now.temperatureUnit}
-                </p>
-                <p className="text-[10px] text-slate-300 leading-tight line-clamp-2">
-                  {now.shortForecast}
-                </p>
+                <div className="flex items-baseline gap-1.5 min-w-0">
+                  <span className="text-lg font-bold text-slate-100 leading-none shrink-0">
+                    {now.temperature}°{now.temperatureUnit}
+                  </span>
+                  <span className="text-[10px] text-slate-300 leading-tight truncate">
+                    {now.shortForecast}
+                  </span>
+                </div>
+                {arrival?.period ? (
+                  <p className="text-[10px] text-slate-400 leading-tight mt-0.5 truncate">
+                    <span className="text-emerald-300/90 font-semibold">
+                      {arrival.period.temperature}°{arrival.period.temperatureUnit}
+                    </span>{' '}
+                    when you get in, ~{clockTime(arrival.arrivesAt)}
+                  </p>
+                ) : (
+                  <p className="text-[9px] text-slate-500 leading-tight mt-0.5 line-clamp-2">
+                    {arrival
+                      ? `${arrival.note} You'd get in around ${clockTime(arrival.arrivesAt)}.`
+                      : 'Arrival forecast needs a driving time.'}
+                  </p>
+                )}
                 {now.windSpeed && (
-                  <p className="text-[9px] text-slate-500">Wind {now.windSpeed}</p>
+                  <p className="text-[9px] text-slate-500 truncate">Wind {now.windSpeed}</p>
                 )}
               </>
             ) : (
-              <p className="text-[10px] text-slate-400 leading-snug">
+              <p className="text-[10px] text-slate-400 leading-snug line-clamp-3">
                 {weather.note ?? 'No forecast for this point.'}
-              </p>
-            )}
-          </Tile>
-
-          <Tile icon={<Clock className="w-3 h-3" />} label="When you arrive">
-            {arrival?.period ? (
-              <>
-                <p className="text-lg font-bold text-slate-100 leading-none">
-                  {arrival.period.temperature}°{arrival.period.temperatureUnit}
-                </p>
-                <p className="text-[10px] text-slate-300 leading-tight line-clamp-2">
-                  {arrival.period.shortForecast}
-                </p>
-                <p className="text-[9px] text-emerald-300/80">
-                  ~{clockTime(arrival.arrivesAt)}
-                  {arrival.isNow ? ' · same slot as now' : ''}
-                </p>
-              </>
-            ) : arrival ? (
-              <p className="text-[10px] text-slate-400 leading-snug">
-                {arrival.note} You'd get in around {clockTime(arrival.arrivesAt)}.
-              </p>
-            ) : (
-              <p className="text-[10px] text-slate-400 leading-snug">
-                Needs a driving time — work out a route first.
               </p>
             )}
           </Tile>
@@ -419,60 +448,49 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
                     .filter(Boolean)
                     .join(' · ')}
                 </p>
-                <p className="text-[9px] text-slate-500 leading-tight mt-0.5">
+                <p className="text-[9px] text-slate-500 leading-tight mt-0.5 line-clamp-2">
                   Approximate edge — not permission to camp.
                 </p>
               </>
             ) : (
-              <p className="text-[10px] text-slate-400 leading-snug line-clamp-3">
+              <p className="text-[10px] text-slate-400 leading-snug line-clamp-4">
                 No mapped parcel here. That is missing data, not private or
                 closed land — check with the local land manager.
               </p>
             )}
           </Tile>
-
-          {worstRouteWarning && (
-            <Tile
-              icon={<TriangleAlert className="w-3 h-3" />}
-              label={
-                routeWarnings.length > 1
-                  ? `Road ahead · ${routeWarnings.length} notes`
-                  : 'Road ahead'
-              }
-              tone={worstRouteWarning.severity === 'critical' ? 'danger' : 'warn'}
-            >
-              <p className="text-[10px] text-slate-200 leading-tight line-clamp-3">
-                {worstRouteWarning.message}
-              </p>
-            </Tile>
-          )}
         </div>
 
         {/* ------------------------------------------------------- actions */}
-        <div className="px-4 pb-3 pt-1.5 border-t border-slate-800 shrink-0 bg-slate-900 space-y-1.5">
-          <div className="flex gap-1.5">
+        {/*
+          One row, not two. The coordinates live on the copy button — it is
+          the only place they are needed and it doubles as the label — which
+          buys the grid above about forty pixels of tile height.
+        */}
+        <div className="px-4 pb-3 pt-1.5 border-t border-slate-800 shrink-0 bg-slate-900 flex items-stretch gap-1.5">
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(coords);
+              setCopied(true);
+              haptic('tap');
+              setTimeout(() => setCopied(false), 2000);
+            }}
+            className="min-w-0 flex-1 px-2 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold flex items-center justify-center gap-1.5 hover:bg-slate-700"
+            aria-label="Copy the coordinates"
+          >
+            {copied ? <Check className="w-3 h-3 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
+            <span className="truncate">{copied ? 'Copied' : coords}</span>
+          </button>
+
+          {onOpenDetail && (
             <button
-              onClick={() => {
-                navigator.clipboard.writeText(coords);
-                setCopied(true);
-                haptic('tap');
-                setTimeout(() => setCopied(false), 2000);
-              }}
-              className="flex-1 min-w-0 px-2 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold flex items-center justify-center gap-1.5 hover:bg-slate-700"
+              onClick={onOpenDetail}
+              className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold flex items-center gap-1.5 hover:bg-slate-700 shrink-0"
             >
-              {copied ? <Check className="w-3 h-3 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
-              <span className="truncate">{copied ? 'Copied' : coords}</span>
+              <Eye className="w-3 h-3" />
+              Details
             </button>
-            {onOpenDetail && (
-              <button
-                onClick={onOpenDetail}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold flex items-center gap-1.5 hover:bg-slate-700 shrink-0"
-              >
-                <Eye className="w-3 h-3" />
-                Details
-              </button>
-            )}
-          </div>
+          )}
 
           {/*
             NOT disabled while the route is still being worked out, and not
@@ -482,10 +500,10 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
           */}
           <button
             onClick={() => { haptic('success'); onOpenDirections(); }}
-            className="w-full px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50"
+            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-950/50 shrink-0"
           >
-            <Navigation className="w-4 h-4" />
-            Directions in {directionsAppName()}
+            <Navigation className="w-4 h-4 shrink-0" />
+            <span className="whitespace-nowrap">{directionsAppName()}</span>
           </button>
         </div>
 

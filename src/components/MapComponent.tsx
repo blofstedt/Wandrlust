@@ -6,11 +6,11 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
-  Crosshair, Eye, Info, Layers, Loader2, MousePointerClick
+  Crosshair, Eye, Info, Layers, Loader2, MousePointerClick, Navigation, X
 } from 'lucide-react';
 
 import type {
-  Campsite, DestinationLand, MapDestination, MapTileLayer
+  Campsite, DestinationLand, MapDestination, MapTileLayer, NearbyFacility
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
@@ -33,8 +33,14 @@ import {
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
-  MarkerDot, amenityDots, hazardDots, COLLAPSED_DOT_LIMIT
+  MarkerDot, amenityDots, facilityDots, hazardDots, COLLAPSED_DOT_LIMIT,
+  FACILITY_COLOR
 } from '../utils/amenityDots';
+import {
+  fetchNearbyFacilities, FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM
+} from '../services/nearbyAmenityService';
+import { calculateRoute, RouteResult } from '../services/routingService';
+import { directionsAppName, openDirections } from '../utils/handoff';
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
@@ -211,27 +217,39 @@ const buildCampsiteIcon = (isSelected: boolean, dots: MarkerDot[] = []): L.DivIc
     const cells = shown
       .map(
         (d) =>
-          `<i class="wl-dot${d.tone === 'bad' ? ' wl-dot-bad' : ''}" ` +
-          `style="background:${d.color}"></i>`
+          `<i class="wl-dot${d.tone === 'bad' ? ' wl-dot-bad' : ''}` +
+          `${d.hollow ? ' wl-dot-hollow' : ''}" ` +
+          `style="--wl-dot-color:${d.color}"></i>`
       )
       .join('');
     const more = overflow
-      ? `<i class="wl-dot wl-dot-more" style="background:#475569"></i>`
+      ? `<i class="wl-dot wl-dot-more" style="--wl-dot-color:#94a3b8"></i>`
       : '';
     return `<div class="wl-dots">${cells}${more}</div>`;
   };
 
-  /** Tapped: the same dots, each grown into the fact it stood for. */
+  /**
+   * Tapped: the same dots, each grown into the fact it stood for.
+   *
+   * A chip carrying a facility is a button rather than a label — it is
+   * somewhere you can go, so it opts back into pointer events and carries the
+   * facility id for the click handler on the marker.
+   */
   const expandedRow = (): string => {
     const chips = dots
-      .map(
-        (d, i) =>
-          `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}" ` +
+      .map((d, i) => {
+        const go = d.facility;
+        return (
+          `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
+          `${go ? ' wl-chip-go' : ''}" ` +
+          `${go ? `data-facility="${escapeHtml(go.id)}" role="button" tabindex="0" ` : ''}` +
           `style="--wl-chip-color:${d.color};animation-delay:${i * 26}ms">` +
-          `<i class="wl-chip-dot" style="background:${d.color}"></i>` +
+          `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
           `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
-          `${escapeHtml(d.label)}</span>`
-      )
+          `${escapeHtml(d.label)}` +
+          `${go ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
+        );
+      })
       .join('');
     return `<div class="wl-chips">${chips}</div>`;
   };
@@ -813,6 +831,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * between snaps never re-runs the zoom.
    */
   const focusedDestRef = useRef<MapDestination | null>(null);
+  /**
+   * Where the camera was before it closed in on a spot.
+   *
+   * Tapping a pin zooms in; letting go of it puts the map back where the
+   * camper had it. Without this the app kept every zoom it ever took on the
+   * camper's behalf, so browsing four spots in a row left you looking at a
+   * hundred metres of one clearing with no idea where it sat.
+   */
+  const preFocusViewRef = useRef<{ center: L.LatLng; zoom: number } | null>(null);
+  /** Facilities near the selected spot, for the tappable chips. */
+  const facilitiesRef = useRef<NearbyFacility[]>([]);
+  /** The line and end marker drawn for the facility the camper tapped. */
+  const facilityLayerRef = useRef<L.LayerGroup | null>(null);
 
   // What boundary data we already hold, so a pan inside it costs nothing.
   const loadedBoxRef = useRef<BoundingBox | null>(null);
@@ -902,6 +933,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [zoomTooFar, setZoomTooFar] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
+  /**
+   * Toilets, taps and fuel within `FACILITY_RADIUS_KM` of the selected spot.
+   *
+   * Only ever fetched for the pin that is open, because it is an Overpass
+   * query per spot and most spots are never opened.
+   */
+  const [facilities, setFacilities] = useState<NearbyFacility[]>([]);
+  /** The facility whose chip was tapped: what it is, and how you'd get there. */
+  const [facilityTrip, setFacilityTrip] = useState<{
+    facility: NearbyFacility;
+    route: RouteResult | null;
+    loading: boolean;
+  } | null>(null);
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
   /* ------------------------------------------------------------------ */
@@ -2116,6 +2160,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
          * to a road junction would be worse than not moving at all. And only
          * once per selection, so dragging the panel between its snaps
          * afterwards re-parks the pin without re-zooming.
+         *
+         * The view being left behind is remembered here and flown back to
+         * when the spot is closed — see the effect below. Borrowing the
+         * camera is fine; keeping it is not.
          */
         const first = focusedDestRef.current !== destination;
         focusedDestRef.current = destination;
@@ -2136,6 +2184,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         const shift = map.latLngToContainerPoint(centre).distanceTo(map.getSize().divideBy(2));
         if (shift < 8 && zoomTo === map.getZoom()) return;
 
+        // Remember where we were, once per focus, immediately before moving.
+        if (first && !preFocusViewRef.current) {
+          preFocusViewRef.current = { center: map.getCenter(), zoom: map.getZoom() };
+        }
+
         if (prefersReducedMotion()) {
           map.setView(centre, zoomTo, { animate: false });
         } else if (zoomTo !== map.getZoom()) {
@@ -2151,6 +2204,36 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // is exactly when this should re-run. A manual pan afterwards is left
     // alone — nothing here depends on the map's own move events.
   }, [destination, bottomCoverFraction, isMapReady]);
+
+  /**
+   * Closing the card gives the camera back.
+   *
+   * The tap that opened a spot borrowed the view: it flew in to
+   * `CAMPSITE_FOCUS_ZOOM` so the pin's chips had room. Tapping the X, or
+   * going back, undoes exactly that — the map returns to the centre and zoom
+   * it was at before, which is the wide view the camper was browsing in
+   * rather than some fixed "zoomed out" level we picked for them.
+   *
+   * Only when there is something to undo. A dropped pin that never triggered
+   * the fly-in leaves `preFocusViewRef` empty, and closing it moves nothing.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady || destination) return;
+
+    const previous = preFocusViewRef.current;
+    preFocusViewRef.current = null;
+    focusedDestRef.current = null;
+    if (!previous) return;
+
+    try {
+      if (prefersReducedMotion()) {
+        map.setView(previous.center, previous.zoom, { animate: false });
+      } else {
+        map.flyTo(previous.center, previous.zoom, { duration: 0.7 });
+      }
+    } catch { /* map torn down */ }
+  }, [destination, isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Fire, flood and storm alerts                                        */
@@ -3061,14 +3144,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * Hazards lead the row. A heat warning or smoke over the spot changes
    * whether to go at all, which outranks anything about the spot itself.
    */
-  const iconForId = useCallback(
-    (id: string) =>
-      buildCampsiteIcon(selectedIdRef.current === id, [
-        ...hazardDots(badgesByIdRef.current.get(id) ?? []),
-        ...(amenityDotsRef.current.get(id) ?? [])
-      ]),
-    []
-  );
+  const iconForId = useCallback((id: string) => {
+    const isSelected = selectedIdRef.current === id;
+    return buildCampsiteIcon(isSelected, [
+      ...hazardDots(badgesByIdRef.current.get(id) ?? []),
+      ...(amenityDotsRef.current.get(id) ?? []),
+      // Facilities up the road belong to the open pin only — they are the
+      // one part of the row you can tap through to, and they are only
+      // looked up for the spot being read.
+      ...(isSelected ? facilityDots(facilitiesRef.current) : [])
+    ]);
+  }, []);
 
   // Rebuilt only when the campsite list changes. Selection is handled
   // separately below — previously changing the selection tore down and rebuilt
@@ -3143,6 +3229,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (previousId === nextId) return;
     // Update the ref first: iconForId reads it, and both pins need the new state.
     selectedIdRef.current = nextId;
+    // The last spot's facilities are not this spot's. Cleared before either
+    // icon is rebuilt, so a toilet 4 km from the previous pin cannot appear
+    // over the new one for the moment before the fetch lands.
+    facilitiesRef.current = [];
     if (previousId) {
       const marker = markersRef.current.get(previousId);
       marker?.setIcon(iconForId(previousId));
@@ -3208,6 +3298,199 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     });
   }, [hazards, pinnedCampsites, isMapReady, iconForId]);
+
+  /* ------------------------------------------------------------------ */
+  /* Facilities near the open spot                                       */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Look up what is within a few kilometres of the spot being read.
+   *
+   * Debounced, because tapping down a line of pins would otherwise fire an
+   * Overpass query per pin, and aborted on the way out so the answer for a
+   * spot the camper has already left never lands on the one they are on.
+   *
+   * Finding nothing sets an empty list and draws no dots, which is the
+   * honest outcome: OpenStreetMap is volunteer-surveyed and the emptiest
+   * country is the least surveyed. Nowhere does the app turn that into "no
+   * toilet within 5 km".
+   */
+  useEffect(() => {
+    setFacilityTrip(null);
+    if (!selectedCampsite || isOfflineMode) {
+      setFacilities([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    const { latitude, longitude } = selectedCampsite;
+
+    const timer = setTimeout(async () => {
+      const result = await fetchNearbyFacilities(
+        latitude, longitude, FACILITY_RADIUS_KM, controller.signal
+      );
+      if (!cancelled) setFacilities(result.facilities);
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearTimeout(timer);
+      setFacilities([]);
+    };
+  }, [selectedCampsite, isOfflineMode]);
+
+  // Grow the open pin's chip row once the facilities land.
+  useEffect(() => {
+    facilitiesRef.current = facilities;
+    const id = selectedIdRef.current;
+    if (!id) return;
+    markersRef.current.get(id)?.setIcon(iconForId(id));
+  }, [facilities, iconForId]);
+
+  /**
+   * A tap on a facility chip.
+   *
+   * Delegated from the map container in the CAPTURE phase, which is the only
+   * place it works: the chips live inside a marker's icon, so Leaflet's own
+   * marker handler would otherwise see the tap first and re-select the pin.
+   * Bound once for the life of the map and reads the facility list through a
+   * ref, so it never needs rebinding.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+    const container = map.getContainer();
+
+    const onTap = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      const chip = target?.closest?.('[data-facility]') as HTMLElement | null;
+      if (!chip) return;
+
+      const id = chip.getAttribute('data-facility');
+      const facility = facilitiesRef.current.find((f) => f.id === id);
+      if (!facility) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setFacilityTrip({ facility, route: null, loading: true });
+    };
+
+    container.addEventListener('click', onTap, true);
+    return () => container.removeEventListener('click', onTap, true);
+  }, [isMapReady]);
+
+  /**
+   * Frame the spot and the facility together, then ask for a route.
+   *
+   * Pulling the camera OUT here is the point — the answer to "where is the
+   * toilet" is the two places in one view, not a closer look at either. The
+   * bottom padding is whatever the card over the map is covering, so the
+   * facility does not land underneath it.
+   */
+  const tripFacility = facilityTrip?.facility ?? null;
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady || !tripFacility || !selectedCampsite) return;
+
+    const bounds = L.latLngBounds(
+      [selectedCampsite.latitude, selectedCampsite.longitude],
+      [tripFacility.latitude, tripFacility.longitude]
+    );
+    const covered = Math.min(Math.max(bottomCoverFraction, 0), 0.9) * map.getSize().y;
+
+    try {
+      map.fitBounds(bounds, {
+        paddingTopLeft: L.point(48, 80),
+        paddingBottomRight: L.point(48, covered + 120),
+        maxZoom: 15,
+        animate: !prefersReducedMotion()
+      });
+    } catch { /* map torn down */ }
+
+    const controller = new AbortController();
+    let cancelled = false;
+
+    calculateRoute(
+      {
+        from: [selectedCampsite.latitude, selectedCampsite.longitude],
+        to: [tripFacility.latitude, tripFacility.longitude]
+      },
+      controller.signal
+    ).then((route) => {
+      if (cancelled) return;
+      setFacilityTrip((current) =>
+        current && current.facility.id === tripFacility.id
+          ? { ...current, route, loading: false }
+          : current
+      );
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // Deliberately keyed on the facility, not on the trip: the route landing
+    // must not re-frame the map or ask for the route again.
+  }, [tripFacility, selectedCampsite, isMapReady, bottomCoverFraction]);
+
+  /**
+   * The line to the facility, and a dot on the facility itself.
+   *
+   * Dashed until a route comes back, and dashed for good if none does — a
+   * straight line between two points is a bearing, not a way through, and
+   * drawing it solid would claim a road that may not exist.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!facilityLayerRef.current) return;
+      try { map.removeLayer(facilityLayerRef.current); } catch { /* detached */ }
+      facilityLayerRef.current = null;
+    };
+    clear();
+
+    const trip = facilityTrip;
+    if (!trip || !selectedCampsite) return;
+
+    const colour = FACILITY_COLOR[trip.facility.kind];
+    const routed = trip.route?.ok && trip.route.geometry.length > 1;
+    const line: [number, number][] = routed
+      ? trip.route!.geometry
+      : [
+          [selectedCampsite.latitude, selectedCampsite.longitude],
+          [trip.facility.latitude, trip.facility.longitude]
+        ];
+
+    const layer = L.layerGroup([
+      L.polyline(line, {
+        color: colour,
+        weight: routed ? 4 : 3,
+        opacity: 0.95,
+        dashArray: routed ? undefined : '6 7',
+        lineCap: 'round'
+      }),
+      L.marker([trip.facility.latitude, trip.facility.longitude], {
+        interactive: false,
+        icon: L.divIcon({
+          className: 'facility-target-marker',
+          html:
+            `<div class="wl-facility-dot" style="--wl-facility-color:${colour}">` +
+            `<span aria-hidden="true">${FACILITY_GLYPH[trip.facility.kind]}</span></div>`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13]
+        })
+      })
+    ]);
+
+    layer.addTo(map);
+    facilityLayerRef.current = layer;
+
+    return clear;
+  }, [facilityTrip, selectedCampsite, isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Alert patterns over affected parcels — REMOVED                      */
@@ -3365,6 +3648,94 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         )}
       </div>
+
+      {/*
+        THE HOP TO A FACILITY.
+
+        Sits just above whatever card is over the map, because the two things
+        it is about — the spot and the facility — are both in the strip of map
+        left above it, joined by the line this card describes.
+
+        What it will not say: how long the walk takes, or that the place is
+        open. The time is a driving estimate from the same engine as every
+        other route in the app, and the existence of the facility is one
+        volunteer's note in OpenStreetMap, which is said on the card rather
+        than left for the camper to discover at the trailhead.
+      */}
+      {facilityTrip && selectedCampsite && (
+        <div
+          className="absolute left-1/2 -translate-x-1/2 z-[1400] w-[min(23rem,calc(100%-1.5rem))] anim-in-up"
+          style={{ bottom: `calc(${Math.min(Math.max(bottomCoverFraction, 0), 0.9) * 100}% + 12px)` }}
+        >
+          <div
+            className="rounded-2xl bg-slate-900/96 backdrop-blur-md border shadow-2xl px-3 py-2.5"
+            style={{ borderColor: FACILITY_COLOR[facilityTrip.facility.kind] }}
+          >
+            <div className="flex items-start gap-2">
+              <span className="text-base leading-none mt-0.5" aria-hidden="true">
+                {FACILITY_GLYPH[facilityTrip.facility.kind]}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-slate-100 truncate">
+                  {facilityTrip.facility.name ?? FACILITY_LABEL[facilityTrip.facility.kind]}
+                </p>
+                <p className="text-[10px] text-slate-400">
+                  {FACILITY_LABEL[facilityTrip.facility.kind]} ·{' '}
+                  {facilityTrip.facility.distanceKm} km from this spot
+                  {facilityTrip.facility.fee === true && ' · charges a fee'}
+                </p>
+                <p className="text-[10px] text-slate-300 mt-0.5">
+                  {facilityTrip.loading ? (
+                    <span className="flex items-center gap-1.5 text-slate-400">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Working out the drive…
+                    </span>
+                  ) : facilityTrip.route?.ok ? (
+                    <>
+                      <span className="font-bold text-slate-100">
+                        ~{Math.max(1, facilityTrip.route.durationMin)} min
+                      </span>{' '}
+                      by road, {facilityTrip.route.distanceKm} km
+                    </>
+                  ) : (
+                    <span className="text-amber-300">
+                      No road route found — the dashed line is the direction, not a way through.
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFacilityTrip(null)}
+                className="p-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 shrink-0"
+                aria-label="Hide this facility"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <p className="text-[9px] text-slate-500 leading-tight mt-1.5">
+              Mapped by an OpenStreetMap volunteer. Nobody has checked whether it
+              is open, maintained or still there.
+            </p>
+
+            <button
+              type="button"
+              onClick={() =>
+                openDirections(
+                  facilityTrip.facility.latitude,
+                  facilityTrip.facility.longitude,
+                  [selectedCampsite.latitude, selectedCampsite.longitude]
+                )
+              }
+              className="mt-2 w-full px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2"
+            >
+              <Navigation className="w-3.5 h-3.5" />
+              Take me there in {directionsAppName()}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Layer controls */}
       <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-2">
