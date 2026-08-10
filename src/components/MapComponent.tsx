@@ -6,8 +6,7 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
-  AlertTriangle, ChevronDown, Crosshair, Eye, Info, Layers, Loader2,
-  MousePointerClick, Shield
+  Crosshair, Eye, Info, Layers, Loader2, MousePointerClick
 } from 'lucide-react';
 
 import type {
@@ -23,7 +22,7 @@ import {
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import { fetchActiveFires, isUnderControl, ActiveFire } from '../services/fireService';
-import { fetchAdmin1, Admin1, primeAdmin1, findAdmin1At } from '../services/admin1Service';
+import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
 import { isOnLand, primeLandMask } from '../services/landService';
 import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
@@ -31,7 +30,7 @@ import {
 import {
   AlertBadge, BADGE_COLOR, badgesForPoint, alertBadge,
   hazardCloudHtml, preciseMarkerHtml, isDiffuse, warningGlyphPattern, explodeToFeatures,
-  WARNING_LABEL, dissolveKey, dissolveSegments, dissolvedFill
+  dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
   MarkerDot, amenityDots, hazardDots, COLLAPSED_DOT_LIMIT
@@ -39,7 +38,7 @@ import {
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
-  COVERAGE_LABEL, isWithinCoverage, landDataGap
+  COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
   fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts
@@ -867,8 +866,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showCrownLand, setShowCrownLand] = useState(true);
   const [crownLandAvailable, setCrownLandAvailable] = useState(false);
   const [showLayerMenu, setShowLayerMenu] = useState(false);
-  // Collapsed by default: the map matters more than the key to it.
-  const [showLegend, setShowLegend] = useState(false);
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
   const [showBoundaries, setShowBoundaries] = useState(true);
@@ -903,25 +900,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const [showAdmin1, setShowAdmin1] = useState(true);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
-  const [isLoadingBoundaries, setIsLoadingBoundaries] = useState(false);
   const [zoomTooFar, setZoomTooFar] = useState(false);
-  /** True while the map is showing the large-parcels-only overview. */
-  const [isOverviewTier, setIsOverviewTier] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
-  const [unmappableHazards, setUnmappableHazards] = useState(0);
-  /** Which warning families are drawn in view — drives the top-left legend. */
-  const [warningBadges, setWarningBadges] = useState<AlertBadge[]>([]);
-  /** Camper-filed reports currently on screen — counted in the status chip. */
-  const [hazardReports, setHazardReports] = useState<HazardRecord[]>([]);
-  /**
-   * The state or province under the middle of the screen.
-   *
-   * Used for one thing: telling a camper in a province this app has no Crown
-   * land data for that the empty map is a gap in the data, not an absence of
-   * public land. Null while the outlines load, or outside the US and Canada.
-   */
-  const [viewJurisdiction, setViewJurisdiction] = useState<Admin1 | null>(null);
-
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
   /* ------------------------------------------------------------------ */
@@ -1352,47 +1332,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
-  /* Which state or province is on screen                                */
-  /* ------------------------------------------------------------------ */
-  /**
-   * Kept only so the status chip can name a province that has no Crown land
-   * data. Cheap: the admin-1 outlines are a prebuilt file already loaded for
-   * the boundary lines, and this is one point-in-polygon test against a
-   * bbox-prefiltered list, debounced, per settled view.
-   */
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
-
-    let cancelled = false;
-    let debounce: ReturnType<typeof setTimeout> | null = null;
-
-    const check = () => {
-      const c = map.getCenter();
-      void findAdmin1At(c.lat, c.lng).then((hit) => {
-        if (cancelled) return;
-        // Compare by code so an identical result never re-renders.
-        setViewJurisdiction((prev) =>
-          prev?.isoCode === hit?.isoCode ? prev : hit
-        );
-      });
-    };
-
-    const schedule = () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(check, 300);
-    };
-
-    schedule();
-    map.on('moveend', schedule);
-    return () => {
-      cancelled = true;
-      if (debounce) clearTimeout(debounce);
-      map.off('moveend', schedule);
-    };
-  }, [isMapReady]);
-
-  /* ------------------------------------------------------------------ */
   /* Public land boundaries                                              */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
@@ -1422,7 +1361,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       forget();
       setBoundaries(EMPTY_BOUNDARIES);
       setZoomTooFar(false);
-      setIsOverviewTier(false);
       return;
     }
 
@@ -1832,7 +1770,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // is nothing legible to draw at any level of generalisation.
       if (currentZoom < BOUNDARY_OVERVIEW_MIN_ZOOM) {
         setZoomTooFar(true);
-        setIsOverviewTier(false);
         setBoundaries(EMPTY_BOUNDARIES);
         forget();
         clearLayer();
@@ -1852,7 +1789,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        */
       const detail: BoundaryDetail = currentZoom < BOUNDARY_MIN_ZOOM ? 'overview' : 'full';
       setZoomTooFar(false);
-      setIsOverviewTier(detail === 'overview');
 
       const b = map.getBounds();
       const view: BoundingBox = {
@@ -1885,18 +1821,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const myId = ++requestId;
       controller?.abort();
       controller = new AbortController();
-      // The spinner is for a camper waiting on an EMPTY map. Once parcels are
-      // drawn, a top-up fetch for the next box along is background work they
-      // did not ask about, and flipping the status chip to "Loading
-      // boundaries…" and back on every pan is a large part of what made this
-      // feel busy. Say nothing while there is already something to look at.
-      const showsProgress = !boundaryLayerRef.current;
-      if (showsProgress) setIsLoadingBoundaries(true);
-
       const collection = await fetchBoundaries(box, controller.signal, detail, currentZoom);
       if (cancelled || myId !== requestId) return;
 
-      if (showsProgress) setIsLoadingBoundaries(false);
       // `null` means the request was superseded. Keep what is on screen rather
       // than blanking the map between one viewport and the next.
       if (!collection) return;
@@ -2023,7 +1950,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       reportLayerRef.current = null;
     };
 
-    if (isOfflineMode) { clear(); setHazardReports([]); return; }
+    if (isOfflineMode) { clear(); return; }
 
     if (!map.getPane('reportPane')) {
       map.createPane('reportPane');
@@ -2069,7 +1996,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (cancelled) return;
 
       loadedAt = [centre.lat, centre.lng];
-      setHazardReports(records);
       render(records);
     };
 
@@ -2251,8 +2177,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (isOfflineMode) {
       clear();
       setHazards([]);
-      setUnmappableHazards(0);
-      setWarningBadges([]);
       return;
     }
 
@@ -2265,7 +2189,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // the layer toggleable without losing safety context.
     if (!showWarnings) {
       clear();
-      setWarningBadges([]);
       return;
     }
 
@@ -2652,11 +2575,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         }
       }
 
-      // Legend order: the diffuse cloud families first (they need the legend to
-      // be understood at all), then the precise icons.
-      const legendOrder: AlertBadge[] =
-        ['smoke', 'heat', 'winter', 'wind', 'fire', 'flood', 'storm'];
-      setWarningBadges(legendOrder.filter((b) => present.has(b)));
     };
 
     const run = async () => {
@@ -2693,7 +2611,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       loadedAlertBox = padded;
       const sorted = sortAlerts(alerts);
       setHazards(sorted);
-      setUnmappableHazards(sorted.filter((a) => !a.centroid || !a.geometry).length);
       render(sorted);
     };
 
@@ -3382,56 +3299,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [center, zoom, isMapReady]);
 
 
-  /**
-   * Set when the province on screen has no Crown land layer behind it.
-   *
-   * Drives both the status chip and the note under it. Held as one value so
-   * the two can never disagree about whether the map is blank for a reason.
-   */
-  const dataGapNote = showBoundaries && !zoomTooFar
-    ? landDataGap(viewJurisdiction?.isoCode)
-    : null;
-
-  const statusText = useCallback((): string => {
-    if (!showBoundaries) return 'Land boundaries hidden';
-    if (zoomTooFar) return 'Zoom in for land boundaries';
-    if (isLoadingBoundaries) return 'Loading boundaries…';
-    /**
-     * A BLANK MAP MUST NEVER SAY "NOTHING HERE" WHEN IT MEANS "NO DATA".
-     *
-     * Only Alberta and Ontario publish a queryable layer of campable Crown
-     * land. In British Columbia, Saskatchewan, Manitoba, Quebec and Atlantic
-     * Canada this app draws nothing — and until now it captioned that with
-     * "No mapped public land in view", which reads as a statement that there
-     * is nowhere to camp in provinces that are mostly Crown land. Naming the
-     * province and the gap turns a wrong answer into an honest one.
-     */
-    if (dataGapNote && boundaries.features.length === 0) {
-      return `${viewJurisdiction?.name} — no Crown land data`;
-    }
-    // The overview shows only the big parcels, so it has to say so. Otherwise
-    // a camper zoomed out over a region full of small BLM sections would read
-    // a near-empty map as "nothing here", which is the exact misreading this
-    // app exists to avoid.
-    if (isOverviewTier) {
-      return boundaries.features.length > 0
-        ? `${boundaries.features.length} large parcels · zoom in for the rest`
-        : 'No large parcels here · zoom in for smaller ones';
-    }
-    // "edges approximate" rides along with the count so the caveat is on
-    // screen even when the legend below is collapsed.
-    if (boundaries.features.length > 0) {
-      return `${boundaries.features.length} parcels · edges approximate`;
-    }
-    return 'No mapped public land in view';
-  }, [
-    showBoundaries, zoomTooFar, isLoadingBoundaries, isOverviewTier,
-    boundaries.features.length, viewJurisdiction, dataGapNote
-  ]);
-
-  /** Only worth expanding when there is a per-source breakdown to show. */
-  const hasLegend = !isOfflineMode && showBoundaries && boundaries.features.length > 0;
-
   return (
     <div className="relative w-full h-full bg-slate-950 overflow-hidden">
       {/*
@@ -3452,17 +3319,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         <div ref={containerRef} className="w-full h-full" />
       </div>
       {/*
-        Status + legend.
+        WHAT USED TO SIT IN THIS CORNER.
 
-        This is one collapsed chip by default. It used to be a permanently
-        expanded panel listing every source plus a paragraph about edge
-        accuracy, which on a phone covered most of the map it was describing —
-        a legend that hides the thing it explains.
+        A stack of standing notices: a parcel-count chip with an expandable
+        source legend, an amber "Storm in view" panel, and a camper-report
+        count. All three described things already visible on the map — the
+        shaded warning clouds, the coloured dots on the pins, the report
+        markers — and between them they covered the top third of a phone
+        screen with text you could not dismiss. A permanent caption over the
+        map is not information; it is something to look past.
 
-        What it must never do is drop the caveat. The collapsed chip always
-        carries "edges approximate", the faded band is drawn on the map itself,
-        and the full explanation is one tap away and repeated in every parcel's
-        popup. The detail is quieter, not absent.
+        The caveats they carried did not go with them. Boundary edges are
+        drawn as a fade rather than a line and the accuracy note now lives in
+        the layer menu beside the toggle that draws them; warnings are read by
+        tapping the spot they cover; camper reports are read by tapping the
+        report.
+
+        What is left here is state you cannot see any other way: that the app
+        is running on saved data, and that you have panned outside the region
+        it covers at all.
       */}
       {/*
         z-index sits above every Leaflet pane, not level with them.
@@ -3476,179 +3351,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         every tap meant for these buttons.
       */}
       <div className="absolute top-3 left-3 z-[1000] flex flex-col gap-1 max-w-[min(16rem,calc(100%-5rem))]">
-        {isOfflineMode ? (
+        {isOfflineMode && (
           <div className="bg-amber-500 text-slate-950 px-3 py-1.5 rounded-xl font-bold text-xs shadow-xl flex items-center gap-2 border border-amber-300">
             <span className="w-2 h-2 rounded-full bg-slate-950 animate-ping" />
             Offline — saved maps and spots
-          </div>
-        ) : (
-          <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-xl shadow-xl anim-in-down overflow-hidden">
-            <button
-              type="button"
-              onClick={() => hasLegend && setShowLegend((open) => !open)}
-              // Nothing to open when there are no parcels to break down.
-              className={`w-full px-3 py-1.5 flex items-center gap-2 text-left text-xs font-semibold text-slate-200 ${
-                hasLegend ? 'hover:bg-slate-800/60' : 'cursor-default'
-              }`}
-              aria-expanded={hasLegend ? showLegend : undefined}
-              disabled={!hasLegend}
-            >
-              {isLoadingBoundaries ? (
-                <Loader2 className="w-3.5 h-3.5 text-emerald-400 animate-spin shrink-0" />
-              ) : (
-                <Shield
-                  className={`w-3.5 h-3.5 shrink-0 ${
-                    boundaries.features.length > 0 ? 'text-emerald-400' : 'text-slate-500'
-                  }`}
-                />
-              )}
-              <span className="min-w-0 truncate">{statusText()}</span>
-              {hasLegend && (
-                <ChevronDown
-                  className={`w-3.5 h-3.5 ml-auto shrink-0 text-slate-400 transition-moook ${
-                    showLegend ? 'rotate-180' : ''
-                  }`}
-                />
-              )}
-            </button>
-
-            {/*
-              The blank-province note.
-
-              Shown whenever the map has no Crown land layer for the province
-              under the middle of the screen. It is deliberately not a
-              collapsible legend row: the whole point is that a camper looking
-              at an empty map in British Columbia reads WHY it is empty without
-              tapping anything.
-            */}
-            {dataGapNote && boundaries.features.length === 0 && (
-              <div className="px-3 pb-2 pt-0.5 border-t border-slate-700/60">
-                <p className="text-[10px] leading-tight text-amber-300/90">
-                  No Crown land layer for {viewJurisdiction?.name} yet — only
-                  Alberta and Ontario publish one this app can read. A blank map
-                  here means missing data, not missing public land.
-                </p>
-              </div>
-            )}
-
-            {hasLegend && showLegend && (
-              <div className="px-3 pb-2 pt-0.5 border-t border-slate-700/60 anim-in-down">
-                {boundaries.meta.sources
-                  .filter((source) => source.featureCount > 0)
-                  .map((source) => {
-                    const style = BOUNDARY_STYLES[source.confidence];
-                    return (
-                      <div key={source.id} className="flex items-center gap-2 py-0.5">
-                        <span
-                          className="w-3 h-3 rounded-sm border shrink-0"
-                          style={{ backgroundColor: style.fillColor, borderColor: style.color }}
-                        />
-                        {/* Name the source, not its confidence tier. Several
-                            sources share a tier, so the tier label would show
-                            Alberta Crown Land as "Federal land (BLM / USFS)". */}
-                        <span className="text-[10px] text-slate-300 font-semibold truncate">
-                          {source.label}
-                        </span>
-                        <span className="text-[10px] text-slate-500 ml-auto">
-                          {source.featureCount}
-                        </span>
-                      </div>
-                    );
-                  })}
-
-                <div className="mt-1.5 pt-1.5 border-t border-slate-700/60">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className="w-3 h-3 rounded-sm shrink-0"
-                      style={{
-                        background:
-                          'linear-gradient(90deg, rgba(148,163,184,0.05), rgba(148,163,184,0.45))'
-                      }}
-                    />
-                    <span className="text-[10px] text-slate-400 font-semibold">
-                      Uncertainty band
-                    </span>
-                  </div>
-                  {/*
-                    The numbers come from UNCERTAINTY_METRES rather than being
-                    typed here, so the figure the legend quotes can never drift
-                    away from the band actually being drawn.
-
-                    This is also where the per-parcel accuracy note went when
-                    the popups were cut back to the land's name and its rules.
-                    The caveat is stated once, permanently, instead of in every
-                    popup — but it is still stated.
-                  */}
-                  <p className="text-[9px] text-slate-500 leading-tight">
-                    Edges are drawn as a fade, not a line, because no source here is
-                    survey-grade — roughly {UNCERTAINTY_LABEL.cadastral_derived} to{' '}
-                    {UNCERTAINTY_LABEL.generalised} depending on the source. Inside the
-                    fade you may be on either side of the real boundary. Not permission
-                    to camp.
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/*
-          WHAT REPLACED THE WEATHER LEGEND.
-
-          There used to be a colour key here: a swatch, an icon and a word per
-          warning family, which asked the camper to look away from the map,
-          learn a code, and carry it back. The pins carry it now — a coloured
-          dot per warning sits over any spot a warning covers, and tapping the
-          spot spells each one out in words.
-
-          What a legend was still needed for is what is left: saying that the
-          animated clouds are warnings at all, naming which kinds are on
-          screen, and admitting to the ones that arrived with no geometry and
-          so are not drawn anywhere. No colour key, no tappable rows.
-        */}
-        {(warningBadges.length > 0 || unmappableHazards > 0) && (
-          <div className="bg-slate-900/92 backdrop-blur-md border border-amber-600/50 rounded-xl px-3 py-2 shadow-xl anim-in-up max-w-[15rem]">
-            <div className="flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span className="text-[11px] font-bold text-amber-100">
-                {warningBadges.length > 0
-                  ? `${warningBadges.map((b) => WARNING_LABEL[b]).join(', ')} in view`
-                  : 'Warnings in view'}
-              </span>
-            </div>
-            {unmappableHazards > 0 && (
-              <p className="text-[9px] text-amber-300/80 leading-tight mt-1">
-                {unmappableHazards} more came with no mapped area, so
-                {unmappableHazards === 1 ? ' it is' : ' they are'} not drawn
-                anywhere — tap a spot to read
-                {unmappableHazards === 1 ? ' it' : ' them'}.
-              </p>
-            )}
-            <p className="text-[9px] text-slate-500 leading-tight mt-1">
-              Shaded, animated clouds are the area an agency warned about. A pin
-              inside one carries a coloured dot per warning — tap it to read them.
-            </p>
-          </div>
-        )}
-
-        {/*
-          Camper reports are counted separately from official alerts, and
-          worded so the difference is unmissable. These are people's accounts
-          of a road; the amber chip above is an agency's warning about weather.
-        */}
-        {hazardReports.length > 0 && (
-          <div className="bg-slate-900/90 backdrop-blur-md border border-slate-600/70 rounded-xl px-3 py-1.5 shadow-xl anim-in-up">
-            <div className="flex items-center gap-2 text-[11px] font-semibold text-slate-200">
-              <span className="text-xs leading-none">📣</span>
-              <span>
-                {hazardReports.length} camper report
-                {hazardReports.length === 1 ? '' : 's'} nearby
-              </span>
-            </div>
-            <p className="text-[9px] text-slate-400 leading-tight mt-0.5">
-              Reported by other campers, not verified. Tap one to see how many
-              people have confirmed it.
-            </p>
           </div>
         )}
 
@@ -3698,6 +3404,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 className="accent-emerald-500 w-3.5 h-3.5"
               />
             </label>
+            {/*
+              The accuracy caveat, now that the standing chip over the map is
+              gone. It sits under the switch that draws the parcels, so it is
+              read by whoever turns them on, and it says the two things that
+              must never be lost: the edges are a guess with a range, and a
+              blank map is missing data rather than missing public land.
+            */}
+            {showBoundaries && (
+              <p className="px-2 pb-1.5 text-[9px] text-slate-500 leading-tight">
+                Edges are drawn as a fade, not a line — roughly{' '}
+                {UNCERTAINTY_LABEL.cadastral_derived} to {UNCERTAINTY_LABEL.generalised}{' '}
+                out depending on the source, and not permission to camp. Nothing
+                drawn means no data here, not private land.
+              </p>
+            )}
             {/* Only listed when the optional vector tileset is actually
                 configured. A toggle that explains why it can't work is a
                 developer's note sitting in a camper's map menu. */}

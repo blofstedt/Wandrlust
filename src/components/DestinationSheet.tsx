@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  X, Navigation, Loader2, ShieldCheck, Flame, Copy, Check, Eye,
-  ChevronUp, TriangleAlert, MapPin
+  X, Navigation, Loader2, ShieldCheck, Copy, Check, Eye, ChevronLeft,
+  TriangleAlert, MapPin, Signal, ThermometerSun, Clock, Flame
 } from 'lucide-react';
 import type { CellCoverage, MapDestination } from '../types';
 import type { WeatherSnapshot } from '../services/weatherService';
 import type { RouteResult } from '../services/routingService';
-import { CellCoverageCard, ArrivalWeatherCard } from './TripConditions';
+import { forecastOnArrival } from '../services/weatherService';
 import { HazardAlertPanel } from './HazardAlertPanel';
-import { NearbyFiresCard } from './NearbyFiresCard';
+import { NearbyFiresTile } from './NearbyFiresCard';
 import { Admin1Line } from './Admin1Line';
 import { haptic } from '../utils/animation';
 import { directionsAppName } from '../utils/handoff';
@@ -21,12 +21,25 @@ import { directionsAppName } from '../utils/handoff';
  * land, signal, weather, and a way to drive there — because from the driver's
  * seat they are the same question.
  *
+ * HALF THE SCREEN, NO SCROLLING. This used to be a resizable stack of sections
+ * that ran to three or four screenfuls, so reading the signal estimate meant
+ * scrolling past a paragraph about boundary accuracy, and the map — the thing
+ * the panel is describing — was hidden while you did it. It is now a fixed
+ * half-height panel laid out as a grid of tiles, each one headline-first: the
+ * answer in a few words, the hedging underneath it in small type. The rows
+ * share whatever height the panel has, so it fits a small phone and a desktop
+ * without a scrollbar either way.
+ *
+ * Nothing that qualifies a number was dropped to make it fit. What got cut is
+ * repetition — the same caveat restated in three sections — and long-form
+ * detail that already has a home: the warning list opens on top of the grid
+ * when tapped, and everything about the site itself is behind "Details".
+ *
  * NOT built on ui/Sheet, and that is deliberate rather than an oversight. That
  * primitive is a modal: it lays a backdrop over everything and traps focus,
  * which is right for a form and wrong here. The entire interaction this panel
  * belongs to is "tap somewhere else to move the pin", so the map underneath
- * has to stay both visible and clickable. It follows CampsiteBottomSheet's
- * shape instead, which is the established pattern for panels over the map.
+ * has to stay both visible and clickable.
  */
 
 interface DestinationSheetProps {
@@ -63,33 +76,92 @@ interface DestinationSheetProps {
 }
 
 /**
- * How tall the panel is at each snap, as a fraction of the viewport.
+ * How much of the screen the panel takes.
  *
- * Kept as numbers rather than only as Tailwind classes because the map needs
- * the same figure to work out where the pin should sit, and a class string it
- * would have to parse is how the two drift apart.
+ * One number, not a set of snaps: the grid is built to fit exactly this, and
+ * the map keeps the other half. Kept here as a fraction as well as a class
+ * because the map needs the same figure to work out where to park the pin,
+ * and a class string it would have to parse is how the two drift apart.
  */
-const SNAP_FRACTION: Record<'peek' | 'half' | 'full', number> = {
-  peek: 0.24,
-  half: 0.58,
-  /**
-   * Was 0.92, which left a four-line sliver of map — too little to put a pin
-   * in and read it. 0.82 still shows the whole panel's content on a phone and
-   * leaves a strip the map can actually use.
-   */
-  full: 0.82
+const SHEET_FRACTION = 0.5;
+
+/** One cell of the bento. Headline first, hedge underneath, never scrolls. */
+const Tile: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  tone?: 'plain' | 'warn' | 'danger';
+  span?: boolean;
+  onClick?: () => void;
+  children: React.ReactNode;
+}> = ({ icon, label, tone = 'plain', span, onClick, children }) => {
+  const toneClass =
+    tone === 'danger'
+      ? 'border-rose-600/50 bg-rose-950/30'
+      : tone === 'warn'
+      ? 'border-amber-600/50 bg-amber-950/25'
+      : 'border-slate-700/60 bg-slate-800/50';
+
+  const body = (
+    <>
+      <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1 shrink-0">
+        {icon}
+        {label}
+      </p>
+      <div className="min-h-0 overflow-hidden mt-0.5">{children}</div>
+    </>
+  );
+
+  const className = `rounded-xl border ${toneClass} px-2.5 py-2 flex flex-col min-h-0 ${
+    span ? 'col-span-2' : ''
+  }`;
+
+  return onClick ? (
+    <button type="button" onClick={onClick} className={`${className} text-left hover:bg-slate-800`}>
+      {body}
+    </button>
+  ) : (
+    <div className={className}>{body}</div>
+  );
 };
+
+/** Five bars, of which the lit ones are an estimate, not a reading. */
+const Bars: React.FC<{ bars: number }> = ({ bars }) => (
+  <span className="flex items-end gap-[2px] h-3" aria-hidden="true">
+    {[1, 2, 3, 4, 5].map((n) => (
+      <span
+        key={n}
+        className={`w-1 rounded-sm ${n <= bars ? 'bg-sky-400' : 'bg-slate-700'}`}
+        style={{ height: `${3 + n * 2}px` }}
+      />
+    ))}
+  </span>
+);
+
+/**
+ * Every one of these is hedged — "likely", "at best" — because the number
+ * behind it is a distance to a mast, not a reading off a phone.
+ */
+const STRENGTH_COPY: Record<string, { label: string; className: string }> = {
+  strong: { label: 'Strong signal likely', className: 'text-emerald-300' },
+  good: { label: 'Usable signal likely', className: 'text-sky-300' },
+  weak: { label: 'Weak signal at best', className: 'text-amber-300' },
+  none: { label: 'Probably no signal', className: 'text-rose-300' }
+};
+
+const clockTime = (date: Date): string =>
+  date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 export const DestinationSheet: React.FC<DestinationSheetProps> = ({
   destination, route, isRouting, originLabel, weather, coverage,
   isLoadingConditions, onClose, onOpenDirections, onOpenDetail,
   onCoverageFractionChange
 }) => {
-  const [snap, setSnap] = useState<'peek' | 'half' | 'full'>('half');
   const [copied, setCopied] = useState(false);
+  /** The one thing that opens on top of the grid: the full warning list. */
+  const [showWarnings, setShowWarnings] = useState(false);
 
   const open = Boolean(destination);
-  const fraction = open ? SNAP_FRACTION[snap] : 0;
+  const fraction = open ? SHEET_FRACTION : 0;
 
   /**
    * Tell the map how much room it has left, whenever that changes.
@@ -108,14 +180,14 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
    * over the bottom edge, so the effect above never gets to report the panel
    * shrinking to nothing. Without this the map would keep parking pins around
    * a panel that is no longer there.
-   *
-   * Kept behind a ref and a mount-only effect on purpose: reporting zero in
-   * the cleanup of the effect above would fire on every resize too, and the
-   * map would jump to centre and back on each snap.
    */
   const reportRef = useRef(onCoverageFractionChange);
   reportRef.current = onCoverageFractionChange;
   useEffect(() => () => reportRef.current?.(0), []);
+
+  // Close the warning list when the pin moves, so the next spot opens on its
+  // own summary rather than on the last spot's drill-down.
+  useEffect(() => { setShowWarnings(false); }, [destination]);
 
   // Hooks first, then the early return — the panel closing must not change how
   // many hooks this component runs.
@@ -124,28 +196,27 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
   const site = destination.campsite;
   const land = destination.land;
   const coords = `${destination.latitude.toFixed(5)}, ${destination.longitude.toFixed(5)}`;
-  const heightClass = snap === 'peek' ? 'h-[24vh]' : snap === 'half' ? 'h-[58vh]' : 'h-[82vh]';
+
+  const alerts = weather.alerts;
+  const overall = coverage.overall;
+  const now = weather.periods[0] ?? null;
+  const arrival = route?.ok ? forecastOnArrival(weather, route.durationMin) : null;
+  const routeWarnings = route?.ok ? route.warnings : [];
+  const worstRouteWarning =
+    routeWarnings.find((w) => w.severity === 'critical') ?? routeWarnings[0] ?? null;
 
   return (
-    <div
-      className={`fixed inset-x-0 bottom-0 z-[1500] ${heightClass}`}
-      style={{ transition: 'height 320ms cubic-bezier(0.16, 1.36, 0.36, 1)' }}
-    >
-      <div className="h-full mx-auto max-w-2xl bg-slate-900 border-t border-x border-slate-700 rounded-t-3xl shadow-2xl flex flex-col overflow-hidden anim-sheet-up">
-        <button
-          onClick={() => setSnap(snap === 'peek' ? 'half' : snap === 'half' ? 'full' : 'peek')}
-          className="w-full pt-2.5 pb-1.5 flex flex-col items-center gap-1 shrink-0 hover:bg-slate-800/40 no-press"
-          aria-label="Resize panel"
-        >
+    <div className="fixed inset-x-0 bottom-0 z-[1500] h-[50vh]">
+      <div className="relative h-full mx-auto max-w-2xl bg-slate-900 border-t border-x border-slate-700 rounded-t-3xl shadow-2xl flex flex-col overflow-hidden anim-sheet-up">
+        <div className="pt-2.5 pb-1 flex justify-center shrink-0">
           <div className="w-10 h-1 rounded-full bg-slate-600" />
-          {snap === 'peek' && <ChevronUp className="w-3 h-3 text-slate-500 animate-pulse" />}
-        </button>
+        </div>
 
         {/* ------------------------------------------------------- header */}
-        <div className="px-4 pb-3 shrink-0">
+        <div className="px-4 pb-2 shrink-0">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[9px] font-bold text-rose-200 uppercase tracking-wide flex items-center gap-1">
                   <MapPin className="w-2.5 h-2.5" />
                   {site ? 'Camper spot' : 'Your pin'}
@@ -158,16 +229,12 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
                 )}
               </div>
 
-              <h2 className="text-base font-bold text-slate-100 truncate">
+              <h2 className="text-base font-bold text-slate-100 truncate mt-0.5">
                 {site ? site.name : land?.name ?? 'This spot'}
               </h2>
-              <p className="text-[11px] text-slate-400 truncate">{coords}</p>
-              {/* Country + state/province under the coords. The user
-                  is reading the lat/lon, then the "what country and
-                  state is that", in that order. Renders nothing while
-                  the lookup is in flight or on a failed lookup
-                  (Mexico, mid-ocean, etc.) so a quiet area is a quiet
-                  line, not a "we don't know" message. */}
+              {/* Coordinates, country and province on one line each, small:
+                  they are reference, not the headline. */}
+              <p className="text-[10px] text-slate-400 truncate">{coords}</p>
               <Admin1Line
                 latitude={destination.latitude}
                 longitude={destination.longitude}
@@ -183,8 +250,7 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
             </button>
           </div>
 
-          {/* Drive summary, sized to be readable in the peek snap. */}
-          <div className="mt-2.5 flex items-center gap-3 text-[11px] text-slate-400 flex-wrap">
+          <div className="mt-1.5 flex items-center gap-2 text-[10px] text-slate-400 flex-wrap">
             {isRouting ? (
               <span className="flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -192,17 +258,15 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
               </span>
             ) : route?.ok ? (
               <>
-                <span className="text-slate-200 font-semibold">
-                  {route.distanceKm} km
-                </span>
+                <span className="text-slate-200 font-semibold">{route.distanceKm} km</span>
                 <span>
                   ~{route.durationMin >= 60
                     ? `${Math.floor(route.durationMin / 60)}h ${route.durationMin % 60}m`
                     : `${route.durationMin}m`}{' '}
                   from {originLabel}
                 </span>
-                {/* The shortfall belongs beside the drive time, not buried in
-                    the warning list — it changes whether the trip is even on. */}
+                {/* The shortfall belongs beside the drive time — it changes
+                    whether the trip is even on. */}
                 {route.gapToDestinationKm > 0.15 && (
                   <span className="text-amber-300 font-semibold">
                     · last{' '}
@@ -219,213 +283,238 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
           </div>
         </div>
 
-        {/* -------------------------------------------------------- body */}
-        {snap !== 'peek' && (
-          <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-4 scroll-soft">
-            {/*
-              Warnings first — safety before scenery.
-
-              The active fire / flood / storm / heat / smoke / cold warnings for
-              THIS point, from the National Weather Service and Environment
-              Canada. On the map they draw as animated, unselectable area
-              overlays; tapping this spot is what brings the detail down here.
-            */}
-            {weather.alerts.length > 0 && (
-              <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                  Active warnings here
-                </h3>
-                <HazardAlertPanel alerts={weather.alerts} compact />
-              </section>
-            )}
-
-            {/*
-              Active fire proximity. Reads from the same fire service
-              the map uses, but the bbox is a small one around this
-              point and the result is filtered to 25 km. The user
-              gets the heads-up regardless of the showFires layer
-              state — the whole point of the layer being a toggle is
-              that the on-map marker is optional, but the safety
-              context on a pin the user is considering is not.
-            */}
-            <NearbyFiresCard
-              latitude={destination.latitude}
-              longitude={destination.longitude}
-            />
-
-            {/*
-              The land, and what it permits.
-
-              Read from the boundary polygon already on screen, which is why
-              its absence means "no polygon covers this point in the data we
-              have loaded" — never "this isn't public land". The app has no
-              coverage at all for most of Canada, and a blank here over
-              Saskatchewan means nothing about Saskatchewan.
-            */}
-            <section>
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                The land here
-              </h3>
-
-              {land ? (
-                <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-3">
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span className="text-xs font-bold text-slate-200">{land.name}</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400">{land.designation}</p>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px] mt-2">
-                    {land.stayLimitDays != null && (
-                      <div>
-                        <span className="text-slate-500">Stay limit</span>
-                        <p className="text-slate-200 font-semibold">{land.stayLimitDays} days</p>
-                      </div>
-                    )}
-                    {land.permitRequired !== undefined && (
-                      <div>
-                        <span className="text-slate-500">Permit</span>
-                        <p className="text-slate-200 font-semibold">
-                          {land.permitRequired
-                            ? land.permitName ?? 'Required'
-                            : 'Not required'}
-                        </p>
-                        {land.permitRequired && land.permitUrl && (
-                          <a
-                            href={land.permitUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[10px] text-sky-400 underline"
-                          >
-                            Get it here
-                          </a>
-                        )}
-                      </div>
-                    )}
-                    {land.campfirePolicy && (
-                      <div className="col-span-2">
-                        <span className="text-slate-500">Fires</span>
-                        <p className="text-slate-200 font-semibold">{land.campfirePolicy}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {land.stayLimitDays == null && land.permitRequired === undefined && (
-                    <p className="text-[10px] text-slate-400 leading-snug mt-2">
-                      No camping rules recorded for this parcel. That does not mean
-                      there are none — check with{' '}
-                      {land.attribution ?? 'the managing agency'} before you stay.
-                    </p>
-                  )}
-
-                  <p className="text-[9px] text-slate-500 mt-2 pt-2 border-t border-slate-700/60 leading-snug">
-                    Approximate boundary — not permission to camp.
-                    {land.attribution ? ` ${land.attribution}` : ''}
-                  </p>
-                </div>
-              ) : (
-                <p className="text-[11px] text-slate-400 rounded-xl border border-slate-700/60 bg-slate-800/50 px-3 py-2.5 leading-snug">
-                  No mapped parcel covers this point. That means we have no data
-                  here, not that the land is private or closed. Zoom in to load
-                  boundaries, and check with the local land manager either way.
-                </p>
-              )}
-            </section>
-
-            <CellCoverageCard coverage={coverage} isLoading={isLoadingConditions} />
-
-            <ArrivalWeatherCard
-              weather={weather}
-              travelMinutes={route?.ok ? route.durationMin : null}
-              originLabel={originLabel}
-              isLoading={isLoadingConditions}
-            />
-
-            {/* Anything the routing engine wants to say about your rig. */}
-            {route?.ok && route.warnings.length > 0 && (
-              <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                  About this route
-                </h3>
-                <div className="space-y-1.5">
-                  {route.warnings.map((w, i) => (
-                    <div
-                      key={i}
-                      data-stagger={Math.min(i, 6)}
-                      className={`rounded-xl border px-3 py-2 flex items-start gap-2 anim-in-up ${
-                        w.severity === 'critical'
-                          ? 'bg-rose-950/50 border-rose-600/50'
-                          : w.severity === 'caution'
-                          ? 'bg-amber-950/40 border-amber-600/40'
-                          : 'bg-slate-800/50 border-slate-700/60'
-                      }`}
-                    >
-                      <TriangleAlert
-                        className={`w-3.5 h-3.5 shrink-0 mt-px ${
-                          w.severity === 'critical'
-                            ? 'text-rose-400'
-                            : w.severity === 'caution'
-                            ? 'text-amber-400'
-                            : 'text-slate-400'
-                        }`}
-                      />
-                      <p className="text-[10px] text-slate-200 leading-snug">{w.message}</p>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            <section className="flex gap-2">
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(coords);
-                  setCopied(true);
-                  haptic('tap');
-                  setTimeout(() => setCopied(false), 2000);
-                }}
-                className="flex-1 px-3 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-slate-700"
-              >
-                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                {copied ? 'Copied' : coords}
-              </button>
-              {onOpenDetail && (
-                <button
-                  onClick={onOpenDetail}
-                  className="px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 hover:bg-slate-700"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  Details
-                </button>
-              )}
-            </section>
-          </div>
-        )}
-
-        {/* ------------------------------------------------- directions */}
+        {/* --------------------------------------------------------- bento */}
         {/*
-          NOT disabled while the route is still being worked out, and not
-          disabled when there is no route at all.
-
-          Those two states are about OUR routing engine, and this button does
-          not use it — it opens the phone's maps app with a coordinate. A
-          camper who can see the pin should always be able to set off towards
-          it. The route only informs the warnings above; it is not a gate on
-          leaving.
+          `auto-rows-fr` is what makes the no-scrolling promise keepable: the
+          rows divide whatever height is left rather than each claiming their
+          content's height, and every tile clips its own overflow. A phone in
+          landscape gets shorter tiles, not a scrollbar.
         */}
-        <div className="px-4 pb-4 pt-2 border-t border-slate-800 shrink-0 bg-slate-900">
+        <div className="flex-1 min-h-0 px-4 pb-2 grid grid-cols-2 auto-rows-fr gap-2 overflow-hidden">
+          {alerts.length > 0 && (
+            <Tile
+              icon={<TriangleAlert className="w-3 h-3" />}
+              label={`${alerts.length} official warning${alerts.length === 1 ? '' : 's'}`}
+              tone="danger"
+              span
+              onClick={() => setShowWarnings(true)}
+            >
+              <p className="text-[11px] font-bold text-rose-100 leading-tight line-clamp-2">
+                {alerts.map((a) => a.event).join(' · ')}
+              </p>
+              <p className="text-[9px] text-rose-300/80 mt-0.5">Tap to read them</p>
+            </Tile>
+          )}
+
+          <NearbyFiresTile
+            latitude={destination.latitude}
+            longitude={destination.longitude}
+          />
+
+          <Tile icon={<Signal className="w-3 h-3" />} label="Cell signal">
+            {isLoadingConditions ? (
+              <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Checking…
+              </p>
+            ) : overall ? (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <Bars bars={overall.bars} />
+                  <span
+                    className={`text-[11px] font-bold leading-tight ${
+                      STRENGTH_COPY[overall.strength].className
+                    }`}
+                  >
+                    {STRENGTH_COPY[overall.strength].label}
+                  </span>
+                </div>
+                {/* Distance to the nearest mast is the whole basis of the
+                    estimate, so it stays on the tile with it. */}
+                <p className="text-[9px] text-slate-500 leading-tight mt-0.5">
+                  Nearest mast {overall.nearestTowerKm} km · straight-line guess,
+                  terrain ignored
+                </p>
+              </>
+            ) : (
+              <p className="text-[10px] text-slate-400 leading-snug">
+                {coverage.note ?? 'No coverage information for this point.'}
+              </p>
+            )}
+          </Tile>
+
+          <Tile icon={<ThermometerSun className="w-3 h-3" />} label="Right now">
+            {isLoadingConditions ? (
+              <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Loading…
+              </p>
+            ) : now ? (
+              <>
+                <p className="text-lg font-bold text-slate-100 leading-none">
+                  {now.temperature}°{now.temperatureUnit}
+                </p>
+                <p className="text-[10px] text-slate-300 leading-tight line-clamp-2">
+                  {now.shortForecast}
+                </p>
+                {now.windSpeed && (
+                  <p className="text-[9px] text-slate-500">Wind {now.windSpeed}</p>
+                )}
+              </>
+            ) : (
+              <p className="text-[10px] text-slate-400 leading-snug">
+                {weather.note ?? 'No forecast for this point.'}
+              </p>
+            )}
+          </Tile>
+
+          <Tile icon={<Clock className="w-3 h-3" />} label="When you arrive">
+            {arrival?.period ? (
+              <>
+                <p className="text-lg font-bold text-slate-100 leading-none">
+                  {arrival.period.temperature}°{arrival.period.temperatureUnit}
+                </p>
+                <p className="text-[10px] text-slate-300 leading-tight line-clamp-2">
+                  {arrival.period.shortForecast}
+                </p>
+                <p className="text-[9px] text-emerald-300/80">
+                  ~{clockTime(arrival.arrivesAt)}
+                  {arrival.isNow ? ' · same slot as now' : ''}
+                </p>
+              </>
+            ) : arrival ? (
+              <p className="text-[10px] text-slate-400 leading-snug">
+                {arrival.note} You'd get in around {clockTime(arrival.arrivesAt)}.
+              </p>
+            ) : (
+              <p className="text-[10px] text-slate-400 leading-snug">
+                Needs a driving time — work out a route first.
+              </p>
+            )}
+          </Tile>
+
+          {/*
+            The land, and what it permits.
+
+            Read from the boundary polygon already on screen, which is why its
+            absence means "no polygon covers this point in the data we have
+            loaded" — never "this isn't public land".
+          */}
+          <Tile icon={<ShieldCheck className="w-3 h-3" />} label="The land here">
+            {land ? (
+              <>
+                <p className="text-[11px] font-bold text-slate-100 leading-tight line-clamp-2">
+                  {land.name}
+                </p>
+                <p className="text-[9px] text-slate-400 leading-tight line-clamp-1">
+                  {[
+                    land.designation,
+                    land.stayLimitDays != null ? `${land.stayLimitDays}-day limit` : null,
+                    land.permitRequired === undefined
+                      ? null
+                      : land.permitRequired
+                      ? land.permitName ?? 'Permit required'
+                      : 'No permit'
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+                <p className="text-[9px] text-slate-500 leading-tight mt-0.5">
+                  Approximate edge — not permission to camp.
+                </p>
+              </>
+            ) : (
+              <p className="text-[10px] text-slate-400 leading-snug line-clamp-3">
+                No mapped parcel here. That is missing data, not private or
+                closed land — check with the local land manager.
+              </p>
+            )}
+          </Tile>
+
+          {worstRouteWarning && (
+            <Tile
+              icon={<TriangleAlert className="w-3 h-3" />}
+              label={
+                routeWarnings.length > 1
+                  ? `Road ahead · ${routeWarnings.length} notes`
+                  : 'Road ahead'
+              }
+              tone={worstRouteWarning.severity === 'critical' ? 'danger' : 'warn'}
+            >
+              <p className="text-[10px] text-slate-200 leading-tight line-clamp-3">
+                {worstRouteWarning.message}
+              </p>
+            </Tile>
+          )}
+        </div>
+
+        {/* ------------------------------------------------------- actions */}
+        <div className="px-4 pb-3 pt-1.5 border-t border-slate-800 shrink-0 bg-slate-900 space-y-1.5">
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(coords);
+                setCopied(true);
+                haptic('tap');
+                setTimeout(() => setCopied(false), 2000);
+              }}
+              className="flex-1 min-w-0 px-2 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold flex items-center justify-center gap-1.5 hover:bg-slate-700"
+            >
+              {copied ? <Check className="w-3 h-3 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
+              <span className="truncate">{copied ? 'Copied' : coords}</span>
+            </button>
+            {onOpenDetail && (
+              <button
+                onClick={onOpenDetail}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold flex items-center gap-1.5 hover:bg-slate-700 shrink-0"
+              >
+                <Eye className="w-3 h-3" />
+                Details
+              </button>
+            )}
+          </div>
+
+          {/*
+            NOT disabled while the route is still being worked out, and not
+            disabled when there is no route at all — this button opens the
+            phone's maps app with a coordinate, which our routing engine has no
+            say in. A camper who can see the pin can always set off towards it.
+          */}
           <button
             onClick={() => { haptic('success'); onOpenDirections(); }}
-            className="w-full px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50"
+            className="w-full px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50"
           >
             <Navigation className="w-4 h-4" />
             Directions in {directionsAppName()}
           </button>
-          <p className="text-[9px] text-slate-500 text-center mt-1.5 leading-snug">
-            Opens your maps app, so it carries through to CarPlay and Android
-            Auto. It won't know about anything above.
-          </p>
         </div>
+
+        {/*
+          The warning list, over the grid rather than inside it.
+
+          Warnings are the one thing here that can run long and must not be
+          summarised away, so they get the whole panel when asked for. This is
+          the only place in the sheet that scrolls, and only after a tap.
+        */}
+        {showWarnings && alerts.length > 0 && (
+          <div className="absolute inset-0 bg-slate-900 rounded-t-3xl flex flex-col anim-in-up">
+            <div className="px-4 py-3 flex items-center gap-2 border-b border-slate-800 shrink-0">
+              <button
+                onClick={() => setShowWarnings(false)}
+                className="p-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white"
+                aria-label="Back to the spot"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                Active warnings here
+              </h3>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 scroll-soft">
+              <HazardAlertPanel alerts={alerts} compact />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

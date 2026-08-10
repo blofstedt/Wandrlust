@@ -67,11 +67,14 @@ const formatSize = (fire: ActiveFire): string => {
 /** How close is "scary" vs. "heads up". Tunable. */
 const TIER_NEAR_KM = 10;
 
-export const NearbyFiresCard: React.FC<NearbyFiresCardProps> = ({
-  latitude,
-  longitude,
-  radiusKm = 25
-}) => {
+/**
+ * The fetch, shared by both renderings below.
+ *
+ * Debounced 250 ms, refetched on every pin change with a padded bbox, and the
+ * in-flight request is cancelled on the next change so a slow older fetch
+ * cannot overwrite a newer one.
+ */
+const useNearbyFires = (latitude: number, longitude: number, radiusKm: number) => {
   const [loading, setLoading] = useState(false);
   const [fires, setFires] = useState<Array<{ fire: ActiveFire; distanceKm: number }>>([]);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +112,90 @@ export const NearbyFiresCard: React.FC<NearbyFiresCardProps> = ({
       clearTimeout(timer);
     };
   }, [latitude, longitude, radiusKm]);
+
+  return { loading, fires, error };
+};
+
+/**
+ * The same answer, sized for the destination sheet's bento grid.
+ *
+ * Shares the fetch rules above but renders one tile instead of a list: the
+ * closest fire, in words, because on a half-screen panel the second-closest
+ * fire is not what decides anything. Renders nothing at all when there are no
+ * fires nearby — a tile saying "no fires" would be claiming a clean bill of
+ * health that a 25 km bbox query cannot give. A failed lookup does get a tile,
+ * because "we couldn't check" and "nothing found" must not look the same.
+ */
+export const NearbyFiresTile: React.FC<NearbyFiresCardProps> = ({
+  latitude,
+  longitude,
+  radiusKm = 25
+}) => {
+  const { loading, fires, error } = useNearbyFires(latitude, longitude, radiusKm);
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 px-2.5 py-2 flex flex-col min-h-0">
+        <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+          <Flame className="w-3 h-3" />
+          Active fires
+        </p>
+        <p className="text-[11px] text-slate-400 mt-0.5">Checking…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 px-2.5 py-2 flex flex-col min-h-0">
+        <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+          <Flame className="w-3 h-3" />
+          Active fires
+        </p>
+        <p className="text-[10px] text-slate-400 leading-snug mt-0.5 line-clamp-3">
+          Couldn't check the fire feeds just now — this is not an all-clear.
+        </p>
+      </div>
+    );
+  }
+
+  if (fires.length === 0) return null;
+
+  const closest = fires[0];
+  const near = closest.distanceKm <= TIER_NEAR_KM;
+
+  return (
+    <div
+      className={`rounded-xl border px-2.5 py-2 flex flex-col min-h-0 ${
+        near ? 'border-red-500/60 bg-red-950/30' : 'border-amber-500/50 bg-amber-950/20'
+      }`}
+    >
+      <p
+        className={`text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${
+          near ? 'text-red-300' : 'text-amber-300'
+        }`}
+      >
+        {near ? <TriangleAlert className="w-3 h-3" /> : <Flame className="w-3 h-3" />}
+        {fires.length > 1 ? `${fires.length} active fires` : 'Active fire'}
+      </p>
+      <p className="text-[11px] font-bold text-slate-100 leading-tight mt-0.5">
+        {formatKm(closest.distanceKm)} away
+      </p>
+      <p className="text-[9px] text-slate-300 leading-tight line-clamp-2">
+        {closest.fire.name}
+        {formatSize(closest.fire) && ` · ${formatSize(closest.fire)}`}
+        {closest.fire.status && ` · ${closest.fire.status}`}
+      </p>
+    </div>
+  );
+};
+
+export const NearbyFiresCard: React.FC<NearbyFiresCardProps> = ({
+  latitude,
+  longitude,
+  radiusKm = 25
+}) => {
+  const { loading, fires, error } = useNearbyFires(latitude, longitude, radiusKm);
 
   // Don't render anything if there are no fires and we're not loading
   // and there was no error. A blank section is just noise.
