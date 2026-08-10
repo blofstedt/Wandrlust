@@ -428,7 +428,6 @@
    wrong with it still twitched at you and the fire had no way to stand out
    from the fee. Static bad news keeps its colour and holds still. */
 .wl-dot-urgent { animation: wl-dot-breathe 1.8s var(--ease-standard) infinite; }
-.wl-dot-more { opacity: 0.85; }
 
 @keyframes wl-dot-breathe {
   0%, 100% { transform: scale(1); opacity: 1; }
