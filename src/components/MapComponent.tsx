@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 import type {
-  Campsite, DestinationLand, MapDestination, MapTileLayer, NearbyFacility
+  Campsite, CellCoverage, DestinationLand, MapDestination, MapTileLayer, NearbyFacility
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
@@ -22,7 +22,7 @@ import {
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import {
-  fetchActiveFires, findFiresNear, boxAround, FIRE_ALERT_RADIUS_KM, ActiveFire
+  fetchActiveFires, findFiresNear, boxAround, isUnderControl, FIRE_ALERT_RADIUS_KM, ActiveFire
 } from '../services/fireService';
 import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
 import { isOnLand, primeLandMask } from '../services/landService';
@@ -35,8 +35,8 @@ import {
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
-  MarkerDot, amenityDots, facilityDots, fireDots, hazardDots, COLLAPSED_DOT_LIMIT,
-  FACILITY_COLOR
+  MarkerDot, amenityDots, conditionDots, facilityDots, fireDots, hazardDots,
+  COLLAPSED_DOT_LIMIT, FACILITY_COLOR
 } from '../utils/amenityDots';
 import {
   fetchNearbyFacilities, FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM
@@ -49,7 +49,7 @@ import {
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
-  fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts
+  fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts, WeatherSnapshot
 } from '../services/weatherService';
 import { prefersReducedMotion } from '../utils/animation';
 
@@ -260,22 +260,68 @@ const expandedDotRow = (dots: MarkerDot[]): string => {
   const chips = dots
     .map((d, i) => {
       const go = d.facility;
+      const tappable = Boolean(go) || Boolean(d.action);
       return (
         `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
-        `${go ? ' wl-chip-go' : ''}" ` +
-        `${go ? `data-facility="${escapeHtml(go.id)}" role="button" tabindex="0" ` : ''}` +
+        `${tappable ? ' wl-chip-go' : ''}" ` +
+        `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
+        `${d.action ? `data-action="${d.action}" ` : ''}` +
+        `${tappable ? 'role="button" tabindex="0" ' : ''}` +
         `style="--wl-chip-color:${d.color};animation-delay:${i * 26}ms">` +
         `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
         `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
         `${escapeHtml(d.label)}` +
-        `${go ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
+        `${tappable ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
       );
     })
     .join('');
   return `<div class="wl-chips">${chips}</div>`;
 };
 
-const buildCampsiteIcon = (isSelected: boolean, dots: MarkerDot[] = []): L.DivIcon => {
+const NAV_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">' +
+  '<path d="M3 11 22 2l-9 19-2-8-8-2z"/></svg>';
+
+const CLOSE_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" ' +
+  'stroke-linecap="round" style="width:12px;height:12px">' +
+  '<path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+/** "Google Maps" or "Apple Maps" — the phone's own app, named on the button. */
+const DIRECTIONS_LABEL = directionsAppName();
+
+/**
+ * The two things you can DO with the open pin, directly under it.
+ *
+ * They used to live in the footer of a panel over the bottom half of the
+ * screen. Under the pin they are where the thumb already is and, more to the
+ * point, they are attached to the thing they act on — tapping "take me there"
+ * three pins into a browse can no longer mean the pin you were last reading
+ * about rather than the one you are looking at.
+ */
+const pinActionsRow = (
+  label: string,
+  secondary?: { action: 'add' | 'details'; label: string }
+): string =>
+  `<div class="wl-pin-actions">` +
+  `<span class="wl-pin-action wl-pin-action-go" data-action="directions" ` +
+  `role="button" tabindex="0" title="${escapeHtml(label)}">` +
+  `${NAV_SVG}${escapeHtml(label)}</span>` +
+  (secondary
+    ? `<span class="wl-pin-action" data-action="${secondary.action}" ` +
+      `role="button" tabindex="0">${escapeHtml(secondary.label)}</span>`
+    : '') +
+  `<span class="wl-pin-action wl-pin-action-close" data-action="close" ` +
+  `role="button" tabindex="0" aria-label="Close this spot" title="Close">` +
+  `${CLOSE_SVG}</span>` +
+  `</div>`;
+
+const buildCampsiteIcon = (
+  isSelected: boolean,
+  dots: MarkerDot[] = [],
+  directionsLabel?: string
+): L.DivIcon => {
   const row = dots.length
     ? (isSelected ? expandedDotRow(dots) : collapsedDotRow(dots))
     : '';
@@ -286,6 +332,9 @@ const buildCampsiteIcon = (isSelected: boolean, dots: MarkerDot[] = []): L.DivIc
       `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}">` +
       row +
       `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
+      `${isSelected && directionsLabel
+        ? pinActionsRow(directionsLabel, { action: 'details', label: 'Details' })
+        : ''}` +
       `</div>`,
     iconSize: [32, 32],
     iconAnchor: [16, 16]
@@ -343,12 +392,19 @@ const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
  * warnings over it, a fire burning near it, a toilet up the road — is stacked
  * above the pin in words, the same as it is above a spot somebody submitted.
  */
-const buildDestinationIcon = (dots: MarkerDot[] = []): L.DivIcon =>
+const buildDestinationIcon = (
+  dots: MarkerDot[] = [],
+  directionsLabel?: string,
+  addLabel?: string
+): L.DivIcon =>
   L.divIcon({
     className: 'destination-marker',
     html: `
       <div class="relative flex items-end justify-center anim-pin-drop">
         ${dots.length ? expandedDotRow(dots) : ''}
+        ${directionsLabel
+          ? pinActionsRow(directionsLabel, addLabel ? { action: 'add', label: addLabel } : undefined)
+          : ''}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
           <path d="M12 1c5.2 0 9.4 4.2 9.4 9.4 0 6.8-9.4 20.6-9.4 20.6S2.6 17.2 2.6 10.4C2.6 5.2 6.8 1 12 1z"
@@ -675,12 +731,21 @@ interface MapComponentProps {
   /** The pin the user dropped, or the site they selected. Null when neither. */
   destination: MapDestination | null;
   /**
-   * How much of the screen a panel over the map is covering, 0–1.
+   * Conditions at that point, fetched by App and shown as chips on the pin.
    *
-   * Drives where the destination pin is parked — see the effect that reads it.
-   * Zero when nothing is over the map.
+   * The map does not fetch these itself because the list view asks the same
+   * question about the same point, and two owners means two requests.
    */
-  bottomCoverFraction?: number;
+  weather: WeatherSnapshot;
+  coverage: CellCoverage;
+  /** The drive to that point, or null while it is being worked out. */
+  route: RouteResult | null;
+  /** Hands the drive to Apple or Google Maps. See `src/utils/handoff.ts`. */
+  onOpenDirections: () => void;
+  /** Lets the open pin go, and gives the camera back. */
+  onClearDestination: () => void;
+  /** Starts a submission at the dropped pin. Bare ground only. */
+  onAddSpotHere: (lat: number, lon: number) => void;
   /** Fired when the user taps bare map. Carries the land under the tap. */
   onDropDestination: (lat: number, lon: number, land?: DestinationLand) => void;
   /**
@@ -720,11 +785,11 @@ const clusterView = (map: L.Map): L.Map =>
   });
 
 export const MapComponent: React.FC<MapComponentProps> = ({
-  campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation,
+  campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation, weather,
+  coverage, route, onOpenDirections, onClearDestination, onAddSpotHere,
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
-  destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert,
-  bottomCoverFraction = 0
+  destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -807,6 +872,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   reportTapRef.current = onSelectHazardReport;
   const alertTapRef = useRef(onSelectAlert);
   alertTapRef.current = onSelectAlert;
+  const directionsRef = useRef(onOpenDirections);
+  directionsRef.current = onOpenDirections;
+  const clearDestinationRef = useRef(onClearDestination);
+  clearDestinationRef.current = onClearDestination;
+  const addSpotRef = useRef(onAddSpotHere);
+  addSpotRef.current = onAddSpotHere;
+  const detailRef = useRef(onOpenDetailModal);
+  detailRef.current = onOpenDetailModal;
+  const destinationRef = useRef(destination);
+  destinationRef.current = destination;
+
+  /** Weather, signal and land for the open point, as chips. */
+  const conditions = React.useMemo(
+    () => conditionDots(weather, coverage, destination?.land, route),
+    [weather, coverage, destination?.land, route]
+  );
+  const conditionsRef = useRef(conditions);
+  conditionsRef.current = conditions;
+
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -872,6 +956,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const readLat = destination?.latitude ?? null;
   const readLon = destination?.longitude ?? null;
+  /** The same point, for the callbacks that run outside React's render. */
+  const readPointRef = useRef<{ lat: number; lon: number } | null>(null);
+  readPointRef.current =
+    readLat === null || readLon === null ? null : { lat: readLat, lon: readLon };
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -2018,119 +2106,62 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const dots = [
       ...hazardDots(badgesForPoint(destination.latitude, destination.longitude, hazards)),
       ...fireDots(nearbyFires),
+      ...conditions,
       ...facilityDots(facilities)
     ];
 
     destinationMarkerRef.current = L.marker(
       [destination.latitude, destination.longitude],
-      { icon: buildDestinationIcon(dots), title: 'Your chosen spot', zIndexOffset: 900 }
+      {
+        icon: buildDestinationIcon(
+          dots,
+          DIRECTIONS_LABEL,
+          // Only bare ground can become a new spot: a pin that is already a
+          // campsite is one somebody has submitted.
+          destination.campsite ? undefined : 'Add spot here'
+        ),
+        title: 'Your chosen spot',
+        zIndexOffset: 900
+      }
     ).addTo(map);
 
     return clear;
-  }, [destination, isMapReady, hazards, nearbyFires, facilities]);
+  }, [destination, isMapReady, hazards, nearbyFires, facilities, conditions]);
 
   /**
-   * Park the pin in the map you can still see.
+   * The open pin sits dead centre.
    *
-   * ---------------------------------------------------------------------
-   * THE BUG THIS FIXES
-   * ---------------------------------------------------------------------
+   * It used to be parked in the strip of map left over above a half-screen
+   * panel, because the panel described the pin and covered it at the same
+   * time. There is no panel any more — everything it said is on the pin — so
+   * the pin gets the middle of the screen, which is where a camper looks.
    *
-   * You tapped a spot, the detail panel slid up over the bottom half of the
-   * screen, and the panel covered the thing you had just tapped. Opening the
-   * panel further to read it buried the pin completely. The app's answer to
-   * "what is here?" was to hide "here".
-   *
-   * So the pin is not centred in the WINDOW, it is centred in what is left of
-   * the map: the strip between the status chips at the top and the top edge of
-   * the panel. As the panel is resized between its snaps the pin slides to
-   * follow, which also makes the relationship obvious — the map is getting out
-   * of the panel's way rather than being covered by it.
-   *
-   * THE MATHS, since it is easy to get backwards. Panning is a pure
-   * translation, so the screen-space gap between two points survives it. Pick
-   * the coordinate Q sitting `(centre − target)` pixels BELOW the pin right
-   * now; make Q the new centre; the pin lands exactly on the target row.
+   * Tapping a submitted spot also moves the camera IN, once per selection, so
+   * the chips that just unfolded have room and the roads into the spot are
+   * drawn. Only ever in, never out: the zoom you chose to browse at is yours.
+   * The view being borrowed is remembered here and flown back to when the pin
+   * is closed — see the effect below.
    */
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapReady || !destination) return;
 
-    /**
-     * Wait for the panel to finish growing before measuring around it.
-     *
-     * Its height is a 320 ms CSS transition; panning against the height it is
-     * about to have, rather than the one it has, lands the pin in the right
-     * place first time instead of chasing it.
-     */
+    // A beat, so the chips are laid out and Leaflet has the marker on screen
+    // before the camera measures anything.
     const timer = setTimeout(() => {
       try {
-        const size = map.getSize();
-        const covered = Math.min(Math.max(bottomCoverFraction, 0), 0.95) * size.y;
-
-        // The status chips and layer buttons, plus a little air. Anything under
-        // this is technically visible and practically behind a control.
-        const TOP_CHROME_PX = 64;
-        const bottomEdge = size.y - covered;
-        const band = bottomEdge - TOP_CHROME_PX;
-
-        // Nothing usable left to aim at. Better to leave the view alone than to
-        // shove the pin under a control.
-        if (band < 80) return;
-
-        /**
-         * The middle of the strip, and nothing else.
-         *
-         * It used to aim 14 px low, on the theory that the pin's chips hang
-         * above the coordinate and needed the headroom. In practice that read
-         * as the pin sitting off-centre in its half of the screen, which is
-         * the one thing a camper can measure by eye. Dead centre it is; the
-         * clamp only stops the pin from sliding under the top controls on a
-         * very short strip. Horizontally there is nothing to correct — the
-         * card is full-width on a phone and centred on a desktop, so the
-         * remaining map is symmetrical and the map's own centre is its middle.
-         */
-        const targetY = Math.min(
-          Math.max(bottomEdge / 2, TOP_CHROME_PX + 24),
-          bottomEdge - 12
-        );
-
-        /**
-         * Tapping a pin also moves the camera IN.
-         *
-         * A tapped pin has just unfolded its dots into a stack of labelled
-         * chips, and at the zoom you were browsing at those chips overlap
-         * the pins around them. Closing in gives the expanded pin the room
-         * it needs and answers the question the tap asked — "what is this
-         * place?" — with the ground around it, not just a card.
-         *
-         * Only ever in, never out: the zoom you chose to browse at is yours,
-         * and yanking the view back out from under a camper who had zoomed
-         * to a road junction would be worse than not moving at all. And only
-         * once per selection, so dragging the panel between its snaps
-         * afterwards re-parks the pin without re-zooming.
-         *
-         * The view being left behind is remembered here and flown back to
-         * when the spot is closed — see the effect below. Borrowing the
-         * camera is fine; keeping it is not.
-         */
         const first = focusedDestRef.current !== destination;
         focusedDestRef.current = destination;
         const zoomTo = first && destination.campsite
           ? Math.max(map.getZoom(), CAMPSITE_FOCUS_ZOOM)
           : map.getZoom();
 
-        // Projected at the zoom we are GOING to, not the one we are at:
-        // the pixel offset that parks the pin above the panel is only
-        // correct in the scale it is measured in.
-        const pin = map.project([destination.latitude, destination.longitude], zoomTo);
-        const centre = map.unproject(
-          pin.add(L.point(0, size.y / 2 - targetY)),
-          zoomTo
-        );
+        const centre = L.latLng(destination.latitude, destination.longitude);
 
         // Already close enough that moving would just look twitchy.
-        const shift = map.latLngToContainerPoint(centre).distanceTo(map.getSize().divideBy(2));
+        const shift = map
+          .latLngToContainerPoint(centre)
+          .distanceTo(map.getSize().divideBy(2));
         if (shift < 8 && zoomTo === map.getZoom()) return;
 
         // Remember where we were, once per focus, immediately before moving.
@@ -2149,10 +2180,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }, 70);
 
     return () => clearTimeout(timer);
-    // `destination` identity changes when the user picks somewhere new, which
-    // is exactly when this should re-run. A manual pan afterwards is left
-    // alone — nothing here depends on the map's own move events.
-  }, [destination, bottomCoverFraction, isMapReady]);
+  }, [destination, isMapReady]);
 
   /**
    * Closing the card gives the camera back.
@@ -2916,17 +2944,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const iconForId = useCallback((id: string) => {
     const isSelected = selectedIdRef.current === id;
-    return buildCampsiteIcon(isSelected, [
-      ...hazardDots(badgesByIdRef.current.get(id) ?? []),
-      // A fire burning up the valley, for the open pin only — it is one
-      // request per selection, and it is where the map's flame layer went.
-      ...(isSelected ? fireDots(nearbyFiresRef.current) : []),
-      ...(amenityDotsRef.current.get(id) ?? []),
-      // Facilities up the road belong to the open pin only — they are the
-      // one part of the row you can tap through to, and they are only
-      // looked up for the spot being read.
-      ...(isSelected ? facilityDots(facilitiesRef.current) : [])
-    ]);
+    return buildCampsiteIcon(
+      isSelected,
+      [
+        ...hazardDots(badgesByIdRef.current.get(id) ?? []),
+        // A fire burning up the valley, for the open pin only — it is one
+        // request per selection, and it is where the map's flame layer went.
+        ...(isSelected ? fireDots(nearbyFiresRef.current) : []),
+        // Weather, signal and the land under it: also the open pin only,
+        // because App fetches them for the point that is open.
+        ...(isSelected ? conditionsRef.current : []),
+        ...(amenityDotsRef.current.get(id) ?? []),
+        // Facilities up the road belong to the open pin only — they are the
+        // one part of the row you can tap through to, and they are only
+        // looked up for the spot being read.
+        ...(isSelected ? facilityDots(facilitiesRef.current) : [])
+      ],
+      isSelected ? DIRECTIONS_LABEL : undefined
+    );
   }, []);
 
   // Rebuilt only when the campsite list changes. Selection is handled
@@ -3128,14 +3163,115 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     markersRef.current.get(id)?.setIcon(iconForId(id));
   }, [nearbyFires, iconForId]);
 
+  // And for the conditions, which arrive from App a moment after the tap.
+  useEffect(() => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    markersRef.current.get(id)?.setIcon(iconForId(id));
+  }, [conditions, iconForId]);
+
   /**
-   * A tap on a facility chip.
+   * Tapping the fire chip: go and look, then come back.
+   *
+   * The chip says "3 active fires, nearest 21 km away", and the next question
+   * is always the same one — WHERE, and are they out? So the camera pulls out
+   * far enough to hold the spot and the fires in one frame, then names them
+   * one at a time, each label popping in over its own flame so it is obvious
+   * which fire is being talked about. Then it puts the camera back exactly
+   * where it found it.
+   *
+   * The labels quote the agency's own reading and nothing more: "reported
+   * under control" is never shortened to "out", and a fire with no status
+   * from the feed says so rather than being assumed to be running.
+   */
+  const tourRunningRef = useRef(false);
+  const tourLayerRef = useRef<L.LayerGroup | null>(null);
+
+  const runFireTour = useCallback(async () => {
+    const map = mapRef.current;
+    const point = readPointRef.current;
+    const near = nearbyFiresRef.current;
+    if (!map || !point || !near.length || tourRunningRef.current) return;
+
+    tourRunningRef.current = true;
+    const reduced = prefersReducedMotion();
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, reduced ? ms / 3 : ms));
+    const home = { center: map.getCenter(), zoom: map.getZoom() };
+    // Five is as many labels as fit on a phone before they stack on top of
+    // each other; the rest are still counted on the chip.
+    const shown = near.slice(0, 5);
+
+    const layer = L.layerGroup().addTo(map);
+    tourLayerRef.current = layer;
+
+    try {
+      const bounds = L.latLngBounds([point.lat, point.lon] as L.LatLngExpression, [
+        point.lat, point.lon
+      ] as L.LatLngExpression);
+      shown.forEach((n) => bounds.extend([n.fire.centroid.lat, n.fire.centroid.lon]));
+
+      map.fitBounds(bounds, {
+        padding: L.point(70, 90),
+        maxZoom: 11,
+        animate: !reduced
+      });
+      await wait(750);
+
+      for (const { fire, distanceKm } of shown) {
+        if (!tourLayerRef.current) return;
+        const held = isUnderControl(fire);
+        const status = fire.status?.trim()
+          ? fire.status
+          : held
+          ? 'Reported under control'
+          : 'Not reported under control';
+
+        L.marker([fire.centroid.lat, fire.centroid.lon], {
+          icon: L.divIcon({
+            className: 'wl-fire-stop',
+            html:
+              `<div class="wl-fire-stop-wrap">` +
+              `<span class="wl-fire-stop-label${held ? '' : ' wl-fire-stop-label-hot'}">` +
+              `${escapeHtml(status)}` +
+              `<em>${escapeHtml(fire.name)} · ${distanceKm.toFixed(1)} km away</em>` +
+              `</span>` +
+              `<span class="wl-fire-stop-glyph" aria-hidden="true">🔥</span>` +
+              `</div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15]
+          }),
+          interactive: false,
+          zIndexOffset: 800
+        }).addTo(layer);
+
+        await wait(850);
+      }
+
+      await wait(900);
+    } finally {
+      layer.remove();
+      tourLayerRef.current = null;
+      try {
+        if (reduced) map.setView(home.center, home.zoom, { animate: false });
+        else map.flyTo(home.center, home.zoom, { duration: 0.8 });
+      } catch { /* map torn down */ }
+      tourRunningRef.current = false;
+    }
+  }, []);
+
+  // A tour still running when the map goes away would keep adding flames to a
+  // layer nobody can see, and then fly a torn-down camera home.
+  useEffect(() => () => { tourLayerRef.current?.remove(); tourLayerRef.current = null; }, []);
+
+  /**
+   * A tap on something the open pin offers: a facility chip, the fire chip,
+   * the directions button, or the close button.
    *
    * Delegated from the map container in the CAPTURE phase, which is the only
-   * place it works: the chips live inside a marker's icon, so Leaflet's own
-   * marker handler would otherwise see the tap first and re-select the pin.
-   * Bound once for the life of the map and reads the facility list through a
-   * ref, so it never needs rebinding.
+   * place it works: these live inside a marker's icon, so Leaflet's own marker
+   * handler would otherwise see the tap first and re-select the pin. Bound
+   * once for the life of the map and reads everything through refs, so it
+   * never needs rebinding.
    */
   useEffect(() => {
     const map = mapRef.current;
@@ -3144,21 +3280,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const onTap = (event: Event) => {
       const target = event.target as HTMLElement | null;
-      const chip = target?.closest?.('[data-facility]') as HTMLElement | null;
-      if (!chip) return;
+      const hit = target?.closest?.('[data-facility],[data-action]') as HTMLElement | null;
+      if (!hit) return;
 
-      const id = chip.getAttribute('data-facility');
-      const facility = facilitiesRef.current.find((f) => f.id === id);
-      if (!facility) return;
+      const action = hit.getAttribute('data-action');
+      const facilityId = hit.getAttribute('data-facility');
+      const facility = facilityId
+        ? facilitiesRef.current.find((f) => f.id === facilityId)
+        : undefined;
+      if (!action && !facility) return;
 
       event.preventDefault();
       event.stopPropagation();
-      setFacilityTrip({ facility, route: null, loading: true });
+
+      if (facility) setFacilityTrip({ facility, route: null, loading: true });
+      else if (action === 'fires') void runFireTour();
+      else if (action === 'directions') directionsRef.current();
+      else if (action === 'close') clearDestinationRef.current();
+      else if (action === 'details' && destinationRef.current?.campsite) {
+        detailRef.current(destinationRef.current.campsite);
+      } else if (action === 'add') {
+        const at = readPointRef.current;
+        if (at) addSpotRef.current(at.lat, at.lon);
+      }
     };
 
     container.addEventListener('click', onTap, true);
     return () => container.removeEventListener('click', onTap, true);
-  }, [isMapReady]);
+  }, [isMapReady, runFireTour]);
 
   /**
    * Frame the spot and the facility together, then ask for a route.
@@ -3178,12 +3327,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       [readLat, readLon],
       [tripFacility.latitude, tripFacility.longitude]
     );
-    const covered = Math.min(Math.max(bottomCoverFraction, 0), 0.9) * map.getSize().y;
-
     try {
       map.fitBounds(bounds, {
         paddingTopLeft: L.point(48, 80),
-        paddingBottomRight: L.point(48, covered + 120),
+        // Room at the bottom for the trip card, which sits over the map.
+        paddingBottomRight: L.point(48, 180),
         maxZoom: 15,
         animate: !prefersReducedMotion()
       });
@@ -3213,7 +3361,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
     // Deliberately keyed on the facility, not on the trip: the route landing
     // must not re-frame the map or ask for the route again.
-  }, [tripFacility, readLat, readLon, isMapReady, bottomCoverFraction]);
+  }, [tripFacility, readLat, readLon, isMapReady]);
 
   /**
    * The line to the facility, and a dot on the facility itself.
@@ -3443,10 +3591,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         than left for the camper to discover at the trailhead.
       */}
       {facilityTrip && readLat !== null && readLon !== null && (
-        <div
-          className="absolute left-1/2 -translate-x-1/2 z-[1400] w-[min(23rem,calc(100%-1.5rem))] anim-in-up"
-          style={{ bottom: `calc(${Math.min(Math.max(bottomCoverFraction, 0), 0.9) * 100}% + 12px)` }}
-        >
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[1400] w-[min(23rem,calc(100%-1.5rem))] anim-in-up">
           <div
             className="rounded-2xl bg-slate-900/96 backdrop-blur-md border shadow-2xl px-3 py-2.5"
             style={{ borderColor: FACILITY_COLOR[facilityTrip.facility.kind] }}
