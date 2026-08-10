@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
@@ -252,22 +252,35 @@ const escapeHtml = (s: string): string => s
 /**
  * Tapped: the same dots, each grown into the fact it stood for.
  *
- * A chip carrying a facility is a button rather than a label — it is
- * somewhere you can go, so it opts back into pointer events and carries the
- * facility id for the click handler on the marker.
+ * The chip is short — a glyph and two or three words — and the whole hedged
+ * sentence rides along in `title`, so the caveats are a press away without a
+ * paragraph lying across the map.
+ *
+ * A chip carrying a facility, or an action, is a button rather than a label —
+ * it is somewhere you can go, so it opts back into pointer events and carries
+ * the id for the delegated click handler.
+ *
+ * ONE ANIMATION FOR THE WHOLE ROW, not one per chip. The row is rebuilt every
+ * time a lookup lands (fires, then conditions, then facilities, each
+ * arriving on its own schedule), and a per-chip staggered entrance meant the
+ * chips already on screen restarted their slide from the bottom three or four
+ * times over — the popcorn effect. The row now fades up once, as a unit, and
+ * the container is what carries the animation.
  */
-const expandedDotRow = (dots: MarkerDot[]): string => {
+const expandedDotRow = (dots: MarkerDot[], animate: boolean): string => {
   const chips = dots
-    .map((d, i) => {
+    .map((d) => {
       const go = d.facility;
       const tappable = Boolean(go) || Boolean(d.action);
+      const full = d.full ?? d.label;
       return (
         `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
         `${tappable ? ' wl-chip-go' : ''}" ` +
         `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
         `${d.action ? `data-action="${d.action}" ` : ''}` +
         `${tappable ? 'role="button" tabindex="0" ' : ''}` +
-        `style="--wl-chip-color:${d.color};animation-delay:${i * 26}ms">` +
+        `title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}" ` +
+        `style="--wl-chip-color:${d.color}">` +
         `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
         `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
         `${escapeHtml(d.label)}` +
@@ -275,13 +288,23 @@ const expandedDotRow = (dots: MarkerDot[]): string => {
       );
     })
     .join('');
-  return `<div class="wl-chips">${chips}</div>`;
+  return `<div class="wl-chips${animate ? ' wl-chips-in' : ''}">${chips}</div>`;
 };
 
 const NAV_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
   'stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">' +
   '<path d="M3 11 22 2l-9 19-2-8-8-2z"/></svg>';
+
+const INFO_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" style="width:12px;height:12px">' +
+  '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.2"/></svg>';
+
+const PLUS_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" ' +
+  'stroke-linecap="round" style="width:12px;height:12px">' +
+  '<path d="M12 5v14M5 12h14"/></svg>';
 
 const CLOSE_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" ' +
@@ -302,15 +325,16 @@ const DIRECTIONS_LABEL = directionsAppName();
  */
 const pinActionsRow = (
   label: string,
-  secondary?: { action: 'add' | 'details'; label: string }
+  secondary?: { action: 'add' | 'details'; label: string; glyph: string }
 ): string =>
   `<div class="wl-pin-actions">` +
   `<span class="wl-pin-action wl-pin-action-go" data-action="directions" ` +
-  `role="button" tabindex="0" title="${escapeHtml(label)}">` +
-  `${NAV_SVG}${escapeHtml(label)}</span>` +
+  `role="button" tabindex="0" title="Open in ${escapeHtml(label)}" ` +
+  `aria-label="Open in ${escapeHtml(label)}">${NAV_SVG}Go</span>` +
   (secondary
     ? `<span class="wl-pin-action" data-action="${secondary.action}" ` +
-      `role="button" tabindex="0">${escapeHtml(secondary.label)}</span>`
+      `role="button" tabindex="0" title="${escapeHtml(secondary.label)}" ` +
+      `aria-label="${escapeHtml(secondary.label)}">${secondary.glyph}</span>`
     : '') +
   `<span class="wl-pin-action wl-pin-action-close" data-action="close" ` +
   `role="button" tabindex="0" aria-label="Close this spot" title="Close">` +
@@ -320,10 +344,12 @@ const pinActionsRow = (
 const buildCampsiteIcon = (
   isSelected: boolean,
   dots: MarkerDot[] = [],
-  directionsLabel?: string
+  directionsLabel?: string,
+  /** True only when the pin has just been opened. See `refreshIcon`. */
+  animate = false
 ): L.DivIcon => {
   const row = dots.length
-    ? (isSelected ? expandedDotRow(dots) : collapsedDotRow(dots))
+    ? (isSelected ? expandedDotRow(dots, animate) : collapsedDotRow(dots))
     : '';
 
   return L.divIcon({
@@ -333,7 +359,9 @@ const buildCampsiteIcon = (
       row +
       `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
       `${isSelected && directionsLabel
-        ? pinActionsRow(directionsLabel, { action: 'details', label: 'Details' })
+        ? pinActionsRow(directionsLabel, {
+          action: 'details', label: 'Everything recorded about this spot', glyph: INFO_SVG
+        })
         : ''}` +
       `</div>`,
     iconSize: [32, 32],
@@ -395,15 +423,19 @@ const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
 const buildDestinationIcon = (
   dots: MarkerDot[] = [],
   directionsLabel?: string,
-  addLabel?: string
+  addLabel?: string,
+  animate = false
 ): L.DivIcon =>
   L.divIcon({
     className: 'destination-marker',
     html: `
       <div class="relative flex items-end justify-center anim-pin-drop">
-        ${dots.length ? expandedDotRow(dots) : ''}
+        ${dots.length ? expandedDotRow(dots, animate) : ''}
         ${directionsLabel
-          ? pinActionsRow(directionsLabel, addLabel ? { action: 'add', label: addLabel } : undefined)
+          ? pinActionsRow(
+            directionsLabel,
+            addLabel ? { action: 'add', label: addLabel, glyph: PLUS_SVG } : undefined
+          )
           : ''}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
@@ -795,6 +827,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const stageRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
+  /** The HTML each marker's icon was last given, so a no-op swap is skipped. */
+  const iconHtmlRef = useRef<Map<string, string>>(new Map());
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
   /** `mapRef.current` seen through `clusterView`; the cluster group's map. */
   const clusterViewRef = useRef<L.Map | null>(null);
@@ -2084,6 +2118,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * is already on the map and is highlighted instead, so a teardrop on top of
    * it would just be two markers claiming one spot.
    */
+  const destinationHtmlRef = useRef('');
+  const destinationDots = useMemo(() => {
+    if (!destination || destination.campsite) return [];
+    return [
+      ...hazardDots(badgesForPoint(destination.latitude, destination.longitude, hazards)),
+      ...fireDots(nearbyFires),
+      ...conditions,
+      ...facilityDots(facilities)
+    ];
+  }, [destination, hazards, nearbyFires, conditions, facilities]);
+  const destinationDotsRef = useRef(destinationDots);
+  destinationDotsRef.current = destinationDots;
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapReady) return;
@@ -2092,33 +2139,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (!destinationMarkerRef.current) return;
       try { map.removeLayer(destinationMarkerRef.current); } catch { /* detached */ }
       destinationMarkerRef.current = null;
+      destinationHtmlRef.current = '';
     };
 
     clear();
     if (!destination || destination.campsite) return;
 
-    /**
-     * The same row of facts a submitted spot gets, for a patch of bare
-     * ground: what is warned over it, what is burning near it, what is up
-     * the road. Expanded rather than collapsed, because a dropped pin is by
-     * definition the pin the camper is reading.
-     */
-    const dots = [
-      ...hazardDots(badgesForPoint(destination.latitude, destination.longitude, hazards)),
-      ...fireDots(nearbyFires),
-      ...conditions,
-      ...facilityDots(facilities)
-    ];
-
     destinationMarkerRef.current = L.marker(
       [destination.latitude, destination.longitude],
       {
         icon: buildDestinationIcon(
-          dots,
+          destinationDotsRef.current,
           DIRECTIONS_LABEL,
-          // Only bare ground can become a new spot: a pin that is already a
-          // campsite is one somebody has submitted.
-          destination.campsite ? undefined : 'Add spot here'
+          'Add spot here',
+          true
         ),
         title: 'Your chosen spot',
         zIndexOffset: 900
@@ -2126,7 +2160,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     ).addTo(map);
 
     return clear;
-  }, [destination, isMapReady, hazards, nearbyFires, facilities, conditions]);
+    // Deliberately NOT keyed on the dots: the marker is created once per
+    // dropped pin, and the row it carries is grown by the effect below as
+    // each lookup lands. Rebuilding the marker instead would drop the pin
+    // again, from the top, three times over.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destination, isMapReady]);
+
+  /**
+   * Grow the dropped pin's row as the lookups land, without redrawing it.
+   *
+   * Same rule as `refreshIcon` for submitted pins: if the row would come out
+   * identical, the DOM is left alone, and the entrance animation belongs to
+   * the drop rather than to every arrival after it.
+   */
+  useEffect(() => {
+    const marker = destinationMarkerRef.current;
+    if (!marker) return;
+    const icon = buildDestinationIcon(destinationDots, DIRECTIONS_LABEL, 'Add spot here');
+    const html = (icon.options.html as string) ?? '';
+    if (html === destinationHtmlRef.current) return;
+    destinationHtmlRef.current = html;
+    marker.setIcon(icon);
+  }, [destinationDots]);
 
   /**
    * The open pin sits dead centre.
@@ -2942,7 +2998,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * Hazards lead the row. A heat warning or smoke over the spot changes
    * whether to go at all, which outranks anything about the spot itself.
    */
-  const iconForId = useCallback((id: string) => {
+  const iconForId = useCallback((id: string, animate = false) => {
     const isSelected = selectedIdRef.current === id;
     return buildCampsiteIcon(
       isSelected,
@@ -2960,9 +3016,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // looked up for the spot being read.
         ...(isSelected ? facilityDots(facilitiesRef.current) : [])
       ],
-      isSelected ? DIRECTIONS_LABEL : undefined
+      isSelected ? DIRECTIONS_LABEL : undefined,
+      animate
     );
   }, []);
+
+  /**
+   * Give a marker its icon, but only if the HTML actually changed.
+   *
+   * A pin's row grows in stages — the tap, then the fires, then the weather,
+   * then whatever OpenStreetMap has up the road — and each stage used to
+   * replace the icon's DOM whether or not it had anything new to say, which
+   * is the flicker. Comparing the built HTML makes the no-op stages free, and
+   * the entrance animation is asked for only on the tap itself, so the chips
+   * already on screen stay put while later ones arrive underneath them.
+   */
+  const refreshIcon = useCallback((id: string, animate = false) => {
+    const marker = markersRef.current.get(id);
+    if (!marker) return;
+    const icon = iconForId(id, animate);
+    const html = (icon.options.html as string) ?? '';
+    if (!animate && iconHtmlRef.current.get(id) === html) return;
+    iconHtmlRef.current.set(id, html);
+    marker.setIcon(icon);
+  }, [iconForId]);
 
   // Rebuilt only when the campsite list changes. Selection is handled
   // separately below — previously changing the selection tore down and rebuilt
@@ -2975,6 +3052,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       try { map.removeLayer(clusterRef.current); } catch { /* detached */ }
     }
     markersRef.current.clear();
+    iconHtmlRef.current.clear();
 
     const cluster = L.markerClusterGroup({
       showCoverageOnHover: false,
@@ -3042,18 +3120,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // over the new one for the moment before the fetch lands.
     facilitiesRef.current = [];
     if (previousId) {
-      const marker = markersRef.current.get(previousId);
-      marker?.setIcon(iconForId(previousId));
-      marker?.setZIndexOffset(0);
+      refreshIcon(previousId);
+      markersRef.current.get(previousId)?.setZIndexOffset(0);
     }
     if (nextId) {
       const marker = markersRef.current.get(nextId);
-      marker?.setIcon(iconForId(nextId));
+      refreshIcon(nextId, true);
       // Leaflet stacks markers by latitude, so a selected pin's expanded
       // chips would otherwise slide under any pin north of it.
       marker?.setZIndexOffset(800);
     }
-  }, [selectedCampsite, iconForId]);
+  }, [selectedCampsite, refreshIcon]);
 
   /**
    * Keep each pinned campsite's alert badges current.
@@ -3095,17 +3172,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     // Markers that USED to have a badge but no longer do.
     prev.forEach((badges, id) => {
-      if (!next.has(id) && markersRef.current.has(id)) {
-        markersRef.current.get(id)!.setIcon(iconForId(id));
-      }
+      if (!next.has(id)) refreshIcon(id);
     });
     // Markers whose badge set changed.
     next.forEach((badges, id) => {
-      if (!sameBadges(prev.get(id), badges) && markersRef.current.has(id)) {
-        markersRef.current.get(id)!.setIcon(iconForId(id));
-      }
+      if (!sameBadges(prev.get(id), badges)) refreshIcon(id);
     });
-  }, [hazards, pinnedCampsites, isMapReady, iconForId]);
+  }, [hazards, pinnedCampsites, isMapReady, refreshIcon]);
 
   /* ------------------------------------------------------------------ */
   /* Facilities near the open spot                                       */
@@ -3152,23 +3225,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     facilitiesRef.current = facilities;
     const id = selectedIdRef.current;
     if (!id) return;
-    markersRef.current.get(id)?.setIcon(iconForId(id));
-  }, [facilities, iconForId]);
+    refreshIcon(id);
+  }, [facilities, refreshIcon]);
 
   // Same again for the fires: the lookup lands after the pin is already open.
   useEffect(() => {
     nearbyFiresRef.current = nearbyFires;
     const id = selectedIdRef.current;
     if (!id) return;
-    markersRef.current.get(id)?.setIcon(iconForId(id));
-  }, [nearbyFires, iconForId]);
+    refreshIcon(id);
+  }, [nearbyFires, refreshIcon]);
 
   // And for the conditions, which arrive from App a moment after the tap.
   useEffect(() => {
     const id = selectedIdRef.current;
     if (!id) return;
-    markersRef.current.get(id)?.setIcon(iconForId(id));
-  }, [conditions, iconForId]);
+    refreshIcon(id);
+  }, [conditions, refreshIcon]);
 
   /**
    * Tapping the fire chip: go and look, then come back.
@@ -3203,6 +3276,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const layer = L.layerGroup().addTo(map);
     tourLayerRef.current = layer;
+    /**
+     * The pin's own row of chips steps aside while the fires are on screen.
+     *
+     * The row is a stack of labels sitting exactly where the camera is about
+     * to pull out to, so it would otherwise be reading the weather over the
+     * top of the thing it sent you to look at. A class on the map container
+     * fades every chip row out together; the CSS transition brings them back
+     * on its own the moment it is removed in `finally`.
+     */
+    const container = map.getContainer();
+    container.classList.add('wl-touring');
 
     try {
       const bounds = L.latLngBounds([point.lat, point.lon] as L.LatLngExpression, [
@@ -3251,6 +3335,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     } finally {
       layer.remove();
       tourLayerRef.current = null;
+      container.classList.remove('wl-touring');
       try {
         if (reduced) map.setView(home.center, home.zoom, { animate: false });
         else map.flyTo(home.center, home.zoom, { duration: 0.8 });
