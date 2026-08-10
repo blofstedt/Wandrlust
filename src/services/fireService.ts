@@ -229,6 +229,36 @@ export const isUnderControl = (fire: ActiveFire): boolean => {
 };
 
 /**
+ * How far out a fire still counts as "near this spot".
+ *
+ * 25 km is the radius at which smoke routinely reaches a site — well beyond
+ * the burn itself, which is the point: the thing that ruins a night out is
+ * usually the smoke, not the flame. Nothing here says a fire further away is
+ * harmless; it says the app stops volunteering it.
+ */
+export const FIRE_ALERT_RADIUS_KM = 25;
+
+/**
+ * A bbox around a point, padded by `radiusKm`.
+ *
+ * Deliberately generous rather than exact — the box only decides what to
+ * fetch, and `findFiresNear` does the real distance test afterwards, so
+ * over-including costs a few extra records and under-including would drop a
+ * fire that was actually in range. 1° of latitude is ~111 km; longitude
+ * shrinks with the cosine of the latitude, plus a 1.2x margin.
+ */
+export const boxAround = (lat: number, lon: number, radiusKm: number): BoundingBox => {
+  const padLat = radiusKm / 111;
+  const padLon = (radiusKm / (111 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)))) * 1.2;
+  return {
+    minLat: lat - padLat,
+    minLon: lon - padLon,
+    maxLat: lat + padLat,
+    maxLon: lon + padLon
+  };
+};
+
+/**
  * Find fires within `radiusKm` of a point.
  *
  * Returns fires sorted by distance, each with its calculated distance
