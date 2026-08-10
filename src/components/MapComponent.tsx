@@ -39,7 +39,8 @@ import {
   COLLAPSED_DOT_LIMIT, FACILITY_COLOR
 } from '../utils/amenityDots';
 import {
-  fetchNearbyFacilities, FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM
+  fetchNearbyFacilities, fetchNearestDriveableRoad, ROAD_RADIUS_KM,
+  FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM
 } from '../services/nearbyAmenityService';
 import { calculateRoute, RouteResult } from '../services/routingService';
 import { directionsAppName, openDirections } from '../utils/handoff';
@@ -933,7 +934,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showLayerMenu, setShowLayerMenu] = useState(false);
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
-  const [showBoundaries, setShowBoundaries] = useState(true);
+  /**
+   * Parcel fills and their fuzzy edges. OFF by default now.
+   *
+   * The polygons were the loudest thing on the map and the least precise —
+   * a wash of colour across whole states, whose edges are a guess with a
+   * range of hundreds of metres, standing in for a question a camper only
+   * ever asks about ONE point: "can I sleep here?" That question is answered
+   * properly by tapping, which names the land, its stay limit, its permit and
+   * its fire ban for that spot. The data is still loaded either way — hiding
+   * the layer only stops it being painted — so the answer on tap is identical
+   * whether the fills are drawn or not.
+   */
+  const [showBoundaries, setShowBoundaries] = useState(false);
   /**
    * Weather warning overlay (clouds + flame icons). ON by default because
    * warnings are the safety feature, and a camper who has the layer off
@@ -994,6 +1007,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const readPointRef = useRef<{ lat: number; lon: number } | null>(null);
   readPointRef.current =
     readLat === null || readLon === null ? null : { lat: readLat, lon: readLon };
+  /**
+   * What the point is: public land or not, an existing pin or bare ground.
+   * Read inside the facility lookup, which is keyed on the coordinates alone
+   * so it does not re-run when an unrelated part of the destination changes.
+   */
+  const landRef = useRef(destination?.land);
+  landRef.current = destination?.land;
+  const hasCampsiteRef = useRef(Boolean(destination?.campsite));
+  hasCampsiteRef.current = Boolean(destination?.campsite);
 
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
@@ -1449,7 +1471,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       collectionRef.current = EMPTY_BOUNDARIES;
     };
 
-    if (!showBoundaries || isOfflineMode) {
+    // Offline is the only reason to stop LOADING. `showBoundaries` decides
+    // whether the parcels are painted, not whether they are known: tapping a
+    // point has to name the land it is in whether or not it is drawn.
+    if (isOfflineMode) {
       clearLayer();
       forget();
       setBoundaries(EMPTY_BOUNDARIES);
@@ -1673,6 +1698,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * all its popups, exactly where it is.
      */
     const render = (collection: BoundaryCollection, detail: BoundaryDetail) => {
+      // Loaded but not painted: everything below this line is drawing.
+      if (!showBoundaries) { clearLayer(); return; }
       const pane = boundaryPane();
       const overview = detail === 'overview';
       const currentZoom = map.getZoom();
@@ -3206,10 +3233,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let cancelled = false;
 
     const timer = setTimeout(async () => {
-      const result = await fetchNearbyFacilities(
-        readLat, readLon, FACILITY_RADIUS_KM, controller.signal
-      );
-      if (!cancelled) setFacilities(result.facilities);
+      /**
+       * The road question is only asked of bare ground inside public land.
+       *
+       * On an existing pin it is noise — somebody has already camped there,
+       * so of course they drove in — and off public land it is nobody's
+       * business how close the nearest track is. This is the whole of what
+       * replaced the painted parcels: instead of colouring half a state to
+       * hint that a vehicle might get in somewhere, the point you tapped
+       * says whether there is a road near IT.
+       */
+      const wantsRoad = Boolean(landRef.current) && !hasCampsiteRef.current;
+
+      const [result, road] = await Promise.all([
+        fetchNearbyFacilities(readLat, readLon, FACILITY_RADIUS_KM, controller.signal),
+        wantsRoad
+          ? fetchNearestDriveableRoad(readLat, readLon, ROAD_RADIUS_KM, controller.signal)
+          : Promise.resolve(null)
+      ]);
+      if (cancelled) return;
+
+      // Road first: the chip row is capped, and "can I get a vehicle in" beats
+      // a bin two kilometres away for somebody looking at empty land.
+      setFacilities(road ? [road, ...result.facilities] : result.facilities);
     }, 300);
 
     return () => {
@@ -3798,6 +3844,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 {UNCERTAINTY_LABEL.cadastral_derived} to {UNCERTAINTY_LABEL.generalised}{' '}
                 out depending on the source, and not permission to camp. Nothing
                 drawn means no data here, not private land.
+              </p>
+            )}
+            {/*
+              Said when the layer is OFF, because "off" could easily be read as
+              "the app has stopped knowing". It hasn't: the parcels are still
+              loaded and a tap still names the land, its stay limit, its permit
+              and its fire ban. Only the paint is gone.
+            */}
+            {!showBoundaries && (
+              <p className="px-2 pb-1.5 text-[9px] text-slate-500 leading-tight">
+                Off by default — the map stays readable and tapping any point
+                still tells you which public land it is in.
               </p>
             )}
             {/* Only listed when the optional vector tileset is actually

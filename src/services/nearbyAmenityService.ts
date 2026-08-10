@@ -2,7 +2,8 @@ import { distanceKm } from '../utils/geo';
 import type { NearbyFacility, NearbyFacilityKind } from '../types';
 
 /**
- * The nearest toilet, shower, tap, dump station or fuel pump to a spot.
+ * The nearest toilet, shower, tap, dump station, fuel pump, trailhead,
+ * fishing spot, boat ramp or bin to a spot.
  *
  * WHY OPENSTREETMAP. It is the only source covering the continental US and
  * Canada that is free to query, has no key, and lets anybody correct it. Every
@@ -60,7 +61,7 @@ interface OverpassElement {
  * where I sleep tonight" — which is true of a toilet and a water tap, and not
  * true of a picnic bench.
  */
-const KIND_QUERY: Record<NearbyFacilityKind, string[]> = {
+const KIND_QUERY: Record<Exclude<NearbyFacilityKind, 'road'>, string[]> = {
   toilet: ['node["amenity"="toilets"]', 'way["amenity"="toilets"]'],
   shower: ['node["amenity"="shower"]', 'way["amenity"="shower"]'],
   water: [
@@ -72,6 +73,21 @@ const KIND_QUERY: Record<NearbyFacilityKind, string[]> = {
   groceries: [
     'node["shop"="supermarket"]', 'way["shop"="supermarket"]',
     'node["shop"="convenience"]', 'way["shop"="convenience"]'
+  ],
+  /* Where a walk STARTS — the trailhead — rather than the path itself. A
+     hiking route is a line hundreds of km long whose nearest point to a
+     campsite is meaningless; the head is a place you drive to and park. */
+  trail: [
+    'node["highway"="trailhead"]',
+    'node["information"="guidepost"]["hiking"="yes"]'
+  ],
+  fishing: ['node["leisure"="fishing"]', 'way["leisure"="fishing"]'],
+  /* A slipway is the ramp itself. Marinas are excluded on purpose: a marina
+     is a business with a gate, not somewhere to put a canoe in. */
+  boat: ['node["leisure"="slipway"]', 'way["leisure"="slipway"]'],
+  waste: [
+    'node["amenity"="waste_disposal"]', 'way["amenity"="waste_disposal"]',
+    'node["amenity"="recycling"]["recycling_type"="centre"]'
   ]
 };
 
@@ -81,7 +97,12 @@ export const FACILITY_LABEL: Record<NearbyFacilityKind, string> = {
   water: 'Drinking water',
   dump: 'Dump station',
   fuel: 'Fuel',
-  groceries: 'Groceries'
+  groceries: 'Groceries',
+  trail: 'Trailhead',
+  fishing: 'Fishing spot',
+  boat: 'Boat ramp',
+  waste: 'Rubbish disposal',
+  road: 'Driveable road'
 };
 
 export const FACILITY_GLYPH: Record<NearbyFacilityKind, string> = {
@@ -90,7 +111,12 @@ export const FACILITY_GLYPH: Record<NearbyFacilityKind, string> = {
   water: '🚰',
   dump: '🚽',
   fuel: '⛽',
-  groceries: '🛒'
+  groceries: '🛒',
+  trail: '🥾',
+  fishing: '🎣',
+  boat: '🛶',
+  waste: '🗑️',
+  road: '🛣️'
 };
 
 /** Which kind an element is, from the tags it came back with. */
@@ -101,6 +127,10 @@ const kindOf = (tags: Record<string, string>): NearbyFacilityKind | null => {
   if (tags.amenity === 'sanitary_dump_station') return 'dump';
   if (tags.amenity === 'fuel') return 'fuel';
   if (tags.shop === 'supermarket' || tags.shop === 'convenience') return 'groceries';
+  if (tags.highway === 'trailhead' || tags.information === 'guidepost') return 'trail';
+  if (tags.leisure === 'fishing') return 'fishing';
+  if (tags.leisure === 'slipway') return 'boat';
+  if (tags.amenity === 'waste_disposal' || tags.amenity === 'recycling') return 'waste';
   return null;
 };
 
@@ -126,7 +156,7 @@ export const fetchNearbyFacilities = async (
     .map((selector) => `  ${selector}${around};`)
     .join('\n');
 
-  const query = `[out:json][timeout:15];\n(\n${clauses}\n);\nout center 120;`;
+  const query = `[out:json][timeout:15];\n(\n${clauses}\n);\nout center 240;`;
 
   for (const mirror of OVERPASS_MIRRORS) {
     try {
@@ -141,7 +171,7 @@ export const fetchNearbyFacilities = async (
       const data = await res.json();
       if (!Array.isArray(data?.elements)) continue;
 
-      /** Nearest wins, per kind: six dots at most, whatever the mirror sends. */
+      /** Nearest wins, per kind: one dot each, whatever the mirror sends. */
       const nearest = new Map<NearbyFacilityKind, NearbyFacility>();
 
       for (const element of data.elements as OverpassElement[]) {
@@ -186,4 +216,108 @@ export const fetchNearbyFacilities = async (
   }
 
   return EMPTY;
+};
+
+/* ------------------------------------------------------------------ *
+ * The nearest driveable road
+ * ------------------------------------------------------------------ */
+/**
+ * WHY THIS EXISTS, AND WHAT IT REFUSES TO SAY.
+ *
+ * Public-land polygons used to be painted across the map, which is a lot of
+ * colour saying very little: a wash over half a state does not tell a camper
+ * where they could actually put a van. The other tempting answer — computing
+ * "drive-up spots" for every parcel in the country and dropping pins on them —
+ * is worse, because a pin on a map is a promise, and the only thing that data
+ * can honestly support is "there is a road here".
+ *
+ * So this is that, and only that, asked about ONE point the camper has already
+ * tapped: what is the nearest track a vehicle could use? It is a hint about
+ * access, not a campsite. The chip it produces says the distance and nothing
+ * about legality, surface, gates, seasonal closures, or whether the road ever
+ * widens into somewhere you could stop.
+ *
+ * Never throws; a failure is `null`, which draws no chip at all rather than
+ * "no road nearby".
+ */
+
+/**
+ * Roads worth mentioning to somebody looking for dispersed camping.
+ *
+ * Tracks and unclassified/service roads are what forest and BLM roads are
+ * tagged as. Motorways, trunks and primaries are excluded on purpose: you
+ * cannot camp off an interstate, and a chip pointing at one is noise.
+ */
+const DRIVEABLE_HIGHWAY = /^(track|unclassified|service|residential|tertiary)$/;
+
+/** How far out we look for a road, in km. Past this it is not "access". */
+export const ROAD_RADIUS_KM = 2;
+
+interface OverpassWay extends OverpassElement {
+  geometry?: { lat: number; lon: number }[];
+}
+
+export const fetchNearestDriveableRoad = async (
+  latitude: number,
+  longitude: number,
+  radiusKm = ROAD_RADIUS_KM,
+  signal?: AbortSignal
+): Promise<NearbyFacility | null> => {
+  const metres = Math.round(radiusKm * 1000);
+  const around = `(around:${metres},${latitude.toFixed(5)},${longitude.toFixed(5)})`;
+  // `out geom` rather than `out center`: a road is a line, and the centre of a
+  // 20 km forest road can be nowhere near the point that matters.
+  const query =
+    `[out:json][timeout:15];\n` +
+    `way["highway"]["highway"!~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|footway|path|cycleway|steps|bridleway)$"]${around};\n` +
+    `out geom 120;`;
+
+  for (const mirror of OVERPASS_MIRRORS) {
+    try {
+      const res = await fetch(mirror, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+        signal
+      });
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      if (!Array.isArray(data?.elements)) continue;
+
+      let best: NearbyFacility | null = null;
+
+      for (const way of data.elements as OverpassWay[]) {
+        const tags = way.tags ?? {};
+        const highway = tags.highway ?? '';
+        if (!DRIVEABLE_HIGHWAY.test(highway)) continue;
+
+        // A gated or private road is not access. `motor_vehicle=no` catches
+        // the hiking-only tracks that are still tagged as tracks.
+        if (tags.access === 'private' || tags.access === 'no') continue;
+        if (tags.motor_vehicle === 'private' || tags.motor_vehicle === 'no') continue;
+
+        for (const point of way.geometry ?? []) {
+          const km = distanceKm(latitude, longitude, point.lat, point.lon);
+          if (km > radiusKm) continue;
+          if (best && best.distanceKm <= km) continue;
+
+          best = {
+            id: `osm-way-${way.id}`,
+            kind: 'road',
+            name: tags.name?.trim() || tags.ref?.trim() || undefined,
+            latitude: point.lat,
+            longitude: point.lon,
+            distanceKm: Math.round(km * 100) / 100
+          };
+        }
+      }
+
+      return best;
+    } catch {
+      if (signal?.aborted) return null;
+    }
+  }
+
+  return null;
 };
