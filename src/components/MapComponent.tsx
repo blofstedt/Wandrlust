@@ -219,21 +219,50 @@ const TENT_SVG =
  * that is moving on a screenful of pins is always something burning, blowing
  * or freezing right now.
  */
-const collapsedDotRow = (dots: MarkerDot[]): string => {
+/**
+ * THEY GO ROUND THE PIN, NOT ABOVE IT.
+ *
+ * A row above the marker could only ever hold four or five dots before it was
+ * wider than the pin and colliding with the row over the next spot along, so
+ * everything past the fourth fact became a grey "+n" that said nothing. A ring
+ * has the whole circumference to work with: the pin is round, so the dots sit
+ * on it like beads and a spot with eight recorded facts shows eight.
+ *
+ * Placed with a translate rather than a rotate so the dot itself is never
+ * rotated — and on an outer slot rather than on the dot, because the urgent
+ * dot's breathing is a `transform: scale` and would otherwise wipe out its
+ * position.
+ */
+const RING_RADIUS_PX = 19;
+
+const collapsedDotRing = (dots: MarkerDot[]): string => {
+  const shown = dots.slice(0, COLLAPSED_DOT_LIMIT);
   const overflow = Math.max(0, dots.length - COLLAPSED_DOT_LIMIT);
-  const cells = dots
-    .slice(0, COLLAPSED_DOT_LIMIT)
-    .map(
-      (d) =>
-        `<i class="wl-dot${d.urgent ? ' wl-dot-urgent' : ''}` +
-        `${d.hollow ? ' wl-dot-hollow' : ''}" ` +
-        `style="--wl-dot-color:${d.color}"></i>`
-    )
+  const beads = overflow
+    ? [...shown, { key: 'more', color: '#94A3B8', label: '', glyph: '', tone: 'good' as const }]
+    : shown;
+
+  const step = 360 / Math.max(beads.length, 1);
+  const cells = beads
+    .map((d, i) => {
+      // Anticlockwise from the top, so the first fact — always the most
+      // urgent one, since hazards lead the list — sits at twelve o'clock.
+      const angle = ((-90 + i * step) * Math.PI) / 180;
+      const x = (Math.cos(angle) * RING_RADIUS_PX).toFixed(1);
+      const y = (Math.sin(angle) * RING_RADIUS_PX).toFixed(1);
+      const urgent = 'urgent' in d && d.urgent;
+      const hollow = 'hollow' in d && d.hollow;
+      return (
+        `<i class="wl-dot-slot" style="transform:translate(${x}px,${y}px)">` +
+        `<i class="wl-dot${urgent ? ' wl-dot-urgent' : ''}` +
+        `${hollow ? ' wl-dot-hollow' : ''}` +
+        `${d.key === 'more' ? ' wl-dot-more' : ''}" ` +
+        `style="--wl-dot-color:${d.color}"></i></i>`
+      );
+    })
     .join('');
-  const more = overflow
-    ? `<i class="wl-dot wl-dot-more" style="--wl-dot-color:#94a3b8"></i>`
-    : '';
-  return `<div class="wl-dots">${cells}${more}</div>`;
+
+  return `<div class="wl-dots">${cells}</div>`;
 };
 
 /**
@@ -261,27 +290,51 @@ const escapeHtml = (s: string): string => s
  * it is somewhere you can go, so it opts back into pointer events and carries
  * the id for the delegated click handler.
  *
- * ONE ANIMATION FOR THE WHOLE ROW, not one per chip. The row is rebuilt every
- * time a lookup lands (fires, then conditions, then facilities, each
- * arriving on its own schedule), and a per-chip staggered entrance meant the
- * chips already on screen restarted their slide from the bottom three or four
- * times over — the popcorn effect. The row now fades up once, as a unit, and
- * the container is what carries the animation.
+ * EVERY CHIP POPS, AND EACH ONE POPS EXACTLY ONCE.
+ *
+ * The row is rebuilt every time a lookup lands — the tap, then the fires,
+ * then the weather, then whatever OpenStreetMap has up the road — so "animate
+ * the row" and "animate nothing" are both wrong: the first restarts chips
+ * that are already sitting there (popcorn), the second means the answers that
+ * arrive after the tap simply blink into existence.
+ *
+ * So the animation is decided per chip, by whether this pin has shown that
+ * chip before. `animateKeys` is that set of first-timers, and the stagger is
+ * counted across them alone, which is why opening a pin plays the whole stack
+ * in sequence while a toilet found two seconds later pops on its own.
+ *
+ * Chips that have already arrived carry no animation class at all, so the
+ * next rebuild leaves them exactly where they are.
  */
-const expandedDotRow = (dots: MarkerDot[], animate: boolean): string => {
+/** The beat between one chip landing and the next, in ms. */
+const CHIP_STAGGER_MS = 55;
+/**
+ * Everything waits this long before starting.
+ *
+ * Without it the first chip is on screen in the frame the pin opens, which is
+ * the "some of them are just there" complaint: the stack has to start from
+ * nothing for the sequence to read as a sequence.
+ */
+const CHIP_LEAD_MS = 70;
+
+const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string => {
+  let arriving = 0;
   const chips = dots
     .map((d) => {
+      const fresh = animateKeys.has(d.key);
+      const delay = fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0;
       const go = d.facility;
       const tappable = Boolean(go) || Boolean(d.action);
       const full = d.full ?? d.label;
       return (
         `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
-        `${tappable ? ' wl-chip-go' : ''}" ` +
+        `${tappable ? ' wl-chip-go' : ''}${fresh ? ' wl-chip-in' : ''}" ` +
         `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
         `${d.action ? `data-action="${d.action}" ` : ''}` +
         `${tappable ? 'role="button" tabindex="0" ' : ''}` +
         `title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}" ` +
-        `style="--wl-chip-color:${d.color}">` +
+        `style="--wl-chip-color:${d.color}` +
+        `${fresh ? `;animation-delay:${delay}ms` : ''}">` +
         `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
         `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
         `${escapeHtml(d.label)}` +
@@ -289,7 +342,22 @@ const expandedDotRow = (dots: MarkerDot[], animate: boolean): string => {
       );
     })
     .join('');
-  return `<div class="wl-chips${animate ? ' wl-chips-in' : ''}">${chips}</div>`;
+  return `<div class="wl-chips">${chips}</div>`;
+};
+
+/**
+ * Which of these chips this pin has never shown, marking them shown as it
+ * goes. Mutates deliberately: the caller's set IS the pin's memory, and it is
+ * emptied when the pin closes so opening it again replays the whole stack.
+ */
+const freshChipKeys = (shown: Set<string>, dots: MarkerDot[]): Set<string> => {
+  const fresh = new Set<string>();
+  for (const d of dots) {
+    if (shown.has(d.key)) continue;
+    fresh.add(d.key);
+    shown.add(d.key);
+  }
+  return fresh;
 };
 
 const NAV_SVG =
@@ -346,11 +414,11 @@ const buildCampsiteIcon = (
   isSelected: boolean,
   dots: MarkerDot[] = [],
   directionsLabel?: string,
-  /** True only when the pin has just been opened. See `refreshIcon`. */
-  animate = false
+  /** Chip keys this pin has not shown yet. See `refreshIcon`. */
+  animateKeys: Set<string> = new Set()
 ): L.DivIcon => {
   const row = dots.length
-    ? (isSelected ? expandedDotRow(dots, animate) : collapsedDotRow(dots))
+    ? (isSelected ? expandedDotRow(dots, animateKeys) : collapsedDotRing(dots))
     : '';
 
   return L.divIcon({
@@ -425,13 +493,13 @@ const buildDestinationIcon = (
   dots: MarkerDot[] = [],
   directionsLabel?: string,
   addLabel?: string,
-  animate = false
+  animateKeys: Set<string> = new Set()
 ): L.DivIcon =>
   L.divIcon({
     className: 'destination-marker',
     html: `
       <div class="relative flex items-end justify-center anim-pin-drop">
-        ${dots.length ? expandedDotRow(dots, animate) : ''}
+        ${dots.length ? expandedDotRow(dots, animateKeys) : ''}
         ${directionsLabel
           ? pinActionsRow(
             directionsLabel,
@@ -2146,6 +2214,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * it would just be two markers claiming one spot.
    */
   const destinationHtmlRef = useRef('');
+  /** The dropped pin's own memory of which chips it has popped in. */
+  const destinationChipKeysRef = useRef<Set<string>>(new Set());
   const destinationDots = useMemo(() => {
     if (!destination || destination.campsite) return [];
     return [
@@ -2167,6 +2237,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       try { map.removeLayer(destinationMarkerRef.current); } catch { /* detached */ }
       destinationMarkerRef.current = null;
       destinationHtmlRef.current = '';
+      destinationChipKeysRef.current = new Set();
     };
 
     clear();
@@ -2179,7 +2250,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           destinationDotsRef.current,
           DIRECTIONS_LABEL,
           'Add spot here',
-          true
+          freshChipKeys(destinationChipKeysRef.current, destinationDotsRef.current)
         ),
         title: 'Your chosen spot',
         zIndexOffset: 900
@@ -2204,7 +2275,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const marker = destinationMarkerRef.current;
     if (!marker) return;
-    const icon = buildDestinationIcon(destinationDots, DIRECTIONS_LABEL, 'Add spot here');
+    const icon = buildDestinationIcon(
+      destinationDots,
+      DIRECTIONS_LABEL,
+      'Add spot here',
+      freshChipKeys(destinationChipKeysRef.current, destinationDots)
+    );
     const html = (icon.options.html as string) ?? '';
     if (html === destinationHtmlRef.current) return;
     destinationHtmlRef.current = html;
@@ -3020,6 +3096,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   amenityDotsRef.current = amenityDotsById;
 
   /**
+   * Which chips the OPEN pin has already popped in.
+   *
+   * One set, not one per pin, because only one pin is ever open: it is
+   * emptied on every tap, so the stack always plays from nothing, and a
+   * lookup landing afterwards only animates the chip it brought.
+   */
+  const shownChipKeysRef = useRef<Set<string>>(new Set());
+
+  /**
    * Icon for a pinned site: hollow or filled, with its dot row.
    *
    * Hazards lead the row. A heat warning or smoke over the spot changes
@@ -3027,24 +3112,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const iconForId = useCallback((id: string, animate = false) => {
     const isSelected = selectedIdRef.current === id;
+    // A fresh tap forgets what the last one showed, so the stack replays.
+    if (animate) shownChipKeysRef.current = new Set();
+    const dots = [
+      ...hazardDots(badgesByIdRef.current.get(id) ?? []),
+      // A fire burning up the valley, for the open pin only — it is one
+      // request per selection, and it is where the map's flame layer went.
+      ...(isSelected ? fireDots(nearbyFiresRef.current) : []),
+      // Weather, signal and the land under it: also the open pin only,
+      // because App fetches them for the point that is open.
+      ...(isSelected ? conditionsRef.current : []),
+      ...(amenityDotsRef.current.get(id) ?? []),
+      // Facilities up the road belong to the open pin only — they are the
+      // one part of the row you can tap through to, and they are only
+      // looked up for the spot being read.
+      ...(isSelected ? facilityDots(facilitiesRef.current) : [])
+    ];
+
     return buildCampsiteIcon(
       isSelected,
-      [
-        ...hazardDots(badgesByIdRef.current.get(id) ?? []),
-        // A fire burning up the valley, for the open pin only — it is one
-        // request per selection, and it is where the map's flame layer went.
-        ...(isSelected ? fireDots(nearbyFiresRef.current) : []),
-        // Weather, signal and the land under it: also the open pin only,
-        // because App fetches them for the point that is open.
-        ...(isSelected ? conditionsRef.current : []),
-        ...(amenityDotsRef.current.get(id) ?? []),
-        // Facilities up the road belong to the open pin only — they are the
-        // one part of the row you can tap through to, and they are only
-        // looked up for the spot being read.
-        ...(isSelected ? facilityDots(facilitiesRef.current) : [])
-      ],
+      dots,
       isSelected ? DIRECTIONS_LABEL : undefined,
-      animate
+      isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined
     );
   }, []);
 
