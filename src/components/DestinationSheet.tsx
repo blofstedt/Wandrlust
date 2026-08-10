@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   X, Navigation, Loader2, ShieldCheck, Copy, Check, Eye, ChevronLeft,
-  TriangleAlert, MapPin, Signal, ThermometerSun, Flame
+  TriangleAlert, MapPin, Signal, ThermometerSun, Flame, PlusCircle
 } from 'lucide-react';
 import type { CellCoverage, MapDestination } from '../types';
 import type { WeatherSnapshot } from '../services/weatherService';
@@ -73,6 +73,15 @@ interface DestinationSheetProps {
   onOpenDirections: () => void;
   /** Only offered for a real campsite; a bare point has no detail page. */
   onOpenDetail?: () => void;
+  /**
+   * Submit this exact point as a campsite.
+   *
+   * Only passed for a pin the camper dropped on bare map, because that is the
+   * only case where the point is not already a spot. This is where adding a
+   * spot now starts: the form is seeded with the coordinates of the pin in
+   * front of them, instead of asking them to type a latitude.
+   */
+  onAddSpotHere?: () => void;
   /**
    * How much of the screen this panel is covering, 0–1.
    *
@@ -162,7 +171,7 @@ const clockTime = (date: Date): string =>
 
 export const DestinationSheet: React.FC<DestinationSheetProps> = ({
   destination, route, isRouting, originLabel, weather, coverage,
-  isLoadingConditions, onClose, onOpenDirections, onOpenDetail,
+  isLoadingConditions, onClose, onOpenDirections, onOpenDetail, onAddSpotHere,
   onCoverageFractionChange
 }) => {
   const [copied, setCopied] = useState(false);
@@ -481,6 +490,26 @@ export const DestinationSheet: React.FC<DestinationSheetProps> = ({
             {copied ? <Check className="w-3 h-3 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
             <span className="truncate">{copied ? 'Copied' : coords}</span>
           </button>
+
+          {/*
+            The way a spot gets added.
+
+            It used to be a menu item that opened an empty form, so the first
+            thing it asked for was a latitude — which nobody knows, and which
+            the app was already showing on screen. Here the coordinates are
+            the pin you are looking at, and the button only exists for a bare
+            dropped pin: a spot that is already on the map cannot be added
+            again.
+          */}
+          {onAddSpotHere && (
+            <button
+              onClick={() => { haptic('tap'); onAddSpotHere(); }}
+              className="px-3 py-2 rounded-xl bg-slate-800 border border-emerald-600/60 text-emerald-300 text-[10px] font-bold flex items-center gap-1.5 hover:bg-slate-700 shrink-0"
+            >
+              <PlusCircle className="w-3.5 h-3.5" />
+              Add spot
+            </button>
+          )}
 
           {onOpenDetail && (
             <button

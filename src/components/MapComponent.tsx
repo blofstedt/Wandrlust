@@ -2139,10 +2139,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // shove the pin under a control.
         if (band < 80) return;
 
-        // The teardrop hangs about 40 px above its coordinate, so aiming the
-        // coordinate slightly low keeps the whole marker inside the strip.
+        /**
+         * The middle of the strip, and nothing else.
+         *
+         * It used to aim 14 px low, on the theory that the pin's chips hang
+         * above the coordinate and needed the headroom. In practice that read
+         * as the pin sitting off-centre in its half of the screen, which is
+         * the one thing a camper can measure by eye. Dead centre it is; the
+         * clamp only stops the pin from sliding under the top controls on a
+         * very short strip. Horizontally there is nothing to correct — the
+         * card is full-width on a phone and centred on a desktop, so the
+         * remaining map is symmetrical and the map's own centre is its middle.
+         */
         const targetY = Math.min(
-          TOP_CHROME_PX + band / 2 + 14,
+          Math.max(bottomEdge / 2, TOP_CHROME_PX + 24),
           bottomEdge - 12
         );
 

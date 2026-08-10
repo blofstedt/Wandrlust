@@ -17,6 +17,7 @@ import { CampsiteCard } from './components/CampsiteCard';
 import { CampsiteDetailModal } from './components/CampsiteDetailModal';
 import { OfflineManagerModal } from './components/OfflineManagerModal';
 import { AddCampsiteModal } from './components/AddCampsiteModal';
+import { AddHereConfirm } from './components/AddHereConfirm';
 import { CampingGuideModal } from './components/CampingGuideModal';
 import { FilterDrawer } from './components/FilterDrawer';
 import { AuthModal } from './components/AuthModal';
@@ -125,6 +126,16 @@ export default function App() {
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isOfflineManagerOpen, setIsOfflineManagerOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  /**
+   * Which point the submission form is about.
+   *
+   * Adding a spot always starts from somewhere real now — the pin on the map,
+   * or the camper's own position — rather than from a blank latitude field,
+   * so the form is handed a coordinate instead of guessing at the map centre.
+   */
+  const [addSpotAt, setAddSpotAt] = useState<[number, number] | null>(null);
+  /** The "add the ground under your feet?" question, raised by the + button. */
+  const [isAddHereOpen, setIsAddHereOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
   const [legalDoc, setLegalDoc] = useState<LegalDocKind | null>(null);
 
@@ -339,6 +350,13 @@ export default function App() {
 
   useEffect(() => () => {
     if (refusalTimer.current !== null) window.clearTimeout(refusalTimer.current);
+  }, []);
+
+  /** Open the submission form on a specific coordinate. */
+  const handleAddSpotAt = useCallback((latitude: number, longitude: number) => {
+    setAddSpotAt([latitude, longitude]);
+    setIsAddHereOpen(false);
+    setIsAddModalOpen(true);
   }, []);
 
   const handleClearDestination = useCallback(() => {
@@ -689,7 +707,7 @@ export default function App() {
           isOfflineMode={isOfflineMode}
           setIsOfflineMode={setIsOfflineMode}
           onOpenOfflineManager={() => setIsOfflineManagerOpen(true)}
-          onOpenAddModal={() => setIsAddModalOpen(true)}
+          onOpenAddModal={() => setIsAddHereOpen(true)}
           onOpenGuideModal={() => setIsGuideModalOpen(true)}
           onOpenFilterDrawer={() => setIsFilterOpen(true)}
           onOpenAuth={() => setIsAuthOpen(true)}
@@ -874,9 +892,18 @@ export default function App() {
 
       <AddCampsiteModal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
+        onClose={() => { setIsAddModalOpen(false); setAddSpotAt(null); }}
         onAdd={handleAddCustomSite}
-        defaultCenter={center}
+        defaultCenter={addSpotAt ?? center}
+      />
+
+      <AddHereConfirm
+        isOpen={isAddHereOpen}
+        onClose={() => setIsAddHereOpen(false)}
+        userLocation={userLocation}
+        isLocating={isLocating}
+        onLocateUser={handleLocateUser}
+        onConfirm={handleAddSpotAt}
       />
 
       <CampingGuideModal isOpen={isGuideModalOpen} onClose={() => setIsGuideModalOpen(false)} />
@@ -918,6 +945,13 @@ export default function App() {
           onOpenDirections={handleOpenDirections}
           onOpenDetail={
             destination?.campsite ? () => setSheetSite(destination.campsite!) : undefined
+          }
+          /* Only a bare dropped pin can become a new spot: a pin that is
+             already a campsite is one somebody has submitted. */
+          onAddSpotHere={
+            destination && !destination.campsite
+              ? () => handleAddSpotAt(destination.latitude, destination.longitude)
+              : undefined
           }
           onCoverageFractionChange={setSheetCoverFraction}
         />
