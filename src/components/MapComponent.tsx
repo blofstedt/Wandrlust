@@ -763,6 +763,29 @@ interface MapComponentProps {
   onSelectAlert?: (alert: HazardAlert) => void;
 }
 
+/**
+ * The map as the clustering plugin needs to see it: whole-number minimum zoom.
+ *
+ * Leaflet.markercluster asks the map for its minimum zoom in two different
+ * ways — floored when it builds its tree of cluster levels, raw when it
+ * decides which of those levels may be drawn. Our minimum is a fraction on
+ * purpose (see `applyMinZoom`), so those two answers disagree by part of a
+ * level, the top of the tree lands outside the drawable range, and any pin
+ * that isn't grouped with another one is created, counted and then never put
+ * on the map. That is the "I added a spot and no pin appeared" bug.
+ *
+ * So answer that one question with a whole number and leave the map itself
+ * alone — the fractional minimum is what keeps the frame filling the screen.
+ * Zero rather than the floor of the current minimum, because the real minimum
+ * is recomputed on every resize, and a tree built against a stale answer
+ * breaks in exactly the same silent way.
+ */
+const clusterView = (map: L.Map): L.Map =>
+  new Proxy(map, {
+    get: (target, prop) => (prop === 'getMinZoom' ? () => 0 : Reflect.get(target, prop)),
+    set: (target, prop, value) => Reflect.set(target, prop, value)
+  });
+
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation,
   isOfflineMode, onOpenDetailModal, onLocateUser,
@@ -775,6 +798,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
+  /** `mapRef.current` seen through `clusterView`; the cluster group's map. */
+  const clusterViewRef = useRef<L.Map | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const underlayLayerRef = useRef<L.TileLayer | null>(null);
@@ -1035,6 +1060,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     map.on('resize', applyMinZoom);
 
     mapRef.current = map;
+    clusterViewRef.current = clusterView(map);
     setIsMapReady(true);
 
     /**
@@ -1087,6 +1113,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       map.off('resize', applyMinZoom);
       try { map.remove(); } catch { /* already gone */ }
       mapRef.current = null;
+      clusterViewRef.current = null;
       markersRef.current.clear();
     };
     // Mount only: centre and zoom are driven by their own effect below.
@@ -3188,7 +3215,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // group on every single one.
     cluster.addLayers(markers);
 
-    map.addLayer(cluster);
+    (clusterViewRef.current ?? map).addLayer(cluster);
     clusterRef.current = cluster;
   }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenDetailModal, iconForId]);
 
