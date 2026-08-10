@@ -147,8 +147,13 @@ export const FACILITY_COLOR: Record<NearbyFacilityKind, string> = {
   trail: COLOR.trail,
   fishing: COLOR.fishing,
   boat: COLOR.boat,
-  waste: COLOR.waste
+  waste: COLOR.waste,
+  road: COLOR.road
 };
+
+/** "300 m" under a kilometre, "1.4 km" over it. */
+const nearDistance = (km: number): string =>
+  km < 1 ? `${Math.max(10, Math.round((km * 1000) / 10) * 10)} m` : `${km.toFixed(1)} km`;
 
 /**
  * A live hazard over this spot — smoke, a heat warning, a fire.
@@ -536,15 +541,42 @@ export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
     // closest and the rest stay out of the way. Nothing is being hidden that
     // the camper is closer to.
     .slice(0, 6)
-    .map((f) => ({
-      key: `near-${f.id}`,
-      color: FACILITY_COLOR[f.kind],
-      label: `${f.distanceKm} km`,
-      full: `${FACILITY_LABEL[f.kind]} ${f.distanceKm} km away \u2014 tap for a route`,
-      glyph: FACILITY_GLYPH[f.kind],
-      tone: 'good' as const,
-      facility: f
-    }));
+    .map((f) => {
+      /**
+       * The road chip is worded differently because it is a weaker claim.
+       *
+       * A toilet chip means somebody mapped a toilet. A road chip means only
+       * that a driveable track passes near this point — not that it is open,
+       * passable in your vehicle, ungated, or that it ever reaches anywhere
+       * you could park for the night. The full text says so, because this is
+       * the chip most likely to be read as "you can camp here".
+       */
+      if (f.kind === 'road') {
+        return {
+          key: `near-${f.id}`,
+          color: FACILITY_COLOR.road,
+          label: `Road ${nearDistance(f.distanceKm)}`,
+          full:
+            `A driveable track runs about ${nearDistance(f.distanceKm)} from here` +
+            `${f.name ? ` (${f.name})` : ''} \u2014 tap to see it. ` +
+            'A road nearby is not a campsite: it may be gated, seasonal, ' +
+            'impassable, or never widen into anywhere you could stop.',
+          glyph: FACILITY_GLYPH.road,
+          tone: 'good' as const,
+          facility: f
+        };
+      }
+
+      return {
+        key: `near-${f.id}`,
+        color: FACILITY_COLOR[f.kind],
+        label: `${f.distanceKm} km`,
+        full: `${FACILITY_LABEL[f.kind]} ${f.distanceKm} km away \u2014 tap for a route`,
+        glyph: FACILITY_GLYPH[f.kind],
+        tone: 'good' as const,
+        facility: f
+      };
+    });
 
 /**
  * How many dots a collapsed pin shows before it stops.

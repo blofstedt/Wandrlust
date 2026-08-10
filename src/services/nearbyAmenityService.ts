@@ -61,7 +61,7 @@ interface OverpassElement {
  * where I sleep tonight" — which is true of a toilet and a water tap, and not
  * true of a picnic bench.
  */
-const KIND_QUERY: Record<NearbyFacilityKind, string[]> = {
+const KIND_QUERY: Record<Exclude<NearbyFacilityKind, 'road'>, string[]> = {
   toilet: ['node["amenity"="toilets"]', 'way["amenity"="toilets"]'],
   shower: ['node["amenity"="shower"]', 'way["amenity"="shower"]'],
   water: [
@@ -101,7 +101,8 @@ export const FACILITY_LABEL: Record<NearbyFacilityKind, string> = {
   trail: 'Trailhead',
   fishing: 'Fishing spot',
   boat: 'Boat ramp',
-  waste: 'Rubbish disposal'
+  waste: 'Rubbish disposal',
+  road: 'Driveable road'
 };
 
 export const FACILITY_GLYPH: Record<NearbyFacilityKind, string> = {
@@ -114,7 +115,8 @@ export const FACILITY_GLYPH: Record<NearbyFacilityKind, string> = {
   trail: '🥾',
   fishing: '🎣',
   boat: '🛶',
-  waste: '🗑️'
+  waste: '🗑️',
+  road: '🛣️'
 };
 
 /** Which kind an element is, from the tags it came back with. */
@@ -214,4 +216,108 @@ export const fetchNearbyFacilities = async (
   }
 
   return EMPTY;
+};
+
+/* ------------------------------------------------------------------ *
+ * The nearest driveable road
+ * ------------------------------------------------------------------ */
+/**
+ * WHY THIS EXISTS, AND WHAT IT REFUSES TO SAY.
+ *
+ * Public-land polygons used to be painted across the map, which is a lot of
+ * colour saying very little: a wash over half a state does not tell a camper
+ * where they could actually put a van. The other tempting answer — computing
+ * "drive-up spots" for every parcel in the country and dropping pins on them —
+ * is worse, because a pin on a map is a promise, and the only thing that data
+ * can honestly support is "there is a road here".
+ *
+ * So this is that, and only that, asked about ONE point the camper has already
+ * tapped: what is the nearest track a vehicle could use? It is a hint about
+ * access, not a campsite. The chip it produces says the distance and nothing
+ * about legality, surface, gates, seasonal closures, or whether the road ever
+ * widens into somewhere you could stop.
+ *
+ * Never throws; a failure is `null`, which draws no chip at all rather than
+ * "no road nearby".
+ */
+
+/**
+ * Roads worth mentioning to somebody looking for dispersed camping.
+ *
+ * Tracks and unclassified/service roads are what forest and BLM roads are
+ * tagged as. Motorways, trunks and primaries are excluded on purpose: you
+ * cannot camp off an interstate, and a chip pointing at one is noise.
+ */
+const DRIVEABLE_HIGHWAY = /^(track|unclassified|service|residential|tertiary)$/;
+
+/** How far out we look for a road, in km. Past this it is not "access". */
+export const ROAD_RADIUS_KM = 2;
+
+interface OverpassWay extends OverpassElement {
+  geometry?: { lat: number; lon: number }[];
+}
+
+export const fetchNearestDriveableRoad = async (
+  latitude: number,
+  longitude: number,
+  radiusKm = ROAD_RADIUS_KM,
+  signal?: AbortSignal
+): Promise<NearbyFacility | null> => {
+  const metres = Math.round(radiusKm * 1000);
+  const around = `(around:${metres},${latitude.toFixed(5)},${longitude.toFixed(5)})`;
+  // `out geom` rather than `out center`: a road is a line, and the centre of a
+  // 20 km forest road can be nowhere near the point that matters.
+  const query =
+    `[out:json][timeout:15];\n` +
+    `way["highway"]["highway"!~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|footway|path|cycleway|steps|bridleway)$"]${around};\n` +
+    `out geom 120;`;
+
+  for (const mirror of OVERPASS_MIRRORS) {
+    try {
+      const res = await fetch(mirror, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+        signal
+      });
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      if (!Array.isArray(data?.elements)) continue;
+
+      let best: NearbyFacility | null = null;
+
+      for (const way of data.elements as OverpassWay[]) {
+        const tags = way.tags ?? {};
+        const highway = tags.highway ?? '';
+        if (!DRIVEABLE_HIGHWAY.test(highway)) continue;
+
+        // A gated or private road is not access. `motor_vehicle=no` catches
+        // the hiking-only tracks that are still tagged as tracks.
+        if (tags.access === 'private' || tags.access === 'no') continue;
+        if (tags.motor_vehicle === 'private' || tags.motor_vehicle === 'no') continue;
+
+        for (const point of way.geometry ?? []) {
+          const km = distanceKm(latitude, longitude, point.lat, point.lon);
+          if (km > radiusKm) continue;
+          if (best && best.distanceKm <= km) continue;
+
+          best = {
+            id: `osm-way-${way.id}`,
+            kind: 'road',
+            name: tags.name?.trim() || tags.ref?.trim() || undefined,
+            latitude: point.lat,
+            longitude: point.lon,
+            distanceKm: Math.round(km * 100) / 100
+          };
+        }
+      }
+
+      return best;
+    } catch {
+      if (signal?.aborted) return null;
+    }
+  }
+
+  return null;
 };

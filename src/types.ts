@@ -357,9 +357,18 @@ export interface GuideSection {
  * survey, never an absence of facilities.
  * ------------------------------------------------------------------ */
 
+/**
+ * `road` is the odd one out and deliberately so.
+ *
+ * It is not a facility somebody built; it is the nearest driveable track,
+ * looked up only for a point sitting in public land, to answer "could I get
+ * a vehicle anywhere near here?". It rides in the facility list because it
+ * behaves identically once found — a chip on the pin, framed and routed when
+ * tapped — but it is never a claim that the road reaches a place to camp.
+ */
 export type NearbyFacilityKind =
   | 'toilet' | 'shower' | 'water' | 'dump' | 'fuel' | 'groceries'
-  | 'trail' | 'fishing' | 'boat' | 'waste';
+  | 'trail' | 'fishing' | 'boat' | 'waste' | 'road';
 
 export interface NearbyFacility {
   id: string;
