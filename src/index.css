@@ -406,9 +406,12 @@
   border: 2px solid var(--wl-dot-color);
   box-shadow: 0 0 0 1px rgba(2, 6, 23, 0.7);
 }
-/* Something wrong here — a warning, or a recorded absence. It breathes,
-   so a hazard is noticeable on a map full of resting pins. */
-.wl-dot-bad { animation: wl-dot-breathe 1.8s var(--ease-standard) infinite; }
+/* Only a hazard happening RIGHT NOW breathes: a fire, a heat warning, a
+   cold snap, smoke. It used to be every "bad" dot, which included the
+   recorded absences — "no water", "fee charged" — so a pin with nothing
+   wrong with it still twitched at you and the fire had no way to stand out
+   from the fee. Static bad news keeps its colour and holds still. */
+.wl-dot-urgent { animation: wl-dot-breathe 1.8s var(--ease-standard) infinite; }
 .wl-dot-more { opacity: 0.85; }
 
 @keyframes wl-dot-breathe {
@@ -537,50 +540,6 @@
 .leaflet-control-zoom a:active { transform: scale(0.92); }
 
 /* ====================================================================
-   Active-fire layer.
-
-   Just the flame — no white disc behind it. The halo used to be here to
-   lift an orange flame off brown satellite imagery, but it turned every
-   fire into a UI button stuck on the map and read as chrome rather than
-   terrain. The flame carries its own dark outline (drawn with
-   paint-order: stroke, so the outline sits outside the fill), and the
-   drop shadow below separates it from the basemap the same way the
-   disc did, without boxing it in.
-   ==================================================================== */
-.wl-fire-flame {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-}
-.wl-fire-flame svg {
-  display: block;
-  /* Two shadows: a tight dark one for contrast on bright ground, and a
-     wider soft one so the flame still separates from dark forest. */
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.85))
-          drop-shadow(0 0 4px rgba(0, 0, 0, 0.45));
-}
-
-/* Popup: tone the Leaflet default chrome so the fire card matches
-   the rest of the app's bottom-sheet dark surface. */
-.wl-fire-popup .leaflet-popup-content-wrapper {
-  background: rgb(15 23 42);
-  color: rgb(241 245 249);
-  border: 1px solid rgb(51 65 85);
-  border-radius: 12px;
-}
-.wl-fire-popup .leaflet-popup-tip {
-  background: rgb(15 23 42);
-  border: 1px solid rgb(51 65 85);
-}
-.wl-fire-popup .leaflet-popup-content {
-  margin: 10px 12px;
-  font-family: inherit;
-  line-height: 1.4;
-}
-
-/* ====================================================================
    Reduced motion — everything above collapses here.
 
    Users who set this at OS level often do so because motion makes them
@@ -611,7 +570,7 @@
   }
 
   .skeleton { animation: none; background: rgb(30 41 59); }
-  .anim-pulse, .anim-pulse-danger { animation: none; }
+  .anim-pulse, .anim-pulse-danger, .wl-dot-urgent { animation: none; }
 }
 
 /* High-contrast preference: strengthen borders. */

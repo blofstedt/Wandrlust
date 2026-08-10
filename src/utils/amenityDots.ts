@@ -4,6 +4,7 @@ import {
 } from './amenities';
 import { AlertBadge, BADGE_COLOR, WARNING_EMOJI, WARNING_LABEL } from './alertOverlay';
 import { FACILITY_GLYPH, FACILITY_LABEL } from '../services/nearbyAmenityService';
+import { isUnderControl, type ActiveFire } from '../services/fireService';
 
 /**
  * THE COLOURED DOTS THAT SIT ABOVE A PIN.
@@ -47,6 +48,17 @@ export interface MarkerDot {
   glyph: string;
   tone: DotTone;
   /**
+   * This one moves.
+   *
+   * Reserved for a hazard happening NOW — a fire burning up the valley, a
+   * heat warning, a cold snap, smoke. Everything else holds still, including
+   * the bad-but-static facts like "no water" or "fee charged": those are
+   * worth a colour, not a heartbeat. Motion is the loudest thing a 7px dot
+   * can do, so spending it on a fee turned the whole row into a twitch and
+   * left the fire with nothing louder to say.
+   */
+  urgent?: boolean;
+  /**
    * Solid, or a ring of the same colour.
    *
    * A ring means "somebody checked and the answer was no" — never "unknown",
@@ -85,7 +97,11 @@ const COLOR = {
   dump: '#A3E635',
   fuel: '#FB7185',
   groceries: '#F0ABFC',
-  warn: '#FB7185'
+  warn: '#FB7185',
+  /* The two fire colours the map's flame layer used, kept so the dot above a
+     pin says exactly what the flame used to. */
+  fireRunning: '#EF4444',
+  fireHeld: '#F97316'
 } as const;
 
 /** The colour a nearby facility's dot and its route line are drawn in. */
@@ -112,8 +128,48 @@ export const hazardDots = (badges: AlertBadge[]): MarkerDot[] =>
     color: BADGE_COLOR[b],
     label: WARNING_LABEL[b],
     glyph: WARNING_EMOJI[b],
-    tone: 'bad' as const
+    tone: 'bad' as const,
+    urgent: true
   }));
+
+/**
+ * An active fire burning near this point.
+ *
+ * THE FLAMES USED TO BE DRAWN ON THE MAP and are not any more. Scattering
+ * every incident in the viewport across the map made the fire feed look like
+ * the subject of the app: a dozen flames over ground the camper was never
+ * going to visit, each of them a tappable thing competing with the pins. The
+ * data still matters, but only ever as an answer about a PLACE — so it is
+ * now one dot above the point being read, in the same row as everything else
+ * about that point, and the full list is a tap away in the card.
+ *
+ * One dot however many fires: what changes a decision is the nearest one and
+ * roughly how much is burning, not each incident's name. Colour follows the
+ * agency's own reading — red while it is not reported under control, orange
+ * once it is — and the label never rounds "under control" up to "safe",
+ * because a contained fire is still a fire and its smoke does not stop at the
+ * containment line.
+ */
+export const fireDots = (
+  near: Array<{ fire: ActiveFire; distanceKm: number }>
+): MarkerDot[] => {
+  const nearest = near[0];
+  if (!nearest) return [];
+
+  const running = near.some((n) => !isUnderControl(n.fire));
+  const km = nearest.distanceKm;
+  const distance = km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(km < 10 ? 1 : 0)} km`;
+  const count = near.length > 1 ? `${near.length} active fires, nearest` : 'Active fire';
+
+  return [{
+    key: 'fire-near',
+    color: running ? COLOR.fireRunning : COLOR.fireHeld,
+    label: `${count} ${distance} away${running ? '' : ' — reported under control'}`,
+    glyph: '\u{1F525}',
+    tone: 'bad',
+    urgent: true
+  }];
+};
 
 /**
  * Everything recorded about the spot itself, in the order a camper deciding

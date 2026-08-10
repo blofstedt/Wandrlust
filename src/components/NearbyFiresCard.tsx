@@ -20,7 +20,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { Flame, TriangleAlert } from 'lucide-react';
-import { fetchActiveFires, findFiresNear, ActiveFire } from '../services/fireService';
+import { fetchActiveFires, findFiresNear, boxAround, ActiveFire } from '../services/fireService';
 
 interface NearbyFiresCardProps {
   latitude: number;
@@ -28,25 +28,6 @@ interface NearbyFiresCardProps {
   /** Search radius in km. 25 is the project's default. */
   radiusKm?: number;
 }
-
-/** Pad a point by `radiusKm` in degrees — rough but good enough
- *  for "is there a fire within X km of me" bbox queries. 1° lat
- *  ≈ 111 km; 1° lon shrinks with latitude and we want to
- *  over-include rather than miss, so use 1/100 of the lat
- *  conversion. */
-const padBox = (lat: number, lon: number, radiusKm: number) => {
-  const padLat = radiusKm / 111;
-  // 1° lon at the equator is 111 km; at high latitudes it shrinks.
-  // We use cos(lat) to account for that, then add a 1.2× safety
-  // margin so the bbox always contains the radius circle.
-  const padLon = (radiusKm / (111 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)))) * 1.2;
-  return {
-    minLat: lat - padLat,
-    minLon: lon - padLon,
-    maxLat: lat + padLat,
-    maxLon: lon + padLon
-  };
-};
 
 const formatKm = (km: number): string => {
   if (km < 1) return `${Math.round(km * 1000)} m`;
@@ -87,7 +68,7 @@ const useNearbyFires = (latitude: number, longitude: number, radiusKm: number) =
 
     const timer = setTimeout(async () => {
       controller = new AbortController();
-      const box = padBox(latitude, longitude, radiusKm);
+      const box = boxAround(latitude, longitude, radiusKm);
       const data = await fetchActiveFires(box, controller.signal);
       if (cancelled) return;
       if (data.meta.errors.length > 0 && data.features.length === 0) {

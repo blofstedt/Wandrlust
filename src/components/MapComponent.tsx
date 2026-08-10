@@ -21,7 +21,9 @@ import {
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
-import { fetchActiveFires, isUnderControl, ActiveFire } from '../services/fireService';
+import {
+  fetchActiveFires, findFiresNear, boxAround, FIRE_ALERT_RADIUS_KM, ActiveFire
+} from '../services/fireService';
 import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
 import { isOnLand, primeLandMask } from '../services/landService';
 import {
@@ -33,7 +35,7 @@ import {
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
-  MarkerDot, amenityDots, facilityDots, hazardDots, COLLAPSED_DOT_LIMIT,
+  MarkerDot, amenityDots, facilityDots, fireDots, hazardDots, COLLAPSED_DOT_LIMIT,
   FACILITY_COLOR
 } from '../utils/amenityDots';
 import {
@@ -208,53 +210,75 @@ const TENT_SVG =
  *
  * A dot only ever stands for something somebody recorded. See `amenityDots`.
  */
-const buildCampsiteIcon = (isSelected: boolean, dots: MarkerDot[] = []): L.DivIcon => {
+/**
+ * Resting: colour only, no words. The pin is the label.
+ *
+ * Only a live hazard breathes. Everything else — including a recorded "no
+ * water" — is bad news that already happened and holds still, so the one dot
+ * that is moving on a screenful of pins is always something burning, blowing
+ * or freezing right now.
+ */
+const collapsedDotRow = (dots: MarkerDot[]): string => {
   const overflow = Math.max(0, dots.length - COLLAPSED_DOT_LIMIT);
+  const cells = dots
+    .slice(0, COLLAPSED_DOT_LIMIT)
+    .map(
+      (d) =>
+        `<i class="wl-dot${d.urgent ? ' wl-dot-urgent' : ''}` +
+        `${d.hollow ? ' wl-dot-hollow' : ''}" ` +
+        `style="--wl-dot-color:${d.color}"></i>`
+    )
+    .join('');
+  const more = overflow
+    ? `<i class="wl-dot wl-dot-more" style="--wl-dot-color:#94a3b8"></i>`
+    : '';
+  return `<div class="wl-dots">${cells}${more}</div>`;
+};
 
-  /** Resting: colour only, no words. The pin is the label. */
-  const collapsedRow = (): string => {
-    const shown = dots.slice(0, COLLAPSED_DOT_LIMIT);
-    const cells = shown
-      .map(
-        (d) =>
-          `<i class="wl-dot${d.tone === 'bad' ? ' wl-dot-bad' : ''}` +
-          `${d.hollow ? ' wl-dot-hollow' : ''}" ` +
-          `style="--wl-dot-color:${d.color}"></i>`
-      )
-      .join('');
-    const more = overflow
-      ? `<i class="wl-dot wl-dot-more" style="--wl-dot-color:#94a3b8"></i>`
-      : '';
-    return `<div class="wl-dots">${cells}${more}</div>`;
-  };
+/**
+ * Escape text before it goes into a divIcon's HTML.
+ *
+ * A chip's label carries an OpenStreetMap facility name and a campsite's
+ * recorded facts, so the worst realistic case is a malformed upstream record —
+ * but it lands in innerHTML, so it gets escaped.
+ */
+const escapeHtml = (s: string): string => s
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
 
-  /**
-   * Tapped: the same dots, each grown into the fact it stood for.
-   *
-   * A chip carrying a facility is a button rather than a label — it is
-   * somewhere you can go, so it opts back into pointer events and carries the
-   * facility id for the click handler on the marker.
-   */
-  const expandedRow = (): string => {
-    const chips = dots
-      .map((d, i) => {
-        const go = d.facility;
-        return (
-          `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
-          `${go ? ' wl-chip-go' : ''}" ` +
-          `${go ? `data-facility="${escapeHtml(go.id)}" role="button" tabindex="0" ` : ''}` +
-          `style="--wl-chip-color:${d.color};animation-delay:${i * 26}ms">` +
-          `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
-          `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
-          `${escapeHtml(d.label)}` +
-          `${go ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
-        );
-      })
-      .join('');
-    return `<div class="wl-chips">${chips}</div>`;
-  };
+/**
+ * Tapped: the same dots, each grown into the fact it stood for.
+ *
+ * A chip carrying a facility is a button rather than a label — it is
+ * somewhere you can go, so it opts back into pointer events and carries the
+ * facility id for the click handler on the marker.
+ */
+const expandedDotRow = (dots: MarkerDot[]): string => {
+  const chips = dots
+    .map((d, i) => {
+      const go = d.facility;
+      return (
+        `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
+        `${go ? ' wl-chip-go' : ''}" ` +
+        `${go ? `data-facility="${escapeHtml(go.id)}" role="button" tabindex="0" ` : ''}` +
+        `style="--wl-chip-color:${d.color};animation-delay:${i * 26}ms">` +
+        `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
+        `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
+        `${escapeHtml(d.label)}` +
+        `${go ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
+      );
+    })
+    .join('');
+  return `<div class="wl-chips">${chips}</div>`;
+};
 
-  const row = dots.length ? (isSelected ? expandedRow() : collapsedRow()) : '';
+const buildCampsiteIcon = (isSelected: boolean, dots: MarkerDot[] = []): L.DivIcon => {
+  const row = dots.length
+    ? (isSelected ? expandedDotRow(dots) : collapsedDotRow(dots))
+    : '';
 
   return L.divIcon({
     className: 'custom-campsite-marker',
@@ -311,12 +335,20 @@ const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
  * A teardrop rather than a circle, so at a glance it never reads as one of the
  * data pins around it. This is the one marker on the map that came from the
  * user rather than from a source.
+ *
+ * IT CARRIES THE SAME ROW OF FACTS A SUBMITTED SPOT DOES. Tapping bare ground
+ * is a camper asking "what is it like here?", and the answer used to be split:
+ * warnings and fires were painted across the map as separate features, and the
+ * pin itself said nothing. Now whatever is true of this patch of ground —
+ * warnings over it, a fire burning near it, a toilet up the road — is stacked
+ * above the pin in words, the same as it is above a spot somebody submitted.
  */
-const buildDestinationIcon = (): L.DivIcon =>
+const buildDestinationIcon = (dots: MarkerDot[] = []): L.DivIcon =>
   L.divIcon({
     className: 'destination-marker',
     html: `
       <div class="relative flex items-end justify-center anim-pin-drop">
+        ${dots.length ? expandedDotRow(dots) : ''}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
           <path d="M12 1c5.2 0 9.4 4.2 9.4 9.4 0 6.8-9.4 20.6-9.4 20.6S2.6 17.2 2.6 10.4C2.6 5.2 6.8 1 12 1z"
@@ -546,138 +578,22 @@ const parcelFingerprint = (collection: BoundaryCollection): string => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Active fire rendering                                                */
+/* Active fires: no longer drawn on the map                             */
 /* ------------------------------------------------------------------ */
-
 /**
- * Flame colours. One pair, used by the icon, the perimeter outline and
- * the layer-menu key, so the three can never drift apart.
+ * The flame markers, the burn perimeters and their popups used to live here.
+ * They are gone, and the fire data is not.
  *
- *   red    — still running. The agency has not reported it under control.
- *   orange — reported held / contained / under control. Still burning,
- *            still worth knowing about, just not spreading.
+ * Scattering every incident in the viewport across the map made the feed look
+ * like the subject of the app: a dozen flames over country the camper was
+ * never going to visit, each one tappable and each one competing with the
+ * pins for the same square inch. What a camper actually asks is about a
+ * PLACE — "is anything burning near here?" — so fires now answer as part of a
+ * point: a breathing dot above the pin you tapped (`fireDots`), and the full
+ * list with sizes and containment in the card underneath it
+ * (`NearbyFiresCard`). Same feed, same numbers, asked at the moment it means
+ * something.
  */
-const FIRE_COLOR = {
-  running: { fill: '#EF4444', stroke: '#450A0A' },   // red-500 on red-950
-  controlled: { fill: '#F97316', stroke: '#431407' } // orange-500 on orange-950
-} as const;
-
-/**
- * The flame drawn at a fire's location. US and Canada, perimeter and
- * point — the same icon every time.
- *
- * It used to be Canada-only: a US fire was a bare red polygon outline
- * with no marker, so at any zoom where the perimeter was smaller than a
- * fingertip there was nothing to see and nothing to tap. Now the flame
- * marks every fire and the polygon is the extra detail on top of it.
- *
- * There is no white disc behind the flame any more. The halo made every
- * fire look like a UI button pinned to the map; a dark outline on the
- * flame plus a drop shadow (see `.wl-fire-flame` in index.css) keeps it
- * readable over satellite imagery without the chrome.
- *
- * Inline SVG so a single divIcon is one DOM node. `paint-order: stroke`
- * puts the dark edge outside the fill, so the flame keeps its shape
- * instead of being eaten by its own outline.
- */
-const buildFirePointHtml = (underControl: boolean): string => {
-  const c = underControl ? FIRE_COLOR.controlled : FIRE_COLOR.running;
-  return `
-  <div class="wl-fire-flame">
-    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
-      <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"
-        fill="${c.fill}" stroke="${c.stroke}" stroke-width="1.6"
-        stroke-linejoin="round" stroke-linecap="round" paint-order="stroke" />
-    </svg>
-  </div>
-`;
-};
-
-/**
- * Escape user-supplied text before it goes into a popup. The fire name
- * is from the issuing agency (WFIGS or FireRadar), so the worst case is
- * a misformatted upstream record, but a stray `<script>` tag in a name
- * would land in innerHTML; escape it.
- */
-const escapeHtml = (s: string): string => s
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;');
-
-const formatSize = (fire: ActiveFire): string => {
-  // Prefer hectares (CA reports in ha, US in acres). The other field is
-  // a derived approximation, so a single number with a unit is the
-  // honest thing to show.
-  if (fire.sizeHa != null && fire.sizeHa >= 0.1) {
-    return `${fire.sizeHa.toFixed(fire.sizeHa < 10 ? 1 : 0)} ha`;
-  }
-  if (fire.sizeAcres != null && fire.sizeAcres >= 0.1) {
-    return `${Math.round(fire.sizeAcres).toLocaleString()} acres`;
-  }
-  if (fire.sizeHa != null) return '< 0.1 ha';
-  if (fire.sizeAcres != null) return '< 0.1 acres';
-  return 'size unknown';
-};
-
-/**
- * Popup body for a fire — what the user gets when they tap a perimeter
- * outline or a flame dot. Two lines of header (name + region), then a
- * small table of attributes, all from the upstream record.
- */
-const buildFirePopupHtml = (fire: ActiveFire): string => {
-  const controlled = isUnderControl(fire);
-  const rows: Array<[string, string]> = [];
-  rows.push(['Size', formatSize(fire)]);
-  if (fire.contained != null) {
-    rows.push(['Contained', `${Math.round(fire.contained)}%`]);
-  }
-  if (fire.status) {
-    rows.push(['Status', escapeHtml(fire.status)]);
-  }
-  if (fire.discovered) {
-    const d = new Date(fire.discovered);
-    if (Number.isFinite(d.getTime())) {
-      rows.push(['Discovered', d.toISOString().slice(0, 10)]);
-    }
-  }
-  if (fire.cause) {
-    rows.push(['Cause', escapeHtml(fire.cause)]);
-  }
-  const source = fire.country === 'US' ? 'WFIGS / NIFC' : 'FireRadar (provincial feeds)';
-
-  const rowsHtml = rows.map(([k, v]) =>
-    `<div class="flex justify-between text-[11px] py-0.5">
-       <span class="text-slate-400">${escapeHtml(k)}</span>
-       <span class="text-slate-100 font-semibold">${v}</span>
-     </div>`
-  ).join('');
-
-  /**
-   * The colour has to say what it means somewhere, and the popup is the
-   * one place the user is already asking "what is this?". The wording is
-   * careful: "not reported under control" is what we actually know, and
-   * is not the same claim as "out of control".
-   */
-  const c = controlled ? FIRE_COLOR.controlled : FIRE_COLOR.running;
-  const stateText = controlled
-    ? 'Reported under control'
-    : 'Not reported under control';
-
-  return `
-    <div class="font-sans text-slate-100 min-w-[180px]">
-      <div class="text-[13px] font-bold leading-tight">${escapeHtml(fire.name)}</div>
-      <div class="text-[10px] uppercase tracking-wider text-slate-400 mb-2">${escapeHtml(fire.region)}</div>
-      <div class="flex items-center gap-1.5 mb-2">
-        <span style="width:8px;height:8px;border-radius:9999px;background:${c.fill};display:inline-block;flex:none"></span>
-        <span class="text-[10px] font-bold" style="color:${c.fill}">${stateText}</span>
-      </div>
-      <div class="border-t border-slate-700 pt-1.5">${rowsHtml}</div>
-      <div class="text-[9px] text-slate-500 mt-1.5">Source: ${source}</div>
-    </div>
-  `;
-};
 
 /** Pull the fields we show from a boundary feature's properties. */
 const landFromFeature = (properties: Record<string, any> | undefined): DestinationLand | undefined => {
@@ -842,6 +758,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const preFocusViewRef = useRef<{ center: L.LatLng; zoom: number } | null>(null);
   /** Facilities near the selected spot, for the tappable chips. */
   const facilitiesRef = useRef<NearbyFacility[]>([]);
+  /** Fires near the open point, read by the icon builders. */
+  const nearbyFiresRef = useRef<Array<{ fire: ActiveFire; distanceKm: number }>>([]);
   /** The line and end marker drawn for the facility the camper tapped. */
   const facilityLayerRef = useRef<L.LayerGroup | null>(null);
 
@@ -867,8 +785,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
-  /** Active-fire layer (perimeters + points). Cleared when `showFires` is off. */
-  const fireLayerRef = useRef<L.LayerGroup | null>(null);
   /** State / province boundary lines. Cleared when `showAdmin1` is off. */
   const admin1LayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
@@ -909,17 +825,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const [showWarnings, setShowWarnings] = useState(true);
   /**
-   * Active-fire layer. ON by default.
-   *
-   * The comment here used to say the toggle did nothing because there was no
-   * fire data source yet. There is one — /api/fires merges the US WFIGS
-   * perimeters with the Canadian FireRadar points — and defaulting the layer
-   * off meant a camper had to know the toggle existed before the app would
-   * show them a fire burning where they were headed. Same reasoning as the
-   * warning layer above: this is the safety feature, so it starts on.
-   */
-  const [showFires, setShowFires] = useState(true);
-  /**
    * State / province boundary lines. ON by default.
    *
    * They used to start off, on the reasoning that a state line is context
@@ -946,6 +851,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     route: RouteResult | null;
     loading: boolean;
   } | null>(null);
+  /**
+   * Fires burning within `FIRE_ALERT_RADIUS_KM` of the point being read.
+   *
+   * Looked up per open point rather than per viewport — see the effect below
+   * and the note where the map's flame layer used to be. Empty means "not
+   * asked, or nothing came back", which is never rendered as "no fires".
+   */
+  const [nearbyFires, setNearbyFires] = useState<
+    Array<{ fire: ActiveFire; distanceKm: number }>
+  >([]);
+
+  /**
+   * The one point the app is currently answering questions about.
+   *
+   * A tapped campsite and a dropped pin are the same question — "what is it
+   * like here?" — so the facility and fire lookups hang off this rather than
+   * off `selectedCampsite`. That is what lets a pin on bare ground carry the
+   * same row of dots a submitted spot does.
+   */
+  const readLat = destination?.latitude ?? null;
+  const readLon = destination?.longitude ?? null;
+
   /* ------------------------------------------------------------------ */
   /* Map lifecycle                                                       */
   /* ------------------------------------------------------------------ */
@@ -2082,13 +2009,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     clear();
     if (!destination || destination.campsite) return;
 
+    /**
+     * The same row of facts a submitted spot gets, for a patch of bare
+     * ground: what is warned over it, what is burning near it, what is up
+     * the road. Expanded rather than collapsed, because a dropped pin is by
+     * definition the pin the camper is reading.
+     */
+    const dots = [
+      ...hazardDots(badgesForPoint(destination.latitude, destination.longitude, hazards)),
+      ...fireDots(nearbyFires),
+      ...facilityDots(facilities)
+    ];
+
     destinationMarkerRef.current = L.marker(
       [destination.latitude, destination.longitude],
-      { icon: buildDestinationIcon(), title: 'Your chosen spot', zIndexOffset: 900 }
+      { icon: buildDestinationIcon(dots), title: 'Your chosen spot', zIndexOffset: 900 }
     ).addTo(map);
 
     return clear;
-  }, [destination, isMapReady]);
+  }, [destination, isMapReady, hazards, nearbyFires, facilities]);
 
   /**
    * Park the pin in the map you can still see.
@@ -2745,225 +2684,46 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady, isOfflineMode, showWarnings]);
 
   /* ------------------------------------------------------------------ */
-  /* Active fires (WFIGS US perimeters + FireRadar CA points)           */
+  /* Active fires near the point being read                              */
   /* ------------------------------------------------------------------ */
   /**
-   * Fetch and draw the active-fire layer.
+   * Ask "is anything burning near HERE" once, for the one point that is open.
    *
-   *   - On by default (`showFires`); when off we clear what is drawn and
-   *     skip the fetch. The per-pin card reads from this same data
-   *     independently of the toggle, so a hidden layer still surfaces
-   *     "fire X km away" on the pin.
-   *   - ONLY ACTIVE FIRES ARE HERE AT ALL. `/api/fires` drops incidents
-   *     the agency has declared out, so this layer never has to decide
-   *     what "active" means — it draws what it's given.
-   *   - Every fire gets a flame, coloured by control state: orange when
-   *     the agency reports it under control, red when it doesn't. A US
-   *     perimeter and a Canadian point look the same, because to a
-   *     camper they mean the same thing.
-   *   - Perimeters (US, WFIGS) additionally get a thin stroke and faint
-   *     fill of the burn footprint. The fire's actual size is in
-   *     `sizeAcres`; we do not try to scale anything by acreage, because
-   *     the user wants "there is a fire here", not "this fire is bigger
-   *     than that fire".
-   *   - Pane above the boundary fills, below the campsite pins. A flame
-   *     marker on the map is worth more than the pin beneath it and has
-   *     to be tappable to open its popup, same as a warning icon.
-   *   - The fetch is debounced 250 ms, refetched on `moveend zoomend`
-   *     when the new viewport is outside the loaded box. Cancel the
-   *     in-flight request on the next move, the same requestId guard
-   *     the warning and boundary effects use, so a slow older fetch
-   *     does not overwrite a newer one (the "shows up then disappears"
-   *     flicker).
+   * This replaces the viewport-wide fire layer. That version fetched every
+   * incident on screen and drew a flame on each; this one fetches a padded box
+   * around the open pin and turns the answer into a single dot above it. It
+   * costs one request per selection instead of one per pan, and nothing is
+   * drawn on ground the camper has not asked about.
+   *
+   * Debounced and aborted on the way out, like the facility lookup, so walking
+   * down a line of pins does not leave the previous pin's fires over the new
+   * one. Offline it stays empty — and empty means "not asked", never "clear".
    */
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapReady) return;
+    setNearbyFires([]);
+    if (readLat === null || readLon === null || isOfflineMode) return;
 
-    const clear = (): void => {
-      if (!fireLayerRef.current) return;
-      try { map.removeLayer(fireLayerRef.current); } catch { /* detached */ }
-      fireLayerRef.current = null;
-    };
-
-    if (isOfflineMode) {
-      clear();
-      return;
-    }
-
-    if (!showFires) {
-      // Layer off: clear what's drawn but leave the cached fetch in
-      // place, so flipping the layer back on is instant.
-      clear();
-      return;
-    }
-
-    // One pane, above the boundary fills. The user can tap the perim /
-    // point to read details, so the pane must be interactive.
-    if (!map.getPane('firePane')) {
-      map.createPane('firePane');
-      const pane = map.getPane('firePane');
-      if (pane) pane.style.zIndex = '560';
-    }
-
-    /** The raw viewport — what has to be COVERED by loaded data. */
-    const viewBox = (): BoundingBox => ({
-      minLat: map.getBounds().getSouth(),
-      minLon: map.getBounds().getWest(),
-      maxLat: map.getBounds().getNorth(),
-      maxLon: map.getBounds().getEast()
-    });
-
-    /**
-     * The area the drawn fires were fetched for, and a fingerprint of the
-     * fires themselves.
-     *
-     * BOTH OF THESE EXIST TO STOP THE LAYER REDRAWING ON EVERY PAN.
-     *
-     * The box used to be compared padded-against-padded: the loaded box was
-     * the padded viewport, and the next gesture's padded viewport was tested
-     * against it. A padded box shifts whenever the viewport shifts, so that
-     * test failed on essentially every pan — and each failure tore down every
-     * flame marker, every perimeter and every popup binding and rebuilt them.
-     * That is the flicker. The test is now the RAW viewport against the loaded
-     * box, so the 60% pad `requestBoxFor` adds is real slack: you can pan more
-     * than half a screen in any direction before anything is refetched.
-     *
-     * The fingerprint covers the rest. Crossing the edge of the loaded box
-     * refetches, but the national fire feed almost always returns the same
-     * incidents for the neighbouring box — and redrawing identical fires is
-     * pure churn. If nothing about the set changed, the layer on the map is
-     * left exactly as it is.
-     */
-    let loadedBox: BoundingBox | null = null;
-    let drawnSignature: string | null = null;
-    let requestId = 0;
-    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
     let cancelled = false;
-    let controller: AbortController | null = null;
 
-    const renderFires = (fires: ActiveFire[]): void => {
-      const group = L.layerGroup();
-      for (const fire of fires) {
-        /**
-         * Nothing burns on the grey. The national feeds cover more ground
-         * than this app does — Alaska, the territories, northern Mexico —
-         * and a flame drawn out there is a claim about an area the map has
-         * just said it doesn't cover.
-         */
-        if (!isWithinCoverage(fire.centroid.lat, fire.centroid.lon)) continue;
-        /**
-         * ONE BAD RECORD MUST NOT COST THE WHOLE LAYER.
-         *
-         * These loops build every fire into a group that is added to the map
-         * at the end, so anything that throws mid-loop threw away every fire
-         * already built — the entire layer vanished because a single feed
-         * record was malformed. Skip the bad one and draw the rest.
-         */
-        try {
-          const controlled = isUnderControl(fire);
-          const colour = controlled ? FIRE_COLOR.controlled : FIRE_COLOR.running;
-          const popup = buildFirePopupHtml(fire);
-
-          // The burn footprint, when the feed gives us one. Drawn first so
-          // the flame sits on top of its own perimeter.
-          if (fire.kind === 'perimeter') {
-            const poly = L.geoJSON(
-              { type: 'Feature', geometry: fire.geometry, properties: {} } as GeoJSON.Feature,
-              {
-                pane: 'firePane',
-                style: {
-                  color: colour.fill,
-                  weight: 1.5,
-                  opacity: 0.85,
-                  fillColor: colour.fill,
-                  fillOpacity: 0.12,
-                  // The polyline joins mustn't be smoothed — the data is
-                  // a satellite-derived footprint and the joins are
-                  // already the right shape.
-                  lineJoin: 'miter'
-                }
-              }
-            );
-            poly.bindPopup(popup, { className: 'wl-fire-popup' });
-            group.addLayer(poly);
-          }
-
-          // The flame. EVERY fire gets one, US and Canadian alike — a
-          // perimeter smaller than a fingertip is invisible and untappable
-          // without it, which is most perimeters at trip-planning zoom.
-          const marker = L.marker([fire.centroid.lat, fire.centroid.lon], {
-            pane: 'firePane',
-            icon: L.divIcon({
-              className: 'wl-fire-marker',
-              html: buildFirePointHtml(controlled),
-              iconSize: [26, 26],
-              iconAnchor: [13, 13]
-            })
-          });
-          marker.bindPopup(popup, { className: 'wl-fire-popup' });
-          group.addLayer(marker);
-        } catch { /* unusable geometry from the feed — draw the others */ }
-      }
-      // Swap in the new layer; the old one was already removed by `clear`.
-      const previous = fireLayerRef.current;
-      fireLayerRef.current = group.addTo(map);
-      if (previous) {
-        try { map.removeLayer(previous); } catch { /* detached */ }
-      }
-    };
-
-    const run = async (): Promise<void> => {
-      const view = viewBox();
-      // Everything on screen is inside data we already hold. Nothing to do —
-      // no fetch, and above all no redraw.
-      if (loadedBox && boxContains(loadedBox, view)) return;
-
-      const box = requestBoxFor(view, map.getZoom());
-      const myId = ++requestId;
-      controller?.abort();
-      controller = new AbortController();
-
+    const timer = setTimeout(async () => {
+      const box = boxAround(readLat, readLon, FIRE_ALERT_RADIUS_KM);
       const data = await fetchActiveFires(box, controller.signal);
-      if (cancelled || myId !== requestId) return;
-      // Only NOW is this area loaded. Marking it before the fetch meant a
-      // failed or aborted request still counted as "we have this area", so
-      // the layer stayed empty until the user panned somewhere new.
-      loadedBox = box;
-
-      const fires = data.features.map((f) => f.properties);
-      // Identity plus the one property that changes how a fire is drawn.
-      // Sorted, because feed ordering is not stable between requests and an
-      // order-sensitive fingerprint would report a change on every fetch.
-      const signature = fires
-        .map((f) => `${f.id}:${isUnderControl(f) ? 'c' : 'r'}`)
-        .sort()
-        .join('|');
-      if (signature === drawnSignature && fireLayerRef.current) return;
-      drawnSignature = signature;
-      renderFires(fires);
-    };
-
-    const schedule = (): void => {
-      if (debounce) clearTimeout(debounce);
-      // Same debounce as the boundary effect — 250 ms is short enough
-      // to feel instant and long enough to merge a flurry of moveends
-      // into a single fetch.
-      debounce = setTimeout(() => { run().catch(() => undefined); }, 250);
-    };
-
-    map.on('moveend zoomend', schedule);
-    // Initial fetch on (re-)enable.
-    schedule();
+      if (cancelled) return;
+      setNearbyFires(
+        findFiresNear(
+          data.features.map((f) => f.properties),
+          readLat, readLon, FIRE_ALERT_RADIUS_KM
+        )
+      );
+    }, 300);
 
     return () => {
       cancelled = true;
-      controller?.abort();
-      if (debounce) clearTimeout(debounce);
-      map.off('moveend zoomend', schedule);
-      clear();
+      controller.abort();
+      clearTimeout(timer);
     };
-  }, [isMapReady, isOfflineMode, showFires]);
+  }, [readLat, readLon, isOfflineMode]);
 
   /* ------------------------------------------------------------------ */
   /* State / province boundary lines (Natural Earth admin-1)           */
@@ -3158,6 +2918,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const isSelected = selectedIdRef.current === id;
     return buildCampsiteIcon(isSelected, [
       ...hazardDots(badgesByIdRef.current.get(id) ?? []),
+      // A fire burning up the valley, for the open pin only — it is one
+      // request per selection, and it is where the map's flame layer went.
+      ...(isSelected ? fireDots(nearbyFiresRef.current) : []),
       ...(amenityDotsRef.current.get(id) ?? []),
       // Facilities up the road belong to the open pin only — they are the
       // one part of the row you can tap through to, and they are only
@@ -3326,18 +3089,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   useEffect(() => {
     setFacilityTrip(null);
-    if (!selectedCampsite || isOfflineMode) {
+    if (readLat === null || readLon === null || isOfflineMode) {
       setFacilities([]);
       return;
     }
 
     const controller = new AbortController();
     let cancelled = false;
-    const { latitude, longitude } = selectedCampsite;
 
     const timer = setTimeout(async () => {
       const result = await fetchNearbyFacilities(
-        latitude, longitude, FACILITY_RADIUS_KM, controller.signal
+        readLat, readLon, FACILITY_RADIUS_KM, controller.signal
       );
       if (!cancelled) setFacilities(result.facilities);
     }, 300);
@@ -3348,7 +3110,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       clearTimeout(timer);
       setFacilities([]);
     };
-  }, [selectedCampsite, isOfflineMode]);
+  }, [readLat, readLon, isOfflineMode]);
 
   // Grow the open pin's chip row once the facilities land.
   useEffect(() => {
@@ -3357,6 +3119,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!id) return;
     markersRef.current.get(id)?.setIcon(iconForId(id));
   }, [facilities, iconForId]);
+
+  // Same again for the fires: the lookup lands after the pin is already open.
+  useEffect(() => {
+    nearbyFiresRef.current = nearbyFires;
+    const id = selectedIdRef.current;
+    if (!id) return;
+    markersRef.current.get(id)?.setIcon(iconForId(id));
+  }, [nearbyFires, iconForId]);
 
   /**
    * A tap on a facility chip.
@@ -3402,10 +3172,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isMapReady || !tripFacility || !selectedCampsite) return;
+    if (!map || !isMapReady || !tripFacility || readLat === null || readLon === null) return;
 
     const bounds = L.latLngBounds(
-      [selectedCampsite.latitude, selectedCampsite.longitude],
+      [readLat, readLon],
       [tripFacility.latitude, tripFacility.longitude]
     );
     const covered = Math.min(Math.max(bottomCoverFraction, 0), 0.9) * map.getSize().y;
@@ -3424,7 +3194,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     calculateRoute(
       {
-        from: [selectedCampsite.latitude, selectedCampsite.longitude],
+        from: [readLat, readLon],
         to: [tripFacility.latitude, tripFacility.longitude]
       },
       controller.signal
@@ -3443,7 +3213,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
     // Deliberately keyed on the facility, not on the trip: the route landing
     // must not re-frame the map or ask for the route again.
-  }, [tripFacility, selectedCampsite, isMapReady, bottomCoverFraction]);
+  }, [tripFacility, readLat, readLon, isMapReady, bottomCoverFraction]);
 
   /**
    * The line to the facility, and a dot on the facility itself.
@@ -3464,14 +3234,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     clear();
 
     const trip = facilityTrip;
-    if (!trip || !selectedCampsite) return;
+    if (!trip || readLat === null || readLon === null) return;
 
     const colour = FACILITY_COLOR[trip.facility.kind];
     const routed = trip.route?.ok && trip.route.geometry.length > 1;
     const line: [number, number][] = routed
       ? trip.route!.geometry
       : [
-          [selectedCampsite.latitude, selectedCampsite.longitude],
+          [readLat, readLon],
           [trip.facility.latitude, trip.facility.longitude]
         ];
 
@@ -3500,7 +3270,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     facilityLayerRef.current = layer;
 
     return clear;
-  }, [facilityTrip, selectedCampsite, isMapReady]);
+  }, [facilityTrip, readLat, readLon, isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Alert patterns over affected parcels — REMOVED                      */
@@ -3672,7 +3442,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         volunteer's note in OpenStreetMap, which is said on the card rather
         than left for the camper to discover at the trailhead.
       */}
-      {facilityTrip && selectedCampsite && (
+      {facilityTrip && readLat !== null && readLon !== null && (
         <div
           className="absolute left-1/2 -translate-x-1/2 z-[1400] w-[min(23rem,calc(100%-1.5rem))] anim-in-up"
           style={{ bottom: `calc(${Math.min(Math.max(bottomCoverFraction, 0), 0.9) * 100}% + 12px)` }}
@@ -3735,7 +3505,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 openDirections(
                   facilityTrip.facility.latitude,
                   facilityTrip.facility.longitude,
-                  [selectedCampsite.latitude, selectedCampsite.longitude]
+                  [readLat, readLon]
                 )
               }
               className="mt-2 w-full px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2"
@@ -3823,39 +3593,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 className="accent-emerald-500 w-3.5 h-3.5"
               />
             </label>
-            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
-              <span>Active fires</span>
-              <input
-                type="checkbox"
-                checked={showFires}
-                onChange={(e) => setShowFires(e.target.checked)}
-                className="accent-emerald-500 w-3.5 h-3.5"
-              />
-            </label>
             {/*
-              The flame colours mean something, so they get a key. It only
-              appears while the layer is on — a key to something that isn't
-              drawn is just clutter. Colours come from FIRE_COLOR so the
-              key can't drift away from the flames on the map.
+              No "Active fires" toggle here any more: there is no fire layer
+              to switch off. Fires are reported on the pin you tap, which is
+              a safety answer and not a layer.
             */}
-            {showFires && (
-              <div className="px-2 pb-1.5 -mt-0.5 flex flex-col gap-0.5">
-                <span className="flex items-center gap-1.5 text-[9px] text-slate-400">
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ background: FIRE_COLOR.running.fill }}
-                  />
-                  Not reported under control
-                </span>
-                <span className="flex items-center gap-1.5 text-[9px] text-slate-400">
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ background: FIRE_COLOR.controlled.fill }}
-                  />
-                  Reported under control
-                </span>
-              </div>
-            )}
             <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
               <span>State / province lines</span>
               <input
