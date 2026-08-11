@@ -36,11 +36,13 @@ import {
   ROAD_ACCESS_RANK, countActiveFilters
 } from './config/filters';
 import { distanceMiles } from './utils/geo';
-import { bestCellSignal } from './utils/amenities';
+import { bestCellSignal } fr
+om './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
   fetchCampsitesNear, fetchMyRigs, submitCampsite, fetchMySubmissionStates,
+  saveCampsiteRemote, unsaveCampsiteRemote,
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
 import { mergeCampsites } from './utils/mergeCampsites';
@@ -75,7 +77,8 @@ export default function App() {
   const [campsites, setCampsites] = useState<Campsite[]>(CURATED_CAMPSITES);
   const [savedSites, setSavedSites] = useState<Campsite[]>([]);
   const [selectedCampsite, setSelectedCampsite] = useState<Campsite | null>(null);
-  const [detailModalSite, setDetailModalSite] = useState<Campsite | null>(null);
+  const [detailModalSite, setDetailModalSite] = useState<Campsite | null
+>(null);
   const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
   const [isSearchingSites, setIsSearchingSites] = useState(false);
   const [outOfCoverageNotice, setOutOfCoverageNotice] = useState<string | null>(null);
@@ -110,7 +113,8 @@ export default function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isPresenceOpen, setIsPresenceOpen] = useState(false);
   const [isScoutOpen, setIsScoutOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const 
+[isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isOfflineManagerOpen, setIsOfflineManagerOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -162,6 +166,7 @@ export default function App() {
    * somebody else's schedule, and nothing would ever tell this browser. So one
    * query on sign-in reconciles the chips.
    *
+
    * Only possible because of the author-read policy in migration 10: before
    * it, the row-level security hid a user's own unpublished row from them, so
    * there was no way to ask.
@@ -215,7 +220,8 @@ export default function App() {
          * Until now the app only ever asked Overpass. Everything submitted
          * through Wandrlust stayed in the submitter's own browser, so the
          * "community" half of a community app reached nobody. This is the
-         * line that makes a shared spot actually shared.
+         * line that makes a shared
+ spot actually shared.
          *
          * With no Supabase configured `fetchCampsitesNear` returns an empty
          * array and `mergeCampsites` collapses to what this did before —
@@ -273,7 +279,8 @@ export default function App() {
   }, [handleSelectLocation]);
 
   // Stable identity: MapComponent rebuilds its marker cluster whenever this
-  // changes, so an inline arrow here would rebuild every pin on every render.
+  // changes, so an inline arro
+w here would rebuild every pin on every render.
   const handleSelectMapCampsite = useCallback((site: Campsite) => {
     setSelectedCampsite(site);
     setSelectedReport(null);
@@ -318,7 +325,8 @@ export default function App() {
    * A pin was refused — in water, or outside the coverage area.
    *
    * Shows a short notice and clears it after a beat. The timer is held
-   * in a ref and reset on each refusal, because tapping the water twice
+   * in a ref and reset on each refusal, because tapping the water
+ twice
    * is the normal way to meet this message and the naive version broke
    * exactly there: every refusal started its own timer, and the first
    * one to fire cleared whatever notice was on screen at the time. Tap,
@@ -370,7 +378,8 @@ export default function App() {
   /**
    * Work out the drive as soon as somewhere is picked.
    *
-   * The app does not drive you there — that is handed off to the maps app on
+   * The app does not drive you
+ there — that is handed off to the maps app on
    * the phone, which is also what puts it on CarPlay or Android Auto. The route
    * is still worked out here because it answers the questions that decide
    * whether to go at all: how far, how long, what the weather will be doing on
@@ -426,7 +435,8 @@ export default function App() {
     ]);
 
     return () => { cancelled = true; controller.abort(); };
-  }, [destination]);
+  }, [des
+tination]);
 
   /**
    * Hand the drive to the phone's own maps app.
@@ -474,7 +484,8 @@ export default function App() {
    *
    * THE LOCAL WRITE COMES FIRST AND IS NEVER UNDONE. A camper standing at a
    * pullout with one bar has just typed coordinates they may not be able to
-   * recover; losing that because an insert failed, or because they were signed
+   * recover; losing that because an inse
+rt failed, or because they were signed
    * out, would be the worst thing this form could do. So localforage gets it
    * unconditionally, and the server write is an enhancement on top that is
    * allowed to fail.
@@ -523,7 +534,8 @@ export default function App() {
    * locally — which meant the figure on screen was this browser's opinion of
    * the average, drifting from the database the moment anybody else reviewed
    * the same spot, and vanishing entirely on reload. `refresh_campsite_rating`
-   * owns the number; the modal asks it and passes the answer through here.
+   * owns the num
+ber; the modal asks it and passes the answer through here.
    */
   const handleRatingChange = useCallback(
     (siteId: string, rating: number, reviewCount: number) => {
@@ -568,7 +580,8 @@ export default function App() {
       const { amenities } = site;
       if (filterState.waterOnly && (!amenities.water || amenities.water === 'none')) return false;
       if (filterState.toiletOnly && (!amenities.toilet || amenities.toilet === 'none')) return false;
-      if (filterState.petFriendlyOnly && amenities.petFriendly !== true) return false;
+      if (filterState.petFriendlyOnly && a
+menities.petFriendly !== true) return false;
 
       if (filterState.cellSignalOnly) {
         const best = bestCellSignal(amenities);
@@ -623,7 +636,8 @@ export default function App() {
 
   const distanceById = useMemo(() => {
     const map = new Map<string, number>();
-    filteredCampsites.forEach(({ site, distance }) => map.set(site.id, distance));
+    filteredCampsites.forEach(({ site, distance })
+ => map.set(site.id, distance));
     return map;
   }, [filteredCampsites]);
 
@@ -680,7 +694,8 @@ export default function App() {
 
   return (
     /**
-     * Height is `100dvh`, not `100vh`.
+     * Height is `100dvh`, no
+t `100vh`.
      *
      * On a phone, `vh` is the viewport with the browser chrome hidden, which
      * is taller than what you can actually see while the address bar is
@@ -718,7 +733,8 @@ export default function App() {
           onOpenScout={() => setIsScoutOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenReport={() => setIsReportOpen(true)}
-          nearbyCount={nearbyCampers.length}
+          nearbyCount={nearbyC
+ampers.length}
           activeFilterCount={activeFilterCount}
           savedCount={savedSites.length}
         />
@@ -757,7 +773,8 @@ export default function App() {
                 </ErrorBoundary>
 
                 {isSearchingSites && (
-                  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
+                
+  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
                     <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
                     <span>Exploring public lands…</span>
                   </div>
@@ -765,215 +782,6 @@ export default function App() {
 
                 {outOfCoverageNotice && (
                   <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-[11px] flex items-start gap-2 anim-in-up">
-                    <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>
-                      <strong>{outOfCoverageNotice}</strong> is outside our coverage.
-                      Wandrlust currently supports {COVERAGE_LABEL}, so campsite and
-                      boundary data is unavailable here.
-                    </span>
-                  </div>
-                )}
+      
 
-                {/*
-                  Pin-refused toast. Two cases:
-                    'water' — the tap was in a lake, a bay, or the ocean.
-                    'outside_coverage' — the tap was in the pannable
-                       rectangle but outside the precise coverage
-                       polygon (a sliver of northern Mexico is the
-                       main one; the user cannot reach anywhere else
-                       because of maxBounds).
-                  Auto-clears after 2.4s; see handlePinRefused.
-                */}
-                {pinRefusal && (
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-amber-500/60 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-[11px] flex items-start gap-2 anim-in-up">
-                    {pinRefusal === 'water'
-                      ? <Waves className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
-                      : <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />}
-                    <span>
-                      {pinRefusal === 'water'
-                        ? <>This spot is in <strong>water</strong>. Drop the pin on land — a campsite needs a place to pitch a tent.</>
-                        : <>This spot is <strong>outside our coverage</strong>. Wandrlust currently supports {COVERAGE_LABEL}.</>}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* --------------------------------------------------------- LIST */}
-          {activeView === 'list' && (
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <div>
-                  <h2 className="font-['Outfit'] font-bold text-xl text-slate-100">
-                    Dispersed campsites near {currentLocationName}
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    {visibleSites.length} public land site
-                    {visibleSites.length === 1 ? '' : 's'} within{' '}
-                    {filterState.maxDistanceMiles} miles
-                  </p>
-                </div>
-                <button
-                  onClick={() => setIsFilterOpen(true)}
-                  className="px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5"
-                >
-                  <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-400" />
-                  Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
-                </button>
-              </div>
-
-              {visibleSites.length === 0 ? (
-                <EmptyState
-                  icon={SlidersHorizontal}
-                  title="Nothing matches those filters"
-                  description="Try widening the search radius, allowing more land types, or clearing the amenity requirements."
-                  action={{ label: 'Reset filters', onClick: resetFilters }}
-                />
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {visibleSites.map(renderCard)}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* -------------------------------------------------------- SAVED */}
-          {activeView === 'saved' && (
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <div>
-                  <h2 className="font-['Outfit'] font-bold text-xl text-slate-100 flex items-center gap-2">
-                    <Bookmark className="w-5 h-5 text-amber-400" />
-                    Saved offline ({savedSites.length})
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Stored on this device, so they work with no cell service
-                  </p>
-                </div>
-                <button
-                  onClick={() => setIsOfflineManagerOpen(true)}
-                  className="px-3 py-1.5 rounded-xl bg-teal-600/30 text-teal-300 border border-teal-500/40 text-xs font-semibold"
-                >
-                  Manage map packs
-                </button>
-              </div>
-
-              {savedSites.length === 0 ? (
-                <EmptyState
-                  icon={Bookmark}
-                  title="No saved campsites yet"
-                  description="Tap the bookmark on any campsite to keep its details, coordinates and photos on your device for the trip."
-                  action={{ label: 'Explore the map', onClick: () => setActiveView('map') }}
-                />
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {savedSites.map(renderCard)}
-                </div>
-              )}
-            </div>
-          )}
-        </main>
-      </div>
-
-      {/* ------------------------------------------------ Modals & panels */}
-      {detailModalSite && (
-        <CampsiteDetailModal
-          campsite={detailModalSite}
-          isSaved={savedIds.has(detailModalSite.id)}
-          onClose={() => setDetailModalSite(null)}
-          onToggleSave={handleToggleSave}
-          onRatingChange={handleRatingChange}
-          onRequireAuth={() => setIsAuthOpen(true)}
-        />
-      )}
-
-      <OfflineManagerModal
-        isOpen={isOfflineManagerOpen}
-        onClose={() => setIsOfflineManagerOpen(false)}
-        currentLocationName={currentLocationName}
-        center={center}
-        campsitesInView={visibleSites}
-        isOfflineMode={isOfflineMode}
-        setIsOfflineMode={setIsOfflineMode}
-      />
-
-      <AddCampsiteModal
-        isOpen={isAddModalOpen}
-        onClose={() => { setIsAddModalOpen(false); setAddSpotAt(null); }}
-        onAdd={handleAddCustomSite}
-        defaultCenter={addSpotAt ?? center}
-      />
-
-      <AddHereConfirm
-        isOpen={isAddHereOpen}
-        onClose={() => setIsAddHereOpen(false)}
-        userLocation={userLocation}
-        isLocating={isLocating}
-        onLocateUser={handleLocateUser}
-        onConfirm={handleAddSpotAt}
-      />
-
-      <CampingGuideModal isOpen={isGuideModalOpen} onClose={() => setIsGuideModalOpen(false)} />
-
-      <FilterDrawer
-        isOpen={isFilterOpen}
-        onClose={() => setIsFilterOpen(false)}
-        filterState={filterState}
-        setFilterState={setFilterState}
-        onReset={resetFilters}
-        totalResultsCount={visibleSites.length}
-      />
-
-      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
-
-      <CampsiteBottomSheet
-        campsite={sheetSite}
-        isSaved={sheetSite ? savedIds.has(sheetSite.id) : false}
-        onClose={() => setSheetSite(null)}
-        onToggleSave={handleToggleSave}
-        onRequireAuth={() => setIsAuthOpen(true)}
-      />
-
-      <HazardReportCard
-        record={selectedReport}
-        onClose={() => setSelectedReport(null)}
-        onRequireAuth={() => setIsAuthOpen(true)}
-      />
-      <AlertCard alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
-
-      <PresencePanel
-        isOpen={isPresenceOpen}
-        onClose={() => setIsPresenceOpen(false)}
-        center={center}
-        onRequireAuth={() => setIsAuthOpen(true)}
-        onCampersChange={setNearbyCampers}
-      />
-
-      <ScoutModePanel
-        isOpen={isScoutOpen}
-        onClose={() => setIsScoutOpen(false)}
-        onRequireAuth={() => setIsAuthOpen(true)}
-      />
-
-      <SettingsPanel
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        onRequireAuth={() => setIsAuthOpen(true)}
-        center={center}
-        onOpenLegal={setLegalDoc}
-      />
-
-      <ReportPanel
-        isOpen={isReportOpen}
-        onClose={() => setIsReportOpen(false)}
-        center={center}
-        campsiteId={sheetSite?.id ?? selectedCampsite?.id ?? null}
-        onRequireAuth={() => setIsAuthOpen(true)}
-      />
-
-      <LegalGate onOpenFullText={setLegalDoc} />
-      <LegalDocumentModal kind={legalDoc} onClose={() => setLegalDoc(null)} />
-    </div>
-  );
-}
+... [Content truncated]
