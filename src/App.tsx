@@ -1,4 +1,42 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from './utils/amenities';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import type {
+  Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
+  DestinationLand, MapDestination, CellCoverage
+} from './types';
+import { CURATED_CAMPSITES } from './data/curatedCampsites';
+import { fetchOverpassCampsites } from './services/overpass';
+import {
+  getSavedCampsites,
+  toggleSaveCampsite,
+  getCustomCampsites,
+  addCustomCampsite
+} from './services/offlineStorage';
+import { Navbar } from './components/Navbar';
+import { MapComponent } from './components/MapComponent';
+import { CampsiteCard } from './components/CampsiteCard';
+import { CampsiteDetailModal } from './components/CampsiteDetailModal';
+import { OfflineManagerModal } from './components/OfflineManagerModal';
+import { AddCampsiteModal } from './components/AddCampsiteModal';
+import { AddHereConfirm } from './components/AddHereConfirm';
+import { CampingGuideModal } from './components/CampingGuideModal';
+import { FilterDrawer } from './components/FilterDrawer';
+import { AuthModal } from './components/AuthModal';
+import { CampsiteBottomSheet } from './components/CampsiteBottomSheet';
+import { PresencePanel } from './components/PresencePanel';
+import { ScoutModePanel } from './components/ScoutModePanel';
+import { SettingsPanel } from './components/SettingsPanel';
+import { ReportPanel } from './components/ReportPanel';
+import { LegalGate, LegalDocumentModal } from './components/LegalGate';
+import { HazardReportCard } from './components/HazardReportCard';
+import { AlertCard } from './components/AlertCard';
+import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
+import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
+import {
+  createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
+  ROAD_ACCESS_RANK, countActiveFilters
+} from './config/filters';
+import { distanceMiles } from './utils/geo';
+import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
@@ -454,7 +492,6 @@ tination]);
     
     setSavedSites(await getSavedCampsites());
   }, []);
-
   /**
    * Save the spot, then try to share it. In that order, always.
    *
