@@ -492,6 +492,7 @@ tination]);
     
     setSavedSites(await getSavedCampsites());
   }, []);
+
   /**
    * Save the spot, then try to share it. In that order, always.
    *
