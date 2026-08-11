@@ -37,7 +37,6 @@ import {
 } from './config/filters';
 import { distanceMiles } from './utils/geo';
 import { bestCellSignal } fr
-
 om './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
@@ -78,8 +77,7 @@ export default function App() {
   const [campsites, setCampsites] = useState<Campsite[]>(CURATED_CAMPSITES);
   const [savedSites, setSavedSites] = useState<Campsite[]>([]);
   const [selectedCampsite, setSelectedCampsite] = useState<Campsite | null>(null);
-  const [detailModalSite, s
-etDetailModalSite] = useState<Campsite | null
+  const [detailModalSite, setDetailModalSite] = useState<Campsite | null
 >(null);
   const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
   const [isSearchingSites, setIsSearchingSites] = useState(false);
@@ -114,8 +112,7 @@ etDetailModalSite] = useState<Campsite | null
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isPresenceOpen, setIsPresenceOpen] = useState(false);
-  const [isScoutOpen
-, setIsScoutOpen] = useState(false);
+  const [isScoutOpen, setIsScoutOpen] = useState(false);
   const 
 [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
@@ -167,8 +164,7 @@ etDetailModalSite] = useState<Campsite | null
    * A spot submitted from this device is stored locally with whatever state it
    * had at the time — usually `pending_review`. It gets approved later, on
    * somebody else's schedule, and nothing would ever tell this browser. So one
-  
- * query on sign-in reconciles the chips.
+   * query on sign-in reconciles the chips.
    *
 
    * Only possible because of the author-read policy in migration 10: before
@@ -223,8 +219,7 @@ etDetailModalSite] = useState<Campsite | null
          *
          * Until now the app only ever asked Overpass. Everything submitted
          * through Wandrlust stayed in the submitter's own browser, so the
-         * "community" half of a community app reached nobody. 
-This is the
+         * "community" half of a community app reached nobody. This is the
          * line that makes a shared
  spot actually shared.
          *
@@ -283,8 +278,7 @@ This is the
     );
   }, [handleSelectLocation]);
 
-  // Stable identity: MapComponent rebuilds its marker clust
-er whenever this
+  // Stable identity: MapComponent rebuilds its marker cluster whenever this
   // changes, so an inline arro
 w here would rebuild every pin on every render.
   const handleSelectMapCampsite = useCallback((site: Campsite) => {
@@ -331,8 +325,7 @@ w here would rebuild every pin on every render.
    * A pin was refused — in water, or outside the coverage area.
    *
    * Shows a short notice and clears it after a beat. The timer is held
-   * in a ref an
-d reset on each refusal, because tapping the water
+   * in a ref and reset on each refusal, because tapping the water
  twice
    * is the normal way to meet this message and the naive version broke
    * exactly there: every refusal started its own timer, and the first
@@ -383,8 +376,7 @@ d reset on each refusal, because tapping the water
   const origin: [number, number] = userLocation ?? center;
 
   /**
-   * Work out the drive as soon as somewher
-e is picked.
+   * Work out the drive as soon as somewhere is picked.
    *
    * The app does not drive you
  there — that is handed off to the maps app on
@@ -442,8 +434,7 @@ e is picked.
       })
     ]);
 
-    return () => {
- cancelled = true; controller.abort(); };
+    return () => { cancelled = true; controller.abort(); };
   }, [des
 tination]);
 
@@ -484,22 +475,7 @@ tination]);
 
   const handleToggleSave = useCallback(async (site: Campsite, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    
-    // Toggle local save first (always works)
-    const isNowSaved = await toggleSaveCampsite(site);
-    
-    // Sync with Supabase if available and user is signed in
-    try {
-      if (isNowSaved) {
-        await saveCampsiteRemote(site.id);
-      } else {
-        await unsaveCampsiteRemote(site.id);
-      }
-    } catch (error) {
-      // Supabase save failed, but local save still worked
-      console.warn('Failed to sync save with Supabase:', error);
-    }
-    
+    await toggleSaveCampsite(site);
     setSavedSites(await getSavedCampsites());
   }, []);
 
@@ -507,8 +483,7 @@ tination]);
    * Save the spot, then try to share it. In that order, always.
    *
    * THE LOCAL WRITE COMES FIRST AND IS NEVER UNDONE. A camper standing at a
-   * pullout with one bar has just typed coordinates they may not 
-be able to
+   * pullout with one bar has just typed coordinates they may not be able to
    * recover; losing that because an inse
 rt failed, or because they were signed
    * out, would be the worst thing this form could do. So localforage gets it
@@ -558,8 +533,7 @@ rt failed, or because they were signed
    * This used to append the review to React state and recompute the average
    * locally — which meant the figure on screen was this browser's opinion of
    * the average, drifting from the database the moment anybody else reviewed
-   * the same spot, and vanishing entirely o
-n reload. `refresh_campsite_rating`
+   * the same spot, and vanishing entirely on reload. `refresh_campsite_rating`
    * owns the num
 ber; the modal asks it and passes the answer through here.
    */
@@ -605,8 +579,7 @@ ber; the modal asks it and passes the answer through here.
        */
       const { amenities } = site;
       if (filterState.waterOnly && (!amenities.water || amenities.water === 'none')) return false;
-      if (filterState.toiletOnly && (!amenities.toilet || amenities.toilet === 'none')) re
-turn false;
+      if (filterState.toiletOnly && (!amenities.toilet || amenities.toilet === 'none')) return false;
       if (filterState.petFriendlyOnly && a
 menities.petFriendly !== true) return false;
 
@@ -662,8 +635,7 @@ menities.petFriendly !== true) return false;
   }, [campsites, center, filterState]);
 
   const distanceById = useMemo(() => {
-    const map = new Map<string, number
->();
+    const map = new Map<string, number>();
     filteredCampsites.forEach(({ site, distance })
  => map.set(site.id, distance));
     return map;
@@ -718,8 +690,7 @@ menities.petFriendly !== true) return false;
       onOpenDetail={setDetailModalSite}
       distanceMiles={distanceById.get(site.id)}
     />
- 
- );
+  );
 
   return (
     /**
@@ -761,8 +732,7 @@ t `100vh`.
           onOpenPresence={() => setIsPresenceOpen(true)}
           onOpenScout={() => setIsScoutOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenReport={()
- => setIsReportOpen(true)}
+          onOpenReport={() => setIsReportOpen(true)}
           nearbyCount={nearbyC
 ampers.length}
           activeFilterCount={activeFilterCount}
@@ -802,7 +772,6 @@ ampers.length}
                   />
                 </ErrorBoundary>
 
-
                 {isSearchingSites && (
                 
   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
@@ -812,6 +781,7 @@ ampers.length}
                 )}
 
                 {outOfCoverageNotice && (
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blu
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-[11px] flex items-start gap-2 anim-in-up">
+      
 
 ... [Content truncated]
