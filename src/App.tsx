@@ -36,8 +36,7 @@ import {
   ROAD_ACCESS_RANK, countActiveFilters
 } from './config/filters';
 import { distanceMiles } from './utils/geo';
-import { bestCellSignal } fr
-om './utils/amenities';
+import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
@@ -475,22 +474,7 @@ tination]);
 
   const handleToggleSave = useCallback(async (site: Campsite, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    
-    // Toggle local save first (always works)
-    const isNowSaved = await toggleSaveCampsite(site);
-    
-    // Sync with Supabase if available and user is signed in
-    try {
-      if (isNowSaved) {
-        await saveCampsiteRemote(site.id);
-      } else {
-        await unsaveCampsiteRemote(site.id);
-      }
-    } catch (error) {
-      // Supabase save failed, but local save still worked
-      console.warn('Failed to sync save with Supabase:', error);
-    }
-    
+    await toggleSaveCampsite(site);
     setSavedSites(await getSavedCampsites());
   }, []);
 
