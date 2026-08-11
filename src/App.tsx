@@ -474,7 +474,22 @@ tination]);
 
   const handleToggleSave = useCallback(async (site: Campsite, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    await toggleSaveCampsite(site);
+    
+    // Toggle local save first (always works)
+    const isNowSaved = await toggleSaveCampsite(site);
+    
+    // Sync with Supabase if available and user is signed in
+    try {
+      if (isNowSaved) {
+        await saveCampsiteRemote(site.id);
+      } else {
+        await unsaveCampsiteRemote(site.id);
+      }
+    } catch (error) {
+      // Supabase save failed, but local save still worked
+      console.warn('Failed to sync save with Supabase:', error);
+    }
+    
     setSavedSites(await getSavedCampsites());
   }, []);
 
