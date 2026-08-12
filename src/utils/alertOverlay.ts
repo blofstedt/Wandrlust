@@ -2,19 +2,25 @@
  * Alert overlay helpers — the map's "what disaster is here" logic, kept out of
  * MapComponent so the geometry is testable on its own.
  *
- * Three jobs, matching the three things the redesign asks for:
- *   1. A short badge word (Fire / Flood / Smoke …) for a POINT sitting inside an
+ * Four jobs:
+ *   1. Sorting every active alert into ONE OF TWO KINDS — a localized incident
+ *      with a place (drawn as a teardrop pin) or a generalized weather event
+ *      over a region (drawn as one merged area with a single badge at its
+ *      centre). See EVENT_SCOPE, well down the file.
+ *   2. A short badge word (Fire / Flood / Smoke …) for a POINT sitting inside an
  *      active alert — drawn on the campsite pins.
- *   2. The same for a PARCEL, so Crown/BLM land can carry a subtle repeating
- *      pattern instead of a marker.
- *   3. Dissolving the shared edges between same-category parcels, so adjacent
- *      public land reads as one shape rather than a web of internal lines.
+ *   3. Merging the separate forecast-zone parcels of one generalized event into
+ *      a single shape, so the client draws only the outer boundary.
+ *   4. Dissolving the shared edges between same-category land parcels, so
+ *      adjacent public land reads as one shape rather than a web of lines.
  *
  * NOTHING HERE TOUCHES THE HAZARD CLASSIFIER. shared/hazards.ts still folds
- * wildfire smoke into the 'fire' family, because for pushing a warning they are
- * one decision. Smoke is split back out HERE, for display only, by re-reading
- * the event text — so a camper can tell "there's a fire" from "the air is bad"
- * without any change rippling into the database enums downstream.
+ * wildfire smoke into the 'fire' family, and regional rainfall into 'flood',
+ * because for pushing a warning each pair is one decision. Both are split back
+ * out HERE, for display only, by re-reading the event text — so a camper can
+ * tell "there's a fire" from "the air is bad", and "the river is up" from "it
+ * is raining hard", without any change rippling into the database enums
+ * downstream.
  *
  * Save to: src/utils/alertOverlay.ts
  */
@@ -22,30 +28,68 @@ import type { HazardAlert } from '../services/weatherService';
 import { pointInGeometry } from './geo';
 
 export type AlertBadge =
-  | 'fire' | 'smoke' | 'flood' | 'storm' | 'winter' | 'heat' | 'wind';
+  | 'fire' | 'smoke' | 'flood' | 'rain' | 'storm' | 'winter' | 'heat' | 'wind';
 
 /** Draw order / priority. The most decision-changing hazard leads. */
-const BADGE_ORDER: AlertBadge[] = ['fire', 'smoke', 'flood', 'storm', 'winter', 'heat', 'wind'];
+const BADGE_ORDER: AlertBadge[] = [
+  'fire', 'smoke', 'flood', 'rain', 'storm', 'winter', 'heat', 'wind'
+];
 
 export const BADGE_LABEL: Record<AlertBadge, string> = {
-  fire: 'Fire', smoke: 'Smoke', flood: 'Flood', storm: 'Storm',
-  winter: 'Winter', heat: 'Heat', wind: 'Wind'
+  fire: 'Fire', smoke: 'Smoke', flood: 'Flood', rain: 'Heavy rain',
+  storm: 'Storm', winter: 'Cold', heat: 'Heat', wind: 'Wind'
 };
 
+/**
+ * ONE COLOUR PER EVENT KIND, AND IT MEANS THE SAME THING EVERYWHERE.
+ *
+ * The same hex paints the pin, the area, the centroid badge and the little dot
+ * that sits over a campsite pin standing inside the event. Two families that a
+ * camper has to tell apart at a glance never share a hue: flood is teal and
+ * heavy rain is dark blue precisely because "the river is up" and "it is
+ * raining hard over the region" are different decisions.
+ */
 export const BADGE_COLOR: Record<AlertBadge, string> = {
-  fire: '#F97316', smoke: '#A16207', flood: '#0EA5E9', storm: '#A855F7',
-  winter: '#38BDF8', heat: '#EF4444', wind: '#94A3B8'
+  // Localized — a place, drawn as a teardrop pin.
+  fire: '#EA580C',   // red-orange
+  flood: '#14B8A6',  // teal
+  // Generalized — a region, drawn as one merged area with a badge at its centre.
+  rain: '#1D4ED8',   // dark blue
+  storm: '#7C3AED',  // purple
+  heat: '#B91C1C',   // dark red
+  winter: '#7DD3FC', // ice blue
+  smoke: '#78716C',  // brown-grey
+  wind: '#94A3B8'    // slate
 };
 
 /** Wildfire smoke and air-quality products, which the classifier files as fire. */
 const SMOKE_TEXT = /smoke|air quality|air stagnation|blowing dust/i;
 
+/**
+ * Water that has ARRIVED somewhere, as opposed to water still falling.
+ *
+ * `shared/hazards.ts` folds both into the 'flood' family, because for pushing a
+ * warning they are one decision. On the map they are not: a flood warning is a
+ * place you must not drive into, and a rainfall warning covers a whole forecast
+ * region and changes nothing about where a road is. Drawing a regional rainfall
+ * product as a pin on a single point was the thing that made the map claim to
+ * know more than it does — the pin looked like someone had seen water there.
+ *
+ * Flood words are tested FIRST, so an alert that mentions both ("heavy rain and
+ * flooding") stays a flood. Over-calling flood is the safe direction to err in.
+ */
+const FLOOD_TEXT = /flood|hydrologic|dam break|seiche|storm surge|tsunami|high water|ice jam/i;
+const RAIN_TEXT = /rain/i;
+
 /** The badge for one alert, or null for families the map does not badge. */
 export const alertBadge = (alert: HazardAlert): AlertBadge | null => {
+  const text = `${alert.event} ${alert.headline}`;
   switch (alert.family) {
     case 'fire':
-      return SMOKE_TEXT.test(`${alert.event} ${alert.headline}`) ? 'smoke' : 'fire';
-    case 'flood': return 'flood';
+      return SMOKE_TEXT.test(text) ? 'smoke' : 'fire';
+    case 'flood':
+      if (FLOOD_TEXT.test(text)) return 'flood';
+      return RAIN_TEXT.test(text) ? 'rain' : 'flood';
     case 'storm': return 'storm';
     case 'winter': return 'winter';
     case 'heat': return 'heat';
@@ -128,55 +172,6 @@ export const badgesForParcel = (
 };
 
 /* ------------------------------------------------------------------ */
-/* Repeating pattern                                                   */
-/* ------------------------------------------------------------------ */
-
-/** At most two glyphs share a tile; a third simultaneous family is rare. */
-export const patternKey = (badges: AlertBadge[]): string => badges.slice(0, 2).join('-');
-
-/** 16x16 glyphs, coloured by the caller. */
-const GLYPH: Record<AlertBadge, string> = {
-  fire: '<path d="M8 1.5c.4 2.2 2.7 2.8 2.7 5.5A2.7 2.7 0 1 1 5.3 7c0-1 .4-1.8 1-2.4.2 1.3 1.3 1.3 1.3 0C7.6 3.4 7.8 2.4 8 1.5Z"/>',
-  smoke: '<path d="M4 12c-1.6 0-2-2.4 0-2.6C4 6.8 7.6 6.8 8 9c2-.6 3.2 1 2.2 2.2M6 4c.7-1 2.3-1 2.7.4"/>',
-  flood: '<path d="M1.5 8.5c1.3-1.3 2.7-1.3 4 0s2.7 1.3 4 0 2.7-1.3 4 0M1.5 12c1.3-1.3 2.7-1.3 4 0s2.7 1.3 4 0 2.7-1.3 4 0"/>',
-  storm: '<path d="M9 1.5 4 9h3l-1 5.5L12 6H8.5Z"/>',
-  winter: '<path d="M8 1v14M2 5l12 6M14 5 2 11"/>',
-  heat: '<circle cx="8" cy="8" r="2.6"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/>',
-  wind: '<path d="M2 6h8a2 2 0 1 0-2-2M2 10h11a2 2 0 1 1-2 2"/>'
-};
-
-/** Fire, smoke and storm read better filled; the rest are line icons. */
-const FILLED = new Set<AlertBadge>(['fire', 'smoke', 'storm']);
-
-/**
- * A `<pattern>` element (as an SVG string) tiling the affected families' glyphs,
- * low-opacity so it reads as a wash over the land rather than a stamp. Returns
- * null when there is nothing to draw.
- */
-export const alertPattern = (
-  badges: AlertBadge[]
-): { id: string; def: string } | null => {
-  const shown = badges.slice(0, 2);
-  if (shown.length === 0) return null;
-  const id = `wl-alert-${shown.join('-')}`;
-  const cell = 24;
-  const width = cell * shown.length;
-  const glyphs = shown
-    .map((b, i) => {
-      const c = BADGE_COLOR[b];
-      const paint = FILLED.has(b)
-        ? `fill="${c}" stroke="none"`
-        : `fill="none" stroke="${c}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"`;
-      return `<g transform="translate(${i * cell + 4},4)" ${paint}>${GLYPH[b]}</g>`;
-    })
-    .join('');
-  const def =
-    `<pattern id="${id}" patternUnits="userSpaceOnUse" width="${width}" height="${cell}">` +
-    `<g opacity="0.3">${glyphs}</g></pattern>`;
-  return { id, def };
-};
-
-/* ------------------------------------------------------------------ */
 /* Dissolving internal borders                                         */
 /* ------------------------------------------------------------------ */
 
@@ -245,6 +240,12 @@ export const dissolveSegments = (
         if (!Array.isArray(a) || !Array.isArray(b)) continue;
         const ka = `${round(a[0])},${round(a[1])}`;
         const kb = `${round(b[0])},${round(b[1])}`;
+        // Both ends landed on the same grid cell: at this tolerance the edge
+        // has no length. Skip it rather than hash it — two unrelated degenerate
+        // edges elsewhere in the data would otherwise hash alike, "cancel" each
+        // other, and take a real piece of somebody's outline with them. The
+        // chain is unaffected: a step from a point to itself joins nothing.
+        if (ka === kb) continue;
         const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
         const existing = counts.get(key);
         if (existing) existing.n += 1;
@@ -452,191 +453,241 @@ export const dissolvedFill = (
   return out;
 };
 
-
-/* ------------------------------------------------------------------ */
-/* Weather warning overlays (heat / smoke / cold, and the rest)        */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* THE TWO KINDS OF EVENT THE MAP DRAWS                                */
+/* ================================================================== */
 /**
- * These power the new look: instead of a grey, tappable badge sitting on a
- * parcel edge, an active warning is drawn as a coloured, gently ANIMATED cloud
- * over the exact area the agency warned about. The camper cannot select it —
- * it is scenery, not a control — so a legend (top-left) carries the meaning by
- * colour and icon, and tapping a campsite pin inside a warning is what surfaces
- * the detail in the bottom card.
+ * Everything below exists to keep one distinction visible from across the
+ * room, because it is the distinction a camper actually acts on:
+ *
+ *   LOCALIZED  — something is happening AT A PLACE. A fire. Water over a road.
+ *                A bridge that is out. Drawn as a TEARDROP PIN on the point,
+ *                tappable, opening the detail card.
+ *
+ *   GENERALIZED — something is happening OVER A REGION. Heavy rain, a storm,
+ *                a heatwave, a cold snap, smoke. Drawn as ONE merged area with
+ *                a semi-transparent fill and a solid outer stroke, and ONE
+ *                badge at the centre of each merged piece.
+ *
+ * The old version drew every family as a soft tinted cloud with its glyph
+ * TILED across the whole polygon, which is what put a dozen purple lightning
+ * bolts across a valley for a single storm warning and made the satellite
+ * imagery underneath unreadable. One area, one badge.
+ *
+ * The honesty rule is unchanged and is the reason a generalized event may
+ * never be drawn as a pin: a rainfall warning covers a forecast region, and a
+ * pin on a point inside it would claim someone looked at that point.
  */
 
-/** Emoji + human label per family, for the map legend. */
+/** Emoji + human label per family, for pin chips and lists. */
 export const WARNING_EMOJI: Record<AlertBadge, string> = {
-  heat: '\u{1F321}\uFE0F', smoke: '\u{1F32B}\uFE0F', winter: '\u2744\uFE0F',
-  fire: '\u{1F525}', flood: '\u{1F30A}', storm: '\u26C8\uFE0F', wind: '\u{1F4A8}'
+  heat: '\u{1F321}️', smoke: '\u{1F32B}️', winter: '❄️',
+  fire: '\u{1F525}', flood: '\u{1F30A}', rain: '\u{1F327}️',
+  storm: '⛈️', wind: '\u{1F4A8}'
 };
 
 export const WARNING_LABEL: Record<AlertBadge, string> = {
-  heat: 'Heat', smoke: 'Smoke / air quality', winter: 'Cold / winter',
-  fire: 'Fire', flood: 'Flood', storm: 'Storm', wind: 'Wind'
+  heat: 'Heatwave', smoke: 'Smoke / air quality', winter: 'Cold snap',
+  fire: 'Fire', flood: 'Flood', rain: 'Heavy rain', storm: 'Storm',
+  wind: 'Wind'
+};
+
+export type EventScope = 'localized' | 'generalized';
+
+/**
+ * WHICH FAMILY IS WHICH, AND WHY.
+ *
+ * Fire and flood are the two things an agency draws around an actual event —
+ * a perimeter, a flooded reach — so they earn a point on the map.
+ *
+ * Everything else is issued PER FORECAST REGION. Rain, storms, heat, cold and
+ * smoke are all weather over an area; none of them has a point, and pretending
+ * otherwise is the mistake this table exists to prevent.
+ */
+export const EVENT_SCOPE: Record<AlertBadge, EventScope> = {
+  fire: 'localized',
+  flood: 'localized',
+  rain: 'generalized',
+  storm: 'generalized',
+  heat: 'generalized',
+  winter: 'generalized',
+  smoke: 'generalized',
+  wind: 'generalized'
+};
+
+export const isGeneralized = (badge: AlertBadge): boolean =>
+  EVENT_SCOPE[badge] === 'generalized';
+
+export const isLocalized = (badge: AlertBadge): boolean =>
+  EVENT_SCOPE[badge] === 'localized';
+
+/* ------------------------------------------------------------------ */
+/* Localized events — teardrop pins                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The point-event families, shared by official alerts and camper reports.
+ *
+ * A washed-out road reported by a camper and a flood warning issued by an
+ * agency are the same SHAPE of fact — something is wrong at this spot — so
+ * they wear the same shape of marker. What separates them is what the card
+ * says when you tap it, which is where the "one person's report, not verified"
+ * wording lives.
+ */
+export type LocalizedKind = 'fire' | 'flood' | 'infrastructure' | 'other';
+
+export const LOCALIZED_COLOR: Record<LocalizedKind, string> = {
+  fire: BADGE_COLOR.fire,   // red-orange
+  flood: BADGE_COLOR.flood, // teal
+  infrastructure: '#475569', // dark grey — a closure is not a weather event
+  other: '#EAB308'           // amber — everything else a camper flags
+};
+
+export const LOCALIZED_LABEL: Record<LocalizedKind, string> = {
+  fire: 'Fire', flood: 'Flood', infrastructure: 'Road blocked', other: 'Hazard'
 };
 
 /**
- * The two kinds of hazard the map draws, and the whole point of this file's
- * redesign.
+ * Pin glyphs, drawn white inside the teardrop, on a 24x24 grid.
  *
- *   DIFFUSE  — smoke, extreme heat, extreme cold, high wind. Things that hang
- *              over a whole region with no single point to them. Drawn as a
- *              tinted, gently animated CLOUD over the affected area. They are
- *              scenery, not controls: you cannot tap them, and the top-left
- *              legend is what says what each colour and icon means.
- *
- *   PRECISE  — fire, flood, storm. Things that happen at a place. Drawn as a
- *              crisp ICON (a flame, a flood, a storm) you CAN tap, which opens
- *              the warning in the card at the bottom of the screen.
+ * PATHS, NOT EMOJI, and this is load-bearing. Colour emoji inside an SVG
+ * `<text>` draws as a missing-glyph box on iOS Safari and several Android
+ * WebViews — a camper looking for a flame gets a blank pin and the family the
+ * pin exists to communicate is lost.
  */
-export const HAZARD_TIER: Record<AlertBadge, 'diffuse' | 'precise'> = {
-  smoke: 'diffuse', heat: 'diffuse', winter: 'diffuse', wind: 'diffuse',
-  storm: 'diffuse',
-  // Fire and flood are the two families a camper most needs to act on at a
-  // specific spot — a fire perimeter or a flood zone — and they earn a
-  // tappable icon. Everything else (including storms, which are often
-  // county-wide) renders as a soft cloud that generalises nearby warnings
-  // of the same family into one mass.
-  fire: 'precise', flood: 'precise'
-};
-
-export const isDiffuse = (badge: AlertBadge): boolean =>
-  HAZARD_TIER[badge] === 'diffuse';
-
-/** The animated line style a warning or report wears. */
-export type WarningMotion = 'squiggle' | 'heatline' | 'zigzag' | 'wave';
-
-const WARNING_MOTION: Record<AlertBadge, WarningMotion> = {
-  // Smoke drifts, fire flickers upward — both read as rising squiggles.
-  smoke: 'squiggle', fire: 'squiggle',
-  // Heat shimmers up as wavy horizontal lines.
-  heat: 'heatline',
-  // Cold gets sharp zig-zags.
-  winter: 'zigzag',
-  // Water, storm and wind slide sideways as gentle waves.
-  flood: 'wave', storm: 'wave', wind: 'wave'
-};
-
-/** One tile of the animated line, on a 30x30 grid. */
-const WARNING_GLYPH: Record<WarningMotion, string> = {
-  squiggle: 'M0 15 q7.5 -7 15 0 t15 0',
-  heatline: 'M0 10 q7.5 -5 15 0 t15 0 M0 21 q7.5 -5 15 0 t15 0',
-  zigzag: 'M0 15 l7.5 -8 l7.5 8 l7.5 -8 l7.5 8',
-  wave: 'M0 16 q7.5 -6 15 0 t15 0 M0 24 q7.5 -6 15 0 t15 0'
+const LOCALIZED_GLYPH: Record<LocalizedKind, string> = {
+  // A flame with a hot inner tongue.
+  fire:
+    '<path d="M12 4.5c1.6 3.2 4.8 4.7 4.8 8.9A4.8 4.8 0 0 1 7.2 13.4c0-1.8.7-3.2 ' +
+    '1.8-4.3.3 2.4 2.3 2.4 2.3 0 0-2.2.2-3.7.7-4.6z" fill="#FFFFFF"/>',
+  // Three rising crests — water where it should not be.
+  flood:
+    '<path d="M2.5 8c1.9-1.9 4.1-1.9 6 0s4.1 1.9 6 0 4.1-1.9 6 0' +
+    'M2.5 13c1.9-1.9 4.1-1.9 6 0s4.1 1.9 6 0 4.1-1.9 6 0' +
+    'M2.5 18c1.9-1.9 4.1-1.9 6 0s4.1 1.9 6 0 4.1-1.9 6 0" ' +
+    'fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round"/>',
+  // A road barricade: two legs, a board across them, hazard stripes on the
+  // board. Drawn legs-first so the board sits over them.
+  infrastructure:
+    '<path d="M7 11v9.5M17 11v9.5" stroke="#FFFFFF" stroke-width="2.4" ' +
+    'stroke-linecap="round"/>' +
+    '<rect x="2" y="4.5" width="20" height="7.5" rx="1.4" fill="#FFFFFF"/>' +
+    '<path d="M5 12 8.4 4.5M10 12l3.4-7.5M15 12l3.4-7.5" stroke="#0F172A" ' +
+    'stroke-width="1.8" opacity="0.55"/>',
+  // The plain warning triangle, for kinds with no symbol of their own.
+  other:
+    '<path d="M12 4.2 21.6 20.8H2.4z" fill="#FFFFFF"/>' +
+    '<path d="M12 10v4.4" stroke="#0F172A" stroke-width="2" stroke-linecap="round"/>' +
+    '<circle cx="12" cy="17.6" r="1.2" fill="#0F172A"/>'
 };
 
 /**
- * A tiling <pattern> (as an SVG string) of the family's animated line, ready to
- * inject into an SVG renderer's <defs> and reference as a fill. The whole
- * pattern drifts via an animated `patternTransform`, so it reads as slowly
- * moving smoke, rising heat, or sliding cold rather than a static hatch.
+ * A teardrop pin for a LOCALIZED event.
  *
- * Under prefers-reduced-motion the animation is dropped and the lines sit still.
+ * Hard-edged on purpose: a point event has a place, and the pin claims one.
+ * The dark outline keeps it readable over both bright snow and dark forest on
+ * satellite imagery, which a white outline alone does not.
+ *
+ * `ring` draws a pale halo — used to mark a camper report several people have
+ * confirmed. Nothing here sets pointer-events; whether a pin can be tapped is
+ * decided by its pane and its Leaflet marker, not by this markup.
  */
-export const warningPattern = (
-  badge: AlertBadge, reduced = false
-): { id: string; def: string } => {
-  const motion = WARNING_MOTION[badge];
-  const color = BADGE_COLOR[badge];
-  const id = `wl-warn-${badge}${reduced ? '-static' : ''}`;
-  const rises = motion === 'squiggle' || motion === 'heatline';
-  // One tile per loop keeps the drift seamless. Rising families move up;
-  // sliding families move sideways.
-  const to = rises ? '0 -30' : '30 0';
-  const dur = motion === 'heatline' ? '9s' : motion === 'zigzag' ? '11s' : '7s';
-  const anim = reduced
-    ? ''
-    : `<animateTransform attributeName="patternTransform" type="translate" ` +
-      `from="0 0" to="${to}" dur="${dur}" repeatCount="indefinite"/>`;
-  const def =
-    `<pattern id="${id}" patternUnits="userSpaceOnUse" width="30" height="30">` +
-    anim +
-    `<path d="${WARNING_GLYPH[motion]}" fill="none" stroke="${color}" ` +
-    `stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>` +
-    `</pattern>`;
-  return { id, def };
-};
-
-/** The short trailing strand under a cloud, per motion style. */
-const CLOUD_STRAND: Record<WarningMotion, string> = {
-  zigzag: 'M0 0 l5 -5 l5 5 l5 -5',
-  heatline: 'M0 0 q6 -5 12 0 t12 0',
-  squiggle: 'M0 0 q5 -5 10 0 t10 0',
-  wave: 'M0 0 q5 -5 10 0 t10 0'
-};
-
-/** The cloud body, reused for the shadow, the fill, and any outline. */
-const CLOUD_BLOB =
-  '<circle cx="22" cy="30" r="11"/><circle cx="38" cy="24" r="14"/>' +
-  '<circle cx="52" cy="31" r="10"/><rect x="20" y="30" width="34" height="12" rx="6"/>';
-
-/**
- * A coloured cloud with a slowly animated strand trailing beneath it.
- *
- * This is the shared shape behind BOTH the official weather-warning overlays
- * and the camper hazard reports — the two now look alike on purpose. What still
- * tells them apart is behaviour, not appearance: an official warning sits in a
- * pointer-events:none pane and cannot be tapped, while a camper report is a
- * live marker that opens the "reported by a camper, not verified" card. So this
- * function never sets pointer-events itself — interactivity is decided by the
- * pane and the Leaflet marker, not by the icon markup.
- *
- * Under prefers-reduced-motion the strand holds still.
- */
-export const hazardCloudHtml = (opts: {
-  color: string;
-  motion: WarningMotion;
-  reduced?: boolean;
-  /** Cloud width in px; height scales with it. Defaults to 72. */
+export const localizedPinHtml = (opts: {
+  kind: LocalizedKind;
+  /** Overrides the family colour. Used by nothing today; kept for one-offs. */
+  color?: string;
+  /** Pin width in px; the height follows at the pin's own ratio. Default 36. */
   size?: number;
-  /** An emoji drawn on the cloud body, so a report is identifiable without a legend. */
-  glyph?: string;
-  /** A pale ring around the cloud, used to mark a confirmed camper report. */
-  outline?: boolean;
+  ring?: boolean;
 }): string => {
-  const { color, motion, reduced = false, size = 72, glyph, outline = false } = opts;
-  const height = Math.round((size * 64) / 72);
-  const strand = CLOUD_STRAND[motion];
-  const drift = (dur: string) =>
-    reduced
-      ? ''
-      : `<animateTransform attributeName="transform" type="translate" ` +
-        `values="0 0; 0 -5; 0 0" dur="${dur}" repeatCount="indefinite" additive="sum"/>`;
-  const outlineSvg = outline
-    ? `<g fill="none" stroke="#F8FAFC" stroke-width="2" opacity="0.9">${CLOUD_BLOB}</g>`
-    : '';
-  const glyphSvg = glyph
-    ? `<text x="37" y="30" text-anchor="middle" dominant-baseline="central" ` +
-      `font-size="18">${glyph}</text>`
-    : '';
+  const { kind, color = LOCALIZED_COLOR[kind], size = 36, ring = false } = opts;
+  const height = Math.round((size * 44) / 36);
+  const body =
+    'M18 1.5C9.4 1.5 2.5 8.4 2.5 17c0 10.8 15.5 25.5 15.5 25.5S33.5 27.8 33.5 17' +
+    'C33.5 8.4 26.6 1.5 18 1.5z';
   return `
-    <div style="width:${size}px;height:${height}px">
-      <svg width="${size}" height="${height}" viewBox="0 0 72 64" aria-hidden="true">
-        <g fill="#0F172A" opacity="0.35" transform="translate(0,2)">${CLOUD_BLOB}</g>
-        <g fill="${color}">${CLOUD_BLOB}</g>
-        ${outlineSvg}
-        ${glyphSvg}
-        <g fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" opacity="0.85">
-          <g transform="translate(26 46)">${drift('4.5s')}<path d="${strand}"/></g>
-          <g transform="translate(36 48)">${drift('5.6s')}<path d="${strand}"/></g>
-          <g transform="translate(46 46)">${drift('4.9s')}<path d="${strand}"/></g>
-        </g>
+    <div style="width:${size}px;height:${height}px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))">
+      <svg width="${size}" height="${height}" viewBox="0 0 36 44" aria-hidden="true">
+        <path d="${body}" fill="${color}" stroke="#0F172A" stroke-width="2"
+              stroke-linejoin="round"/>
+        ${ring ? `<path d="${body}" fill="none" stroke="#F8FAFC" stroke-width="2.4" opacity="0.95" transform="translate(18 17) scale(0.8) translate(-18 -17)"/>` : ''}
+        <g transform="translate(7.8 6.3) scale(0.85)">${LOCALIZED_GLYPH[kind]}</g>
       </svg>
     </div>`;
 };
 
+/* ------------------------------------------------------------------ */
+/* Generalized events — one merged area, one badge                     */
+/* ------------------------------------------------------------------ */
+
 /**
- * The cloud for an official warning area's centroid — the "icon" the top-left
- * legend names. Carries the family emoji so it matches the camper-report clouds.
+ * The ink a glyph is drawn in, given what it is drawn ON.
+ *
+ * Two of these families are PALE — a cold snap is ice blue and wind is slate —
+ * and a white snowflake on ice blue is a white shape on a nearly white disc.
+ * Perceived brightness decides: pale disc, dark ink; everything else white.
  */
-export const cloudMarkerHtml = (badge: AlertBadge, reduced = false): string =>
-  hazardCloudHtml({
-    color: BADGE_COLOR[badge],
-    motion: WARNING_MOTION[badge],
-    reduced,
-    glyph: WARNING_EMOJI[badge]
-  });
+const glyphInk = (hex: string): string => {
+  const n = parseInt(hex.slice(1), 16);
+  const brightness =
+    (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  return brightness > 0.62 ? '#0F172A' : '#FFFFFF';
+};
+
+/** Glyphs for the centroid badge, on a 24x24 grid, drawn in `ink`. */
+const GENERALIZED_GLYPH: Record<string, (ink: string, color: string) => string> = {
+  // Raincloud with heavy drops.
+  rain: (ink) =>
+    `<g fill="${ink}"><circle cx="9" cy="10.6" r="3.6"/><circle cx="14" cy="9" r="4.6"/>` +
+    '<circle cx="18" cy="11.2" r="3.2"/><rect x="8.6" y="10.4" width="9.8" height="4.2" rx="2.1"/></g>' +
+    '<path d="M9.5 17.4 8 21.4M14 17.4 12.5 21.4M18.5 17.4 17 21.4" fill="none" ' +
+    `stroke="${ink}" stroke-width="2.2" stroke-linecap="round"/>`,
+  // Cloud with a lightning bolt.
+  storm: (ink) =>
+    `<g fill="${ink}"><circle cx="9" cy="8.8" r="3.4"/><circle cx="14" cy="7.2" r="4.4"/>` +
+    '<circle cx="18" cy="9.4" r="3"/><rect x="8.6" y="8.6" width="9.8" height="4" rx="2"/></g>' +
+    `<path d="M14.2 12.8 9.8 19.6h2.9L11.6 23.4 16.6 17.2h-3z" fill="${ink}"/>`,
+  // Thermometer reading high — the mercury is the badge colour showing through.
+  heat: (ink, color) =>
+    `<path d="M9.6 6.4a2.6 2.6 0 0 1 5.2 0v7.9a4.4 4.4 0 1 1-5.2 0z" fill="${ink}"/>` +
+    `<path d="M12.2 8.6v8.4" fill="none" stroke="${color}" stroke-width="2" ` +
+    'stroke-linecap="round"/>',
+  // Snowflake.
+  winter: (ink) =>
+    '<path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9M12 7.4 9.4 4.8M12 7.4l2.6-2.6' +
+    `M12 16.6l-2.6 2.6M12 16.6l2.6 2.6" fill="none" stroke="${ink}" stroke-width="2" ` +
+    'stroke-linecap="round"/>',
+  // Haze: layered, staggered lines.
+  smoke: (ink) =>
+    `<path d="M3.5 7.5h13M7 12h13.5M3.5 16.5h13M7.5 21h11" fill="none" stroke="${ink}" ` +
+    'stroke-width="2.2" stroke-linecap="round"/>',
+  // Gust lines.
+  wind: (ink) =>
+    '<path d="M3 8h9.5a2.6 2.6 0 1 0-2.6-2.6M3 13h13a2.6 2.6 0 1 1-2.6 2.6M3 18h8.5" ' +
+    `fill="none" stroke="${ink}" stroke-width="2.2" stroke-linecap="round" ` +
+    'stroke-linejoin="round"/>'
+};
+
+/**
+ * The single badge dropped at the centre of a merged generalized area.
+ *
+ * A filled disc in the family colour with a WHITE RING around it. The white is
+ * not decoration: a purple storm badge on a dark satellite tile is nearly
+ * invisible without it, and this map is mostly dark satellite tiles.
+ */
+export const centroidBadgeHtml = (badge: AlertBadge): string => {
+  const color = BADGE_COLOR[badge];
+  const ink = glyphInk(color);
+  const glyph =
+    GENERALIZED_GLYPH[badge]?.(ink, color) ?? GENERALIZED_GLYPH.wind(ink, color);
+  return `
+    <div style="width:44px;height:44px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.6))">
+      <svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
+        <circle cx="22" cy="22" r="16" fill="${color}" stroke="#FFFFFF" stroke-width="3"/>
+        <g transform="translate(10.6 10.6) scale(0.95)">${glyph}</g>
+      </svg>
+    </div>`;
+};
 
 /**
  * Split a warning's geometry into its separate pieces, one GeoJSON Feature
@@ -647,16 +698,6 @@ export const cloudMarkerHtml = (badge: AlertBadge, reduced = false): string =>
  * is a MultiPolygon — a heat warning over the prairies arrives as a dozen
  * scattered blocks. Handed a MultiPolygon, Leaflet draws every piece into ONE
  * `<path>` element, and a `<path>` can only carry one fill.
- *
- * That broke the tint badly. The cloud's radial gradient is measured from the
- * drawn path, so a MultiPolygon got a single gradient stretched across the
- * bounding box of all its pieces — bright in the empty middle, and fully
- * transparent out at the actual blocks. A camper parked under one of those
- * blocks saw the tiled thermometers with no colour behind them at all, which
- * looks exactly like a warning that failed to load.
- *
- * One Feature per piece means one `<path>` per piece, so every block gets its
- * own gradient sized to itself and every block is actually tinted.
  *
  * Holes are preserved: a Polygon's inner rings stay attached to their outer
  * ring, so a warned area with a genuine gap in the middle keeps the gap.
@@ -693,111 +734,263 @@ export const explodeToFeatures = (geometry: unknown): GeoJSON.FeatureCollection 
   return { type: 'FeatureCollection', features };
 };
 
-/**
- * The glyph tiled across a DIFFUSE warning's cloud.
- *
- * A thermometer for heat (the redesign asks for it by name), a puff for smoke,
- * a snowflake for cold, gust lines for wind. All stroked in the family colour,
- * so they read the same as the legend chip.
- */
-const DIFFUSE_GLYPH: Record<'heat' | 'smoke' | 'winter' | 'wind' | 'storm', string> = {
-  heat:
-    '<path d="M6.6 9.6V4.4a1.4 1.4 0 0 1 2.8 0v5.2a2.6 2.6 0 1 1-2.8 0z"/>' +
-    '<path d="M8 6.2v3.6"/>',
-  smoke:
-    '<path d="M3.6 12.4h6.8M4.4 9.9h7M3.9 7.4h6.4"/>' +
-    '<path d="M6 5.2c.6-1 2.2-1 2.7.3"/>',
-  winter: '<path d="M8 1v14M2 5l12 6M14 5 2 11"/>',
-  wind: '<path d="M2 6h8a2 2 0 1 0-2-2M2 10h11a2 2 0 1 1-2 2"/>',
-  // A small lightning bolt for storm warnings. Single zigzag, family color.
-  storm: '<path d="M9 1 4 9h3l-1 6 5-8H8l1-6z"/>'
+/* ------------------------------------------------------------------ */
+/* Ring maths — area, centroid, and a point that is actually inside    */
+/* ------------------------------------------------------------------ */
+
+/** Shoelace area of a `[lon, lat]` ring. Signed: negative means clockwise. */
+const ringSignedArea = (ring: [number, number][]): number => {
+  let sum = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    sum += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+  }
+  return sum / 2;
+};
+
+const ringBbox = (ring: [number, number][]): [number, number, number, number] => {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of ring) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return [minX, minY, maxX, maxY];
+};
+
+/** Area-weighted centroid as `[lon, lat]`; bbox centre for a degenerate ring. */
+const ringCentroid = (ring: [number, number][]): [number, number] => {
+  const area = ringSignedArea(ring);
+  if (!Number.isFinite(area) || Math.abs(area) < 1e-14) {
+    const [minX, minY, maxX, maxY] = ringBbox(ring);
+    return [(minX + maxX) / 2, (minY + maxY) / 2];
+  }
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const f = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    cx += (ring[j][0] + ring[i][0]) * f;
+    cy += (ring[j][1] + ring[i][1]) * f;
+  }
+  return [cx / (6 * area), cy / (6 * area)];
+};
+
+/** Standard ray cast, on a `[lon, lat]` ring. */
+const pointInRing = (lon: number, lat: number, ring: [number, number][]): boolean => {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat)) {
+      const x = ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+      if (lat !== yi && x > lon) inside = !inside;
+    }
+  }
+  return inside;
 };
 
 /**
- * A tiling <pattern> of the family glyph, to repeat over a diffuse cloud.
+ * A point INSIDE the ring to hang the badge on, as `[lat, lon]`.
  *
- * Returned as an SVG string for injection into a renderer's <defs>; the caller
- * points a polygon's fill at `url(#id)`. Low opacity so it reads as a texture
- * over the tinted cloud rather than a stamp. Static — the drift lives in the
- * cloud's own soft edge, not in the icons, which should stay legible.
+ * The area centroid first, because for the compact blobs agencies actually
+ * issue it is the point that reads as "the middle". A C-shaped or horseshoe
+ * region puts its centroid in the empty middle, though — a heat badge floating
+ * over a valley the warning explicitly does not cover — so when the centroid
+ * falls outside, we sweep the horizontal line through it and take the middle
+ * of the WIDEST stretch that is genuinely inside. That is cheap (one pass over
+ * the edges) and always lands on painted ground.
  */
-export const warningGlyphPattern = (
-  badge: 'heat' | 'smoke' | 'winter' | 'wind' | 'storm'
-): { id: string; def: string } => {
-  const color = BADGE_COLOR[badge];
-  const glyph = DIFFUSE_GLYPH[badge];
-  const id = `wl-glyph-${badge}`;
-  const cell = 48;
-  const scale = 1.6;
-  const off = (cell - 16 * scale) / 2;
-  const def =
-    `<pattern id="${id}" patternUnits="userSpaceOnUse" width="${cell}" height="${cell}">` +
-    `<g opacity="0.55" transform="translate(${off},${off}) scale(${scale})" ` +
-    `fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" ` +
-    `stroke-linejoin="round">${glyph}</g></pattern>`;
-  return { id, def };
+export const ringLabelPoint = (ring: [number, number][]): [number, number] => {
+  const [lon, lat] = ringCentroid(ring);
+  if (pointInRing(lon, lat, ring)) return [lat, lon];
+
+  const crossings: number[] = [];
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat)) {
+      crossings.push(((xj - xi) * (lat - yi)) / (yj - yi) + xi);
+    }
+  }
+  crossings.sort((a, b) => a - b);
+
+  let bestMid = lon;
+  let bestWidth = -1;
+  // Crossings pair up: [0,1] is inside, [1,2] outside, [2,3] inside, and so on.
+  for (let i = 0; i + 1 < crossings.length; i += 2) {
+    const width = crossings[i + 1] - crossings[i];
+    if (width > bestWidth) {
+      bestWidth = width;
+      bestMid = (crossings[i] + crossings[i + 1]) / 2;
+    }
+  }
+  return [lat, bestMid];
+};
+
+/* ------------------------------------------------------------------ */
+/* Merging the parcels of one generalized event                        */
+/* ------------------------------------------------------------------ */
+
+export interface MergedArea {
+  /**
+   * Every source piece in ONE Feature. Draw it with `fillRule: 'nonzero'` and
+   * overlapping pieces union themselves in the renderer — no seams, no holes
+   * punched where two warnings overlap.
+   */
+  fill: GeoJSON.Feature;
+  /**
+   * The outer boundary only, as a MultiLineString. Internal edges between
+   * abutting forecast zones are gone, so the merged area reads as one shape.
+   */
+  outline: GeoJSON.Feature;
+  /** One badge position per merged piece, biggest first, as `[lat, lon]`. */
+  labelPoints: [number, number][];
+}
+
+/**
+ * A cheap identity for a polygon, used to drop exact duplicates.
+ *
+ * THIS GUARD IS NOT OPTIONAL. The dissolve works by cancelling edges that
+ * appear twice, so two IDENTICAL polygons — which the feeds do send, when a
+ * region carries both a warning and a matching statement — cancel each other
+ * completely and the whole outline disappears. Vertex count plus three sampled
+ * vertices is enough: two genuinely different zone polygons agreeing on all
+ * four does not happen.
+ */
+const polygonKey = (rings: [number, number][][]): string => {
+  const outer = rings[0] ?? [];
+  const at = (i: number) => {
+    const p = outer[i];
+    return p ? `${p[0].toFixed(4)},${p[1].toFixed(4)}` : '-';
+  };
+  return `${rings.length}:${outer.length}:${at(0)}:${at(Math.floor(outer.length / 2))}:${at(outer.length - 1)}`;
 };
 
 /**
- * SVG path data for the icon inside the precise marker, per family.
+ * MERGE THE PARCELS OF ONE GENERALIZED EVENT INTO ONE SHAPE.
  *
- * WHY PATHS, NOT EMOJI. The previous version rendered the family glyph as a
- * `<text>` element carrying the emoji codepoint. That worked on desktop
- * Chrome but on iOS Safari and several Android WebViews, color emoji inside
- * SVG `<text>` draws as a missing-glyph box (□) or nothing at all. A
- * camper looking for a flame sees a blank pin, and the family the pin is
- * trying to communicate is lost.
+ * The redesign asks for a union — an `ST_Union`, if these polygons came from
+ * our database. They do not: warning geometry arrives live from the National
+ * Weather Service and Environment Canada, one polygon per forecast zone, and
+ * there is no table to union it in. So the union happens here, on the client,
+ * with the same segment-cancelling dissolve the boundary layer already uses:
  *
- * Paths render the same in every browser that supports SVG (which is every
- * browser this app ships to). The flame and water shapes below are designed
- * to read at 22×22 px — the actual draw size — over both light and dark
- * backgrounds.
+ *   FILL     — every source piece kept, drawn as one path with fill-rule
+ *              nonzero. Overlaps merge instead of punching holes, and there is
+ *              no internal division to see because it is a single fill.
+ *   OUTLINE  — an edge shared by two abutting zones appears twice in the
+ *              vertex data, once from each side. Hash every segment; the ones
+ *              appearing exactly once are the true outer boundary. That is the
+ *              only stroke drawn, so a rainfall warning over eleven zones is
+ *              one outlined region rather than an eleven-cell honeycomb.
+ *
+ * The vertex-matching tolerance absorbs the mismatch between zones digitised
+ * separately, which is what stops a hairline seam surviving between two blocks
+ * that really do abut. It is derived from the shapes themselves — see
+ * `autoSnap` in the body.
+ *
+ * Returns null when there is nothing drawable.
  */
-const PRECISE_GLYPH: Record<'fire' | 'flood', string> = {
-  // Flame: two stacked tongues with a hot core.
-  fire:
-    'M12 2.5c-1.2 3-3.4 4.6-4.4 7.4-.9 2.5-.4 5.2 1.2 6.8.4-2.4 1.6-3.6 3-4.2' +
-    '-.2 1.6.4 3.2 1.4 4 1 .8 2.2 1 3.2.4-.4 1.4-.4 2.6.4 3.4.6.6 1.4.8 2.2.6' +
-    ' 1.8-.4 3-2.2 3-4 0-2-1.2-3.6-2.4-5.2-1.4-1.8-2.8-3.6-3.2-5.8-.2-1.2 0-2.4.4-3.4' +
-    '-1.6.4-3 1.4-4 2.8z',
-  // Water: three stacked wave crests.
-  flood:
-    'M3 9.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1' +
-    'M3 14.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1' +
-    'M3 19.5c1.4 0 2 1 3 1s1.6-1 3-1 2 1 3 1 1.6-1 3-1 2 1 3 1 1.6-1 3-1',
-  // Storm no longer needs a precise marker — it became a diffuse cloud
-  // along with heat/smoke/cold/wind. The shape was a cloud with a
-  // lightning bolt; not used.
-};
+export const mergeAreas = (
+  geometries: unknown[],
+  /**
+   * Vertex-matching tolerance in degrees. Left unset it is derived from the
+   * SMALLEST piece being merged — see `autoSnap` below, which is the guard
+   * against a fixed 100 m tolerance eating a small warning's outline whole.
+   */
+  snap?: number,
+  /** Rings whose bbox is smaller than this (in square degrees) are dropped. */
+  minRingExtent = 1e-8
+): MergedArea | null => {
+  const polygons: [number, number][][][] = [];
+  const seen = new Set<string>();
 
-/**
- * A crisp, tappable pin for a PRECISE hazard (fire, flood).
- *
- * Deliberately a hard-edged map marker rather than a soft cloud — a precise
- * hazard has a place, and the icon claims one. Coloured by family, carrying the
- * family glyph as a real SVG path, with a dark outline so a flame reads over
- * both bright snow and dark forest. This one is meant to be tapped: the caller
- * wires a click to it.
- */
-export const preciseMarkerHtml = (badge: AlertBadge): string => {
-  const color = BADGE_COLOR[badge];
-  // Diffuse badges should never reach this function — they go to the cloud
-  // branch. Be defensive: if one does, fall back to a generic dot rather
-  // than producing malformed SVG.
-  const path = PRECISE_GLYPH[badge as 'fire' | 'flood']
-    ?? 'M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z';
-  return `
-    <div style="width:36px;height:44px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))">
-      <svg width="36" height="44" viewBox="0 0 36 44" aria-hidden="true">
-        <path d="M18 1.5C9.4 1.5 2.5 8.4 2.5 17c0 10.8 15.5 25.5 15.5 25.5S33.5 27.8 33.5 17
-                 C33.5 8.4 26.6 1.5 18 1.5z"
-              fill="${color}" stroke="#0F172A" stroke-width="2" stroke-linejoin="round"/>
-        <circle cx="18" cy="16.5" r="11" fill="#0F172A" opacity="0.16"/>
-        <path d="${path}" fill="#FFFFFF" stroke="#0F172A" stroke-width="0.8"
-              stroke-linejoin="round" stroke-linecap="round"
-              transform="translate(7 5.5) scale(0.92)"/>
-      </svg>
-    </div>`;
+  geometries.forEach((geometry) => {
+    explodeToFeatures(geometry).features.forEach((feature) => {
+      const geom = feature.geometry as { type?: string; coordinates?: unknown };
+      if (geom?.type !== 'Polygon' || !Array.isArray(geom.coordinates)) return;
+      const rings = geom.coordinates as [number, number][][];
+      if (!Array.isArray(rings[0]) || rings[0].length < 4) return;
+      const key = polygonKey(rings);
+      if (seen.has(key)) return;
+      seen.add(key);
+      polygons.push(rings);
+    });
+  });
+
+  if (polygons.length === 0) return null;
+
+  const fill: GeoJSON.Feature = {
+    type: 'Feature',
+    properties: {},
+    geometry: { type: 'MultiPolygon', coordinates: polygons as any }
+  } as GeoJSON.Feature;
+
+  /**
+   * TOLERANCE HAS TO SCALE WITH THE SHAPES, or it destroys the small ones.
+   *
+   * A flat 1e-3 (about 100 m) is right for a forecast zone the size of a
+   * county, whose vertices sit kilometres apart. Handed a compact
+   * storm-based polygon whose vertices are 50 m apart, the same tolerance
+   * snaps neighbouring vertices onto one grid cell and the outline comes
+   * apart. So the smallest piece in the set sets the tolerance — the safe
+   * direction to err, because an exactly shared edge cancels at ANY
+   * tolerance and only the near-miss case needs the slack.
+   */
+  const autoSnap = (): number => {
+    let smallest = Infinity;
+    for (const rings of polygons) {
+      const [minX, minY, maxX, maxY] = ringBbox(rings[0]);
+      smallest = Math.min(smallest, Math.max(maxX - minX, maxY - minY));
+    }
+    if (!Number.isFinite(smallest)) return 1e-3;
+    return Math.min(1e-3, Math.max(1e-6, smallest / 400));
+  };
+  const tolerance = snap ?? autoSnap();
+
+  const rings = segmentsToRings(
+    dissolveSegments(
+      polygons.map((coordinates) => ({ geometry: { type: 'Polygon', coordinates } })),
+      tolerance
+    ),
+    tolerance
+  ).filter((ring) => {
+    if (ring.length < 4) return false;
+    const [minX, minY, maxX, maxY] = ringBbox(ring);
+    return (maxX - minX) * (maxY - minY) >= minRingExtent;
+  });
+
+  const outline: GeoJSON.Feature = {
+    type: 'Feature',
+    properties: {},
+    geometry: { type: 'MultiLineString', coordinates: rings as any }
+  } as GeoJSON.Feature;
+
+  /**
+   * One badge per merged piece — not per source zone, and not one for the
+   * whole event.
+   *
+   * Per zone is the scatter this refactor exists to remove. One for the whole
+   * event is worse than it sounds: Environment Canada's prairie warnings come
+   * as blocks hundreds of kilometres apart, and a single badge averaged across
+   * them would sit over land no warning covers at all. A badge per merged
+   * piece means every drawn area carries exactly one, wherever you have
+   * panned to.
+   *
+   * Slivers left over from the dissolve are dropped by area, and the count is
+   * capped so a pathological response cannot flood the DOM with markers.
+   */
+  const MAX_BADGES = 8;
+  const byArea = rings
+    .map((ring) => ({ ring, area: Math.abs(ringSignedArea(ring)) }))
+    .sort((a, b) => b.area - a.area);
+  const largest = byArea[0]?.area ?? 0;
+  const labelPoints = byArea
+    .filter(({ area }) => area >= largest * 0.04)
+    .slice(0, MAX_BADGES)
+    .map(({ ring }) => ringLabelPoint(ring));
+
+  return { fill, outline, labelPoints };
 };
 
 /** The active alerts whose drawn area contains a point — for the bottom card. */
