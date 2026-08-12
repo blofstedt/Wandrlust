@@ -188,6 +188,15 @@ await safeRegister(
   'registerPushRoutes'
 );
 
+// Beacon: scans OpenStreetMap for places you might legally sleep. Needs
+// Supabase to store and rank what it finds; MAPILLARY_TOKEN is optional and
+// only adds the street-sign check.
+await safeRegister(
+  'beacon',
+  () => import('../server/beaconRoutes.js'),
+  'registerBeaconRoutes'
+);
+
 /**
  * Which feature owns a path, so a route that failed to LOAD can say so.
  *
@@ -208,7 +217,8 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/route/, 'routing'],
   [/^\/api\/push/, 'push'],
   [/^\/api\/alerts/, 'alerts'],
-  [/^\/api\/fires/, 'fires']
+  [/^\/api\/fires/, 'fires'],
+  [/^\/api\/beacon/, 'beacon']
 ];
 
 // Unknown /api routes return JSON, not the SPA's HTML. A typo in a fetch URL

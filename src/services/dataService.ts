@@ -11,7 +11,11 @@
  */
 import { supabase } from '../lib/supabase';
 import { campsiteIdKind } from '../utils/campsiteId';
-import type { Campsite, CamperReview } from '../types';
+import type {
+  Campsite, CamperReview,
+  BeaconSpot, BeaconDwellState, BeaconOutcome, BeaconVerificationAnswers,
+  BeaconModelSummary
+} from '../types';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -1154,4 +1158,218 @@ export const saveSettings = async (
 
   const { error } = await supabase.from('user_settings').upsert({ ...patch, user_id: uid });
   return error ? failure(error.message) : success(true, 'Settings saved');
-};
+};
+
+/* ------------------------------------------------------------------ */
+/* Beacon                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Beacon spots near a point.
+ *
+ * Positions come back projected to numbers by the RPC — never select `geom`
+ * directly, PostgREST serves it as EWKB hex. Withdrawn spots are filtered out
+ * in SQL, so a spot somebody was ticketed at can't reach a map layer even if a
+ * caller forgets to check.
+ */
+export const fetchBeaconSpotsNear = async (
+  lat: number,
+  lon: number,
+  radiusKm = 25
+): Promise<BeaconSpot[]> => {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase.rpc('beacon_spots_near', {
+    in_lat: lat,
+    in_lon: lon,
+    in_radius_km: radiusKm
+  });
+  if (error || !Array.isArray(data)) return [];
+
+  return (data as Record<string, unknown>[]).map((row) => ({
+    id: String(row.id),
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    tier: row.tier as BeaconSpot['tier'],
+    generator: row.generator as BeaconSpot['generator'],
+    label: (row.label as string) ?? 'Possible spot',
+    landBasis: (row.land_basis as string) ?? undefined,
+    signEvidence: row.sign_evidence as BeaconSpot['signEvidence'],
+    verifyCount: Number(row.verify_count ?? 0),
+    score: Number(row.rule_score ?? 0) + Number(row.model_score ?? 0),
+    region: (row.region as string) ?? '*'
+  }));
+};
+
+/**
+ * Log where the camper is right now, at a spot they intend to vouch for.
+ *
+ * The server does every check that matters — inside the 50 m fence, plausible
+ * accuracy, no impossible travel since the last ping — because a browser has
+ * no mock-location flag to read and anything checked here could be edited by
+ * whoever is faking the position in the first place.
+ */
+export const recordBeaconPing = async (
+  spotId: string,
+  lat: number,
+  lon: number,
+  accuracyM?: number
+): Promise<BeaconDwellState> => {
+  if (!supabase) {
+    return { ok: false, dwellMinutes: 0, ready: false, message: 'Not connected' };
+  }
+
+  const { data, error } = await supabase.rpc('beacon_record_ping', {
+    in_spot: spotId,
+    in_lat: lat,
+    in_lon: lon,
+    in_accuracy: accuracyM ?? null,
+    in_flags: {}
+  });
+
+  if (error || !data) {
+    return {
+      ok: false, dwellMinutes: 0, ready: false,
+      message: 'Could not reach the server to log your check-in.'
+    };
+  }
+
+  const row = data as Record<string, unknown>;
+  return {
+    ok: row.ok === true,
+    distanceM: typeof row.distance_m === 'number' ? row.distance_m : undefined,
+    arrivedAt: (row.arrived_at as string) ?? undefined,
+    dwellMinutes: Number(row.dwell_minutes ?? 0),
+    ready: row.ready === true,
+    message: (row.message as string) ?? undefined
+  };
+};
+
+/**
+ * Vouch for a spot after a four-hour stay.
+ *
+ * Everything is decided in SQL: the dwell span, the geofence, the one-per-camper
+ * rule, and the tier promotion. This function's only job is to hand over what
+ * the camper typed and pass back the sentence the database wrote.
+ */
+export const submitBeaconVerification = async (
+  spotId: string,
+  lat: number,
+  lon: number,
+  accuracyM: number | undefined,
+  photoPath: string,
+  answers: BeaconVerificationAnswers
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_submit_verification', {
+    in_spot: spotId,
+    in_lat: lat,
+    in_lon: lon,
+    in_accuracy: accuracyM ?? null,
+    in_photo_path: photoPath,
+    in_answers: answers
+  });
+
+  if (error) return failure('Could not save that just now. Your stay is still logged.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+  return row.ok === true ? success(true, message) : failure(message || 'That did not go through.');
+};
+
+/**
+ * Take a spot off the map.
+ *
+ * One report is enough and there is no confirmation step, by design: the cost
+ * of being wrong is a camper losing one possible place to sleep, and the cost
+ * of being slow is another camper getting the ticket this one just got.
+ */
+export const reportBeaconSpot = async (
+  spotId: string,
+  outcome: BeaconOutcome,
+  detail?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_report_spot', {
+    in_spot: spotId,
+    in_outcome: outcome,
+    in_detail: detail ?? null
+  });
+
+  if (error) return failure('Could not send that report just now.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+  return row.ok === true ? success(true, message) : failure(message || 'That did not go through.');
+};
+
+/**
+ * What the ranking model has learned, for the region a camper is looking at.
+ *
+ * Shown in the Beacon panel. A ranking nobody can inspect is a ranking nobody
+ * should trust, and "learned from 14 stays around here" is also the honest way
+ * to say "so do not lean on this yet".
+ */
+export const fetchBeaconModelSummary = async (
+  region?: string
+): Promise<BeaconModelSummary | null> => {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase.rpc('beacon_model_summary', {
+    in_region: region ?? '*'
+  });
+  if (error || !data) return null;
+
+  const row = data as Record<string, unknown>;
+  return {
+    region: (row.region as string) ?? '*',
+    stays_recorded: Number(row.stays_recorded ?? 0),
+    reports_recorded: Number(row.reports_recorded ?? 0),
+    observations_here: Number(row.observations_here ?? 0),
+    trusts_most: Array.isArray(row.trusts_most) ? (row.trusts_most as string[]) : [],
+    trusts_least: Array.isArray(row.trusts_least) ? (row.trusts_least as string[]) : []
+  };
+};
+
+/**
+ * Store the proof photo and hand back its path.
+ *
+ * The bucket is private and foldered by user id, which is what the storage
+ * policy in migration 13 keys on — change the path shape here and the upload
+ * starts failing with a permissions error rather than a useful one.
+ */
+export const uploadBeaconProof = async (
+  spotId: string,
+  file: Blob
+): Promise<Result<string>> => {
+  if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Not signed in');
+
+  const path = `${uid}/${spotId}-${Date.now()}.jpg`;
+  const { error } = await supabase.storage
+    .from('beacon-proof')
+    .upload(path, file, { contentType: 'image/jpeg', upsert: false });
+
+  if (error) return failure('Could not upload that photo. Try again with a smaller one.');
+  return success(path, '');
+};
+
+/**
+ * The caller's access token, for the one API route that has to check a quota
+ * against a real identity.
+ *
+ * `/api/beacon/query` claims a rate-limit token with the CALLER's credentials
+ * rather than trusting the browser to say who it is — otherwise three beacons
+ * per twelve hours would be a polite suggestion. This is the only place that
+ * hands a token out, so beaconService never needs to import the Supabase
+ * client itself.
+ */
+export const currentAccessToken = async (): Promise<string | null> => {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.access_token ?? null;
+};
