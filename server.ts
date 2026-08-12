@@ -10,6 +10,7 @@ import { registerCellRoutes } from './server/cellRoutes';
 import { registerRouteRoutes } from './server/routeRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
+import { registerBeaconRoutes } from './server/beaconRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -50,6 +51,11 @@ const startServer = async (): Promise<void> => {
 
   // Routing. Tries engines that can drive a forest road before ones that can't.
   registerRouteRoutes(app);
+
+  // Beacon: scans public map data for places you might legally sleep, and
+  // ranks them with a model trained on what campers report back. Works with
+  // no keys at all; MAPILLARY_TOKEN adds the street-sign check.
+  registerBeaconRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.

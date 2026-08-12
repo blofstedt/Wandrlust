@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type {
   Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
-  DestinationLand, MapDestination, CellCoverage
+  DestinationLand, MapDestination, CellCoverage, BeaconSpot
 } from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
 import { fetchOverpassCampsites } from './services/overpass';
@@ -27,6 +27,8 @@ import { PresencePanel } from './components/PresencePanel';
 import { ScoutModePanel } from './components/ScoutModePanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
+import { BeaconPanel } from './components/BeaconPanel';
+import { BeaconVerifyPanel } from './components/BeaconVerifyPanel';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
 import { AlertCard } from './components/AlertCard';
@@ -50,7 +52,7 @@ import { calculateRoute, type RouteResult } from './services/routingService';
 import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot, type HazardAlert } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
 import { useAuth } from './contexts/AuthContext';
-import { Search, Bookmark, MapPinOff, SlidersHorizontal, Waves } from 'lucide-react';
+import { Search, Bookmark, MapPinOff, SlidersHorizontal, Waves, Radar } from 'lucide-react';
 
 /** Calgary, AB — the app's home coordinates. */
 const HOME_CENTER: [number, number] = [51.0447, -114.0719];
@@ -136,6 +138,23 @@ export default function App() {
   /** The "add the ground under your feet?" question, raised by the + button. */
   const [isAddHereOpen, setIsAddHereOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+
+  /**
+   * Beacon.
+   *
+   * `beaconAt` is where the beacon was dropped; `beaconSpot` is the one a
+   * camper tapped on the map to check in at. They are separate because the two
+   * are different questions — "what is around here?" and "how did this one go?"
+   * — and a camper can have the second open having never asked the first.
+   *
+   * `beaconRefreshKey` is bumped after a takedown so the map layer refetches
+   * at once. A spot somebody was just ticketed at must not sit on the map
+   * waiting for a pan.
+   */
+  const [isBeaconOpen, setIsBeaconOpen] = useState(false);
+  const [beaconAt, setBeaconAt] = useState<[number, number] | null>(null);
+  const [beaconSpot, setBeaconSpot] = useState<BeaconSpot | null>(null);
+  const [beaconRefreshKey, setBeaconRefreshKey] = useState(0);
   const [legalDoc, setLegalDoc] = useState<LegalDocKind | null>(null);
 
   const [filterState, setFilterState] = useState<FilterState>(() =>
@@ -362,6 +381,43 @@ export default function App() {
     setDestination(null);
     setSelectedCampsite(null);
     setRoute(null);
+  }, []);
+
+  /* ---------------------------------------------------------------- BEACON */
+
+  /** Send a beacon from the pin the camper just dropped. */
+  const handleSendBeacon = useCallback(() => {
+    if (!destination) return;
+    setBeaconAt([destination.latitude, destination.longitude]);
+    setIsBeaconOpen(true);
+  }, [destination]);
+
+  /**
+   * Sending the camper to a Beacon spot reuses the existing destination flow
+   * rather than inventing a second one — same pin, same routing, same
+   * conditions panel. A Beacon result is just a place on the map once you have
+   * decided to drive to it.
+   */
+  const handleNavigateToBeaconSpot = useCallback(
+    (latitude: number, longitude: number) => {
+      setIsBeaconOpen(false);
+      setSelectedCampsite(null);
+      setSelectedReport(null);
+      setSelectedAlert(null);
+      setDestination({ latitude, longitude });
+      setCenter([latitude, longitude]);
+      setZoom((current) => Math.max(current, 14));
+    },
+    []
+  );
+
+  /**
+   * A spot left the map. Bump the layer key so it disappears now, and close
+   * the sheet that was talking about it.
+   */
+  const handleBeaconSpotWithdrawn = useCallback((_spotId: string) => {
+    setBeaconSpot(null);
+    setBeaconRefreshKey((n) => n + 1);
   }, []);
 
   /**
@@ -839,6 +895,8 @@ export default function App() {
                     onPinRefused={handlePinRefused}
                     onSelectHazardReport={(r) => { setSelectedReport(r); setSelectedAlert(null); }}
                     onSelectAlert={(a) => { setSelectedAlert(a); setSelectedReport(null); }}
+                    onSelectBeaconSpot={setBeaconSpot}
+                    beaconRefreshKey={beaconRefreshKey}
                     weather={destWeather}
                     coverage={destCoverage}
                     route={route}
@@ -853,6 +911,24 @@ export default function App() {
                     <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
                     <span>Exploring public lands…</span>
                   </div>
+                )}
+
+                {/*
+                  Beacon, offered only on a BARE dropped pin.
+
+                  Not on a campsite: asking "what might be around here?" while
+                  standing on a known campsite is answering a question the
+                  camper did not ask. The pin has to be a piece of ground they
+                  chose, which is exactly what a destination with no campsite is.
+                */}
+                {destination && !destination.campsite && !isBeaconOpen && (
+                  <button
+                    onClick={handleSendBeacon}
+                    className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-sky-500/50 text-sky-300 hover:text-sky-200 hover:border-sky-400 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2 anim-in-down"
+                  >
+                    <Radar className="w-4 h-4" />
+                    <span>Send a beacon from here</span>
+                  </button>
                 )}
 
                 {outOfCoverageNotice && (
@@ -1068,6 +1144,22 @@ export default function App() {
         center={center}
         campsiteId={sheetSite?.id ?? selectedCampsite?.id ?? null}
         onRequireAuth={() => setIsAuthOpen(true)}
+      />
+
+      <BeaconPanel
+        isOpen={isBeaconOpen}
+        onClose={() => setIsBeaconOpen(false)}
+        at={beaconAt}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onNavigate={handleNavigateToBeaconSpot}
+      />
+
+      <BeaconVerifyPanel
+        isOpen={beaconSpot !== null}
+        onClose={() => setBeaconSpot(null)}
+        spot={beaconSpot}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onSpotWithdrawn={handleBeaconSpotWithdrawn}
       />
 
       <LegalGate onOpenFullText={setLegalDoc} />

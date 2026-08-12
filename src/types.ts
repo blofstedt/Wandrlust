@@ -382,3 +382,102 @@ export interface NearbyFacility {
   /** Undefined when nobody recorded whether it costs anything. */
   fee?: boolean;
 }
+
+/* ------------------------------------------------------------------ */
+/* Beacon                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How much is actually known about a possible overnight spot.
+ *
+ * These are EVIDENCE labels, not confidence labels, and the distinction is the
+ * whole design. `lead` means public map data suggested a place and nobody has
+ * ever been there; it is the ceiling for anything an algorithm produces, and
+ * the database enforces that rather than trusting this UI to. Only a camper
+ * who actually slept somewhere can move a spot up, and it takes two separate
+ * campers to reach `confirmed`.
+ *
+ * There is deliberately no tier meaning "we are sure". Nothing here can be.
+ */
+export type BeaconTier = 'lead' | 'reported' | 'confirmed' | 'withdrawn';
+
+/** Which candidate generator found it — public land, or the edge of a town. */
+export type BeaconGenerator = 'public_land' | 'urban';
+
+/**
+ * What the street-level sign check found.
+ *
+ * `unknown` is NOT `clear`. It means either that no Mapillary token is
+ * configured or that nobody has driven this road with a camera, and treating
+ * the two as the same is how an app tells somebody a permit-only lot is fine.
+ */
+export type BeaconSignEvidence = 'unknown' | 'clear' | 'restricted';
+
+/** What a camper found when they got there. Only `good` is good news. */
+export type BeaconOutcome =
+  | 'good' | 'ticketed' | 'asked_to_leave' | 'posted_no_parking' | 'gone';
+
+export interface BeaconSpot {
+  id: string;
+  latitude: number;
+  longitude: number;
+  tier: BeaconTier;
+  generator: BeaconGenerator;
+  /** What the place is, in a camper's words: "Passing place", "Rest area". */
+  label: string;
+  /** Why we think you might be allowed to stay. Shown verbatim, never edited. */
+  landBasis?: string;
+  signEvidence: BeaconSignEvidence;
+  /** How many separate campers have vouched for it. Zero for every lead. */
+  verifyCount: number;
+  /** Rule score plus the learned model score. Higher is a better guess. */
+  score: number;
+  region: string;
+  metresAway?: number;
+}
+
+/** What a Beacon scan came back with, caveat included. */
+export interface BeaconQueryResult {
+  ok: boolean;
+  spots: BeaconSpot[];
+  /** True when this was answered from ground somebody already swept — free. */
+  cached: boolean;
+  /** Beacons left in the current 12-hour window, when the server said. */
+  remaining?: number;
+  resetsAt?: string;
+  radiusScannedM?: number;
+  sources?: Record<string, string>;
+  /** Always present. Travels with the data so it cannot be rendered without. */
+  disclaimer: string;
+  note?: string;
+  signageNote?: string;
+}
+
+/** Where a camper is in the four-hour dwell, as the server sees it. */
+export interface BeaconDwellState {
+  ok: boolean;
+  distanceM?: number;
+  arrivedAt?: string;
+  dwellMinutes: number;
+  /** Four contiguous hours of endpoints inside the fence. */
+  ready: boolean;
+  message?: string;
+}
+
+/** The boolean form a camper fills in when vouching for a spot. */
+export interface BeaconVerificationAnswers {
+  signs_restricted: boolean;
+  ground_flat: boolean;
+  quiet_overnight: boolean;
+  note?: string;
+}
+
+/** What the ranking model has learned, in a shape worth showing a person. */
+export interface BeaconModelSummary {
+  region: string;
+  stays_recorded: number;
+  reports_recorded: number;
+  observations_here: number;
+  trusts_most: string[];
+  trusts_least: string[];
+}

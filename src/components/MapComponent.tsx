@@ -10,12 +10,14 @@ import {
 } from 'lucide-react';
 
 import type {
-  Campsite, CellCoverage, DestinationLand, MapDestination, MapTileLayer, NearbyFacility
+  Campsite, CellCoverage, DestinationLand, MapDestination, MapTileLayer, NearbyFacility,
+  BeaconSpot
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
 import { hazardReportStyle, reportStanding } from '../config/hazardReports';
-import { fetchHazardsNear, HazardRecord } from '../services/dataService';
+import { beaconTierStyle } from '../config/beacon';
+import { fetchHazardsNear, fetchBeaconSpotsNear, HazardRecord } from '../services/dataService';
 import {
   fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains, BOUNDARY_STYLES,
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
@@ -565,6 +567,46 @@ const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
 };
 
 /**
+ * A Beacon spot.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS LOOKS DELIBERATELY UNLIKE A CAMPSITE PIN
+ * ---------------------------------------------------------------------------
+ *
+ * A campsite pin means somebody put a campsite there. A Beacon spot means the
+ * app read some map data and thought "maybe". Drawing the two the same way
+ * would let a guess borrow a real site's authority at a glance, from across
+ * the map, before any text has been read.
+ *
+ * So this is a hollow ring, not a filled tent pin: an outline reads as
+ * provisional where a solid shape reads as a fact. The grey `lead` ring is
+ * dashed on top of that, because grey means nobody has ever been there, and
+ * that is the one state a camper most needs to catch without opening anything.
+ * A confirmed spot earns a solid ring and a filled centre — and it can only
+ * earn those from other campers.
+ */
+const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
+  const style = beaconTierStyle(spot.tier);
+  const size = 26;
+  const isLead = spot.tier === 'lead';
+
+  const html =
+    `<div style="width:${size}px;height:${size}px;border-radius:9999px;` +
+    `border:2px ${isLead ? 'dashed' : 'solid'} ${style.ring};` +
+    `background:${style.colorSoft};display:flex;align-items:center;` +
+    `justify-content:center;box-sizing:border-box;">` +
+    `<div style="width:${isLead ? 5 : 9}px;height:${isLead ? 5 : 9}px;` +
+    `border-radius:9999px;background:${style.color};"></div></div>`;
+
+  return L.divIcon({
+    className: 'beacon-spot-marker',
+    html,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2]
+  });
+};
+
+/**
  * The pin the user drops by tapping.
  *
  * A teardrop rather than a circle, so at a glance it never reads as one of the
@@ -949,6 +991,16 @@ interface MapComponentProps {
   onSelectHazardReport?: (record: HazardRecord) => void;
   /** Fired when a precise official warning (fire / flood / storm) is tapped. */
   onSelectAlert?: (alert: HazardAlert) => void;
+  /** Fired when a Beacon spot is tapped. */
+  onSelectBeaconSpot?: (spot: BeaconSpot) => void;
+  /**
+   * Bumped to force the Beacon layer to refetch.
+   *
+   * Needed because a takedown has to leave the map immediately. Without it the
+   * withdrawn spot would sit there until the camper panned 50 km — which is
+   * exactly the pin somebody else is about to drive to.
+   */
+  beaconRefreshKey?: number;
 }
 
 /**
@@ -979,7 +1031,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   coverage, route, onOpenDirections, onClearDestination, onAddSpotHere,
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
-  destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert
+  destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert,
+  onSelectBeaconSpot, beaconRefreshKey = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1042,6 +1095,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
+  const beaconLayerRef = useRef<L.LayerGroup | null>(null);
   /** State / province boundary lines. Cleared when `showAdmin1` is off. */
   const admin1LayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
@@ -1064,6 +1118,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   reportTapRef.current = onSelectHazardReport;
   const alertTapRef = useRef(onSelectAlert);
   alertTapRef.current = onSelectAlert;
+  const beaconTapRef = useRef(onSelectBeaconSpot);
+  beaconTapRef.current = onSelectBeaconSpot;
   const directionsRef = useRef(onOpenDirections);
   directionsRef.current = onOpenDirections;
   const clearDestinationRef = useRef(onClearDestination);
@@ -2291,6 +2347,99 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       clear();
     };
   }, [isMapReady, isOfflineMode]);
+
+  /**
+   * Beacon spots.
+   *
+   * Same shape as the hazard-report layer above — own pane, debounced on
+   * `moveend`, cleared at the start of the effect AND in the cleanup, because
+   * Leaflet layers stack up invisibly otherwise.
+   *
+   * Two differences worth knowing. It refetches on `beaconRefreshKey` as well
+   * as on movement, so a spot somebody has just been ticketed at leaves the map
+   * at once rather than at the next 50 km pan. And withdrawn spots never arrive
+   * here at all — `beacon_spots_near` filters them in SQL — so there is no way
+   * for a client bug to leave one drawn.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!beaconLayerRef.current) return;
+      try { map.removeLayer(beaconLayerRef.current); } catch { /* detached */ }
+      beaconLayerRef.current = null;
+    };
+
+    if (isOfflineMode) { clear(); return; }
+
+    if (!map.getPane('beaconPane')) {
+      map.createPane('beaconPane');
+      const pane = map.getPane('beaconPane');
+      // Below the camper hazard reports (610) — a lead is the least urgent
+      // thing on the map and must never cover a washout warning.
+      if (pane) pane.style.zIndex = '600';
+    }
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let loadedAt: [number, number] | null = null;
+
+    const render = (spots: BeaconSpot[]) => {
+      clear();
+      if (spots.length === 0) return;
+
+      const group = L.layerGroup([], { pane: 'beaconPane' });
+      spots.forEach((spot) => {
+        if (typeof spot.latitude !== 'number' || typeof spot.longitude !== 'number') return;
+        // Same rule as the alerts, fires and reports: no icon on the grey.
+        if (!isWithinCoverage(spot.latitude, spot.longitude)) return;
+
+        const style = beaconTierStyle(spot.tier);
+        const marker = L.marker([spot.latitude, spot.longitude], {
+          pane: 'beaconPane',
+          icon: buildBeaconIcon(spot),
+          // The tooltip carries the tier's MEANING, not its name, so hovering
+          // a grey ring says "nobody has been here" rather than "Lead".
+          title: `${spot.label} — ${style.meaning}`,
+          riseOnHover: true
+        });
+        marker.on('click', () => beaconTapRef.current?.(spot));
+        group.addLayer(marker);
+      });
+
+      beaconLayerRef.current = group.addTo(map);
+    };
+
+    const run = async () => {
+      const centre = map.getCenter();
+      // Already loaded within ~10 km: the 25 km fetch still covers the view.
+      // Tighter than the hazard layer's 50 km because these are small rings
+      // that matter at close zoom, not region-wide warnings.
+      if (loadedAt && map.distance(centre, L.latLng(loadedAt)) < 10_000) return;
+
+      const spots = await fetchBeaconSpotsNear(centre.lat, centre.lng, 25);
+      if (cancelled) return;
+
+      loadedAt = [centre.lat, centre.lng];
+      render(spots);
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 700);
+    };
+
+    load();
+    map.on('moveend', load);
+
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend', load);
+      clear();
+    };
+  }, [isMapReady, isOfflineMode, beaconRefreshKey]);
 
   /* ------------------------------------------------------------------ */
   /* The dropped destination pin                                         */
