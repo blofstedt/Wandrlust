@@ -126,15 +126,21 @@ export const SOURCE_LABEL: Record<WeatherSnapshot['source'], string> = {
   none: 'no source'
 };
 
+/**
+ * The colours here are the SAME hexes the map draws each family in
+ * (`BADGE_COLOR` in src/utils/alertOverlay.ts). A camper who taps a teal pin
+ * has to land on a teal card, or the two look like two different warnings.
+ * If you change one, change the other.
+ */
 export const HAZARD_STYLE: Record<
   HazardFamily,
   { label: string; color: string; bg: string; border: string; icon: string }
 > = {
-  fire: { label: 'Fire', color: '#F97316', bg: 'bg-orange-950/60', border: 'border-orange-600/60', icon: '🔥' },
-  flood: { label: 'Flood', color: '#0EA5E9', bg: 'bg-sky-950/60', border: 'border-sky-600/60', icon: '🌊' },
-  storm: { label: 'Storm', color: '#A855F7', bg: 'bg-purple-950/60', border: 'border-purple-600/60', icon: '⛈️' },
-  winter: { label: 'Winter', color: '#38BDF8', bg: 'bg-cyan-950/60', border: 'border-cyan-600/60', icon: '❄️' },
-  heat: { label: 'Heat', color: '#EF4444', bg: 'bg-red-950/60', border: 'border-red-600/60', icon: '🌡️' },
+  fire: { label: 'Fire', color: '#EA580C', bg: 'bg-orange-950/60', border: 'border-orange-600/60', icon: '🔥' },
+  flood: { label: 'Flood / rain', color: '#14B8A6', bg: 'bg-teal-950/60', border: 'border-teal-600/60', icon: '🌊' },
+  storm: { label: 'Storm', color: '#7C3AED', bg: 'bg-violet-950/60', border: 'border-violet-600/60', icon: '⛈️' },
+  winter: { label: 'Cold', color: '#7DD3FC', bg: 'bg-sky-950/60', border: 'border-sky-600/60', icon: '❄️' },
+  heat: { label: 'Heat', color: '#B91C1C', bg: 'bg-red-950/60', border: 'border-red-600/60', icon: '🌡️' },
   wind: { label: 'Wind', color: '#94A3B8', bg: 'bg-slate-800/60', border: 'border-slate-600/60', icon: '💨' },
   other: { label: 'Advisory', color: '#64748B', bg: 'bg-slate-800/60', border: 'border-slate-600/60', icon: 'ℹ️' }
 };

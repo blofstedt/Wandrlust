@@ -103,7 +103,7 @@ export interface MarkerDot {
  * One hue per subject, all of them at the same brightness so no single dot
  * shouts louder than its neighbour for reasons of palette rather than
  * meaning. Hazards are excluded — they come from `BADGE_COLOR`, so a dot
- * matches the cloud it is standing in.
+ * matches the warning area it is standing in.
  */
 const COLOR = {
   water: '#38BDF8',
@@ -159,7 +159,7 @@ const nearDistance = (km: number): string =>
  * A live hazard over this spot — smoke, a heat warning, a fire.
  *
  * These lead the row, because they change whether a camper should go at all.
- * They are the same colours and words as the hazard clouds drawn on the map,
+ * They are the same colours and words as the hazard areas drawn on the map,
  * so the dot above a pin and the shape it is standing in are obviously the
  * same warning.
  */

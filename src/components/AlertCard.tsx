@@ -6,9 +6,11 @@ import { HAZARD_STYLE } from '../services/weatherService';
 /**
  * One official warning, opened from its icon on the map.
  *
- * This is the card the PRECISE hazards (fire, flood, storm) open when tapped —
- * the diffuse clouds can't be tapped at all, by design, so this only ever shows
- * a place-based warning. It relays exactly what the agency published: the event,
+ * Opened by the two things on the map you can tap: a LOCALIZED pin (a fire or
+ * a flood, on its own point) and the single badge at the centre of a
+ * GENERALIZED area (heavy rain, storm, heat, cold, smoke, wind). The area's own
+ * fill is not tappable, by design — it is scenery, the badge is the control.
+ * It relays exactly what the agency published: the event,
  * its severity, where it applies, the description and any instruction, and who
  * issued it. Nothing is reworded, and no severity is invented.
  */
@@ -113,4 +115,4 @@ export const AlertCard: React.FC<AlertCardProps> = ({ alert, onClose }) => {
       </div>
     </div>
   );
-};
+};
