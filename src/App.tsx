@@ -8,6 +8,7 @@ import { fetchOverpassCampsites } from './services/overpass';
 import {
   getSavedCampsites,
   toggleSaveCampsite,
+  mergeSavedCampsites,
   getCustomCampsites,
   addCustomCampsite
 } from './services/offlineStorage';
@@ -41,6 +42,7 @@ import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
   fetchCampsitesNear, fetchMyRigs, submitCampsite, fetchMySubmissionStates,
+  saveCampsiteRemote, unsaveCampsiteRemote, fetchSavedCampsitesRemote,
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
 import { mergeCampsites } from './utils/mergeCampsites';
@@ -74,6 +76,15 @@ export default function App() {
   // Data
   const [campsites, setCampsites] = useState<Campsite[]>(CURATED_CAMPSITES);
   const [savedSites, setSavedSites] = useState<Campsite[]>([]);
+  /**
+   * How much of the saved list the account actually has.
+   *
+   * Shown to the camper rather than assumed, because "saved" meaning two
+   * different things — on this phone, versus on your account — is precisely
+   * the confusion that made the missing sync worth fixing.
+   */
+  const [savedSync, setSavedSync] =
+    useState<'signed_out' | 'syncing' | 'synced' | 'unreachable'>('signed_out');
   const [selectedCampsite, setSelectedCampsite] = useState<Campsite | null>(null);
   const [detailModalSite, setDetailModalSite] = useState<Campsite | null>(null);
   const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
@@ -463,11 +474,92 @@ export default function App() {
     return () => { cancelled = true; };
   }, [user]);
 
+  /**
+   * Bookmark a spot — on this device, and on the account behind it.
+   *
+   * THE DEVICE WRITE COMES FIRST AND IS NEVER UNDONE, the same rule the add
+   * form follows. A camper tapping the bookmark at a pullout with one bar is
+   * keeping something they may need when the signal goes; losing it because an
+   * insert failed would be the worst outcome this button has. The account write
+   * is an enhancement layered on top and is allowed to fail.
+   *
+   * Silent on success — a toast on every bookmark tap is noise. It speaks up
+   * only when the two copies have actually diverged, because a bookmark that
+   * quietly never left the phone is the bug this replaced.
+   */
   const handleToggleSave = useCallback(async (site: Campsite, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    await toggleSaveCampsite(site);
+
+    const nowSaved = await toggleSaveCampsite(site);
     setSavedSites(await getSavedCampsites());
-  }, []);
+
+    // Signed out is not a failure, and the saved view already says the list
+    // lives on this device only. Nothing to report.
+    if (!user) return;
+
+    if (nowSaved) {
+      const result = await saveCampsiteRemote(site);
+      if (!result.ok) toast.info('Saved on this device', result.message);
+      return;
+    }
+
+    const result = await unsaveCampsiteRemote(site.id);
+    if (!result.ok) {
+      // Worth saying out loud: the merge on next sign-in only ever adds, so a
+      // failed removal means this spot comes back rather than staying gone.
+      toast.info('Removed from this device', `Still on your account — ${result.message}`);
+    }
+  }, [user, toast]);
+
+  /**
+   * Reconcile the saved list with the account, once per sign-in.
+   *
+   * Runs in three steps, in this order for a reason:
+   *
+   *   1. read what the account has,
+   *   2. fold it into the device list — only ever adding, never removing,
+   *   3. push up whatever the account had not seen.
+   *
+   * Step 3 is what carries across every spot bookmarked before this fix
+   * shipped, or bookmarked while signed out. Those exist on one phone and
+   * nowhere else, and the first sign-in after this change is the moment they
+   * stop being one bad reinstall away from gone.
+   *
+   * A server that cannot be reached leaves the device list exactly as it was
+   * and says so in the saved view. It never reads silence as "you saved
+   * nothing" — see `fetchSavedCampsitesRemote` on why it returns null rather
+   * than an empty array.
+   */
+  useEffect(() => {
+    if (!user) { setSavedSync('signed_out'); return; }
+
+    let cancelled = false;
+    setSavedSync('syncing');
+
+    (async () => {
+      const remote = await fetchSavedCampsitesRemote();
+      if (cancelled) return;
+
+      if (remote === null) { setSavedSync('unreachable'); return; }
+
+      const merged = await mergeSavedCampsites(remote);
+      if (cancelled) return;
+
+      setSavedSites(merged);
+      setSavedSync('synced');
+
+      const knownRemotely = new Set(remote.map((site) => site.id));
+      // One at a time: the list is small, and a burst of parallel upserts on a
+      // weak connection is how you turn a slow sync into a failed one.
+      for (const site of merged) {
+        if (cancelled) return;
+        if (knownRemotely.has(site.id)) continue;
+        await saveCampsiteRemote(site);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [user]);
 
   /**
    * Save the spot, then try to share it. In that order, always.
@@ -848,7 +940,13 @@ export default function App() {
                     Saved offline ({savedSites.length})
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Stored on this device, so they work with no cell service
+                    {savedSync === 'synced'
+                      ? 'On this device and on your account, so they work with no cell service'
+                      : savedSync === 'syncing'
+                        ? 'Stored on this device — checking your account…'
+                        : savedSync === 'unreachable'
+                          ? "Stored on this device. Couldn't reach your account just now."
+                          : 'Stored on this device only. Sign in to keep them on your account.'}
                   </p>
                 </div>
                 <button

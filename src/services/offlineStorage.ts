@@ -70,6 +70,60 @@ export const toggleSaveCampsite = async (campsite: Campsite): Promise<boolean> =
   return true;
 };
 
+/**
+ * Fold the account's saved list into this device's.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS ONLY EVER ADDS
+ * ---------------------------------------------------------------------------
+ *
+ * The obvious implementation — take the server's list as the truth and
+ * overwrite — deletes saved spots, and it does it in exactly the situation
+ * where the camper can least afford it. `campsites_saved` legitimately returns
+ * fewer rows than the camper has saved: a site that has since been hidden, or
+ * one above their trust tier, drops out server-side while the row stays. A
+ * spot bookmarked while signed out is on the device and nowhere else. Treating
+ * either as "unsaved" throws away the only copy.
+ *
+ * So a union, keyed on id. Removing a bookmark is an explicit act on both
+ * sides — `toggleSaveCampsite` and `unsaveCampsiteRemote` — never a side
+ * effect of a sync.
+ *
+ * The DEVICE copy wins a collision. It is the richer record: it carries the
+ * amenities the camper filled in, and the server deliberately returns none
+ * (they are `not null default` columns, so reading them back would invent
+ * observations nobody made). Position is the one thing worth taking from the
+ * server, since a stealth site's coordinates may have sharpened or fuzzed
+ * since the device last looked.
+ *
+ * @returns the merged list, already persisted.
+ */
+export const mergeSavedCampsites = async (remote: Campsite[]): Promise<Campsite[]> => {
+  const local = await getSavedCampsites();
+  const byId = new Map<string, Campsite>();
+
+  for (const site of remote) byId.set(site.id, { ...site, savedOffline: true });
+
+  for (const site of local) {
+    const server = byId.get(site.id);
+    byId.set(site.id, server
+      ? {
+          ...site,
+          latitude: server.latitude,
+          longitude: server.longitude,
+          isApproximate: server.isApproximate,
+          isStealth: server.isStealth,
+          submissionState: server.submissionState,
+          savedOffline: true
+        }
+      : { ...site, savedOffline: true });
+  }
+
+  const merged = [...byId.values()];
+  await writeList(SAVED_KEY, merged);
+  return merged;
+};
+
 export const clearSavedCampsites = (): Promise<void> => writeList(SAVED_KEY, []);
 
 /* ------------------------------------------------------------------ */

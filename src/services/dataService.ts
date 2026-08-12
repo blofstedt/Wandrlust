@@ -10,6 +10,7 @@
  *    DEFINER functions, never direct table writes.
  */
 import { supabase } from '../lib/supabase';
+import { campsiteIdKind } from '../utils/campsiteId';
 import type { Campsite, CamperReview } from '../types';
 
 /* ------------------------------------------------------------------ */
@@ -251,6 +252,47 @@ export const canReferenceCampsite = (site: Campsite): boolean =>
  * Never throws. Returns [] with no Supabase configured, which is what keeps
  * the app working with no keys at all.
  */
+/**
+ * One database row in the app's shape.
+ *
+ * Shared by `campsites_visible` and `campsites_saved`, which return the same
+ * columns under the same stealth rules — so the two reads have to agree about
+ * what a row means. Returns [] for a row with no usable position, so callers
+ * can flatMap it away.
+ */
+const mapCampsiteRow = (row: any, uid: string | null): Campsite[] => {
+  if (typeof row?.latitude !== 'number' || typeof row?.longitude !== 'number') return [];
+
+  return [{
+    id: String(row.id),
+    name: row.name ?? 'Unnamed site',
+    landType: row.land_type,
+    landManager: row.land_manager ?? '',
+    latitude: row.latitude,
+    longitude: row.longitude,
+    address: {
+      nearestCity: row.nearest_city ?? '',
+      stateProvince: row.state_province ?? '',
+      country: row.country ?? ''
+    },
+    description: row.description ?? '',
+    amenities: {},
+    images: Array.isArray(row.images) ? row.images : [],
+    reviews: [],
+    rating: Number(row.rating ?? 0),
+    reviewCount: Number(row.review_count ?? 0),
+    source: row.source ?? 'user_submitted',
+    capacityStatus: row.capacity_status ?? undefined,
+    isStealth: Boolean(row.is_stealth),
+    // The server fuzzed this position to ~2 km because the caller has not
+    // earned the exact one. The sheet says so rather than drawing it as
+    // though it were surveyed.
+    isApproximate: Boolean(row.is_approximate),
+    submissionState: row.is_published ? 'published' : 'pending_review',
+    submittedByMe: Boolean(uid) && row.submitted_by === uid
+  }];
+};
+
 export const fetchCampsitesNear = async (
   lat: number,
   lon: number,
@@ -262,38 +304,7 @@ export const fetchCampsitesNear = async (
   // Resolved once for the whole batch rather than per row.
   const uid = await currentUserId();
 
-  return rows.flatMap((row: any): Campsite[] => {
-    if (typeof row?.latitude !== 'number' || typeof row?.longitude !== 'number') return [];
-
-    return [{
-      id: String(row.id),
-      name: row.name ?? 'Unnamed site',
-      landType: row.land_type,
-      landManager: row.land_manager ?? '',
-      latitude: row.latitude,
-      longitude: row.longitude,
-      address: {
-        nearestCity: row.nearest_city ?? '',
-        stateProvince: row.state_province ?? '',
-        country: row.country ?? ''
-      },
-      description: row.description ?? '',
-      amenities: {},
-      images: Array.isArray(row.images) ? row.images : [],
-      reviews: [],
-      rating: Number(row.rating ?? 0),
-      reviewCount: Number(row.review_count ?? 0),
-      source: row.source ?? 'user_submitted',
-      capacityStatus: row.capacity_status ?? undefined,
-      isStealth: Boolean(row.is_stealth),
-      // The server fuzzed this position to ~2 km because the caller has not
-      // earned the exact one. The sheet says so rather than drawing it as
-      // though it were surveyed.
-      isApproximate: Boolean(row.is_approximate),
-      submissionState: row.is_published ? 'published' : 'pending_review',
-      submittedByMe: Boolean(uid) && row.submitted_by === uid
-    }];
-  });
+  return rows.flatMap((row: any) => mapCampsiteRow(row, uid));
 };
 
 /**
@@ -580,21 +591,128 @@ export const unlockStealthSite = async (campsiteId: string): Promise<Result<any>
   return success(data?.[0] ?? data, 'Location unlocked');
 };
 
-export const saveCampsiteRemote = async (campsiteId: string, notes?: string) => {
-  if (!supabase) return failure('Not connected');
+/* ------------------------------------------------------------------ */
+/* Saved campsites                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Put a bookmark on the account instead of only in this browser.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS FIXES
+ * ---------------------------------------------------------------------------
+ *
+ * These two functions existed and nothing called them, so the bookmark button
+ * wrote to localforage and stopped. A camper's saved list died with the
+ * browser profile — reinstall, clear site data, or pick up a second device and
+ * every spot they had kept was gone. The table and its owner-only policy had
+ * been sitting there since migration 04.
+ *
+ * They were also both wrong, which is presumably why they were never wired up:
+ * `user_id` is `not null` with no default and the upsert never sent one, so the
+ * insert could only ever have failed. Migration 12 defaults the column to
+ * `auth.uid()` — the same expression the RLS policy checks it against — so the
+ * client no longer names it at all.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS ALLOWED TO FAIL
+ * ---------------------------------------------------------------------------
+ *
+ * `saved_campsites.campsite_id` is a foreign key into `campsites`, so a site
+ * that has never reached the server cannot be bookmarked on the server. Two
+ * kinds of site are like that: one somebody added on this device and never
+ * shared, and an OSM result nobody has interacted with yet. The second is
+ * fixable — `ensureCampsiteExists` materialises it — and the first is not.
+ *
+ * So the foreign-key violation is caught and reported as a plain sentence
+ * rather than a Postgres error. The local bookmark has already been written by
+ * the caller and is never rolled back on this result: on a phone at a trailhead
+ * the device copy is the one that matters.
+ */
+export const saveCampsiteRemote = async (
+  site: Campsite,
+  notes?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Saved on this device only — no server configured.');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Saved on this device. Sign in to keep it on your account.');
+
+  // An OSM site has to become a real row before anything can point at it.
+  if (campsiteIdKind(site.id) === 'osm') {
+    const materialised = await ensureCampsiteExists(site);
+    if (!materialised.ok) return failure(materialised.message);
+  }
+
   const { error } = await supabase
     .from('saved_campsites')
-    .upsert({ campsite_id: campsiteId, notes: notes ?? null });
-  return error ? failure(error.message) : success(true, 'Saved');
+    .upsert(
+      { user_id: uid, campsite_id: site.id, notes: notes ?? null },
+      { onConflict: 'user_id,campsite_id' }
+    );
+
+  // 23503 = foreign key violation: this spot only exists on this device.
+  if (error?.code === '23503') {
+    return failure('Saved on this device. Share this spot to keep it on your account.');
+  }
+  if (error) return failure(error.message);
+
+  return success(true, 'Saved');
 };
 
-export const unsaveCampsiteRemote = async (campsiteId: string) => {
+/**
+ * Drop the bookmark from the account.
+ *
+ * Scoped to the caller explicitly as well as by RLS. The policy already
+ * confines the delete to your own rows, but a delete whose WHERE clause relies
+ * entirely on a policy is one policy edit away from being a very bad day.
+ */
+export const unsaveCampsiteRemote = async (campsiteId: string): Promise<Result<boolean>> => {
   if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Not signed in');
+
   const { error } = await supabase
     .from('saved_campsites')
     .delete()
+    .eq('user_id', uid)
     .eq('campsite_id', campsiteId);
+
   return error ? failure(error.message) : success(true, 'Removed');
+};
+
+/**
+ * The saved list as the account knows it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A `null` RETURN AND NOT AN EMPTY ARRAY
+ * ---------------------------------------------------------------------------
+ *
+ * The caller merges this with the device's own saved list, and the difference
+ * between "the server says you have saved nothing" and "the server could not
+ * be reached" decides whether a bookmark gets pushed up or thrown away. Every
+ * other read here returns [] on failure because the worst case is a thin map;
+ * here the worst case is deleting somebody's saved spots on a bad connection.
+ *
+ * So: an array means the server answered, `null` means it did not, and the
+ * caller must never treat `null` as empty.
+ *
+ * Note that even a successful read can be shorter than the row count — a site
+ * that has since been hidden, or one that sits above the caller's trust tier,
+ * drops out server-side while its row stays. That is why the merge only ever
+ * adds and never removes.
+ */
+export const fetchSavedCampsitesRemote = async (): Promise<Campsite[] | null> => {
+  if (!supabase) return null;
+
+  const uid = await currentUserId();
+  if (!uid) return null;
+
+  const { data, error } = await supabase.rpc('campsites_saved');
+  if (error || !Array.isArray(data)) return null;
+
+  return data.flatMap((row: any) => mapCampsiteRow(row, uid));
 };
 
 /* ------------------------------------------------------------------ */
