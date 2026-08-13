@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type {
   Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
-  DestinationLand, MapDestination, CellCoverage, BeaconSpot
+  DestinationLand, MapDestination, CellCoverage, BeaconSpot, FacilityKind, MapFacility
 } from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
 import { fetchOverpassCampsites } from './services/overpass';
@@ -18,6 +18,9 @@ import { CampsiteCard } from './components/CampsiteCard';
 import { CampsiteDetailModal } from './components/CampsiteDetailModal';
 import { OfflineManagerModal } from './components/OfflineManagerModal';
 import { AddHereConfirm } from './components/AddHereConfirm';
+import { AddFacilitySheet } from './components/AddFacilitySheet';
+import { FacilityCard } from './components/FacilityCard';
+import type { FacilityLookupState } from './components/FacilityChips';
 import { CampingGuideModal } from './components/CampingGuideModal';
 import { FilterDrawer } from './components/FilterDrawer';
 import { AuthModal } from './components/AuthModal';
@@ -168,6 +171,27 @@ export default function App() {
   const [beaconSpot, setBeaconSpot] = useState<BeaconSpot | null>(null);
   const [beaconRefreshKey, setBeaconRefreshKey] = useState(0);
   const [legalDoc, setLegalDoc] = useState<LegalDocKind | null>(null);
+
+  /**
+   * Facilities — the chips under the search, and adding one.
+   *
+   * `facilityKinds` is a DISPLAY layer and deliberately not part of
+   * `filterState`. "Find me a toilet" and "only show campsites that have a
+   * toilet" are different questions with different answers, and the one time
+   * they lived in the same drawer people reliably reached for the wrong one.
+   * Nothing here touches `filteredCampsites`.
+   *
+   * `facilityRefreshKey` exists for the same reason `beaconRefreshKey` does:
+   * without it a camper adds a dump station, the sheet says "added", and the
+   * map shows nothing until they pan far enough to trip a reload.
+   */
+  const [facilityKinds, setFacilityKinds] = useState<FacilityKind[]>([]);
+  const [facilityState, setFacilityState] = useState<FacilityLookupState>({ status: 'idle' });
+  const [facilityRefreshKey, setFacilityRefreshKey] = useState(0);
+  const [isAddFacilityOpen, setIsAddFacilityOpen] = useState(false);
+  const [addFacilityAt, setAddFacilityAt] = useState<[number, number] | null>(null);
+  const [addFacilityFromGps, setAddFacilityFromGps] = useState(false);
+  const [selectedFacility, setSelectedFacility] = useState<MapFacility | null>(null);
 
   const [filterState, setFilterState] = useState<FilterState>(() =>
     createDefaultFilters(HOME_LABEL)
@@ -393,6 +417,37 @@ export default function App() {
     setDestination(null);
     setSelectedCampsite(null);
     setRoute(null);
+  }, []);
+
+  /* ------------------------------------------------------------ FACILITIES */
+
+  /** Switch one facility layer on or off. */
+  const handleToggleFacilityKind = useCallback((kind: FacilityKind) => {
+    setFacilityKinds((prev) =>
+      prev.includes(kind) ? prev.filter((k) => k !== kind) : [...prev, kind]
+    );
+  }, []);
+
+  const handleClearFacilityKinds = useCallback(() => setFacilityKinds([]), []);
+
+  /** Open the facility form on a specific coordinate. */
+  const handleAddFacilityAt = useCallback((latitude: number, longitude: number) => {
+    setAddFacilityAt([latitude, longitude]);
+    setAddFacilityFromGps(false);
+    setIsAddFacilityOpen(true);
+  }, []);
+
+  /**
+   * A facility landed. Redraw the layer, and switch its kind on if it is off.
+   *
+   * Without the second half a camper adds a toilet with no chips selected and
+   * the map stays exactly as blank as it was — the pin is there, the layer
+   * that would draw it is not running, and the app looks like it lost the
+   * submission.
+   */
+  const handleFacilitySaved = useCallback((kind: FacilityKind) => {
+    setFacilityKinds((prev) => (prev.includes(kind) ? prev : [...prev, kind]));
+    setFacilityRefreshKey((key) => key + 1);
   }, []);
 
   /* ---------------------------------------------------------------- BEACON */
@@ -994,6 +1049,10 @@ export default function App() {
           nearbyCount={nearbyCampers.length}
           activeFilterCount={activeFilterCount}
           savedCount={savedSites.length}
+          facilityKinds={facilityKinds}
+          onToggleFacilityKind={handleToggleFacilityKind}
+          onClearFacilityKinds={handleClearFacilityKinds}
+          facilityState={facilityState}
         />
 
         <main id="main" className="flex-1 relative flex flex-col overflow-hidden min-h-0">
@@ -1028,6 +1087,11 @@ export default function App() {
                     onOpenDirections={handleOpenDirections}
                     onClearDestination={handleClearDestination}
                     onAddSpotHere={handleAddSpotAt}
+                    onAddFacilityHere={handleAddFacilityAt}
+                    facilityKinds={facilityKinds}
+                    onFacilityStateChange={setFacilityState}
+                    onSelectFacility={setSelectedFacility}
+                    facilityRefreshKey={facilityRefreshKey}
                     bottomSheetPx={sheetSite ? sheetPx : 0}
                   />
                 </ErrorBoundary>
@@ -1216,6 +1280,33 @@ export default function App() {
         onSubmit={handleSubmitNewSpot}
       />
 
+      {/*
+        Adding a facility, and the card one opens when tapped.
+
+        A separate sheet from SpotReportSheet on purpose: a campsite needs a
+        photo, a GPS fix taken where you are standing, and eight scales; a
+        toilet needs a kind and a coordinate. Folding the second into the
+        first would make marking a tap as heavy as publishing a campsite, and
+        nobody would do it twice.
+      */}
+      <AddFacilitySheet
+        isOpen={isAddFacilityOpen}
+        onClose={() => { setIsAddFacilityOpen(false); setAddFacilityAt(null); }}
+        at={addFacilityAt}
+        fromGps={addFacilityFromGps}
+        isSignedIn={Boolean(user)}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onSaved={handleFacilitySaved}
+      />
+
+      <FacilityCard
+        facility={selectedFacility}
+        onClose={() => setSelectedFacility(null)}
+        isSignedIn={Boolean(user)}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onVoted={() => setFacilityRefreshKey((key) => key + 1)}
+      />
+
       <AddHereConfirm
         isOpen={isAddHereOpen}
         onClose={() => setIsAddHereOpen(false)}
@@ -1223,6 +1314,14 @@ export default function App() {
         isLocating={isLocating}
         onLocateUser={handleLocateUser}
         onConfirm={handleAddSpotAt}
+        onAddFacility={(latitude, longitude) => {
+          setIsAddHereOpen(false);
+          setAddFacilityAt([latitude, longitude]);
+          // The one path where the coordinate IS the phone's own fix, so the
+          // sheet hedges it as such rather than as "where you tapped".
+          setAddFacilityFromGps(true);
+          setIsAddFacilityOpen(true);
+        }}
       />
 
       <CampingGuideModal isOpen={isGuideModalOpen} onClose={() => setIsGuideModalOpen(false)} />

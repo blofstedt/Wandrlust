@@ -1,5 +1,8 @@
 import { distanceKm, distanceToLineKm } from '../utils/geo';
-import type { NearbyFacility, NearbyFacilityKind } from '../types';
+import type { FacilityKind, MapFacility, NearbyFacility, NearbyFacilityKind } from '../types';
+import { FACILITY, FACILITY_KINDS } from '../config/facilities';
+
+export { FACILITY_LABEL, FACILITY_GLYPH, FACILITY_COLOR } from '../config/facilities';
 
 /**
  * The nearest toilet, shower, tap, dump station, fuel pump, trailhead,
@@ -54,78 +57,36 @@ interface OverpassElement {
 }
 
 /**
- * The kinds worth a dot, and the OSM tags that mean each one.
+ * The Overpass selectors for a set of kinds, read off the shared table.
  *
- * Deliberately short. Every kind added here is another dot over the pin and
- * another thing to read before deciding, so the bar is "would this change
- * where I sleep tonight" — which is true of a toilet and a water tap, and not
- * true of a picnic bench.
+ * The tags used to be duplicated here, in `config/spotReport.ts` and in
+ * `server/spotContext.ts`, and they disagreed — which is how a toilet ended
+ * up being called a `restroom` in one place and being unstorable in another.
+ * `config/facilities.ts` is now the only copy.
  */
-const KIND_QUERY: Record<Exclude<NearbyFacilityKind, 'road'>, string[]> = {
-  toilet: ['node["amenity"="toilets"]', 'way["amenity"="toilets"]'],
-  shower: ['node["amenity"="shower"]', 'way["amenity"="shower"]'],
-  water: [
-    'node["amenity"="drinking_water"]',
-    'node["man_made"="water_tap"]["drinking_water"="yes"]'
-  ],
-  dump: ['node["amenity"="sanitary_dump_station"]', 'way["amenity"="sanitary_dump_station"]'],
-  fuel: ['node["amenity"="fuel"]', 'way["amenity"="fuel"]'],
-  groceries: [
-    'node["shop"="supermarket"]', 'way["shop"="supermarket"]',
-    'node["shop"="convenience"]', 'way["shop"="convenience"]'
-  ],
-  /* Where a walk STARTS — the trailhead — rather than the path itself. A
-     hiking route is a line hundreds of km long whose nearest point to a
-     campsite is meaningless; the head is a place you drive to and park. */
-  trail: [
-    'node["highway"="trailhead"]',
-    'node["information"="guidepost"]["hiking"="yes"]'
-  ],
-  fishing: ['node["leisure"="fishing"]', 'way["leisure"="fishing"]'],
-  /* A slipway is the ramp itself. Marinas are excluded on purpose: a marina
-     is a business with a gate, not somewhere to put a canoe in. */
-  boat: ['node["leisure"="slipway"]', 'way["leisure"="slipway"]'],
-  waste: [
-    'node["amenity"="waste_disposal"]', 'way["amenity"="waste_disposal"]',
-    'node["amenity"="recycling"]["recycling_type"="centre"]'
-  ]
-};
+const selectorsFor = (kinds: readonly FacilityKind[]): string[] =>
+  kinds.flatMap((kind) => FACILITY[kind].osm);
 
-export const FACILITY_LABEL: Record<NearbyFacilityKind, string> = {
-  toilet: 'Toilet',
-  shower: 'Shower',
-  water: 'Drinking water',
-  dump: 'Dump station',
-  fuel: 'Fuel',
-  groceries: 'Groceries',
-  trail: 'Trailhead',
-  fishing: 'Fishing spot',
-  boat: 'Boat ramp',
-  waste: 'Rubbish disposal',
-  road: 'Driveable road'
-};
+/** Every kind that OpenStreetMap can actually answer for. */
+const OSM_KINDS = FACILITY_KINDS.filter((kind) => FACILITY[kind].osm.length > 0);
 
-export const FACILITY_GLYPH: Record<NearbyFacilityKind, string> = {
-  toilet: '🚻',
-  shower: '🚿',
-  water: '🚰',
-  dump: '🚽',
-  fuel: '⛽',
-  groceries: '🛒',
-  trail: '🥾',
-  fishing: '🎣',
-  boat: '🛶',
-  waste: '🗑️',
-  road: '🛣️'
-};
-
-/** Which kind an element is, from the tags it came back with. */
-const kindOf = (tags: Record<string, string>): NearbyFacilityKind | null => {
+/**
+ * Which kind an element is, from the tags it came back with.
+ *
+ * Order matters where tags overlap: a fuel station that also sells propane
+ * carries `amenity=fuel` AND `fuel:lpg=yes`, and a camper hunting propane
+ * wants it to come back as propane rather than disappearing into the fuel
+ * pile. So the narrower reading is tested first.
+ */
+const kindOf = (tags: Record<string, string>): FacilityKind | null => {
   if (tags.amenity === 'toilets') return 'toilet';
   if (tags.amenity === 'shower') return 'shower';
   if (tags.amenity === 'drinking_water' || tags.man_made === 'water_tap') return 'water';
   if (tags.amenity === 'sanitary_dump_station') return 'dump';
+  if (tags['fuel:lpg'] === 'yes' || tags.shop === 'gas') return 'propane';
   if (tags.amenity === 'fuel') return 'fuel';
+  if (tags.shop === 'laundry' || tags.amenity === 'laundry') return 'laundry';
+  if (tags.amenity === 'compressed_air') return 'air';
   if (tags.shop === 'supermarket' || tags.shop === 'convenience') return 'groceries';
   if (tags.highway === 'trailhead' || tags.information === 'guidepost') return 'trail';
   if (tags.leisure === 'fishing') return 'fishing';
@@ -133,6 +94,15 @@ const kindOf = (tags: Record<string, string>): NearbyFacilityKind | null => {
   if (tags.amenity === 'waste_disposal' || tags.amenity === 'recycling') return 'waste';
   return null;
 };
+
+/**
+ * A toilet behind a locked door is not a facility.
+ *
+ * `access=private` on a shower is somebody's bathroom, and drawing it would
+ * send a camper to knock on a stranger's door at 6am.
+ */
+const isReachable = (tags: Record<string, string>): boolean =>
+  tags.access !== 'private' && tags.access !== 'no';
 
 export interface NearbyFacilityResult {
   /** False when every mirror failed — "couldn't check", never "nothing here". */
@@ -151,8 +121,7 @@ export const fetchNearbyFacilities = async (
 ): Promise<NearbyFacilityResult> => {
   const metres = Math.round(radiusKm * 1000);
   const around = `(around:${metres},${latitude.toFixed(5)},${longitude.toFixed(5)})`;
-  const clauses = Object.values(KIND_QUERY)
-    .flat()
+  const clauses = selectorsFor(OSM_KINDS)
     .map((selector) => `  ${selector}${around};`)
     .join('\n');
 
@@ -182,10 +151,7 @@ export const fetchNearbyFacilities = async (
 
         const kind = kindOf(tags);
         if (!kind) continue;
-
-        // A toilet tagged access=private is somebody's bathroom, not a
-        // facility; showing it would send a camper to knock on a door.
-        if (tags.access === 'private' || tags.access === 'no') continue;
+        if (!isReachable(tags)) continue;
 
         const km = distanceKm(latitude, longitude, lat, lon);
         if (km > radiusKm) continue;
@@ -344,4 +310,145 @@ export const fetchNearestDriveableRoad = async (
   }
 
   return null;
+};
+
+/* ------------------------------------------------------------------ *
+ * Every facility of a chosen kind, across the map in view
+ * ------------------------------------------------------------------ */
+/**
+ * THE OTHER QUESTION.
+ *
+ * `fetchNearbyFacilities` above answers "what is near THIS spot", and it
+ * deliberately collapses to the nearest one of each kind — a pin wearing
+ * fourteen toilet chips tells a camper nothing. This answers "show me every
+ * toilet on the screen", which is the opposite shape: one kind, or a few,
+ * and all of them.
+ *
+ * A BOUNDING BOX RATHER THAN A RADIUS, because the thing being filled is a
+ * rectangular screen. Asking for a radius that covers the corners of the
+ * viewport fetches a third more ground than is being looked at, and Overpass
+ * charges for it in seconds.
+ *
+ * THE CAP IS NOT COSMETIC. Overpass will refuse, or take thirty seconds over,
+ * a continent-wide box. The caller gates on zoom before ever getting here;
+ * this clamps the box as a second line of defence and tells the truth about
+ * what came back.
+ *
+ * Never throws. Every mirror failing is `ok: false` with an empty list, which
+ * the UI must render as "couldn't check" — never as "there are none here".
+ */
+
+/** Below this the box is too big for Overpass and too coarse to be useful. */
+export const FACILITY_MIN_ZOOM = 10;
+
+/** Degrees of latitude/longitude. ~110 km — a generous phone screen at z10. */
+const MAX_BOX_DEGREES = 1.2;
+
+export interface FacilityViewBounds {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+export interface FacilityViewResult {
+  /** False when every mirror failed. "Couldn't check", never "nothing here". */
+  ok: boolean;
+  facilities: MapFacility[];
+  /** True when the answer hit the row cap, so it is a sample, not the set. */
+  truncated: boolean;
+}
+
+const EMPTY_VIEW: FacilityViewResult = { ok: false, facilities: [], truncated: false };
+
+/** How many we will draw before the map becomes a wall of glyphs. */
+const MAX_IN_VIEW = 250;
+
+export const fetchFacilitiesInView = async (
+  bounds: FacilityViewBounds,
+  kinds: readonly FacilityKind[],
+  signal?: AbortSignal
+): Promise<FacilityViewResult> => {
+  const wanted = kinds.filter((kind) => FACILITY[kind].osm.length > 0);
+  if (wanted.length === 0) return { ok: true, facilities: [], truncated: false };
+
+  // Clamp around the centre rather than refusing outright: a slightly-too-big
+  // box still answers for the middle of the screen, which is where the camper
+  // is looking. The zoom gate upstream is what stops this happening normally.
+  const midLat = (bounds.south + bounds.north) / 2;
+  const midLon = (bounds.west + bounds.east) / 2;
+  const halfLat = Math.min((bounds.north - bounds.south) / 2, MAX_BOX_DEGREES / 2);
+  const halfLon = Math.min((bounds.east - bounds.west) / 2, MAX_BOX_DEGREES / 2);
+
+  const box = [
+    (midLat - halfLat).toFixed(5), (midLon - halfLon).toFixed(5),
+    (midLat + halfLat).toFixed(5), (midLon + halfLon).toFixed(5)
+  ].join(',');
+
+  const clauses = selectorsFor(wanted)
+    .map((selector) => `  ${selector}(${box});`)
+    .join('\n');
+
+  const query = `[out:json][timeout:20];\n(\n${clauses}\n);\nout center ${MAX_IN_VIEW + 1};`;
+
+  for (const mirror of OVERPASS_MIRRORS) {
+    try {
+      const res = await fetch(mirror, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+        signal
+      });
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      if (!Array.isArray(data?.elements)) continue;
+
+      const wantedSet = new Set(wanted);
+      /* Keyed by id so a node and the way describing the same building do not
+         both draw. OSM ids are unique per type, so the type is in the key. */
+      const found = new Map<string, MapFacility>();
+
+      for (const element of data.elements as OverpassElement[]) {
+        const lat = element.lat ?? element.center?.lat;
+        const lon = element.lon ?? element.center?.lon;
+        const tags = element.tags ?? {};
+        if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+
+        const kind = kindOf(tags);
+        // A selector can drag in a neighbouring tag — `amenity=fuel` matches
+        // the propane query too. Only keep what was actually asked for.
+        if (!kind || !wantedSet.has(kind)) continue;
+        if (!isReachable(tags)) continue;
+
+        const id = `osm-${element.type}-${element.id}`;
+        if (found.has(id)) continue;
+
+        found.set(id, {
+          id,
+          kind,
+          name: tags.name?.trim() || undefined,
+          latitude: lat,
+          longitude: lon,
+          fromOsm: true,
+          /* Nobody using this app has confirmed an OSM node. That is not a
+             criticism of it — it is the difference the pin has to show. */
+          confirmations: 0,
+          fee: tags.fee === undefined ? undefined : tags.fee !== 'no'
+        });
+      }
+
+      const facilities = [...found.values()];
+      return {
+        ok: true,
+        facilities: facilities.slice(0, MAX_IN_VIEW),
+        truncated: facilities.length > MAX_IN_VIEW
+      };
+    } catch {
+      // An abort is the caller changing their mind, not a mirror failing.
+      if (signal?.aborted) return EMPTY_VIEW;
+    }
+  }
+
+  return EMPTY_VIEW;
 };

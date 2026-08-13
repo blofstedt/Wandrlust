@@ -55,16 +55,26 @@ export interface Rig {
 
 export interface PoiRecord {
   id: string;
+  /** A `poi_kind` enum value. Mapped to a `FacilityKind` by config/facilities. */
   kind: string;
-  name: string;
+  /**
+   * Null on most of them, and that is correct rather than missing data — a
+   * vault toilet on a forest road has no name. The form stopped demanding one.
+   */
+  name: string | null;
   detail: string | null;
   latitude: number;
   longitude: number;
   is_free: boolean | null;
   price_cents: number | null;
+  /**
+   * `pending` until five net upvotes. Pending rows ARE returned and ARE drawn
+   * — hollow, and labelled as unconfirmed. See `fetchPoisNear`.
+   */
   status: 'pending' | 'promoted' | 'pruned';
   upvotes: number;
   downvotes: number;
+  created_at: string;
 }
 
 export interface HazardRecord {
@@ -1006,52 +1016,112 @@ export const reportBurnedSite = async (
   return error ? failure(error.message) : success(true, 'Report filed');
 };
 
+/**
+ * Add a facility other campers can use.
+ *
+ * THROUGH THE RPC, NOT THE TABLE, and that change is the whole reason a
+ * camper has never been paid for one. `points_rules` has carried
+ * ('poi_submit', 25, cap 2) since migration 02, but this function used to
+ * `insert` straight into `pois` — and points are server-side only (house
+ * rule 6), so a direct insert cannot grant them. `submit_poi` does the insert
+ * and the capped grant in one place, which is also the only place that can.
+ *
+ * `duplicate` comes back true when the same kind is already logged at the
+ * same coordinate. That is not a failure — it is somebody tapping twice, or
+ * two campers logging one toilet — so it returns `ok` with its own sentence.
+ */
 export const submitPoi = async (poi: {
   kind: string;
-  name: string;
+  name?: string;
   lat: number;
   lon: number;
   detail?: string;
   isFree?: boolean;
-  priceCents?: number;
-}): Promise<Result<boolean>> => {
+}): Promise<Result<{ id: string | null; duplicate: boolean }>> => {
   if (!supabase) return failure('Not connected');
   const uid = await currentUserId();
-  if (!uid) return failure('Sign in to submit');
+  if (!uid) return failure('Sign in to add a facility');
 
-  const { error } = await supabase.from('pois').insert({
-    kind: poi.kind,
-    name: poi.name,
-    geom: `SRID=4326;POINT(${poi.lon} ${poi.lat})`,
-    detail: poi.detail ?? null,
-    is_free: poi.isFree ?? null,
-    price_cents: poi.priceCents ?? null,
-    submitted_by: uid,
-    status: 'pending'
+  const { data, error } = await supabase.rpc('submit_poi', {
+    in_kind: poi.kind,
+    in_lat: poi.lat,
+    in_lon: poi.lon,
+    in_name: poi.name?.trim() || null,
+    in_detail: poi.detail?.trim() || null,
+    in_free: poi.isFree ?? null
   });
-  return error ? failure(error.message) : success(true, 'POI submitted for review');
+
+  if (error) {
+    return failure('Could not send that just now. Nothing was lost — try again in a moment.');
+  }
+
+  const row = data as { ok?: boolean; id?: string; duplicate?: boolean; message?: string } | null;
+  return row?.ok === true
+    ? success(
+        { id: row.id ?? null, duplicate: row.duplicate === true },
+        row.message ?? 'Added.'
+      )
+    : failure(row?.message || 'That did not go through.');
 };
 
+/**
+ * Confirm a facility is there, or say it is gone.
+ *
+ * This is what finally fires `poi_lifecycle()` — the promote-at-five,
+ * prune-after-three trigger has been armed and unreachable since migration
+ * 02, because nothing ever wrote a vote.
+ */
 export const votePoi = async (poiId: string, isUpvote: boolean): Promise<Result<boolean>> => {
   if (!supabase) return failure('Not connected');
   const uid = await currentUserId();
-  if (!uid) return failure('Sign in to vote');
+  if (!uid) return failure('Sign in to confirm a facility');
 
-  const { error } = await supabase
-    .from('poi_votes')
-    .insert({ poi_id: poiId, user_id: uid, is_upvote: isUpvote });
-  return error ? failure(error.message) : success(true, 'Vote recorded');
+  const { data, error } = await supabase.rpc('vote_poi', {
+    in_poi_id: poiId,
+    in_upvote: isUpvote
+  });
+
+  if (error) {
+    return failure('Could not send that just now. Nothing was lost — try again in a moment.');
+  }
+
+  const row = data as { ok?: boolean; message?: string } | null;
+  return row?.ok === true
+    ? success(true, row.message ?? 'Thanks — confirmed.')
+    : failure(row?.message || 'That did not go through.');
 };
 
-export const fetchPois = async (): Promise<PoiRecord[]> => {
+/**
+ * Camper-added facilities near a point.
+ *
+ * THE BUG THIS FIXES. The previous read was `select('*')` on a table whose
+ * position is a PostGIS `geom`, and PostgREST serves that column as EWKB hex
+ * — so `latitude` and `longitude` were never numbers, they were absent, and
+ * every row was unplottable. Nothing rendered them, so nothing broke; the
+ * moment a map layer consumed them it would have. Migration 09 fixed exactly
+ * this for hazard reports and spelled out that `pois` was the same case; this
+ * is that fix, arriving with the layer that needed it.
+ *
+ * Pending rows come back on purpose. A facility hidden until five people
+ * upvote it is a facility nobody can ever upvote — the map draws these hollow
+ * and says in words that one camper added it and nobody else has agreed.
+ *
+ * An empty list means nobody has recorded one nearby. It NEVER means there is
+ * nothing there.
+ */
+export const fetchPoisNear = async (
+  latitude: number,
+  longitude: number,
+  radiusKm = 25
+): Promise<PoiRecord[]> => {
   if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('pois')
-    .select('*')
-    .neq('status', 'pruned')
-    .limit(300);
-  if (error) return [];
-  return ok(data, []);
+  const { data, error } = await supabase.rpc('pois_near', {
+    in_lat: latitude,
+    in_lon: longitude,
+    in_radius_km: radiusKm
+  });
+  if (error || !Array.isArray(data)) return [];
+  return ok(data as PoiRecord[], []);
 };
 
 /* ------------------------------------------------------------------ */
