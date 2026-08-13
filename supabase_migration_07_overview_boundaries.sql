@@ -153,7 +153,12 @@ as $$
   from hits h;
 $$;
 
-comment on function public.boundaries_in_bbox is
+-- Argument list required — see the note in migration 06. By this point the
+-- name carries three overloads.
+comment on function public.boundaries_in_bbox(
+  double precision, double precision, double precision, double precision,
+  double precision, integer, double precision
+) is
   'Seeded public land intersecting a bbox, as a GeoJSON FeatureCollection in the shape /api/boundaries returns. in_min_area_sq_km > 0 returns only parcels at least that large, which is how the zoomed-out overview stays small. Empty when nothing has been seeded, which the API treats as "fall back to the live services".';
 
 grant execute on function public.boundaries_in_bbox(

@@ -359,7 +359,12 @@ as $$
   from candidate d, caller
   where not d.is_stealth
      or public.tier_rank(caller.tier) >= public.tier_rank(d.min_tier)
-  order by 12
+  -- Position 11 is the computed distance, and the select list has eleven
+  -- columns. This said 12, which is out of range: Postgres rejects the whole
+  -- statement, the migration's transaction aborts, and points_reason is never
+  -- created — so every later migration that names it fails too. Only bites a
+  -- fresh install, which is why a deployed database never noticed.
+  order by 11
   limit 300;
 $$;
 

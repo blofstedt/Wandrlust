@@ -24,6 +24,31 @@ export interface BeaconTierStyle {
   emoji: string;
 }
 
+/**
+ * How many separate campers each rung of the ladder takes.
+ *
+ * THE ONLY COPY OF THESE NUMBERS ON THE CLIENT. `beacon_tier_for()` in
+ * migration 14 holds the matching copy on the server, and the server is the
+ * one that decides — this exists so the UI can say "one more camper and this
+ * turns green" without guessing.
+ *
+ * They are deliberately low. A ladder whose top rung needs five separate
+ * campers is a ladder nothing ever climbs while the app is young, and a colour
+ * nobody ever sees teaches nobody anything.
+ */
+export const BEACON_TIER_STEPS = {
+  reported: 1,
+  corroborated: 2,
+  confirmed: 4
+} as const;
+
+/**
+ * The colour ramp only ever moves toward "good": grey → amber → lime → green.
+ *
+ * Red is not on the ramp. It belongs to `flagged` alone, so a red pin on this
+ * map means exactly one thing — somebody got a knock on the window here — and
+ * never gets confused with "we are only part-way confident".
+ */
 export const BEACON_TIER_STYLE: Record<BeaconTier, BeaconTierStyle> = {
   lead: {
     label: 'Lead',
@@ -35,32 +60,86 @@ export const BEACON_TIER_STYLE: Record<BeaconTier, BeaconTierStyle> = {
   },
   reported: {
     label: 'Reported',
-    meaning: 'One camper stayed the night here and vouched for it.',
+    meaning: 'One camper has actually been here and reported back.',
     color: '#F59E0B',
     colorSoft: 'rgba(245, 158, 11, 0.16)',
     ring: 'rgba(245, 158, 11, 0.45)',
     emoji: '🌘'
   },
+  corroborated: {
+    label: 'Corroborated',
+    meaning: 'Two separate campers have been here and agreed it works.',
+    color: '#A3E635',
+    colorSoft: 'rgba(163, 230, 53, 0.16)',
+    ring: 'rgba(163, 230, 53, 0.45)',
+    emoji: '🌗'
+  },
   confirmed: {
     label: 'Confirmed',
-    meaning: 'Several campers have stayed here, recently.',
+    meaning: 'Four or more campers have stayed here, recently.',
     color: '#10B981',
     colorSoft: 'rgba(16, 185, 129, 0.16)',
     ring: 'rgba(16, 185, 129, 0.45)',
     emoji: '✅'
   },
-  withdrawn: {
-    label: 'Withdrawn',
-    meaning: 'Someone got in trouble here. Off the map.',
+  /**
+   * Red, and STILL ON THE MAP.
+   *
+   * The old behaviour took a spot off the map the moment anybody got moved on,
+   * which quietly recreated the problem it was trying to solve: the next
+   * camper finds the same empty pullout on their own, parks, and gets the same
+   * knock at 3am — with the app having known and said nothing. A red pin
+   * carrying the reporter's own words is a warning; a missing pin is silence.
+   */
+  flagged: {
+    label: 'Knock reported',
+    meaning: 'A camper was woken up or moved on here. Read what they said.',
     color: '#EF4444',
     colorSoft: 'rgba(239, 68, 68, 0.16)',
     ring: 'rgba(239, 68, 68, 0.45)',
+    emoji: '🚨'
+  },
+  /** Not a place any more — gated, built on, gone. Genuinely off the map. */
+  withdrawn: {
+    label: 'Gone',
+    meaning: 'This is not a place you can park any more.',
+    color: '#64748B',
+    colorSoft: 'rgba(100, 116, 139, 0.16)',
+    ring: 'rgba(100, 116, 139, 0.45)',
     emoji: '⛔'
   }
 };
 
 export const beaconTierStyle = (tier: string): BeaconTierStyle =>
   BEACON_TIER_STYLE[tier as BeaconTier] ?? BEACON_TIER_STYLE.lead;
+
+/**
+ * "One more camper and this turns green."
+ *
+ * Returns null at the top of the ladder and for the two tiers that are not on
+ * it. Shown on the spot sheet because a visible next rung is what makes
+ * somebody bother to file a report at all.
+ */
+export const nextTierHint = (tier: BeaconTier, verifyCount: number): string | null => {
+  if (tier === 'flagged' || tier === 'withdrawn' || tier === 'confirmed') return null;
+
+  const next = verifyCount < BEACON_TIER_STEPS.reported
+    ? BEACON_TIER_STEPS.reported
+    : verifyCount < BEACON_TIER_STEPS.corroborated
+    ? BEACON_TIER_STEPS.corroborated
+    : BEACON_TIER_STEPS.confirmed;
+
+  const needed = next - verifyCount;
+  if (needed <= 0) return null;
+
+  const tierName = next === BEACON_TIER_STEPS.reported
+    ? BEACON_TIER_STYLE.reported.label
+    : next === BEACON_TIER_STEPS.corroborated
+    ? BEACON_TIER_STYLE.corroborated.label
+    : BEACON_TIER_STYLE.confirmed.label;
+
+  return `${needed} more camper${needed === 1 ? '' : 's'} moves this to ${tierName}.`;
+};
 
 /**
  * What to say about the signage check.

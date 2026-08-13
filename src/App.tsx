@@ -17,7 +17,6 @@ import { MapComponent } from './components/MapComponent';
 import { CampsiteCard } from './components/CampsiteCard';
 import { CampsiteDetailModal } from './components/CampsiteDetailModal';
 import { OfflineManagerModal } from './components/OfflineManagerModal';
-import { AddCampsiteModal } from './components/AddCampsiteModal';
 import { AddHereConfirm } from './components/AddHereConfirm';
 import { CampingGuideModal } from './components/CampingGuideModal';
 import { FilterDrawer } from './components/FilterDrawer';
@@ -29,6 +28,8 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
 import { BeaconPanel } from './components/BeaconPanel';
 import { BeaconVerifyPanel } from './components/BeaconVerifyPanel';
+import { SpotReportSheet, type SpotReportSubmission } from './components/SpotReportSheet';
+import { createSpot } from './services/dataService';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
 import { AlertCard } from './components/AlertCard';
@@ -38,6 +39,8 @@ import {
   createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
   ROAD_ACCESS_RANK, countActiveFilters
 } from './config/filters';
+import { ROAD_ACCESS_BY_SCALE, RIG_FEET_BY_SCALE } from './config/spotReport';
+import { newUserCampsiteId } from './utils/campsiteId';
 import { distanceMiles } from './utils/geo';
 import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
@@ -147,9 +150,11 @@ export default function App() {
    * are different questions — "what is around here?" and "how did this one go?"
    * — and a camper can have the second open having never asked the first.
    *
-   * `beaconRefreshKey` is bumped after a takedown so the map layer refetches
-   * at once. A spot somebody was just ticketed at must not sit on the map
-   * waiting for a pan.
+   * `beaconRefreshKey` is bumped by ANYTHING that changes what the map should
+   * be drawing — a finished scan, a new spot, a report, a takedown. The layer
+   * otherwise only reloads after a 10 km pan, which is how sending a beacon
+   * used to leave the map looking empty while the leads sat in the database.
+   *
    */
   const [isBeaconOpen, setIsBeaconOpen] = useState(false);
   const [beaconAt, setBeaconAt] = useState<[number, number] | null>(null);
@@ -412,11 +417,17 @@ export default function App() {
   );
 
   /**
-   * A spot left the map. Bump the layer key so it disappears now, and close
-   * the sheet that was talking about it.
+   * A spot changed — it was flagged red, or it genuinely left the map. Bump the
+   * layer key so the change shows now, and close the sheet that was talking
+   * about it.
    */
   const handleBeaconSpotWithdrawn = useCallback((_spotId: string) => {
     setBeaconSpot(null);
+    setBeaconRefreshKey((n) => n + 1);
+  }, []);
+
+  /** A scan finished. The leads it persisted are on the map; go and get them. */
+  const handleBeaconScanComplete = useCallback(() => {
     setBeaconRefreshKey((n) => n + 1);
   }, []);
 
@@ -630,7 +641,17 @@ export default function App() {
    * What the share adds is other people seeing it — the row lands unpublished
    * and waits for review, which is what the chip on the card explains.
    */
-  const handleAddCustomSite = useCallback(async (site: Campsite) => {
+  const handleAddCustomSite = useCallback(async (
+    site: Campsite,
+    /**
+     * Skip the toast.
+     *
+     * Set when this is being called as one half of a bigger submission that
+     * reports its own outcome — two toasts about the same tap, one of them a
+     * partial truth, is worse than one accurate one.
+     */
+    silent = false
+  ) => {
     await addCustomCampsite(site);
 
     const shared = await submitCampsite(site);
@@ -640,13 +661,15 @@ export default function App() {
       submittedByMe: true
     };
 
-    if (shared.ok) {
-      toast.success(
-        'Spot saved and sent for review',
-        'Only you can see it until it is approved.'
-      );
-    } else {
-      toast.info('Saved on this device', shared.message);
+    if (!silent) {
+      if (shared.ok) {
+        toast.success(
+          'Spot saved and sent for review',
+          'Only you can see it until it is approved.'
+        );
+      } else {
+        toast.info('Saved on this device', shared.message);
+      }
     }
 
     setCampsites((prev) => [stored, ...prev]);
@@ -663,6 +686,101 @@ export default function App() {
     // typed coordinates and has no idea yet where they landed.
     setCenter([stored.latitude, stored.longitude]);
   }, [toast]);
+
+  /* ------------------------------------------------------- ADDING A SPOT */
+
+  /**
+   * Put a spot on the map, from the report sheet.
+   *
+   * Two writes, and the order matters.
+   *
+   * The LOCAL write happens whatever else does. A camper adding a spot from a
+   * canyon with no signal, or without an account, still gets their pin — it
+   * lands in the on-device list exactly as it always did. That is the house
+   * rule about the app working with no Supabase and no internet, and the
+   * shiny new ladder does not get to break it.
+   *
+   * The SERVER write is what puts the spot on the evidence ladder for other
+   * campers. It needs an account and a connection, and when it cannot happen
+   * the camper is told which of the two they got rather than being left to
+   * assume.
+   */
+  const handleSubmitNewSpot = useCallback(
+    async (submission: SpotReportSubmission) => {
+      // The camper's own fix wins over the pin they dropped. They are standing
+      // at the place; the pin is wherever their thumb landed.
+      const latitude = submission.position.coords.latitude;
+      const longitude = submission.position.coords.longitude;
+
+      const localSite: Campsite = {
+        id: newUserCampsiteId(),
+        name: submission.name,
+        landType: 'dispersed',
+        landManager: '',
+        latitude,
+        longitude,
+        address: { nearestCity: '', stateProvince: '', country: '' },
+        description: submission.report.comment?.trim() || 'Spot added from the map.',
+        /**
+         * Only what the camper actually answered.
+         *
+         * `maxRig` is a five-stop scale, not a length, so it is translated
+         * rather than dropped through — and an unanswered scale stays absent
+         * instead of arriving as "tent only".
+         */
+        amenities: {
+          water: 'none',
+          toilet: submission.report.hasRestroom === true ? 'vault' : 'none',
+          roadAccess: ROAD_ACCESS_BY_SCALE[submission.report.roadAccess ?? -1] ?? 'gravel',
+          maxRvLengthFeet: RIG_FEET_BY_SCALE[submission.report.maxRig ?? -1]
+        },
+        images: [],
+        reviews: [],
+        rating: 0,
+        reviewCount: 0,
+        source: 'user_submitted'
+      };
+
+      // The existing local path, silenced so this handler owns the message.
+      // It saves to the device, sends to the campsite review queue, drops the
+      // pin into state and flies the map to it — all of which a newly added
+      // spot still wants.
+      await handleAddCustomSite(localSite, true);
+
+      const result = await createSpot(
+        latitude,
+        longitude,
+        submission.name,
+        submission.nameBasis,
+        submission.position.coords.accuracy,
+        submission.report,
+        submission.clientFlags
+      );
+
+      setAddSpotAt(null);
+      setIsAddModalOpen(false);
+
+      if (result.ok) {
+        setBeaconRefreshKey((n) => n + 1);
+        return {
+          ok: true,
+          // A merge is not a failure, but it is not what they asked for either,
+          // so it gets said rather than quietly happening.
+          message: result.data?.merged
+            ? 'Somebody had already pinned this pullout, so your report went onto their spot rather than adding a second pin next to it.'
+            : result.message
+        };
+      }
+
+      // The local pin exists. Say exactly that, rather than "failed".
+      return {
+        ok: true,
+        message: `Saved on this device. ${result.message} Other campers will not see it until it goes through.`
+      };
+    },
+    [handleAddCustomSite]
+  );
+
 
   /**
    * Take the site's new rating from the server, rather than working it out.
@@ -1072,11 +1190,22 @@ export default function App() {
         setIsOfflineMode={setIsOfflineMode}
       />
 
-      <AddCampsiteModal
+      {/*
+        The submission form, which used to be a fourteen-field modal.
+
+        What replaced it: the name is built from OpenStreetMap instead of
+        typed, the coordinates come from the camper's own fix instead of two
+        number inputs, the facility questions are only asked when the map
+        cannot answer them, and everything that remains is optional. See
+        SpotReportSheet for why it is one scroll and not a wizard.
+      */}
+      <SpotReportSheet
         isOpen={isAddModalOpen}
         onClose={() => { setIsAddModalOpen(false); setAddSpotAt(null); }}
-        onAdd={handleAddCustomSite}
-        defaultCenter={addSpotAt ?? center}
+        mode="create"
+        at={addSpotAt ?? center}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onSubmit={handleSubmitNewSpot}
       />
 
       <AddHereConfirm
@@ -1152,6 +1281,7 @@ export default function App() {
         at={beaconAt}
         onRequireAuth={() => setIsAuthOpen(true)}
         onNavigate={handleNavigateToBeaconSpot}
+        onScanComplete={handleBeaconScanComplete}
       />
 
       <BeaconVerifyPanel

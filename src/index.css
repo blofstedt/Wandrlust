@@ -473,14 +473,39 @@
   animation: wl-chip-pop var(--dur-base) var(--ease-moook) backwards;
 }
 
-/* A chip's own arrival: up from nothing, past its size, and back — the
-   moook overshoot, scaled rather than travelled, because a chip in a
-   centred column has nowhere to travel from without leaning. */
+/* A chip's own arrival: up from nothing, past its size, and back — the moook
+   overshoot. The small rise is what makes a stack read AS a stack: each chip
+   comes up from where the one below it already sits, rather than materialising
+   in place. Kept to 5px, because a taller travel makes a five-chip stack look
+   like it is being dealt rather than assembled. */
 @keyframes wl-chip-pop {
-  0%   { opacity: 0; transform: scale(0.6); }
-  55%  { opacity: 1; transform: scale(1.1); }
+  0%   { opacity: 0; transform: translateY(5px) scale(0.6); }
+  55%  { opacity: 1; transform: translateY(0) scale(1.1); }
   78%  { transform: scale(0.97); }
   100% { transform: scale(1); }
+}
+
+/* Going away again, for the press-and-hold peek. The reverse of the arrival
+   in every sense: it starts at the TOP of the stack and works down, so the
+   pile dismantles from the loose end rather than collapsing from under
+   itself. The delay is set per chip by the peek code. */
+.wl-chip-out {
+  animation: wl-chip-unpop var(--dur-tap) var(--ease-exit) forwards;
+}
+
+@keyframes wl-chip-unpop {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(4px) scale(0.72); }
+}
+
+/* The peek row itself.
+   Never interactive: a peek is a look, not a menu, and the finger that opened
+   it is already held down somewhere. Letting these take pointer events would
+   mean sliding a thumb off a pin could land on a chip and navigate. */
+.wl-chips-peek,
+.wl-chips-peek .wl-chip {
+  pointer-events: none !important;
+  cursor: default;
 }
 
 /* While the camera is away at the fires, the pin's own labels get out of the
@@ -725,7 +750,11 @@
   .anim-pulse, .anim-pulse-danger, .wl-dot-urgent { animation: none; }
   /* The chips' stagger is a delay, not a duration, so shortening the
      animation above would still leave a chip blank for half a second. */
-  .wl-chip-in { animation-delay: 0ms !important; }
+  .wl-chip-in, .wl-chip-out { animation-delay: 0ms !important; }
+  /* The peek still has to disappear, so this one keeps its end state rather
+     than being switched off — a retract that does not run leaves the stack
+     stuck open over the map. */
+  .wl-chip-out { animation-duration: 1ms; }
 }
 
 /* High-contrast preference: strengthen borders. */

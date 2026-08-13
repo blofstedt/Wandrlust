@@ -11,6 +11,7 @@ import { registerRouteRoutes } from './server/routeRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
 import { registerBeaconRoutes } from './server/beaconRoutes';
+import { registerSpotRoutes } from './server/spotRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -56,6 +57,11 @@ const startServer = async (): Promise<void> => {
   // ranks them with a model trained on what campers report back. Works with
   // no keys at all; MAPILLARY_TOKEN adds the street-sign check.
   registerBeaconRoutes(app);
+
+  // Names a coordinate from OpenStreetMap and reports which facilities are
+  // already within 5 km, so the report form can skip the name field and any
+  // question the map can answer on its own.
+  registerSpotRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.
