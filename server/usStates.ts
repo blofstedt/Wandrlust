@@ -95,3 +95,28 @@ export const statesInBbox = (
   }
   return out;
 };
+
+/**
+ * How far a state's centre is from a point, in rough degrees.
+ *
+ * WHY THIS EXISTS. Zone outlines are fetched under a hard budget — a winter
+ * morning names more forecast zones than the serverless function has seconds
+ * to resolve. The budget used to be spent in whatever order the alerts
+ * happened to arrive, which at a wide zoom meant a viewport over Alberta
+ * could burn its entire allowance on Florida and Texas and have nothing left
+ * for Montana and Idaho. Those unresolved alerts have no geometry, and an
+ * alert with no geometry is never drawn — so the states the camper was
+ * actually looking at were the ones that silently got no cloud.
+ *
+ * Ranking by distance from the middle of the requested box spends the budget
+ * on the middle of the screen first. Squared degrees, unprojected: this only
+ * ever decides an ORDER, and nothing is ever placed on the map using it.
+ */
+export const stateDistanceRank = (code: string, lat: number, lon: number): number => {
+  const box = US_STATE_BBOX[code];
+  if (!box) return Number.POSITIVE_INFINITY;
+  const [w, s, e, n] = box;
+  const dLat = (s + n) / 2 - lat;
+  const dLon = (w + e) / 2 - lon;
+  return dLat * dLat + dLon * dLon;
+};

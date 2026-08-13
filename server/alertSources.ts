@@ -16,6 +16,7 @@
 // an extensionless relative import throws. See the note in weatherRoutes.ts.
 import { classifyHazard, normaliseSeverity, normaliseUrgency } from '../shared/hazards.js';
 import type { HazardFamily, AlertSeverity } from '../shared/hazards.js';
+import { stateDistanceRank } from './usStates.js';
 
 export const NWS_BASE = 'https://api.weather.gov';
 export const ECCC_ALERTS = 'https://api.weather.gc.ca/collections/weather-alerts/items';
@@ -270,12 +271,22 @@ const ZONE_BATCH = 50;
  *
  * A winter morning across six states can name well over a thousand distinct
  * zones. Fetching all of them would blow the 30-second serverless budget and
- * hammer NWS, so we take the first 300 and leave the rest unresolved — they
- * stay in the response as alerts the app could not place, which the UI already
- * reports, and the cache means the next viewport picks up where this one
- * stopped rather than starting over.
+ * hammer NWS, so we take the first 600 and leave the rest unresolved — they
+ * stay in the response as alerts the app could not place, and the cache means
+ * the next viewport picks up where this one stopped rather than starting over.
+ *
+ * WAS 6 (300 zones), AND THAT WAS TOO TIGHT FOR A ZOOMED-OUT MAP. The two
+ * commonest American products in summer — heat advisories — and in winter —
+ * cold and wind — are BOTH zone-based, which means they arrive with no polygon
+ * and are invisible until their outline is resolved. A viewport spanning
+ * several states routinely named more than 300 zones, so most of the clouds
+ * over the US were never drawn at all. The batches run in one parallel wave,
+ * so doubling the cap costs roughly the same wall-clock, not twice as much.
+ *
+ * `near` in `resolveNwsZoneGeometry` is the other half of this: the cap still
+ * exists, so what it spends the budget on has to be the middle of the screen.
  */
-const ZONE_MAX_BATCHES = 6;
+const ZONE_MAX_BATCHES = 12;
 
 const rememberZone = (id: string, geometry: unknown | null): void => {
   if (zoneGeometryCache.size >= ZONE_CACHE_MAX) {
@@ -363,12 +374,34 @@ const polygonParts = (geometry: any): any[] => {
  * honest is the point; this just makes it small.
  */
 export const resolveNwsZoneGeometry = async (
-  alerts: NormalisedAlert[]
+  alerts: NormalisedAlert[],
+  /**
+   * The middle of the viewport that asked, when the caller knows it.
+   *
+   * Zone lookups run under a hard budget (see ZONE_MAX_BATCHES), and which
+   * zones get resolved decides which alerts can be DRAWN — an alert with no
+   * geometry is skipped by the map entirely. Without this the budget went in
+   * arrival order, so a wide viewport over the Rockies could spend all of it
+   * on the Gulf coast and leave every heat and smoke product on screen
+   * unplaced. Nearest-first spends it where the camper is looking.
+   */
+  near?: { lat: number; lon: number }
 ): Promise<NormalisedAlert[]> => {
   const needsGeometry = alerts.filter((a) => !a.geometry && (a.zoneIds?.length ?? 0) > 0);
   if (needsGeometry.length === 0) return alerts;
 
-  const wanted = [...new Set(needsGeometry.flatMap((a) => a.zoneIds ?? []))];
+  let wanted = [...new Set(needsGeometry.flatMap((a) => a.zoneIds ?? []))];
+
+  if (near) {
+    /* An NWS zone id starts with its state: "COZ034" is Colorado zone 34. That
+       prefix is the only locating information available before the outline is
+       fetched, and it is enough to sort by. */
+    wanted = wanted
+      .map((id) => ({ id, rank: stateDistanceRank(id.slice(0, 2), near.lat, near.lon) }))
+      .sort((a, b) => a.rank - b.rank)
+      .map((entry) => entry.id);
+  }
+
   const outlines = await fetchZoneGeometries(wanted);
   if (outlines.size === 0) return alerts;
 
@@ -595,19 +628,22 @@ export const fetchNwsAlertsAtPoint = async (lat: number, lon: number): Promise<N
  * but not directly under its centre; the caller filters the result back down to
  * the real viewport once the geometry is attached.
  *
- * Returns an empty list (never throws) when the feed cannot be reached; the
- * caller reports the outage rather than rendering silence as "all clear".
+ * Returns NULL when the feed could not be reached, so the caller can tell
+ * "nothing in force" apart from "we did not get an answer". It used to return
+ * `[]` for both, which the route then cached for five minutes and served to
+ * every camper in the region as a clear sky.
  */
 export const fetchNwsAlertsForStates = async (
   states: string[]
-): Promise<NormalisedAlert[]> => {
+): Promise<NormalisedAlert[] | null> => {
   if (states.length === 0) return [];
   const data = await getJson(
     `${NWS_BASE}/alerts/active?status=actual&message_type=alert` +
     `&area=${states.join(',')}&limit=500`,
     15000
   );
-  return Array.isArray(data?.features) ? data.features.map(nwsAlertToHazard) : [];
+  if (!data) return null;
+  return Array.isArray(data.features) ? data.features.map(nwsAlertToHazard) : [];
 };
 
 /**
@@ -643,14 +679,17 @@ export const fetchNwsActiveAlerts = async (): Promise<NormalisedAlert[] | null> 
  */
 export const fetchEcccAlerts = async (
   lat: number, lon: number, spanDeg = 1.0
-): Promise<NormalisedAlert[]> => {
+): Promise<NormalisedAlert[] | null> => {
   const bbox = [
     (lon - spanDeg).toFixed(3), (lat - spanDeg).toFixed(3),
     (lon + spanDeg).toFixed(3), (lat + spanDeg).toFixed(3)
   ].join(',');
 
   const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=500&f=json`);
-  if (!Array.isArray(data?.features)) return [];
+  // Null, not [], when GeoMet could not be reached — see the note on
+  // fetchNwsAlertsForStates. A cached empty sky is the worst outcome here.
+  if (!data) return null;
+  if (!Array.isArray(data.features)) return [];
   return mergeZoneAlerts(
     data.features.filter((f: any) => !isEndedEcccAlert(f)).map(ecccAlertToHazard)
   );
