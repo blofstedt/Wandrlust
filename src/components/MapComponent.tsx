@@ -4262,18 +4262,62 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }), [runTour]);
 
   /**
-   * Tapping the gap chip: where does the road actually stop?
+   * Tapping the gap chip: where does the road actually stop, and what is there?
    *
    * The chip says "1.8 km short" and the only useful version of that is on the
-   * map — the router's line ending in the middle of nowhere, and a dashed
-   * stretch to the pin that is deliberately not drawn as a route. Nobody has
-   * said there is anything to drive, walk or push a rig along in that gap.
+   * map. It used to be one dashed line into nowhere and a label saying the
+   * road ends here, which reads as the app not knowing about roads that are
+   * plainly drawn on the basemap underneath it.
+   *
+   * It knows. So the tour now shows the road too, in one of two shapes:
+   *
+   *   THE ROUTE ENDS ON A ROAD — the road is drawn in yellow, named, and the
+   *   dashed stretch runs from it to the pin. That is "you drive this, then
+   *   you're on your own for 400 m".
+   *
+   *   A CLOSER ROAD EXISTS THAT NOTHING WOULD ROUTE ONTO — it is drawn too, in
+   *   a dimmer, dashed yellow to keep it visibly different from the drive, and
+   *   labelled as what it is: mapped, close, and not reachable by any engine
+   *   we asked. That is the honest answer to "why is it ignoring that road",
+   *   and it is one the camper can act on with satellite imagery.
+   *
+   * The dashed stretch is still never called a route. Nobody has said there is
+   * anything to drive, walk or push a rig along in that gap.
    */
   const runGapTour = useCallback(() => runTour(async (t) => {
     const point = readPointRef.current;
-    const line = routeRef.current?.geometry ?? [];
+    const route = routeRef.current;
+    const line = route?.geometry ?? [];
     const end = line[line.length - 1];
     if (!point || !end) return;
+
+    const gap = route?.gapToDestinationKm ?? 0;
+    const approach = route?.approach ?? null;
+    const nearest = route?.nearestRoad ?? null;
+
+    // A road we could not route onto is only worth showing when it is
+    // meaningfully closer than where the drive gave up.
+    const stranded =
+      !approach && nearest && nearest.distanceKm < gap - 0.15 ? nearest : null;
+    const shown = approach ?? stranded;
+
+    const bounds = L.latLngBounds(end, [point.lat, point.lon]);
+
+    if (shown?.line?.length) {
+      // Dark under-stroke first, so yellow survives pale rock and bright sand.
+      L.polyline(shown.line, { color: '#0F172A', weight: 9, opacity: 0.45 }).addTo(t.layer);
+      L.polyline(shown.line, {
+        color: '#FDE047',
+        weight: 5,
+        opacity: stranded ? 0.75 : 0.95,
+        // Dashed when nothing can route onto it: the line is a fact about the
+        // map, not a way in, and it must not look like the drive.
+        dashArray: stranded ? '10 8' : undefined,
+        lineCap: 'round',
+        lineJoin: 'round'
+      }).addTo(t.layer);
+      bounds.extend(L.latLngBounds(shown.line));
+    }
 
     L.polyline([end, [point.lat, point.lon]], {
       color: '#F59E0B', weight: 4, opacity: 0.95, dashArray: '2 9', lineCap: 'round'
@@ -4282,17 +4326,40 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       radius: 6, color: '#F59E0B', weight: 3, fillColor: '#0F172A', fillOpacity: 1
     }).addTo(t.layer);
 
-    t.frame(L.latLngBounds(end, [point.lat, point.lon]), 14);
+    t.frame(bounds, 14);
     await t.wait(700);
     if (!t.alive()) return;
 
+    const named = (road: NonNullable<typeof shown>): string =>
+      road.name ?? `an unnamed ${road.kind.replace(/_/g, ' ')}`;
+    const away = (km: number): string =>
+      km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+
     t.label(end, {
-      title: 'The mapped road ends here',
-      detail: `${(routeRef.current?.gapToDestinationKm ?? 0).toFixed(1)} km left — ` +
-        'an unmapped track, or nothing at all',
+      title: approach
+        ? `The drive ends on ${named(approach)}`
+        : 'The mapped road ends here',
+      detail: approach
+        ? `${away(gap)} left on foot or an unmapped track` +
+          (approach.gated ? ' — OpenStreetMap records a gate on this road' : '')
+        : `${away(gap)} left — an unmapped track, or nothing at all`,
       glyph: '\u{1F6A7}',
       color: '#F59E0B'
     });
+
+    // The second label only exists when there is a second thing to say.
+    if (stranded) {
+      await t.wait(2000);
+      if (!t.alive()) return;
+
+      t.label([stranded.lat, stranded.lon], {
+        title: `${named(stranded)} — ${away(stranded.distanceKm)} away`,
+        detail: 'Mapped, but no router could find a way onto it. Check satellite ' +
+          'imagery before counting on it',
+        glyph: '\u{1F6E3}️',
+        color: '#FDE047'
+      });
+    }
 
     await t.wait(2400);
   }), [runTour]);
