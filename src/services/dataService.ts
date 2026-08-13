@@ -14,7 +14,7 @@ import { campsiteIdKind } from '../utils/campsiteId';
 import type {
   Campsite, CamperReview,
   BeaconSpot, BeaconDwellState, BeaconOutcome, BeaconVerificationAnswers,
-  BeaconModelSummary
+  BeaconModelSummary, BeaconTier, SpotVisitReport
 } from '../types';
 
 /* ------------------------------------------------------------------ */
@@ -1168,9 +1168,9 @@ export const saveSettings = async (
  * Beacon spots near a point.
  *
  * Positions come back projected to numbers by the RPC — never select `geom`
- * directly, PostgREST serves it as EWKB hex. Withdrawn spots are filtered out
- * in SQL, so a spot somebody was ticketed at can't reach a map layer even if a
- * caller forgets to check.
+ * directly, PostgREST serves it as EWKB hex. Spots that are genuinely gone are
+ * filtered out in SQL; spots somebody got a knock at deliberately are NOT, and
+ * arrive with `tier: 'flagged'` so the map can draw them red.
  */
 export const fetchBeaconSpotsNear = async (
   lat: number,
@@ -1197,8 +1197,165 @@ export const fetchBeaconSpotsNear = async (
     signEvidence: row.sign_evidence as BeaconSpot['signEvidence'],
     verifyCount: Number(row.verify_count ?? 0),
     score: Number(row.rule_score ?? 0) + Number(row.model_score ?? 0),
-    region: (row.region as string) ?? '*'
+    region: (row.region as string) ?? '*',
+    knock: Number(row.knock_count ?? 0) > 0
+      ? {
+          reportedAt: (row.last_knock_at as string) ?? '',
+          comment: (row.last_knock_note as string) ?? undefined,
+          count: Number(row.knock_count ?? 0)
+        }
+      : undefined,
+    conditions: {
+      // `numberOrUndefined` and not `Number(x ?? 0)`. A null average means
+      // nobody answered that question, and turning it into a zero would put
+      // "pitch black, no view, sloped" on every spot nobody has rated.
+      crowding: numberOrUndefined(row.avg_crowding),
+      rating: numberOrUndefined(row.avg_rating),
+      view: numberOrUndefined(row.avg_view),
+      maxRig: numberOrUndefined(row.avg_max_rig),
+      roadAccess: numberOrUndefined(row.avg_road_access),
+      levelGround: numberOrUndefined(row.avg_level_ground),
+      shade: numberOrUndefined(row.avg_shade),
+      nightLight: numberOrUndefined(row.avg_night_light),
+      cellBars: numberOrUndefined(row.avg_cell_bars),
+      sampleSize: Number(row.visit_count ?? 0)
+    }
   }));
+};
+
+/** null, undefined and NaN all mean "nobody answered". Zero does not. */
+const numberOrUndefined = (value: unknown): number | undefined => {
+  if (value == null) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/**
+ * Report on a spot the camper is standing at.
+ *
+ * The quick path: no four-hour dwell, just a photo and a position inside
+ * 150 m. Every check that decides anything runs in `beacon_submit_visit` —
+ * the distance, the one-report-per-camper rule, the impossible-trip check and
+ * the tier promotion. This passes the answers over and returns the sentence
+ * the database wrote.
+ */
+export const submitSpotVisit = async (
+  spotId: string,
+  lat: number,
+  lon: number,
+  accuracyM: number | undefined,
+  report: SpotVisitReport,
+  clientFlags: Record<string, unknown> = {}
+): Promise<Result<{ tier: BeaconTier; verifiers: number }>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_submit_visit', {
+    in_spot: spotId,
+    in_lat: lat,
+    in_lon: lon,
+    in_accuracy: accuracyM ?? null,
+    in_report: report,
+    in_flags: clientFlags
+  });
+
+  if (error) return failure('Could not send that just now. Nothing was lost — try again in a moment.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success(
+        {
+          tier: (row.tier as BeaconTier) ?? 'reported',
+          verifiers: Number(row.verifiers ?? 0)
+        },
+        message
+      )
+    : failure(message || 'That did not go through.');
+};
+
+/**
+ * Put a brand-new spot on the map.
+ *
+ * If somebody else's pin is already within 40 m, the database treats this as a
+ * report on THAT spot rather than stacking a second pin on the same pullout,
+ * and says so via `merged`. The caller shows a different sentence in that case
+ * — silently merging without saying so makes it look like the submission was
+ * lost.
+ */
+export const createSpot = async (
+  lat: number,
+  lon: number,
+  label: string,
+  basis: string | undefined,
+  accuracyM: number | undefined,
+  report: SpotVisitReport,
+  clientFlags: Record<string, unknown> = {}
+): Promise<Result<{ spotId: string; merged: boolean; tier: BeaconTier }>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_create_spot', {
+    in_lat: lat,
+    in_lon: lon,
+    in_label: label,
+    in_basis: basis ?? null,
+    in_accuracy: accuracyM ?? null,
+    in_report: report,
+    in_flags: clientFlags
+  });
+
+  if (error) return failure('Could not add that spot just now.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success(
+        {
+          spotId: String(row.spot_id ?? ''),
+          merged: row.merged === true,
+          tier: (row.tier as BeaconTier) ?? 'reported'
+        },
+        message
+      )
+    : failure(message || 'That did not go through.');
+};
+
+/**
+ * Upload a photo that other campers will see.
+ *
+ * A DIFFERENT bucket from `uploadBeaconProof`. That one is private evidence
+ * nobody browses; this one is public content, which is the whole reason
+ * somebody attaches it. The report sheet says which is which before they
+ * submit — discovering afterwards that your photo is public is not a surprise
+ * anybody should get.
+ */
+export const uploadSpotPhoto = async (
+  file: File
+): Promise<Result<string>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data: auth } = await supabase.auth.getUser();
+  const userId = auth?.user?.id;
+  if (!userId) return failure('Sign in to add a photo.');
+
+  // The bucket policy requires the first path segment to be the caller's own
+  // id, so this is not decoration — a different prefix is rejected outright.
+  const extension = (file.name.split('.').pop() ?? 'jpg').toLowerCase().slice(0, 4);
+  const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+
+  const { error } = await supabase.storage
+    .from('spot-photos')
+    .upload(path, file, { cacheControl: '3600', upsert: false });
+
+  if (error) return failure('That photo did not upload. Check your connection.');
+  return success(path, 'Photo added');
+};
+
+/** The public URL for a stored spot photo. Empty string when not configured. */
+export const spotPhotoUrl = (path: string): string => {
+  if (!supabase || !path) return '';
+  return supabase.storage.from('spot-photos').getPublicUrl(path).data.publicUrl ?? '';
 };
 
 /**
@@ -1258,7 +1415,9 @@ export const submitBeaconVerification = async (
   lon: number,
   accuracyM: number | undefined,
   photoPath: string,
-  answers: BeaconVerificationAnswers
+  answers: BeaconVerificationAnswers,
+  /** The same rich report a quick visit carries, marked as an overnight stay. */
+  report: SpotVisitReport = {}
 ): Promise<Result<boolean>> => {
   if (!supabase) return failure('Not connected');
 
@@ -1268,7 +1427,8 @@ export const submitBeaconVerification = async (
     in_lon: lon,
     in_accuracy: accuracyM ?? null,
     in_photo_path: photoPath,
-    in_answers: answers
+    in_answers: answers,
+    in_report: { ...report, stayedOvernight: true }
   });
 
   if (error) return failure('Could not save that just now. Your stay is still logged.');

@@ -52,6 +52,9 @@ question shouldn't rewrite components.
 | Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
 | Search, filters, view switching | `src/App.tsx`, `src/components/Navbar.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
 | A campsite's detail view | `src/components/CampsiteBottomSheet.tsx` (map pin), `src/components/CampsiteDetailModal.tsx` (list card), `src/components/CampsiteCard.tsx` | map internals |
+| Submitting a spot, reporting on one | `src/components/SpotReportSheet.tsx`, `src/config/spotReport.ts`, `src/components/ui/ScalePicker.tsx` | boundaries, weather |
+| Beacon spots, the evidence ladder, the knock | `src/config/beacon.ts` (tiers + thresholds), `src/components/BeaconPanel.tsx`, `BeaconVerifyPanel.tsx`, `supabase_migration_14_spot_reports.sql` | campsites |
+| Naming a spot, finding nearby facilities | `server/spotContext.ts`, `server/spotRoutes.ts`, `src/services/spotContextService.ts` | all of `src/components/` |
 | Weather / fire / flood / storm | `src/services/weatherService.ts`, `src/components/HazardAlertPanel.tsx`, `server/weatherRoutes.ts`, `shared/hazards.ts` | everything else |
 | Notifications | `src/services/pushService.ts`, `src/components/PushSettings.tsx`, `server/pushRoutes.ts`, `public/sw.js` | components |
 | Sign in / accounts / trust tiers | `src/contexts/AuthContext.tsx`, `src/components/AuthModal.tsx`, `src/components/UserMenu.tsx`, `src/lib/supabase.ts`, `AUTH_SETUP.md` | map, weather |
@@ -141,8 +144,16 @@ npm run vapid    # generate push notification keys
   the rest. Absence of a polygon means "no data", never "no public land".
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
-- **Migrations must run in order,** 01 through 09. `supabase_schema.sql` is
-  destructive — it drops and recreates.
+- **Migrations must run in order,** `supabase_schema.sql` then 02 through 14.
+  `supabase_schema.sql` is destructive — it drops and recreates.
+- **An unanswered question is not a zero.** Every scale in a spot report is
+  nullable, and null means nobody answered. Never `coalesce(..., 0)` one of
+  them on the way out — a spot nobody has rated must not read as "pitch black,
+  no view, sloped".
+- **A knock turns a spot red, it does not delete it.** `flagged` stays on the
+  map carrying the reporter's words; only `withdrawn` (gated, built on, gone)
+  disappears. Deleting a spot somebody got moved on from just means the next
+  camper rediscovers the same pullout with no warning attached.
 - **The API runs as one Vercel serverless function.** The filesystem is
   read-only apart from `/tmp`, and there is a 30-second cap. "Download a big
   dataset on first request and cache it on disk" silently fails and re-downloads

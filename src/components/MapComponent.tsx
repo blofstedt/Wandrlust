@@ -578,22 +578,55 @@ const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
  * that is the one state a camper most needs to catch without opening anything.
  * A confirmed spot earns a solid ring and a filled centre — and it can only
  * earn those from other campers.
+ *
+ * The ring fills clockwise as campers report in, so how far a spot has climbed
+ * is readable from the shape alone at a zoom where the colour is four pixels
+ * wide. Colour and fill say the same thing twice, which is what makes the
+ * ladder legible to anyone who cannot easily tell amber from lime.
+ *
+ * `flagged` breaks every one of those rules on purpose: solid red, filled
+ * centre, and a pulse. It is not a rung on the ladder, it is a warning, and it
+ * should be the first thing the eye lands on.
  */
+const BEACON_RUNG: Partial<Record<BeaconSpot['tier'], number>> = {
+  lead: 0,
+  reported: 0.34,
+  corroborated: 0.67,
+  confirmed: 1
+};
+
 const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
   const style = beaconTierStyle(spot.tier);
   const size = 26;
   const isLead = spot.tier === 'lead';
+  const isFlagged = spot.tier === 'flagged';
+  const rung = BEACON_RUNG[spot.tier] ?? 0;
+
+  // The progress ring, drawn with a conic gradient behind the hollow centre.
+  // Cheap enough to put on 200 markers; no SVG, no extra DOM.
+  const progress = rung > 0 && !isFlagged
+    ? `background:conic-gradient(${style.color} ${rung * 360}deg, ` +
+      `rgba(148,163,184,0.22) ${rung * 360}deg);`
+    : `background:${style.colorSoft};`;
+
+  const inner = isFlagged ? 11 : isLead ? 5 : 9;
 
   const html =
     `<div style="width:${size}px;height:${size}px;border-radius:9999px;` +
-    `border:2px ${isLead ? 'dashed' : 'solid'} ${style.ring};` +
-    `background:${style.colorSoft};display:flex;align-items:center;` +
-    `justify-content:center;box-sizing:border-box;">` +
-    `<div style="width:${isLead ? 5 : 9}px;height:${isLead ? 5 : 9}px;` +
-    `border-radius:9999px;background:${style.color};"></div></div>`;
+    `border:2px ${isLead ? 'dashed' : 'solid'} ${style.ring};${progress}` +
+    `display:flex;align-items:center;justify-content:center;box-sizing:border-box;` +
+    `${isFlagged ? `box-shadow:0 0 0 3px ${style.colorSoft};` : ''}">` +
+    `<div style="width:${inner}px;height:${inner}px;border-radius:9999px;` +
+    `background:${style.color};` +
+    // The centre of a mid-ladder pin sits on the panel colour rather than the
+    // tier colour, so the filled arc stays the thing that reads as progress.
+    `${!isFlagged && rung > 0 && rung < 1 ? 'box-shadow:0 0 0 2px #0f172a;' : ''}"></div>` +
+    `</div>`;
 
   return L.divIcon({
-    className: 'beacon-spot-marker',
+    // The danger pulse is an existing utility and collapses under
+    // prefers-reduced-motion with everything else.
+    className: `beacon-spot-marker${isFlagged ? ' anim-pulse-danger' : ''}`,
     html,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2]
@@ -2268,10 +2301,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * Leaflet layers stack up invisibly otherwise.
    *
    * Two differences worth knowing. It refetches on `beaconRefreshKey` as well
-   * as on movement, so a spot somebody has just been ticketed at leaves the map
-   * at once rather than at the next 50 km pan. And withdrawn spots never arrive
-   * here at all — `beacon_spots_near` filters them in SQL — so there is no way
-   * for a client bug to leave one drawn.
+   * as on movement, and spots that are genuinely gone never arrive here at all
+   * — `beacon_spots_near` filters them in SQL — so there is no way for a client
+   * bug to leave one drawn. Flagged spots deliberately DO arrive, and are drawn
+   * red.
+   *
+   * `beaconRefreshKey` is not a nicety. Without it the layer only reloaded when
+   * the map moved more than 10 km, which meant a camper could send a beacon,
+   * watch it find three spots, and see nothing appear on the map underneath —
+   * the leads were in the database the whole time and the layer had simply not
+   * been told to look again. Anything that writes a spot must bump the key.
    */
   useEffect(() => {
     const map = mapRef.current;
@@ -2312,8 +2351,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           pane: 'beaconPane',
           icon: buildBeaconIcon(spot),
           // The tooltip carries the tier's MEANING, not its name, so hovering
-          // a grey ring says "nobody has been here" rather than "Lead".
-          title: `${spot.label} — ${style.meaning}`,
+          // a grey ring says "nobody has been here" rather than "Lead". On a
+          // flagged spot the camper's own words come first — that warning is
+          // the reason the pin is still here at all.
+          title: spot.knock?.comment
+            ? `${spot.label} — knock reported: “${spot.knock.comment}”`
+            : `${spot.label} — ${style.meaning}`,
           riseOnHover: true
         });
         marker.on('click', () => beaconTapRef.current?.(spot));

@@ -18,6 +18,16 @@ interface BeaconPanelProps {
   onRequireAuth: () => void;
   /** Send the camper to a spot — reuses the map's existing destination flow. */
   onNavigate: (latitude: number, longitude: number, label: string) => void;
+  /**
+   * Fired after any scan that reached the server.
+   *
+   * The map's Beacon layer only reloads when the map moves more than 10 km or
+   * when its refresh key changes, so without this a scan wrote new leads to the
+   * database and the map underneath carried on showing nothing. Called even
+   * when the panel itself lists no spots: the panel only surfaces the top three
+   * above a score bar, while the map draws every lead that was persisted.
+   */
+  onScanComplete: () => void;
 }
 
 /**
@@ -38,7 +48,7 @@ interface BeaconPanelProps {
  * should be able to point at what it told them and find it was honest.
  */
 export const BeaconPanel: React.FC<BeaconPanelProps> = ({
-  isOpen, onClose, at, onRequireAuth, onNavigate
+  isOpen, onClose, at, onRequireAuth, onNavigate, onScanComplete
 }) => {
   const { user } = useAuth();
   const toast = useToast();
@@ -62,6 +72,18 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
     setResult(data);
     setBusy(false);
 
+    /**
+     * Tell the map to look again, whatever came back.
+     *
+     * Unconditional on purpose. A scan that surfaced nothing in this panel can
+     * still have persisted leads — the panel shows the top three above a score
+     * bar, the map draws every one that cleared the lower "worth remembering"
+     * bar — so keying this off `data.spots.length` would leave exactly the case
+     * that looks most broken: "it said it found nothing and then pins appeared
+     * when I panned."
+     */
+    onScanComplete();
+
     // The panel already shows the note; the toast is for the two cases a
     // camper needs to notice even if they are looking at the map.
     if (!data.ok && data.note) {
@@ -71,7 +93,7 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
       const region = data.spots[0].region;
       setModel(await fetchBeaconModelSummary(region));
     }
-  }, [at, toast]);
+  }, [at, toast, onScanComplete]);
 
   const handleSend = () => {
     if (!user) { onRequireAuth(); return; }
@@ -142,6 +164,25 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
             <ShieldQuestion className="w-3.5 h-3.5 shrink-0 mt-px" />
             <span>{result.signageNote}</span>
           </div>
+        )}
+
+        {/*
+          Where the rest of them went.
+
+          The panel lists the best three; the scan usually persists more than
+          that, and every one is drawn on the map for everybody — not just the
+          camper who paid for the scan. Saying so is what makes the grey rings
+          make sense instead of looking like clutter that appeared by itself.
+        */}
+        {result?.ok && (
+          <p className="text-[10px] text-slate-400 leading-snug flex items-start gap-1.5">
+            <MapPin className="w-3 h-3 shrink-0 mt-px" />
+            <span>
+              These and any others found are now grey rings on the map, for every
+              camper. Grey means nobody has been there yet — go, and you can be
+              the first to say what it is actually like.
+            </span>
+          </p>
         )}
 
         {result && (

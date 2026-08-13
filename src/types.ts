@@ -394,12 +394,23 @@ export interface NearbyFacility {
  * whole design. `lead` means public map data suggested a place and nobody has
  * ever been there; it is the ceiling for anything an algorithm produces, and
  * the database enforces that rather than trusting this UI to. Only a camper
- * who actually slept somewhere can move a spot up, and it takes two separate
- * campers to reach `confirmed`.
+ * who actually went there can move a spot up the ladder.
+ *
+ * The ladder is `lead → reported → corroborated → confirmed`, and the camper
+ * counts that separate the rungs live in ONE place — `BEACON_TIER_STEPS` in
+ * `config/beacon.ts`, mirrored by `beacon_tier_for()` in migration 14. Change
+ * them there, never here.
+ *
+ * `flagged` is not a rung. It is what happens when somebody got a knock on the
+ * window: the spot turns red and STAYS ON THE MAP, because a spot that quietly
+ * disappears is a spot the next camper rediscovers on their own and parks at
+ * anyway. `withdrawn` is reserved for a place that is no longer a place at all
+ * — gated, built on, gone.
  *
  * There is deliberately no tier meaning "we are sure". Nothing here can be.
  */
-export type BeaconTier = 'lead' | 'reported' | 'confirmed' | 'withdrawn';
+export type BeaconTier =
+  | 'lead' | 'reported' | 'corroborated' | 'confirmed' | 'flagged' | 'withdrawn';
 
 /** Which candidate generator found it — public land, or the edge of a town. */
 export type BeaconGenerator = 'public_land' | 'urban';
@@ -434,6 +445,154 @@ export interface BeaconSpot {
   score: number;
   region: string;
   metresAway?: number;
+  /**
+   * The knock, if there was one.
+   *
+   * Present only on a `flagged` spot. The comment is the reporting camper's
+   * own words and is shown verbatim — it is the whole reason the pin stays on
+   * the map instead of vanishing.
+   */
+  knock?: {
+    reportedAt: string;
+    /** What happened, in the reporter's words. May be absent. */
+    comment?: string;
+    /** How many separate campers have reported being moved on here. */
+    count: number;
+  };
+  /**
+   * What campers who stayed here said, averaged.
+   *
+   * Every field is optional and stays undefined until somebody actually
+   * answered that question — an unanswered slider must never read as a zero.
+   * See `SpotVisitReport` for what each scale means.
+   */
+  conditions?: SpotConditions;
+}
+
+/* ------------------------------------------------------------------ */
+/* Spot reports — what a camper says after being somewhere              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The answer scales.
+ *
+ * Every one of these is a small integer with named stops rather than a
+ * free-running 0-100, for two reasons. A continuous slider is hard to land on
+ * a phone with one thumb in the dark, and it invents precision nobody has —
+ * "crowding 63" means nothing, "half full" means something.
+ *
+ * `undefined` is a first-class value everywhere here and means NOT ANSWERED.
+ * It is never coerced to zero on the way into the database, because "empty"
+ * and "nobody said" are different facts and this app does not blur those.
+ */
+export type SpotScale = 0 | 1 | 2 | 3 | 4;
+
+/** Averaged answers across everyone who has reported on a spot. */
+export interface SpotConditions {
+  crowding?: number;
+  rating?: number;
+  view?: number;
+  maxRig?: number;
+  roadAccess?: number;
+  levelGround?: number;
+  shade?: number;
+  nightLight?: number;
+  /** How many separate visits these averages are built from. */
+  sampleSize: number;
+  /** Cell bars at the moment of submission, averaged, when anyone recorded it. */
+  cellBars?: number;
+}
+
+/**
+ * One camper's report on one spot.
+ *
+ * Filled in by the report sheet and written by `beacon_submit_visit`. Nothing
+ * here is required except the proof fields — a camper in a hurry can answer
+ * two questions and submit, and every question they skipped stays unknown
+ * rather than being guessed at.
+ */
+export interface SpotVisitReport {
+  /** 0 empty → 4 packed. */
+  crowding?: SpotScale;
+  /** 0 poor → 4 excellent. The camper's overall verdict. */
+  rating?: SpotScale;
+  /** 0 nothing to look at → 4 stunning. */
+  view?: SpotScale;
+  /** 0 tent only → 4 big rig, 40 ft and up. */
+  maxRig?: SpotScale;
+  /** 0 paved → 3 4x4 only. */
+  roadAccess?: SpotScale;
+  /** 0 sloped → 2 dead flat. */
+  levelGround?: SpotScale;
+  /** 0 full sun → 2 mostly shaded. */
+  shade?: SpotScale;
+  /** 0 pitch dark → 3 lit up all night. */
+  nightLight?: SpotScale;
+
+  /**
+   * Amenities the camper knows about that our own POI sweep missed.
+   *
+   * Tri-state on purpose. `true` means they told us there is one, `false`
+   * means they told us there is not, and `undefined` means we never asked —
+   * which is what happens whenever the POI sweep already found one within
+   * 5 km, because asking a camper to confirm something we can already see is
+   * a question that wastes their time.
+   */
+  hasShower?: boolean;
+  hasRestroom?: boolean;
+  hasFuel?: boolean;
+
+  /** Somebody knocked. Turns the spot red for everyone. */
+  gotKnocked?: boolean;
+  /** Free text. Shown to other campers verbatim. */
+  comment?: string;
+  /** Storage paths of uploaded photos, in the order they were added. */
+  photoPaths?: string[];
+  /** True when this report came with a four-hour dwell behind it. */
+  stayedOvernight?: boolean;
+  /** Bars 0-4 at submission time, read from the cell coverage service. */
+  cellBars?: number;
+  cellCarrier?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Spot context — what the app can work out about a place on its own    */
+/* ------------------------------------------------------------------ */
+
+/** One nearby facility found by the POI sweep. */
+export interface NearbyPoi {
+  kind: 'shower' | 'restroom' | 'fuel';
+  name: string;
+  metresAway: number;
+}
+
+/**
+ * Everything the app can establish about a coordinate without asking anybody.
+ *
+ * This is what removes the two worst parts of the old submission form: typing
+ * a name, and answering questions the map could have answered. The name here
+ * is BUILT, never invented — it is the nearest named feature plus the land
+ * agency, title-cased. No model writes it, so there is nothing to hallucinate.
+ */
+export interface SpotContext {
+  ok: boolean;
+  /** The generated name, already title-cased. Empty when nothing was found. */
+  name: string;
+  /** Where the name came from, in plain English, for the "why this name" line. */
+  nameBasis?: string;
+  nearestTown?: string;
+  stateProvince?: string;
+  /** Facilities found within 5 km. An empty array means we looked and found none. */
+  pois: NearbyPoi[];
+  /**
+   * True when the POI sweep could not run at all.
+   *
+   * Load-bearing: with this true, "no shower found" means "we could not look",
+   * so the sheet must ASK rather than state. Conflating the two is exactly the
+   * kind of overstatement this codebase forbids.
+   */
+  poiLookupFailed: boolean;
+  note?: string;
 }
 
 /** What a Beacon scan came back with, caveat included. */
@@ -464,11 +623,19 @@ export interface BeaconDwellState {
   message?: string;
 }
 
-/** The boolean form a camper fills in when vouching for a spot. */
+/**
+ * The boolean answers that ride along with a vouch.
+ *
+ * `signs_restricted` is the only one the database acts on, and it is required
+ * for that reason. The other two are optional because the report sheet that
+ * replaced the old inline form asks about level ground on a three-stop scale
+ * and does not ask about noise at all — and sending a hard `false` for a
+ * question nobody was asked would store a camper's silence as a denial.
+ */
 export interface BeaconVerificationAnswers {
   signs_restricted: boolean;
-  ground_flat: boolean;
-  quiet_overnight: boolean;
+  ground_flat?: boolean;
+  quiet_overnight?: boolean;
   note?: string;
 }
 
