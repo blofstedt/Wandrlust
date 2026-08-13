@@ -54,7 +54,7 @@ import {
 import {
   fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts, WeatherSnapshot
 } from '../services/weatherService';
-import { prefersReducedMotion } from '../utils/animation';
+import { prefersReducedMotion, haptic } from '../utils/animation';
 
 /** 1x1 transparent GIF, shown where no offline tile has been cached. */
 const TRANSPARENT_PIXEL =
@@ -352,16 +352,42 @@ const chipHtml = (d: MarkerDot, fresh: boolean, delay: number): string => {
   );
 };
 
-const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string => {
-  let arriving = 0;
-  const chips = dots
-    .map((d) => {
-      const fresh = animateKeys.has(d.key);
-      return chipHtml(d, fresh, fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0);
-    })
-    .join('');
-  return `<div class="wl-chips">${chips}</div>`;
+/**
+ * When each arriving chip pops, counted from the BOTTOM of the stack.
+ *
+ * The row is a column anchored above the pin, so the LAST chip in DOM order
+ * sits nearest the pin and the first sits highest. Staggering in DOM order
+ * therefore ran the wave downwards, from the sky into the pin, which reads as
+ * falling. Stacking is the other way round: the chip nearest the pin lands
+ * first and each one after it piles on top.
+ *
+ * Returned as a map rather than computed inline because `expandedDotRow` and
+ * `patchChipRow` both need the same answer, and two copies of a rule about
+ * timing drift into two slightly different animations.
+ */
+const chipDelays = (dots: MarkerDot[], animateKeys: Set<string>): Map<string, number> => {
+  const freshInOrder = dots.filter((d) => animateKeys.has(d.key));
+  const delays = new Map<string, number>();
+
+  freshInOrder.forEach((d, i) => {
+    // Reverse the index: the last fresh chip (nearest the pin) goes first.
+    const fromBottom = freshInOrder.length - 1 - i;
+    delays.set(d.key, CHIP_LEAD_MS + fromBottom * CHIP_STAGGER_MS);
+  });
+
+  return delays;
 };
+
+/** The chips alone, with no row around them. The peek builds its own row. */
+const chipsHtml = (dots: MarkerDot[], animateKeys: Set<string>): string => {
+  const delays = chipDelays(dots, animateKeys);
+  return dots
+    .map((d) => chipHtml(d, animateKeys.has(d.key), delays.get(d.key) ?? 0))
+    .join('');
+};
+
+const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string =>
+  `<div class="wl-chips">${chipsHtml(dots, animateKeys)}</div>`;
 
 /**
  * Add the chips that are new, leave the ones already there completely alone.
@@ -406,13 +432,13 @@ const patchChipRow = (
   });
 
   const wanted = new Set<string>();
-  let arriving = 0;
+  const delays = chipDelays(dots, animateKeys);
   let placed: Element | null = null;
 
   for (const d of dots) {
     wanted.add(d.key);
     const fresh = animateKeys.has(d.key);
-    const delay = fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0;
+    const delay = fresh ? delays.get(d.key) ?? CHIP_LEAD_MS : 0;
     let node = existing.get(d.key) ?? null;
 
     if (!node || fresh || node.getAttribute('data-sig') !== chipSignature(d)) {
@@ -434,6 +460,108 @@ const patchChipRow = (
   existing.forEach((el, key) => { if (!wanted.has(key)) el.remove(); });
   if (!dots.length) row.remove();
   return true;
+};
+
+/* ------------------------------------------------------------------ */
+/* The press-and-hold peek                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Hold a pin down and its chips rise; let go and they fall away again.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A PEEK RATHER THAN JUST TAPPING THE PIN
+ * ---------------------------------------------------------------------------
+ *
+ * Tapping selects a spot: it flies the camera, opens the sheet, fetches
+ * weather, fires, signal and facilities, and closes whatever was open before.
+ * That is the right weight for "I am considering this place" and far too much
+ * for "what is that one?" — which, three pins into a scan of a valley, is the
+ * question you actually have. The peek answers it without moving the map or
+ * disturbing the pin you already had open.
+ *
+ * ---------------------------------------------------------------------------
+ * IT ONLY EVER SHOWS WHAT IS ALREADY KNOWN
+ * ---------------------------------------------------------------------------
+ *
+ * The peek fires no requests. It draws the dots the pin is ALREADY wearing —
+ * hazards and the spot's own recorded facilities — grown into their words.
+ * That is deliberate twice over: a hold has to answer instantly to feel like
+ * a peek rather than a load, and firing weather and OSM lookups at every pin
+ * somebody rests a thumb on would hammer four upstream services for a glance.
+ *
+ * So a peeked pin shows less than a tapped one, and nothing it shows is a
+ * guess: it is the same set of facts, in the same words, that the ring of dots
+ * was already standing for.
+ */
+
+/** How long a press has to last before it counts as a hold, in ms. */
+const PEEK_HOLD_MS = 320;
+
+/** Movement that turns a hold into a map drag, in px. */
+const PEEK_SLOP_PX = 10;
+
+/** The beat between one chip leaving and the next, in ms. */
+const PEEK_OUT_STAGGER_MS = 34;
+
+/** Roughly the duration of --dur-tap, for cleaning up after the retract. */
+const PEEK_OUT_DURATION_MS = 160;
+
+/**
+ * Draw the peek stack into a pin that is not open.
+ *
+ * Built as its own row rather than by reusing `patchChipRow`, because that
+ * function is the OPEN pin's incremental updater and shares its memory of
+ * which chips have already popped. A peek must always play from nothing, and
+ * must never teach the open pin's memory that a chip has been seen.
+ */
+const openPeek = (wrap: Element, dots: MarkerDot[]): boolean => {
+  if (!dots.length) return false;
+
+  // A peek from a moment ago may still be retracting. Take it out at once and
+  // start over, rather than refusing — holding a pin again straight away and
+  // getting nothing feels like the gesture is broken.
+  wrap.querySelector(':scope > .wl-chips-peek')?.remove();
+
+  // A row that is not a peek belongs to an open pin, and that one has real
+  // lookups behind it. Never replace it.
+  if (wrap.querySelector(':scope > .wl-chips')) return false;
+
+  const row = document.createElement('div');
+  row.className = 'wl-chips wl-chips-peek';
+  // Every chip counts as fresh: a peek always plays the whole stack from
+  // nothing, because each one is its own separate glance.
+  row.innerHTML = chipsHtml(dots, new Set(dots.map((d) => d.key)));
+
+  wrap.insertBefore(row, wrap.firstChild);
+  return true;
+};
+
+/**
+ * Take the peek away, top chip first.
+ *
+ * The stack came up from the pin outwards, so it goes away from the loose end
+ * inwards — the top chip leaves first and the one resting on the pin leaves
+ * last. Dismantling it in the same order it was built would look like the
+ * bottom being pulled out from under the rest.
+ */
+const closePeek = (wrap: Element | null | undefined): void => {
+  const row = wrap?.querySelector(':scope > .wl-chips-peek');
+  if (!row) return;
+
+  const chips = Array.from(row.querySelectorAll<HTMLElement>(':scope > .wl-chip'));
+
+  chips.forEach((chip, i) => {
+    chip.classList.remove('wl-chip-in');
+    chip.style.animationDelay = `${i * PEEK_OUT_STAGGER_MS}ms`;
+    chip.classList.add('wl-chip-out');
+  });
+
+  // Removed on a timer rather than on animationend: a chip whose animation
+  // never fires — reduced motion, a backgrounded tab, an element detached
+  // mid-flight — would otherwise leave the row on the map for ever.
+  const total = chips.length * PEEK_OUT_STAGGER_MS + PEEK_OUT_DURATION_MS;
+  window.setTimeout(() => row.remove(), total);
 };
 
 /**
@@ -506,7 +634,15 @@ const buildCampsiteIcon = (
   dots: MarkerDot[] = [],
   directionsLabel?: string,
   /** Chip keys this pin has not shown yet. See `refreshIcon`. */
-  animateKeys: Set<string> = new Set()
+  animateKeys: Set<string> = new Set(),
+  /**
+   * Stamped on the wrapper so a delegated pointer handler can tell which pin
+   * was pressed. The press-and-hold peek listens on the map container rather
+   * than on each marker — markers are torn down and rebuilt by the cluster
+   * plugin constantly, and per-marker listeners would have to be reattached
+   * every time.
+   */
+  siteId?: string
 ): L.DivIcon => {
   const row = dots.length
     ? (isSelected ? expandedDotRow(dots, animateKeys) : collapsedDotRing(dots))
@@ -515,7 +651,8 @@ const buildCampsiteIcon = (
   return L.divIcon({
     className: 'custom-campsite-marker',
     html:
-      `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}">` +
+      `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}"` +
+      `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
       `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
       `${isSelected && directionsLabel
@@ -3126,6 +3263,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const shownChipKeysRef = useRef<Set<string>>(new Set());
 
   /**
+   * The press-and-hold peek.
+   *
+   * `peekSwallowClickRef` is read by the marker's own click handler, which
+   * Leaflet fires on release — a hold that showed the stack must not also
+   * select the spot.
+   */
+  const peekRef = useRef<{
+    wrap: Element;
+    timer: number | null;
+    startX: number;
+    startY: number;
+    open: boolean;
+  } | null>(null);
+  const peekSwallowClickRef = useRef(false);
+
+  /**
    * Icon for a pinned site: hollow or filled, with its dot row.
    *
    * Hazards lead the row. A heat warning or smoke over the spot changes
@@ -3158,7 +3311,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       isSelected,
       dots,
       isSelected ? DIRECTIONS_LABEL : undefined,
-      isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined
+      isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined,
+      id
     );
   }, [dotsForId]);
 
@@ -3255,7 +3409,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         icon: iconForId(site.id),
         title: `${site.name} — added by a camper`
       });
-      marker.on('click', () => onSelectCampsite(site));
+      marker.on('click', () => {
+        // A hold that showed the peek must not also open the spot. Without
+        // this, letting go fires the click and the pin you only wanted to
+        // glance at takes over the screen.
+        if (peekSwallowClickRef.current) return;
+        onSelectCampsite(site);
+      });
       marker.on('dblclick', () => onOpenDetailModal(site));
       markersRef.current.set(site.id, marker);
       return marker;
@@ -3268,6 +3428,119 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     (clusterViewRef.current ?? map).addLayer(cluster);
     clusterRef.current = cluster;
   }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenDetailModal, iconForId]);
+
+  /**
+   * Press and hold a pin to peek at its chips.
+   *
+   * ONE DELEGATED LISTENER ON THE MAP, not a listener per marker. The cluster
+   * plugin creates and destroys marker elements constantly as you pan and
+   * zoom, so per-marker handlers would need reattaching on every one of those
+   * — and would leak the ones it missed. The pin carries `data-site-id` and
+   * this finds it with `closest`.
+   *
+   * The gesture has to lose gracefully to the map itself: a finger that moves
+   * more than a few pixels is panning, not holding, and the peek must get out
+   * of the way rather than fighting the drag. Hence the slop check, and the
+   * cancel on any map movement at all.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    const container = map?.getContainer();
+    if (!map || !isMapReady || !container) return;
+
+    const cancelTimer = () => {
+      const peek = peekRef.current;
+      if (peek?.timer != null) window.clearTimeout(peek.timer);
+    };
+
+    /** Put everything back. `swallow` when a peek actually opened. */
+    const endPeek = (swallow: boolean) => {
+      const peek = peekRef.current;
+      if (!peek) return;
+      cancelTimer();
+
+      if (peek.open) {
+        closePeek(peek.wrap);
+        if (swallow) {
+          peekSwallowClickRef.current = true;
+          // Cleared on a timer rather than in the click handler: a hold that
+          // ends off the marker produces no click at all, and a flag nobody
+          // clears would swallow the NEXT genuine tap instead.
+          window.setTimeout(() => { peekSwallowClickRef.current = false; }, 350);
+        }
+      }
+      peekRef.current = null;
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      // Secondary buttons and pinch-zoom second fingers are not holds.
+      if (e.button != null && e.button > 0) return;
+      if (peekRef.current) return;
+
+      const target = e.target as Element | null;
+      const wrap = target?.closest?.('.wl-pin-wrap[data-site-id]');
+      if (!wrap) return;
+
+      // An open pin already shows its chips — and a real one, with the
+      // lookups behind it. Peeking it would replace a better answer.
+      if (wrap.classList.contains('wl-pin-wrap-on')) return;
+
+      const id = wrap.getAttribute('data-site-id');
+      if (!id) return;
+
+      const timer = window.setTimeout(() => {
+        const peek = peekRef.current;
+        if (!peek) return;
+        if (openPeek(peek.wrap, dotsForId(id))) {
+          peek.open = true;
+          haptic('tap');
+        }
+      }, PEEK_HOLD_MS);
+
+      peekRef.current = {
+        wrap, timer, open: false, startX: e.clientX, startY: e.clientY
+      };
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const peek = peekRef.current;
+      if (!peek || peek.open) return;
+
+      const moved = Math.hypot(e.clientX - peek.startX, e.clientY - peek.startY);
+      // Still inside the slop: the finger is resting, not travelling.
+      if (moved <= PEEK_SLOP_PX) return;
+      endPeek(false);
+    };
+
+    const onPointerUp = () => endPeek(true);
+    const onPointerCancel = () => endPeek(false);
+    // Any camera movement while holding means the map won the gesture.
+    const onMapMove = () => endPeek(false);
+
+    container.addEventListener('pointerdown', onPointerDown);
+    // On window, not the container: a finger released off the edge of a pin,
+    // or off the map entirely, still has to put the stack away.
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    map.on('movestart', onMapMove);
+    map.on('zoomstart', onMapMove);
+
+    return () => {
+      cancelTimer();
+      // Drop the row outright rather than animating on the way out — the
+      // component is going away and there is nothing left to animate onto.
+      peekRef.current?.wrap.querySelector(':scope > .wl-chips-peek')?.remove();
+      peekRef.current = null;
+
+      container.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      map.off('movestart', onMapMove);
+      map.off('zoomstart', onMapMove);
+    };
+  }, [isMapReady, dotsForId]);
 
   // Swap only the two icons that changed.
   useEffect(() => {
