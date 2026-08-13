@@ -66,6 +66,15 @@ export const BADGE_COLOR: Record<AlertBadge, string> = {
 const SMOKE_TEXT = /smoke|air quality|air stagnation|blowing dust/i;
 
 /**
+ * Products whose own NAME is about the air itself.
+ *
+ * Narrower than SMOKE_TEXT on purpose: blowing dust stays in the wind family,
+ * because a dust advisory is a driving-visibility warning and its card should
+ * not say "smoke".
+ */
+const AIR_QUALITY_EVENT = /smoke|air quality|air stagnation/i;
+
+/**
  * Water that has ARRIVED somewhere, as opposed to water still falling.
  *
  * `shared/hazards.ts` folds both into the 'flood' family, because for pushing a
@@ -84,6 +93,25 @@ const RAIN_TEXT = /rain/i;
 /** The badge for one alert, or null for families the map does not badge. */
 export const alertBadge = (alert: HazardAlert): AlertBadge | null => {
   const text = `${alert.event} ${alert.headline}`;
+
+  /**
+   * SMOKE IS CLAIMED BY ITS OWN NAME, BEFORE THE FAMILY IS EVEN LOOKED AT.
+   *
+   * This used to sit inside `case 'fire'`, which meant a smoke badge could only
+   * ever come from an alert the classifier had already filed as fire — and the
+   * classifier files by keyword. The product every agency actually issues for
+   * wildfire smoke is called "Air Quality Alert" (NWS) or "Air Quality
+   * Statement" (ECCC): neither says fire, neither says smoke, so both fell
+   * through to the 'other' family, which is badged `null` and drawn nowhere.
+   * Every air-quality warning in the country was invisible on the map and
+   * missing from the pins, while the feed carried it perfectly.
+   *
+   * Matched on the EVENT NAME only, not the headline: a red flag warning whose
+   * headline happens to mention smoke is still a fire warning, and demoting it
+   * to a smoke badge would be the dangerous direction to be wrong in.
+   */
+  if (AIR_QUALITY_EVENT.test(alert.event)) return 'smoke';
+
   switch (alert.family) {
     case 'fire':
       return SMOKE_TEXT.test(text) ? 'smoke' : 'fire';

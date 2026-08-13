@@ -507,11 +507,25 @@
   pointer-events: none !important;
   cursor: default;
 }
+/* AND IT SITS HIGHER THAN THE TAPPED ROW, because a thumb is holding the pin
+   down. At the normal 5px the bottom two or three chips came up underneath
+   the finger that asked for them — the answer was on screen and covered by
+   the hand. 42px clears a thumb's contact patch and the knuckle behind it,
+   which is the whole reason this gesture exists: to read without moving. */
+.wl-chips-peek { margin-bottom: 42px; }
 
 /* While the camera is away at the fires, the pin's own labels get out of the
    way of the thing they sent you to look at. */
 .wl-touring .wl-chips { opacity: 0; }
+/* EVERY CHIP IS A BUTTON.
+   The row itself still lets taps through to the map (it is a column of gaps as
+   much as it is a column of chips), but each chip takes its own. What it does
+   is in the arrow: › goes somewhere, … has more to say. */
 .wl-chip {
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform var(--dur-tap) var(--ease-moook),
+              background var(--dur-tap) var(--ease-standard);
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -549,17 +563,47 @@
 }
 .wl-chip-glyph { font-size: 9px; line-height: 1; }
 
-/* A facility up the road, not a fact about this spot: tappable, and it says
-   so by lifting off the others and keeping its arrow. The chip row is
-   pointer-events:none so taps fall through to the map; these opt back in. */
+/* Pressed. The one piece of feedback that makes a thing feel like a button
+   before you have found out what it does. */
+.wl-chip:active { transform: scale(0.94); }
+
+/* Unfurled: the whole hedged sentence, in place, for a few seconds.
+   Wraps rather than running off the side of the phone, and capped at a width
+   that still leaves the map either side of it readable. */
+.wl-chip-open {
+  white-space: normal;
+  max-width: 15rem;
+  text-align: left;
+  background: rgba(15, 23, 42, 0.98);
+  border-color: color-mix(in srgb, var(--wl-chip-color) 85%, transparent);
+  box-shadow: 0 6px 18px rgba(2, 6, 23, 0.65);
+}
+.wl-chip-open .wl-chip-text { line-height: 1.4; }
+.wl-chip-open .wl-chip-arrow { display: none; }
+
+/* Somewhere to go — a warning area, a parcel, a track, the fires, the phone's
+   own maps app. Brighter than a plain fact chip, and it keeps its arrow. */
 .wl-chip-go {
-  pointer-events: auto;
-  cursor: pointer;
   background: color-mix(in srgb, var(--wl-chip-color) 20%, rgba(15, 23, 42, 0.96));
   border-color: var(--wl-chip-color);
   padding-right: 5px;
 }
 .wl-chip-go:hover { background: color-mix(in srgb, var(--wl-chip-color) 34%, rgba(15, 23, 42, 0.96)); }
+/* The car chip is the one that leaves the app, so it wears the colour the
+   old "Go" button under the pin used to. */
+.wl-chip-nav {
+  color: #052e16;
+  font-weight: 800;
+  background: #34d399;
+  border-color: #10b981;
+}
+.wl-chip-nav:hover { background: #6ee7b7; }
+.wl-chip-nav .wl-chip-dot { display: none; }
+.wl-chip .wl-chip-arrow {
+  font-size: 9px;
+  opacity: 0.6;
+  margin-left: 1px;
+}
 .wl-chip-go .wl-chip-arrow {
   font-size: 9px;
   opacity: 0.85;
@@ -571,8 +615,11 @@
 
    The chip row above the pin is what this place IS; this row is what you can
    do about it. Kept small and dark so it reads as controls rather than as two
-   more facts, and pointer-events are on because unlike the chips these exist
-   to be tapped.
+   more facts.
+
+   There used to be a green "Go" here as well. Navigation moved up into the car
+   chip, which was already telling you how long the drive is — so what is left
+   is the info button and the way out.
    ------------------------------------------------------------------------- */
 .wl-pin-actions {
   position: absolute;
@@ -604,22 +651,19 @@
   box-shadow: 0 2px 10px rgba(2, 6, 23, 0.6);
 }
 .wl-pin-action:hover { background: rgba(30, 41, 59, 0.98); }
-.wl-pin-action-go {
-  color: #052e16;
-  background: #34d399;
-  border-color: #10b981;
-}
-.wl-pin-action-go:hover { background: #6ee7b7; }
 .wl-pin-action-close { padding: 4px 6px; color: #cbd5e1; }
 
 /* ---------------------------------------------------------------------------
-   The fire tour: tap the fire chip and the camera goes out to look.
+   Tours: tap a chip and the camera goes out to look at what it stands for.
 
-   Each flame lands with its own label, one after the other, and the label
-   quotes the agency's wording — "reported under control" is a report, not an
-   all-clear, and the red one is only for a fire nobody has said that about.
+   One set of styles for all of them — the fires, the warning area, the parcel,
+   the track in, the end of the road — because they are one gesture wearing
+   different colours. Each stop lands with its own label, and the label quotes
+   the source's own wording: "reported under control" is a report, not an
+   all-clear, and an approximate boundary says it is approximate while it is on
+   screen rather than in a footnote nobody opens.
    ------------------------------------------------------------------------- */
-.wl-fire-stop-wrap {
+.wl-tour-stop-wrap {
   position: relative;
   display: flex;
   align-items: center;
@@ -627,13 +671,13 @@
   width: 30px;
   height: 30px;
 }
-.wl-fire-stop-glyph {
+.wl-tour-stop-glyph {
   font-size: 20px;
   line-height: 1;
   filter: drop-shadow(0 2px 6px rgba(2, 6, 23, 0.7));
   animation: moook-pop var(--dur-base) var(--ease-moook) backwards;
 }
-.wl-fire-stop-label {
+.wl-tour-stop-label {
   position: absolute;
   bottom: 100%;
   left: 50%;
@@ -642,27 +686,27 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  white-space: nowrap;
+  /* `max-content` first: an absolutely positioned box otherwise sizes itself
+     to its 30px containing block and every label comes out one word wide. */
+  width: max-content;
+  max-width: 13rem;
+  text-align: center;
   padding: 3px 8px;
-  border-radius: 9999px;
+  border-radius: 12px;
   font-size: 10px;
   font-weight: 800;
   line-height: 1.3;
   color: #f8fafc;
-  background: rgba(249, 115, 22, 0.9);
-  border: 1px solid #fb923c;
+  background: color-mix(in srgb, var(--wl-tour-color) 88%, rgba(2, 6, 23, 0.9));
+  border: 1px solid var(--wl-tour-color);
   box-shadow: 0 2px 10px rgba(2, 6, 23, 0.6);
   animation: moook-in-up-centred var(--dur-base) var(--ease-moook) backwards;
 }
-.wl-fire-stop-label-hot {
-  background: rgba(239, 68, 68, 0.92);
-  border-color: #ef4444;
-}
-.wl-fire-stop-label em {
+.wl-tour-stop-label em {
   font-style: normal;
   font-weight: 600;
   font-size: 9px;
-  opacity: 0.9;
+  opacity: 0.92;
 }
 
 /* The far end of a facility hop: the toilet, tap or pump itself, in the

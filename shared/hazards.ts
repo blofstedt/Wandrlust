@@ -37,7 +37,13 @@ export const classifyHazard = (eventName: string): HazardFamily => {
 
   // Wildfire smoke is filed by ECCC as an air quality statement; a camper
   // deciding whether to sleep in it is making a fire-season decision.
-  if (/red flag|fire weather|wildfire|fire danger|burn ban|extreme fire|smoke/.test(e)) {
+  //
+  // "air quality" and "air stagnation" are in this list because they are the
+  // names the agencies actually use. NWS issues wildfire smoke as an "Air
+  // Quality Alert" and ECCC as an "Air Quality Statement" — neither string
+  // contains the word smoke, so both used to fall all the way through to
+  // 'other', which the map badges as nothing at all and draws nowhere.
+  if (/red flag|fire weather|wildfire|fire danger|burn ban|extreme fire|smoke|air quality|air stagnation/.test(e)) {
     return 'fire';
   }
   // Claimed before the flood branch — see the note above.

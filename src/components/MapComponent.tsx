@@ -33,7 +33,7 @@ import {
 } from '../utils/fuzzyBoundary';
 import {
   AlertBadge, LocalizedKind, BADGE_COLOR, badgesForPoint, alertBadge, WARNING_LABEL,
-  localizedPinHtml, centroidBadgeHtml, isGeneralized, mergeAreas,
+  WARNING_EMOJI, localizedPinHtml, centroidBadgeHtml, isGeneralized, mergeAreas,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
@@ -328,27 +328,53 @@ const CHIP_LEAD_MS = 70;
  */
 const chipSignature = (d: MarkerDot): string => [
   d.color, d.label, d.full ?? '', d.glyph, d.tone,
-  d.hollow ? 'h' : '', d.action ?? '', d.facility?.id ?? ''
+  d.hollow ? 'h' : '', d.action ?? '', d.badge ?? '', d.facility?.id ?? ''
 ].join('\u0001');
 
+/**
+ * EVERY CHIP IS A BUTTON, AND EVERY CHIP LOOKS LIKE ONE.
+ *
+ * There used to be two kinds: a facility or the fire count, which were
+ * tappable and wore an arrow, and everything else, which was a label that
+ * swallowed nothing. That teaches the wrong lesson — a camper who has learned
+ * that most chips do nothing stops trying the ones that do.
+ *
+ * So all of them take taps, and the mark on the right says what kind of answer
+ * to expect:
+ *
+ *   ›   takes the camera to the thing the chip is talking about — the warning
+ *       area, the parcel, the track in, the fires — and brings it back.
+ *   …   has more to say than fits, and unfurls into the whole hedged sentence
+ *       in place.
+ *
+ * That second one matters more than it looks. The caveats — that a signal
+ * estimate is a distance to a mast with the terrain ignored, that a recorded
+ * "no water" is one camper's visit — lived in the `title` attribute, which on
+ * a phone means nowhere at all.
+ */
 const chipHtml = (d: MarkerDot, fresh: boolean, delay: number): string => {
   const go = d.facility;
-  const tappable = Boolean(go) || Boolean(d.action);
+  const travels = Boolean(d.action) || Boolean(go);
   const full = d.full ?? d.label;
   return (
     `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
-    `${tappable ? ' wl-chip-go' : ''}${fresh ? ' wl-chip-in' : ''}" ` +
+    `${travels ? ' wl-chip-go' : ''}` +
+    `${d.action === 'directions' ? ' wl-chip-nav' : ''}` +
+    `${fresh ? ' wl-chip-in' : ''}" ` +
     `data-key="${escapeHtml(d.key)}" data-sig="${escapeHtml(chipSignature(d))}" ` +
+    `data-label="${escapeHtml(d.label)}" data-full="${escapeHtml(full)}" ` +
     `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
     `${d.action ? `data-action="${d.action}" ` : ''}` +
-    `${tappable ? 'role="button" tabindex="0" ' : ''}` +
+    `${d.badge ? `data-badge="${escapeHtml(d.badge)}" ` : ''}` +
+    `role="button" tabindex="0" ` +
     `title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}" ` +
     `style="--wl-chip-color:${d.color}` +
     `${fresh ? `;animation-delay:${delay}ms` : ''}">` +
     `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
     `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
-    `${escapeHtml(d.label)}` +
-    `${tappable ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
+    `<span class="wl-chip-text">${escapeHtml(d.label)}</span>` +
+    `<span class="wl-chip-arrow" aria-hidden="true">${travels ? '›' : '…'}</span>` +
+    `</span>`
   );
 };
 
@@ -409,6 +435,45 @@ const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string =>
  * Returns false if the marker is not on screen (clustered away, or not yet
  * added), in which case the caller falls back to rebuilding the icon.
  */
+/**
+ * Measure, change, then slide whatever moved into its new place.
+ *
+ * The stack is anchored under the pin and grows upwards, so a chip arriving
+ * anywhere in it shoves every chip above it up by its own height — instantly,
+ * because that is a layout change and layout does not animate. Four lookups
+ * landing meant four of those jolts while the camper was reading.
+ *
+ * FLIP: note where each chip was, let the change happen, then put each chip
+ * back where it started with a transform and release it on the next frame, so
+ * it travels to its new home on the same curve everything else in the app uses.
+ * A chip halfway through its own arrival pop is left alone — its animation owns
+ * the transform, and it has nowhere to slide from anyway.
+ */
+const flipRow = (row: Element, mutate: () => void): void => {
+  const before = new Map<HTMLElement, number>();
+  row.querySelectorAll<HTMLElement>(':scope > .wl-chip').forEach((el) => {
+    before.set(el, el.getBoundingClientRect().top);
+  });
+
+  mutate();
+
+  before.forEach((top, el) => {
+    if (!el.isConnected) return;
+    const dy = top - el.getBoundingClientRect().top;
+    if (Math.abs(dy) < 0.5) return;
+    el.style.transition = 'none';
+    el.style.transform = `translateY(${dy}px)`;
+    // Two frames: the first commits the offset, the second releases it. One is
+    // not enough — the browser coalesces both writes and nothing moves.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform var(--dur-base) var(--ease-moook)';
+        el.style.transform = '';
+      });
+    });
+  });
+};
+
 const patchChipRow = (
   root: HTMLElement | null | undefined,
   dots: MarkerDot[],
@@ -418,48 +483,78 @@ const patchChipRow = (
   if (!wrap) return false;
 
   let row = wrap.querySelector(':scope > .wl-chips');
+  const existed = Boolean(row);
   if (!row) {
     if (!dots.length) return true;
     row = document.createElement('div');
     row.className = 'wl-chips';
     wrap.insertBefore(row, wrap.firstChild);
   }
+  const target = row;
 
-  const existing = new Map<string, Element>();
-  row.querySelectorAll(':scope > .wl-chip').forEach((el) => {
-    const key = el.getAttribute('data-key');
-    if (key) existing.set(key, el);
-  });
+  const rebuild = (): void => {
+    const existing = new Map<string, Element>();
+    target.querySelectorAll(':scope > .wl-chip').forEach((el) => {
+      const key = el.getAttribute('data-key');
+      if (key) existing.set(key, el);
+    });
 
-  const wanted = new Set<string>();
-  const delays = chipDelays(dots, animateKeys);
-  let placed: Element | null = null;
+    const wanted = new Set<string>();
+    const delays = chipDelays(dots, animateKeys);
+    let placed: Element | null = null;
 
-  for (const d of dots) {
-    wanted.add(d.key);
-    const fresh = animateKeys.has(d.key);
-    const delay = fresh ? delays.get(d.key) ?? CHIP_LEAD_MS : 0;
-    let node = existing.get(d.key) ?? null;
+    for (const d of dots) {
+      wanted.add(d.key);
+      const fresh = animateKeys.has(d.key);
+      const delay = fresh ? delays.get(d.key) ?? CHIP_LEAD_MS : 0;
+      let node = existing.get(d.key) ?? null;
 
-    if (!node || fresh || node.getAttribute('data-sig') !== chipSignature(d)) {
-      const holder = document.createElement('template');
-      holder.innerHTML = chipHtml(d, fresh, delay);
-      const next = holder.content.firstElementChild;
-      if (!next) continue;
-      if (node) node.replaceWith(next);
-      node = next;
+      if (!node || fresh || node.getAttribute('data-sig') !== chipSignature(d)) {
+        const holder = document.createElement('template');
+        holder.innerHTML = chipHtml(d, fresh, delay);
+        const next = holder.content.firstElementChild;
+        if (!next) continue;
+        if (node) node.replaceWith(next);
+        node = next;
+      }
+
+      // Only move a chip that is genuinely out of order: re-inserting an
+      // element restarts its animation, which is the popcorn all over again.
+      const slot = placed ? placed.nextElementSibling : target.firstElementChild;
+      if (node !== slot) target.insertBefore(node, slot);
+      placed = node;
     }
 
-    // Only move a chip that is genuinely out of order: re-inserting an
-    // element restarts its animation, which is the popcorn all over again.
-    const slot = placed ? placed.nextElementSibling : row.firstElementChild;
-    if (node !== slot) row.insertBefore(node, slot);
-    placed = node;
-  }
+    existing.forEach((el, key) => { if (!wanted.has(key)) el.remove(); });
+  };
 
-  existing.forEach((el, key) => { if (!wanted.has(key)) el.remove(); });
-  if (!dots.length) row.remove();
+  // A row being built from nothing has nothing to slide — that case is the
+  // whole stack arriving, which is the pop.
+  if (existed) flipRow(target, rebuild);
+  else rebuild();
+
+  if (!dots.length) target.remove();
   return true;
+};
+
+/**
+ * Take a stack away, top chip first, and say how long that will take.
+ *
+ * The wave came up from the pin outwards, so it leaves from the loose end
+ * inwards: the top chip goes first and the one resting on the pin goes last.
+ * Dismantling it in the order it was built looks like the bottom being pulled
+ * out from under the rest.
+ */
+const retractChips = (row: Element): number => {
+  const chips = Array.from(row.querySelectorAll<HTMLElement>(':scope > .wl-chip'));
+
+  chips.forEach((chip, i) => {
+    chip.classList.remove('wl-chip-in');
+    chip.style.animationDelay = `${i * PEEK_OUT_STAGGER_MS}ms`;
+    chip.classList.add('wl-chip-out');
+  });
+
+  return chips.length * PEEK_OUT_STAGGER_MS + PEEK_OUT_DURATION_MS;
 };
 
 /* ------------------------------------------------------------------ */
@@ -549,19 +644,87 @@ const closePeek = (wrap: Element | null | undefined): void => {
   const row = wrap?.querySelector(':scope > .wl-chips-peek');
   if (!row) return;
 
-  const chips = Array.from(row.querySelectorAll<HTMLElement>(':scope > .wl-chip'));
-
-  chips.forEach((chip, i) => {
-    chip.classList.remove('wl-chip-in');
-    chip.style.animationDelay = `${i * PEEK_OUT_STAGGER_MS}ms`;
-    chip.classList.add('wl-chip-out');
-  });
-
   // Removed on a timer rather than on animationend: a chip whose animation
   // never fires — reduced motion, a backgrounded tab, an element detached
   // mid-flight — would otherwise leave the row on the map for ever.
-  const total = chips.length * PEEK_OUT_STAGGER_MS + PEEK_OUT_DURATION_MS;
-  window.setTimeout(() => row.remove(), total);
+  window.setTimeout(() => row.remove(), retractChips(row));
+};
+
+/**
+ * The same exit, for the OPEN pin's real stack.
+ *
+ * Closing a spot used to swap the whole icon on the spot, so the stack of
+ * answers vanished between one frame and the next while the hold-to-peek
+ * stack — the same chips, in the same column — always wound itself down
+ * politely. `onDone` is what actually rebuilds the pin, and it runs after the
+ * last chip has gone rather than on top of it.
+ */
+const retractChipRow = (
+  root: HTMLElement | null | undefined,
+  onDone: () => void
+): void => {
+  const row = root?.firstElementChild?.querySelector(':scope > .wl-chips');
+  if (!row || !row.querySelector(':scope > .wl-chip')) { onDone(); return; }
+  window.setTimeout(() => { row.remove(); onDone(); }, retractChips(row));
+};
+
+/* ------------------------------------------------------------------ */
+/* One wave, not four                                                  */
+/* ------------------------------------------------------------------ */
+/**
+ * THE OPEN PIN'S STACK ARRIVES THE WAY THE HELD PIN'S DOES: ALL AT ONCE.
+ *
+ * A pin answers in instalments — the tap, then the fires, then the weather and
+ * the drive, then whatever OpenStreetMap has up the road — and each instalment
+ * used to redraw the row the moment it landed. Every chip still popped, but the
+ * popping was spread over four separate arrivals a second or two apart, which
+ * reads as things dribbling in rather than as a stack being built. The
+ * press-and-hold peek looks better for one reason only: it has all its
+ * information at the moment it opens, so it plays as a single wave.
+ *
+ * So arrivals are collected and applied together. A change waits `WAIT` for
+ * the next one to join it, and the whole batch goes in as one wave — the same
+ * bottom-up stagger the peek plays. `MAX` is the backstop: a slow feed
+ * trickling in forever must not hold the answers off the screen indefinitely.
+ */
+const CHIP_BATCH_WAIT_MS = 420;
+const CHIP_BATCH_MAX_MS = 1400;
+
+interface ChipBatcher {
+  /** Queue the newest version of the row. Later calls replace earlier ones. */
+  schedule: (apply: () => void) => void;
+  cancel: () => void;
+}
+
+const createChipBatcher = (): ChipBatcher => {
+  let timer: number | null = null;
+  let firstAt = 0;
+  let pending: (() => void) | null = null;
+
+  const fire = (): void => {
+    timer = null;
+    firstAt = 0;
+    const apply = pending;
+    pending = null;
+    apply?.();
+  };
+
+  return {
+    schedule(apply) {
+      pending = apply;
+      const now = Date.now();
+      if (!firstAt) firstAt = now;
+      if (timer != null) window.clearTimeout(timer);
+      const leftOfMax = Math.max(0, CHIP_BATCH_MAX_MS - (now - firstAt));
+      timer = window.setTimeout(fire, Math.min(CHIP_BATCH_WAIT_MS, leftOfMax));
+    },
+    cancel() {
+      if (timer != null) window.clearTimeout(timer);
+      timer = null;
+      firstAt = 0;
+      pending = null;
+    }
+  };
 };
 
 /**
@@ -579,11 +742,6 @@ const freshChipKeys = (shown: Set<string>, dots: MarkerDot[]): Set<string> => {
   return fresh;
 };
 
-const NAV_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">' +
-  '<path d="M3 11 22 2l-9 19-2-8-8-2z"/></svg>';
-
 const INFO_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
   'stroke-linecap="round" style="width:12px;height:12px">' +
@@ -599,26 +757,62 @@ const CLOSE_SVG =
   'stroke-linecap="round" style="width:12px;height:12px">' +
   '<path d="M18 6 6 18M6 6l12 12"/></svg>';
 
-/** "Google Maps" or "Apple Maps" — the phone's own app, named on the button. */
+/** "Google Maps" or "Apple Maps" — the phone's own app, named on the chip. */
 const DIRECTIONS_LABEL = directionsAppName();
 
 /**
- * The two things you can DO with the open pin, directly under it.
+ * The car chip, when there is no route to put on it.
+ *
+ * Navigation lives on the drive chip now, and the drive chip only exists once
+ * a router has answered. Offline, or with every routing engine unreachable,
+ * that would leave an open pin with no way to set off at all — so a plain car
+ * chip stands in. It claims nothing about the drive, because nothing is known
+ * about the drive; it is a door to the phone's own maps app.
+ */
+const NAV_DOT: MarkerDot = {
+  key: 'nav',
+  color: '#93C5FD',
+  label: 'Take me there',
+  full: `Open this spot in ${DIRECTIONS_LABEL}. No route was worked out here, ` +
+    'so nothing about the drive is known yet.',
+  glyph: '\u{1F697}',
+  tone: 'neutral',
+  action: 'directions'
+};
+
+/**
+ * Put the car chip on the bottom of the stack, where the thumb already is.
+ *
+ * The stack builds upwards from the pin, so its last entry is the one nearest
+ * the pin and nearest the hand. That is the right place for the one chip that
+ * leaves the app, and it also keeps the drive in the same position whether it
+ * is a real route ("1 h 20 · 64 km") or the bare stand-in.
+ */
+const withNavChip = (dots: MarkerDot[]): MarkerDot[] => {
+  const drive = dots.find((d) => d.key === 'route');
+  return [...dots.filter((d) => d.key !== 'route'), drive ?? NAV_DOT];
+};
+
+/**
+ * What you can DO with the open pin, directly under it.
  *
  * They used to live in the footer of a panel over the bottom half of the
  * screen. Under the pin they are where the thumb already is and, more to the
- * point, they are attached to the thing they act on — tapping "take me there"
- * three pins into a browse can no longer mean the pin you were last reading
- * about rather than the one you are looking at.
+ * point, they are attached to the thing they act on — tapping something three
+ * pins into a browse can no longer mean the pin you were last reading about
+ * rather than the one you are looking at.
+ *
+ * THE GREEN "GO" BUTTON IS GONE FROM HERE. Navigation moved onto the car chip
+ * in the stack above, which was already saying "1 h 20 · 64 km" — the button
+ * was a second control for a thing the row was describing anyway, and the
+ * chip is the one carrying the number you decide on. What is left under the
+ * pin is what the chips cannot be: everything recorded about the spot, and
+ * the way out.
  */
 const pinActionsRow = (
-  label: string,
   secondary?: { action: 'add' | 'details'; label: string; glyph: string }
 ): string =>
   `<div class="wl-pin-actions">` +
-  `<span class="wl-pin-action wl-pin-action-go" data-action="directions" ` +
-  `role="button" tabindex="0" title="Open in ${escapeHtml(label)}" ` +
-  `aria-label="Open in ${escapeHtml(label)}">${NAV_SVG}Go</span>` +
   (secondary
     ? `<span class="wl-pin-action" data-action="${secondary.action}" ` +
       `role="button" tabindex="0" title="${escapeHtml(secondary.label)}" ` +
@@ -632,7 +826,6 @@ const pinActionsRow = (
 const buildCampsiteIcon = (
   isSelected: boolean,
   dots: MarkerDot[] = [],
-  directionsLabel?: string,
   /** Chip keys this pin has not shown yet. See `refreshIcon`. */
   animateKeys: Set<string> = new Set(),
   /**
@@ -655,8 +848,8 @@ const buildCampsiteIcon = (
       `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
       `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
-      `${isSelected && directionsLabel
-        ? pinActionsRow(directionsLabel, {
+      `${isSelected
+        ? pinActionsRow({
           action: 'details', label: 'Everything recorded about this spot', glyph: INFO_SVG
         })
         : ''}` +
@@ -786,7 +979,6 @@ const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
  */
 const buildDestinationIcon = (
   dots: MarkerDot[] = [],
-  directionsLabel?: string,
   addLabel?: string,
   animateKeys: Set<string> = new Set()
 ): L.DivIcon =>
@@ -795,12 +987,9 @@ const buildDestinationIcon = (
     html: `
       <div class="relative flex items-end justify-center anim-pin-drop">
         ${dots.length ? expandedDotRow(dots, animateKeys) : ''}
-        ${directionsLabel
-          ? pinActionsRow(
-            directionsLabel,
-            addLabel ? { action: 'add', label: addLabel, glyph: PLUS_SVG } : undefined
-          )
-          : ''}
+        ${pinActionsRow(
+          addLabel ? { action: 'add', label: addLabel, glyph: PLUS_SVG } : undefined
+        )}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
           <path d="M12 1c5.2 0 9.4 4.2 9.4 9.4 0 6.8-9.4 20.6-9.4 20.6S2.6 17.2 2.6 10.4C2.6 5.2 6.8 1 12 1z"
@@ -1213,6 +1402,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const destinationRef = useRef(destination);
   destinationRef.current = destination;
 
+  /** The drive to the open point, for the chips that show where it stops. */
+  const routeRef = useRef(route);
+  routeRef.current = route;
+
   /** Weather, signal and land for the open point, as chips. */
   const conditions = React.useMemo(
     () => conditionDots(weather, coverage, destination?.land, route),
@@ -1264,6 +1457,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [zoomTooFar, setZoomTooFar] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
+  /** The same alerts, for the chip tours, which run outside React's render. */
+  const hazardsRef = useRef<HazardAlert[]>([]);
+  hazardsRef.current = hazards;
   /**
    * Toilets, taps and fuel within `FACILITY_RADIUS_KM` of the selected spot.
    *
@@ -2546,14 +2742,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const destinationHtmlRef = useRef('');
   /** The dropped pin's own memory of which chips it has popped in. */
   const destinationChipKeysRef = useRef<Set<string>>(new Set());
+  /** Its answers, gathered so they arrive as one wave. See `createChipBatcher`. */
+  const destinationBatchRef = useRef(createChipBatcher());
   const destinationDots = useMemo(() => {
     if (!destination || destination.campsite) return [];
-    return [
+    return withNavChip([
       ...hazardDots(badgesForPoint(destination.latitude, destination.longitude, hazards)),
       ...fireDots(nearbyFires),
       ...conditions,
       ...facilityDots(facilities)
-    ];
+    ]);
   }, [destination, hazards, nearbyFires, conditions, facilities]);
   const destinationDotsRef = useRef(destinationDots);
   destinationDotsRef.current = destinationDots;
@@ -2563,6 +2761,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!map || !isMapReady) return;
 
     const clear = () => {
+      destinationBatchRef.current.cancel();
       if (!destinationMarkerRef.current) return;
       try { map.removeLayer(destinationMarkerRef.current); } catch { /* detached */ }
       destinationMarkerRef.current = null;
@@ -2578,7 +2777,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       {
         icon: buildDestinationIcon(
           destinationDotsRef.current,
-          DIRECTIONS_LABEL,
           'Add spot here',
           freshChipKeys(destinationChipKeysRef.current, destinationDotsRef.current)
         ),
@@ -2603,19 +2801,32 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * the drop rather than to every arrival after it.
    */
   useEffect(() => {
-    const marker = destinationMarkerRef.current;
-    if (!marker) return;
-    const fresh = freshChipKeys(destinationChipKeysRef.current, destinationDots);
-    // Patched in place for the same reason a submitted pin is: rebuilding the
-    // icon would drop the teardrop again and cut the chips off mid-pop.
-    if (patchChipRow(marker.getElement(), destinationDots, fresh)) return;
-    const icon = buildDestinationIcon(
-      destinationDots, DIRECTIONS_LABEL, 'Add spot here', fresh
-    );
-    const html = (icon.options.html as string) ?? '';
-    if (html === destinationHtmlRef.current) return;
-    destinationHtmlRef.current = html;
-    marker.setIcon(icon);
+    if (!destinationMarkerRef.current) return;
+
+    /*
+     * Held back until the answers stop coming, so they arrive as one wave.
+     *
+     * A dropped pin on bare ground starts with NOTHING — every chip it will
+     * ever wear (the warnings over it, the fires, the weather, the drive, the
+     * track up the road) is a separate request. Applied as they landed, that
+     * was five separate arrivals over a couple of seconds. The batcher gives
+     * them a beat to catch up with each other and then plays the whole stack
+     * in one go, which is what the press-and-hold peek has always looked like.
+     */
+    destinationBatchRef.current.schedule(() => {
+      const marker = destinationMarkerRef.current;
+      if (!marker) return;
+      const dots = destinationDotsRef.current;
+      const fresh = freshChipKeys(destinationChipKeysRef.current, dots);
+      // Patched in place for the same reason a submitted pin is: rebuilding
+      // the icon would drop the teardrop again and cut the chips off mid-pop.
+      if (patchChipRow(marker.getElement(), dots, fresh)) return;
+      const icon = buildDestinationIcon(dots, 'Add spot here', fresh);
+      const html = (icon.options.html as string) ?? '';
+      if (html === destinationHtmlRef.current) return;
+      destinationHtmlRef.current = html;
+      marker.setIcon(icon);
+    });
   }, [destinationDots]);
 
   /**
@@ -3261,6 +3472,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * lookup landing afterwards only animates the chip it brought.
    */
   const shownChipKeysRef = useRef<Set<string>>(new Set());
+  /** The open pin's answers, gathered so they arrive together as one wave. */
+  const openBatchRef = useRef(createChipBatcher());
 
   /**
    * The press-and-hold peek.
@@ -3286,7 +3499,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const dotsForId = useCallback((id: string): MarkerDot[] => {
     const isSelected = selectedIdRef.current === id;
-    return [
+    const dots = [
       ...hazardDots(badgesByIdRef.current.get(id) ?? []),
       // A fire burning up the valley, for the open pin only — it is one
       // request per selection, and it is where the map's flame layer went.
@@ -3300,6 +3513,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // looked up for the spot being read.
       ...(isSelected ? facilityDots(facilitiesRef.current) : [])
     ];
+    // Only the open pin gets the car chip: a resting pin's ring of dots is
+    // facts about the spot, and "you could drive here" is not one of them.
+    return isSelected ? withNavChip(dots) : dots;
   }, []);
 
   const iconForId = useCallback((id: string, animate = false) => {
@@ -3310,7 +3526,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     return buildCampsiteIcon(
       isSelected,
       dots,
-      isSelected ? DIRECTIONS_LABEL : undefined,
       isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined,
       id
     );
@@ -3336,17 +3551,31 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const open = marker.getElement()?.firstElementChild?.classList.contains('wl-pin-wrap-on');
 
     if (isSelected && !animate && open) {
-      const dots = dotsForId(id);
-      if (patchChipRow(
-        marker.getElement(),
-        dots,
-        freshChipKeys(shownChipKeysRef.current, dots)
-      )) {
-        // The cached HTML no longer describes the DOM, so the next full
-        // rebuild must not be skipped as a no-op.
-        iconHtmlRef.current.delete(id);
-        return;
-      }
+      /*
+       * Collected, not applied on the spot. The lookups behind an open pin
+       * finish at different times, and patching each one in as it lands is
+       * what turned one stack into four dribbles. See `createChipBatcher`.
+       */
+      openBatchRef.current.schedule(() => {
+        const live = markersRef.current.get(id);
+        if (!live || selectedIdRef.current !== id) return;
+        const dots = dotsForId(id);
+        if (patchChipRow(
+          live.getElement(),
+          dots,
+          freshChipKeys(shownChipKeysRef.current, dots)
+        )) {
+          // The cached HTML no longer describes the DOM, so the next full
+          // rebuild must not be skipped as a no-op.
+          iconHtmlRef.current.delete(id);
+          return;
+        }
+        // Clustered away or not yet on screen: fall back to a full rebuild.
+        const rebuilt = iconForId(id);
+        iconHtmlRef.current.set(id, (rebuilt.options.html as string) ?? '');
+        live.setIcon(rebuilt);
+      });
+      return;
     }
 
     const icon = iconForId(id, animate);
@@ -3553,9 +3782,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // icon is rebuilt, so a toilet 4 km from the previous pin cannot appear
     // over the new one for the moment before the fetch lands.
     facilitiesRef.current = [];
+    // Anything the old pin was still waiting to show belongs to the old pin.
+    openBatchRef.current.cancel();
     if (previousId) {
-      refreshIcon(previousId);
-      markersRef.current.get(previousId)?.setZIndexOffset(0);
+      /*
+       * The stack winds itself down before the pin closes, top chip first —
+       * the same exit a held pin plays when the finger comes off it. Closing
+       * used to swap the icon on the spot, so a column of answers a camper was
+       * halfway through reading vanished between two frames.
+       */
+      const closing = markersRef.current.get(previousId);
+      retractChipRow(closing?.getElement(), () => {
+        refreshIcon(previousId);
+        markersRef.current.get(previousId)?.setZIndexOffset(0);
+      });
     }
     if (nextId) {
       const marker = markersRef.current.get(nextId);
@@ -3713,24 +3953,51 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const tourRunningRef = useRef(false);
   const tourLayerRef = useRef<L.LayerGroup | null>(null);
 
-  const runFireTour = useCallback(async () => {
+  /**
+   * THE SHAPE OF EVERY "GO AND LOOK" ON THIS MAP.
+   *
+   * The fire chip has always done this: pull the camera out far enough to hold
+   * the spot and the thing being asked about in one frame, draw the thing,
+   * name it, wait long enough to read it, then put the camera back exactly
+   * where it was found. Tapping a chip is a question about something you
+   * cannot currently see, and the map itself is the answer — briefly, rather
+   * than as a paragraph.
+   *
+   * Every chip that has somewhere to take you now runs through here, so they
+   * all behave identically: one tour at a time, nothing in a tour is tappable,
+   * and the borrowed view is always given back, including when the middle of
+   * the tour throws.
+   */
+  const runTour = useCallback(async (
+    steps: (ctx: {
+      map: L.Map;
+      layer: L.LayerGroup;
+      /** Scaled down under prefers-reduced-motion, never to zero. */
+      wait: (ms: number) => Promise<void>;
+      reduced: boolean;
+      /** Frame these bounds, pulling out but never in past `maxZoom`. */
+      frame: (bounds: L.LatLngBounds, maxZoom?: number) => void;
+      /** A named marker pinned on the map, in a colour. */
+      label: (at: L.LatLngExpression, opts: {
+        title: string; detail?: string; glyph: string; color: string;
+      }) => void;
+      /** False once this tour has been torn down — check it after every await. */
+      alive: () => boolean;
+    }) => Promise<void>
+  ) => {
     const map = mapRef.current;
-    const point = readPointRef.current;
-    const near = nearbyFiresRef.current;
-    if (!map || !point || !near.length || tourRunningRef.current) return;
+    if (!map || tourRunningRef.current) return;
 
     tourRunningRef.current = true;
     const reduced = prefersReducedMotion();
-    const wait = (ms: number) => new Promise((r) => setTimeout(r, reduced ? ms / 3 : ms));
+    const wait = (ms: number) =>
+      new Promise<void>((r) => setTimeout(r, reduced ? ms / 3 : ms));
     const home = { center: map.getCenter(), zoom: map.getZoom() };
-    // Five is as many labels as fit on a phone before they stack on top of
-    // each other; the rest are still counted on the chip.
-    const shown = near.slice(0, 5);
 
     const layer = L.layerGroup().addTo(map);
     tourLayerRef.current = layer;
     /**
-     * The pin's own row of chips steps aside while the fires are on screen.
+     * The pin's own row of chips steps aside while the tour is on screen.
      *
      * The row is a stack of labels sitting exactly where the camera is about
      * to pull out to, so it would otherwise be reading the weather over the
@@ -3742,49 +4009,40 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     container.classList.add('wl-touring');
 
     try {
-      const bounds = L.latLngBounds([point.lat, point.lon] as L.LatLngExpression, [
-        point.lat, point.lon
-      ] as L.LatLngExpression);
-      shown.forEach((n) => bounds.extend([n.fire.centroid.lat, n.fire.centroid.lon]));
-
-      map.fitBounds(bounds, {
-        padding: L.point(70, 90),
-        maxZoom: 11,
-        animate: !reduced
+      await steps({
+        map,
+        layer,
+        wait,
+        reduced,
+        alive: () => tourLayerRef.current === layer,
+        frame: (bounds, maxZoom = 11) => {
+          try {
+            map.fitBounds(bounds, {
+              paddingTopLeft: L.point(60, 90),
+              paddingBottomRight: L.point(60, 110),
+              maxZoom,
+              animate: !reduced
+            });
+          } catch { /* degenerate bounds */ }
+        },
+        label: (at, { title, detail, glyph, color }) => {
+          L.marker(at, {
+            icon: L.divIcon({
+              className: 'wl-tour-stop',
+              html:
+                `<div class="wl-tour-stop-wrap" style="--wl-tour-color:${color}">` +
+                `<span class="wl-tour-stop-label">${escapeHtml(title)}` +
+                `${detail ? `<em>${escapeHtml(detail)}</em>` : ''}</span>` +
+                `<span class="wl-tour-stop-glyph" aria-hidden="true">${glyph}</span>` +
+                `</div>`,
+              iconSize: [30, 30],
+              iconAnchor: [15, 15]
+            }),
+            interactive: false,
+            zIndexOffset: 800
+          }).addTo(layer);
+        }
       });
-      await wait(750);
-
-      for (const { fire, distanceKm } of shown) {
-        if (!tourLayerRef.current) return;
-        const held = isUnderControl(fire);
-        const status = fire.status?.trim()
-          ? fire.status
-          : held
-          ? 'Reported under control'
-          : 'Not reported under control';
-
-        L.marker([fire.centroid.lat, fire.centroid.lon], {
-          icon: L.divIcon({
-            className: 'wl-fire-stop',
-            html:
-              `<div class="wl-fire-stop-wrap">` +
-              `<span class="wl-fire-stop-label${held ? '' : ' wl-fire-stop-label-hot'}">` +
-              `${escapeHtml(status)}` +
-              `<em>${escapeHtml(fire.name)} · ${distanceKm.toFixed(1)} km away</em>` +
-              `</span>` +
-              `<span class="wl-fire-stop-glyph" aria-hidden="true">🔥</span>` +
-              `</div>`,
-            iconSize: [30, 30],
-            iconAnchor: [15, 15]
-          }),
-          interactive: false,
-          zIndexOffset: 800
-        }).addTo(layer);
-
-        await wait(850);
-      }
-
-      await wait(900);
     } finally {
       layer.remove();
       tourLayerRef.current = null;
@@ -3797,13 +4055,322 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
   }, []);
 
+  /**
+   * Tapping the fire chip: go and look, then come back.
+   *
+   * The chip says "3 active fires, nearest 21 km away", and the next question
+   * is always the same one — WHERE, and are they out? Each fire is named in
+   * turn, its label popping in over its own flame so it is obvious which one
+   * is being talked about.
+   *
+   * The labels quote the agency's own reading and nothing more: "reported
+   * under control" is never shortened to "out", and a fire the feed gives no
+   * status for says that rather than being assumed to be running.
+   */
+  const runFireTour = useCallback(() => runTour(async (t) => {
+    const point = readPointRef.current;
+    // Five is as many labels as fit on a phone before they stack on top of
+    // each other; the rest are still counted on the chip.
+    const shown = nearbyFiresRef.current.slice(0, 5);
+    if (!point || !shown.length) return;
+
+    const bounds = L.latLngBounds(
+      [point.lat, point.lon] as L.LatLngExpression,
+      [point.lat, point.lon] as L.LatLngExpression
+    );
+    shown.forEach((n) => bounds.extend([n.fire.centroid.lat, n.fire.centroid.lon]));
+    t.frame(bounds, 11);
+    await t.wait(750);
+
+    for (const { fire, distanceKm } of shown) {
+      if (!t.alive()) return;
+      const held = isUnderControl(fire);
+      t.label([fire.centroid.lat, fire.centroid.lon], {
+        title: fire.status?.trim()
+          ? fire.status
+          : held ? 'Reported under control' : 'Not reported under control',
+        detail: `${fire.name} · ${distanceKm.toFixed(1)} km away`,
+        glyph: '\u{1F525}',
+        color: held ? '#F97316' : '#EF4444'
+      });
+      await t.wait(850);
+    }
+
+    await t.wait(900);
+  }), [runTour]);
+
+  /**
+   * Tapping a warning chip: where does this actually apply?
+   *
+   * The chip says "Heatwave" and the honest follow-up is "over what?" — a
+   * warning is a shape an agency drew, and the shape is the answer. Every
+   * alert of that family covering this point is drawn at once, because a
+   * camper standing under two overlapping heat products is standing under one
+   * heat problem.
+   *
+   * A zone-based product says so on its label. Its outline is the edge of the
+   * FORECAST REGION the warning was issued for, not the edge of the weather,
+   * and that is exactly the sort of thing this app must not let a shape imply
+   * on its own.
+   */
+  const runAlertTour = useCallback((badge: AlertBadge) => runTour(async (t) => {
+    const point = readPointRef.current;
+    if (!point) return;
+
+    const covering = hazardsRef.current.filter(
+      (a) =>
+        a.geometry &&
+        alertBadge(a) === badge &&
+        pointInGeometry(point.lat, point.lon, a.geometry)
+    );
+    if (!covering.length) return;
+
+    const color = BADGE_COLOR[badge];
+    const shapes = L.geoJSON(
+      {
+        type: 'FeatureCollection',
+        features: covering.map((a) => ({
+          type: 'Feature', properties: {}, geometry: a.geometry
+        }))
+      } as any,
+      { style: { color, weight: 2.5, opacity: 0.95, fillColor: color, fillOpacity: 0.28 } }
+    ).addTo(t.layer);
+
+    t.frame(shapes.getBounds(), 9);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    const lead = covering[0];
+    t.label([point.lat, point.lon], {
+      title: lead.event,
+      detail: covering.length > 1
+        ? `${covering.length} warnings cover this point`
+        : lead.areaSource === 'zone'
+          ? 'This outline is the forecast region, not the edge of the weather'
+          : lead.areaDescription || 'Issued for the shaded area',
+      glyph: WARNING_EMOJI[badge],
+      color
+    });
+
+    await t.wait(2400);
+  }), [runTour]);
+
+  /**
+   * Tapping the land chip: which shape said that?
+   *
+   * The chip names a forest or a district and quotes its stay limit; this
+   * draws the parcel the name came from. Those edges are approximate to within
+   * hundreds of metres — which is why the fills are off by default — so the
+   * label says so while the shape is on screen, where the caveat is attached
+   * to the thing it is about.
+   */
+  const runLandTour = useCallback(() => runTour(async (t) => {
+    const point = readPointRef.current;
+    if (!point) return;
+
+    // Smallest matching parcel wins, exactly as it does when a pin is dropped:
+    // a wilderness area inside a national forest carries the stricter rules.
+    let best: { feature: BoundaryFeature; extent: number } | null = null;
+    for (const feature of collectionRef.current.features) {
+      if (!pointInGeometry(point.lat, point.lon, feature.geometry)) continue;
+      const extent = bboxExtent(feature.geometry);
+      if (!best || extent < best.extent) best = { feature, extent };
+    }
+    if (!best) return;
+
+    const shape = L.geoJSON(best.feature as any, {
+      style: {
+        color: '#A78BFA', weight: 2.5, opacity: 0.95,
+        fillColor: '#A78BFA', fillOpacity: 0.2
+      }
+    }).addTo(t.layer);
+
+    t.frame(shape.getBounds(), 12);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    t.label([point.lat, point.lon], {
+      title: landFromFeature(best.feature.properties as any)?.name ?? 'Public land',
+      detail: 'Approximate boundary — the edge can be hundreds of metres out',
+      glyph: '\u{1F6E1}️',
+      color: '#A78BFA'
+    });
+
+    await t.wait(2200);
+  }), [runTour]);
+
+  /**
+   * Tapping a road chip: show me the track.
+   *
+   * A road is a LINE, and it used to be treated as a destination — a dot on
+   * the single nearest vertex, and a router asked how to drive to a road you
+   * are already standing beside. Now the way itself is drawn.
+   *
+   * Two chips land here. The facility chip already carries its line, so it
+   * draws instantly. The spot's own "gravel road" chip is a camper's rating
+   * with no geometry behind it at all, so the track is looked up on the spot,
+   * and the label keeps the two apart: the rating describes the drive in, the
+   * line is only whatever OpenStreetMap has near the pin.
+   */
+  const runRoadTour = useCallback((facility: NearbyFacility | null) => runTour(async (t) => {
+    const point = readPointRef.current;
+    if (!point) return;
+
+    let road = facility;
+    if (!road?.line?.length) {
+      t.label([point.lat, point.lon], {
+        title: 'Looking for the track…', glyph: '\u{1F6E3}️', color: '#FDE047'
+      });
+      road = await fetchNearestDriveableRoad(point.lat, point.lon, ROAD_RADIUS_KM);
+      if (!t.alive()) return;
+      t.layer.clearLayers();
+    }
+
+    if (!road?.line?.length) {
+      t.label([point.lat, point.lon], {
+        title: 'No mapped track within 2 km',
+        detail: 'OpenStreetMap has nothing here, which is not the same as nothing being here',
+        glyph: '\u{1F6E3}️',
+        color: '#FDE047'
+      });
+      await t.wait(2200);
+      return;
+    }
+
+    // A dark under-stroke first, so a yellow line stays legible over pale
+    // desert and bright sand.
+    L.polyline(road.line, { color: '#0F172A', weight: 9, opacity: 0.45 }).addTo(t.layer);
+    const line = L.polyline(road.line, {
+      color: '#FDE047', weight: 5, opacity: 0.95, lineCap: 'round', lineJoin: 'round'
+    }).addTo(t.layer);
+
+    t.frame(line.getBounds().extend([point.lat, point.lon]), 15);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    const away = road.distanceKm < 1
+      ? `${Math.round(road.distanceKm * 1000)} m`
+      : `${road.distanceKm.toFixed(1)} km`;
+    t.label([road.latitude, road.longitude], {
+      title: road.name ?? 'Nearest mapped track',
+      detail: `${away} away — it may be gated, seasonal or impassable`,
+      glyph: '\u{1F6E3}️',
+      color: '#FDE047'
+    });
+
+    await t.wait(2400);
+  }), [runTour]);
+
+  /**
+   * Tapping the gap chip: where does the road actually stop?
+   *
+   * The chip says "1.8 km short" and the only useful version of that is on the
+   * map — the router's line ending in the middle of nowhere, and a dashed
+   * stretch to the pin that is deliberately not drawn as a route. Nobody has
+   * said there is anything to drive, walk or push a rig along in that gap.
+   */
+  const runGapTour = useCallback(() => runTour(async (t) => {
+    const point = readPointRef.current;
+    const line = routeRef.current?.geometry ?? [];
+    const end = line[line.length - 1];
+    if (!point || !end) return;
+
+    L.polyline([end, [point.lat, point.lon]], {
+      color: '#F59E0B', weight: 4, opacity: 0.95, dashArray: '2 9', lineCap: 'round'
+    }).addTo(t.layer);
+    L.circleMarker(end, {
+      radius: 6, color: '#F59E0B', weight: 3, fillColor: '#0F172A', fillOpacity: 1
+    }).addTo(t.layer);
+
+    t.frame(L.latLngBounds(end, [point.lat, point.lon]), 14);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    t.label(end, {
+      title: 'The mapped road ends here',
+      detail: `${(routeRef.current?.gapToDestinationKm ?? 0).toFixed(1)} km left — ` +
+        'an unmapped track, or nothing at all',
+      glyph: '\u{1F6A7}',
+      color: '#F59E0B'
+    });
+
+    await t.wait(2400);
+  }), [runTour]);
+
   // A tour still running when the map goes away would keep adding flames to a
   // layer nobody can see, and then fly a torn-down camera home.
   useEffect(() => () => { tourLayerRef.current?.remove(); tourLayerRef.current = null; }, []);
 
   /**
-   * A tap on something the open pin offers: a facility chip, the fire chip,
-   * the directions button, or the close button.
+   * A chip that has no journey in it still answers when tapped.
+   *
+   * It unfurls into its own full sentence — the hedged one, with the caveats —
+   * for a few seconds, and then goes back to being short. That sentence has
+   * always existed; it lived in the `title` attribute, which is a hover
+   * tooltip, which on the phone this app is used on is nowhere at all. So
+   * "Strong signal" could never tell anybody it means a distance to a mast
+   * with the terrain ignored.
+   *
+   * The rest of the stack slides to make room rather than jumping, and the
+   * chip puts itself away on a timer — a tap is a glance, not a state to have
+   * to get back out of.
+   */
+  const unfurlTimersRef = useRef(new Map<HTMLElement, number>());
+
+  const unfurlChip = useCallback((chip: HTMLElement) => {
+    const text = chip.querySelector<HTMLElement>(':scope > .wl-chip-text');
+    const row = chip.parentElement;
+    if (!text || !row) return;
+
+    const timers = unfurlTimersRef.current;
+    const running = timers.get(chip);
+    if (running) window.clearTimeout(running);
+
+    const short = chip.getAttribute('data-label') ?? text.textContent ?? '';
+    const full = chip.getAttribute('data-full') ?? short;
+
+    // Already open: tapping again puts it away rather than doing nothing.
+    if (chip.classList.contains('wl-chip-open')) {
+      timers.delete(chip);
+      flipRow(row, () => {
+        chip.classList.remove('wl-chip-open');
+        text.textContent = short;
+      });
+      return;
+    }
+
+    flipRow(row, () => {
+      chip.classList.add('wl-chip-open');
+      text.textContent = full;
+    });
+    haptic('tap');
+
+    timers.set(chip, window.setTimeout(() => {
+      timers.delete(chip);
+      if (!chip.isConnected) return;
+      const home = chip.parentElement;
+      const close = () => {
+        chip.classList.remove('wl-chip-open');
+        text.textContent = short;
+      };
+      if (home) flipRow(home, close);
+      else close();
+    }, 5200));
+  }, []);
+
+  useEffect(() => () => {
+    unfurlTimersRef.current.forEach((id) => window.clearTimeout(id));
+    unfurlTimersRef.current.clear();
+  }, []);
+
+  /**
+   * A tap on anything the open pin offers.
+   *
+   * EVERY CHIP GOES THROUGH HERE NOW, not just the two that used to be
+   * tappable. A chip that stands for something on the map takes the camera to
+   * it and brings it back; the car chip hands off to the phone's maps app; and
+   * a chip that is purely a fact unfurls into its full wording. Nothing on the
+   * pin is inert any more, which is what makes the arrows worth trusting.
    *
    * Delegated from the map container in the CAPTURE phase, which is the only
    * place it works: these live inside a marker's icon, so Leaflet's own marker
@@ -3818,34 +4385,58 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const onTap = (event: Event) => {
       const target = event.target as HTMLElement | null;
-      const hit = target?.closest?.('[data-facility],[data-action]') as HTMLElement | null;
+      const hit = target?.closest?.(
+        '.wl-chip,[data-facility],[data-action]'
+      ) as HTMLElement | null;
       if (!hit) return;
+      // A peeked stack is a look, not a menu — see the CSS note on .wl-chips-peek.
+      if (hit.closest('.wl-chips-peek')) return;
 
       const action = hit.getAttribute('data-action');
       const facilityId = hit.getAttribute('data-facility');
       const facility = facilityId
         ? facilitiesRef.current.find((f) => f.id === facilityId)
         : undefined;
-      if (!action && !facility) return;
+      const isChip = hit.classList.contains('wl-chip');
+      if (!action && !facility && !isChip) return;
 
       event.preventDefault();
       event.stopPropagation();
 
-      if (facility) setFacilityTrip({ facility, route: null, loading: true });
-      else if (action === 'fires') void runFireTour();
-      else if (action === 'directions') directionsRef.current();
-      else if (action === 'close') clearDestinationRef.current();
-      else if (action === 'details' && destinationRef.current?.campsite) {
-        detailRef.current(destinationRef.current.campsite);
-      } else if (action === 'add') {
-        const at = readPointRef.current;
-        if (at) addSpotRef.current(at.lat, at.lon);
+      switch (action) {
+        case 'fires': void runFireTour(); return;
+        case 'alert': {
+          const badge = hit.getAttribute('data-badge') as AlertBadge | null;
+          if (badge) void runAlertTour(badge);
+          return;
+        }
+        case 'land': void runLandTour(); return;
+        case 'gap': void runGapTour(); return;
+        case 'road': void runRoadTour(facility ?? null); return;
+        case 'directions': directionsRef.current(); return;
+        case 'close': clearDestinationRef.current(); return;
+        case 'details':
+          if (destinationRef.current?.campsite) detailRef.current(destinationRef.current.campsite);
+          return;
+        case 'add': {
+          const at = readPointRef.current;
+          if (at) addSpotRef.current(at.lat, at.lon);
+          return;
+        }
+        default: break;
       }
+
+      // A facility with no action of its own: frame it with the spot and ask
+      // for a route, which is the old behaviour and still the right one.
+      if (facility) { setFacilityTrip({ facility, route: null, loading: true }); return; }
+      if (isChip) unfurlChip(hit);
     };
 
     container.addEventListener('click', onTap, true);
     return () => container.removeEventListener('click', onTap, true);
-  }, [isMapReady, runFireTour]);
+  }, [
+    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour, unfurlChip
+  ]);
 
   /**
    * Frame the spot and the facility together, then ask for a route.
