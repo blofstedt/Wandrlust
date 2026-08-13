@@ -1,4 +1,4 @@
-import { distanceKm } from '../utils/geo';
+import { distanceKm, distanceToLineKm } from '../utils/geo';
 import type { NearbyFacility, NearbyFacilityKind } from '../types';
 
 /**
@@ -297,30 +297,42 @@ export const fetchNearestDriveableRoad = async (
         if (tags.access === 'private' || tags.access === 'no') continue;
         if (tags.motor_vehicle === 'private' || tags.motor_vehicle === 'no') continue;
 
-        for (const point of way.geometry ?? []) {
-          const km = distanceKm(latitude, longitude, point.lat, point.lon);
-          if (km > radiusKm) continue;
-          if (best && best.distanceKm <= km) continue;
-
+        /*
+         * Measured to the ROAD, not to the points somebody clicked when
+         * drawing it. A long straight track has vertices kilometres apart, and
+         * measuring to the nearest of those used to report a road as 2 km away
+         * when it ran 350 m from the pin — which is how the app ended up
+         * naming a further road as "the nearest" while a closer one sat
+         * plainly on the map beside it.
+         */
+        const near = distanceToLineKm(latitude, longitude, way.geometry ?? []);
+        if (near && near.km <= radiusKm && (!best || best.distanceKm > near.km)) {
           best = {
             id: `osm-way-${way.id}`,
             kind: 'road',
             name: tags.name?.trim() || tags.ref?.trim() || undefined,
-            latitude: point.lat,
-            longitude: point.lon,
-            distanceKm: Math.round(km * 100) / 100,
+            latitude: near.lat,
+            longitude: near.lon,
+            distanceKm: Math.round(near.km * 100) / 100,
             /**
              * The whole way, kept rather than thrown away.
              *
              * We already asked for `out geom`, so the line costs nothing extra
              * here and is the only way the map can SHOW the road when its chip
-             * is tapped. Capped at 400 vertices: a 40 km forest road is a lot
-             * of points to hang off a marker, and the shape is legible long
-             * before that.
+             * is tapped.
+             *
+             * Windowed around the point nearest the spot, not taken from the
+             * start of the way: on a 40 km forest road the first 400 vertices
+             * can be an hour's drive from the pin, which draws a yellow line
+             * off the edge of the screen and calls it the nearest track.
              */
-            line: (way.geometry ?? [])
-              .slice(0, 400)
-              .map((p) => [p.lat, p.lon] as [number, number])
+            line: (() => {
+              const geometry = way.geometry ?? [];
+              const start = Math.max(0, near.index - 200);
+              return geometry
+                .slice(start, start + 400)
+                .map((p) => [p.lat, p.lon] as [number, number]);
+            })()
           };
         }
       }

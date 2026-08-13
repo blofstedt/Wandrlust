@@ -33,9 +33,35 @@
  * measured, returned as `gapToDestinationKm`, and drawn on the map as a dashed
  * line the app refuses to call a route.
  *
+ * ---------------------------------------------------------------------------
+ * AIMING AT ROADS THE ENGINE DID NOT PICK
+ * ---------------------------------------------------------------------------
+ *
+ * Even with tracks turned all the way up, a route can end kilometres short
+ * while an ordinary forest road — drawn on the basemap, right there — passes a
+ * few hundred metres from the pin. That is not the router failing to find a
+ * way; it is the router choosing where to give up. Handed a single coordinate,
+ * every engine snaps it to whatever piece of network IT can reach and routes
+ * to that, silently, with no second opinion. If the reachable piece is on the
+ * far side of a ridge, that is where the trip ends.
+ *
+ * So a bad ending is no longer accepted first time. When the gap is big enough
+ * to matter, `roadNetwork.ts` asks OpenStreetMap what is actually near the pin,
+ * and the nearest points on the nearest few roads are retried as explicit
+ * waypoints. Whichever attempt ENDS closest to the pin wins — measured against
+ * the pin every time, so a retry can never flatter itself.
+ *
+ * Two things this deliberately does not do. It does not accept a route that
+ * ends nearer at the cost of a wildly longer drive without saying so, and it
+ * does not stay quiet when nothing could be routed to: a road OSM knows about
+ * and no engine could reach is reported as exactly that, because "there is a
+ * track 300 m away that nothing will route onto" is the sentence a camper
+ * needs, and it is not a sentence a router will ever produce.
+ *
  * Proxied rather than called from the browser for the usual three reasons:
  * CORS, caching, and the User-Agent that FOSSGIS asks public users to send.
  */
+import { findApproachRoads, type ApproachRoad } from './roadNetwork.js';
 // `Response` is aliased: express exports one and `fetch` returns another, and
 // an unaliased import silently shadows the fetch type in every helper below.
 import type { Express, Request, Response as ExpressResponse } from 'express';
@@ -47,6 +73,11 @@ import type { Express, Request, Response as ExpressResponse } from 'express';
 interface RouteWarning {
   severity: 'info' | 'caution' | 'critical';
   message: string;
+  /**
+   * Stable identifier for the warnings that get rewritten later in the
+   * request, once the approach pass knows more than the first attempt did.
+   */
+  key?: string;
 }
 
 interface RouteBody {
@@ -67,6 +98,23 @@ interface RouteBody {
    * something the router does not carry. Never silently rounded away.
    */
   gapToDestinationKm: number;
+  /**
+   * The mapped road the route actually ends on, when one was identified.
+   *
+   * Null means we could not reach OpenStreetMap, or nothing driveable is
+   * mapped near the pin at all — never "the route ends nowhere in particular".
+   */
+  approach: ApproachRoad | null;
+  /**
+   * The nearest driveable road OSM has to the pin, whether or not any engine
+   * could route onto it.
+   *
+   * This is what answers "why did it stop so far away when there is clearly a
+   * road right there" — and it carries its own geometry so the map can DRAW
+   * the road the router refused to use, which is the only version of that
+   * answer worth reading. Null when the lookup did not run or failed.
+   */
+  nearestRoad: ApproachRoad | null;
   warnings: RouteWarning[];
   message: string;
 }
@@ -74,8 +122,26 @@ interface RouteBody {
 const EMPTY: RouteBody = {
   ok: false, geometry: [], distanceKm: 0, durationMin: 0, provider: 'none',
   dimensionAware: false, routesTracks: false, gapToDestinationKm: 0,
-  warnings: [], message: 'No route'
+  approach: null, nearestRoad: null, warnings: [], message: 'No route'
 };
+
+/**
+ * One attempt at one trip.
+ *
+ * `to` and `pin` are separate on purpose. `to` is where the ROUTER is told to
+ * go, which on a retry is a point on some road OSM knows about. `pin` is where
+ * the camper actually wants to be, and the shortfall is measured to it every
+ * single time — so a retry aimed at a convenient waypoint can never report a
+ * smaller gap than it earned.
+ */
+interface Leg {
+  from: [number, number];
+  to: [number, number];
+  pin: [number, number];
+  rig: Rig;
+  /** Wall-clock budget for this attempt. Retries get less than the first try. */
+  budgetMs: number;
+}
 
 interface Rig {
   heightCm?: number;
@@ -181,40 +247,152 @@ const staticRigWarnings = (rig: Rig): RouteWarning[] => {
   return out;
 };
 
+/** Metres under a kilometre, kilometres above it. Nobody reads "0.3 km". */
+const readable = (km: number): string =>
+  km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+
+/** What to call a road that OSM never named, by what kind of road it is. */
+const KIND_NOUN: Record<string, string> = {
+  track: 'an unnamed track',
+  service: 'an unnamed service road',
+  unclassified: 'an unnamed back road',
+  residential: 'a residential street',
+  living_street: 'a residential street',
+  tertiary: 'a minor road',
+  tertiary_link: 'a minor road',
+  secondary: 'a secondary road',
+  secondary_link: 'a secondary road',
+  road: 'an unclassified road'
+};
+
+const describeRoad = (road: ApproachRoad): string =>
+  road.name ?? KIND_NOUN[road.kind] ?? 'an unnamed road';
+
+/**
+ * 150 m is roughly where a snap stops being "the road outside the spot" and
+ * starts being "somewhere else entirely".
+ */
+const GAP_WORTH_MENTIONING_KM = 0.15;
+
+/**
+ * The shortfall, said as precisely as what we know allows.
+ *
+ * Three different sentences, because three different things can be true, and
+ * flattening them into one costs a camper the only actionable part. The route
+ * ending on a named forest road with 400 m of two-track left is a different
+ * evening from the route ending on the wrong side of a ridge with nothing
+ * mapped anywhere near the pin.
+ */
+const gapWarning = (
+  gap: number,
+  approach: ApproachRoad | null,
+  nearestRoad: ApproachRoad | null
+): RouteWarning | null => {
+  if (gap <= GAP_WORTH_MENTIONING_KM) return null;
+
+  const severity: RouteWarning['severity'] = gap > 2 ? 'critical' : 'caution';
+  const stops = `The route stops ${readable(gap)} short of your spot.`;
+
+  // A road OSM knows about, closer than the route managed to get. Worth
+  // naming: it is the thing the camper can see on the basemap and is
+  // wondering about.
+  const closer =
+    nearestRoad && nearestRoad.distanceKm < gap - GAP_WORTH_MENTIONING_KM
+      ? nearestRoad
+      : null;
+
+  if (approach) {
+    const gate = approach.gated
+      ? ' OpenStreetMap records a gate or seasonal closure on it, so it may not be open.'
+      : '';
+    return {
+      key: 'gap',
+      severity,
+      message:
+        `${stops} It ends on ${describeRoad(approach)}, the closest road any ` +
+        `engine could actually route onto.${gate} The last stretch isn't on ` +
+        `a road anybody has mapped — check satellite imagery before you ` +
+        `commit to it.`
+    };
+  }
+
+  if (closer) {
+    return {
+      key: 'gap',
+      severity,
+      message:
+        `${stops} OpenStreetMap does show ${describeRoad(closer)} about ` +
+        `${readable(closer.distanceKm)} from the spot, but no routing engine ` +
+        `could find a way onto it — it may be gated, unconnected in the map ` +
+        `data, or simply not joined to anything driveable. Check satellite ` +
+        `imagery for that section before you commit.`
+    };
+  }
+
+  return {
+    key: 'gap',
+    severity,
+    message:
+      `${stops} The last stretch isn't on any road this router carries — ` +
+      `usually an unmapped two-track or a gated spur. Check satellite imagery ` +
+      `for that section before you commit to it.`
+  };
+};
+
 /**
  * Finish a route: measure the shortfall and say what the engine can't do.
  *
  * Every provider ends here, so the gap is measured identically for all of
- * them and no engine can quietly skip the disclosure.
+ * them and no engine can quietly skip the disclosure. The shortfall is always
+ * measured to `leg.pin` — the camper's coordinate — never to the waypoint a
+ * retry happened to aim at.
  */
 const finalise = (
-  body: Omit<RouteBody, 'gapToDestinationKm' | 'ok' | 'warnings'>,
-  to: [number, number],
-  rig: Rig,
+  body: Omit<RouteBody, 'gapToDestinationKm' | 'ok' | 'warnings' | 'approach' | 'nearestRoad'>,
+  leg: Leg,
   extraWarnings: RouteWarning[]
 ): RouteBody => {
   const end = body.geometry[body.geometry.length - 1];
-  const gap = end ? distanceKm(end[0], end[1], to[0], to[1]) : 0;
-  const warnings = [...extraWarnings, ...staticRigWarnings(rig)];
+  const gap = end ? distanceKm(end[0], end[1], leg.pin[0], leg.pin[1]) : 0;
+  const warnings = [...extraWarnings, ...staticRigWarnings(leg.rig)];
 
-  // 150 m is roughly where a snap stops being "the road outside" and starts
-  // being "somewhere else entirely".
-  if (gap > 0.15) {
-    warnings.unshift({
-      severity: gap > 2 ? 'critical' : 'caution',
-      message:
-        `The route stops ${gap < 1 ? `${Math.round(gap * 1000)} m` : `${gap.toFixed(1)} km`} ` +
-        `short of your spot. The last stretch isn't on any road this router ` +
-        `carries — usually an unmapped two-track or a gated spur. Check ` +
-        `satellite imagery for that section before you commit to it.`
-    });
-  }
+  // Approach details are unknown at this point — the pass that finds them runs
+  // after a route exists to judge. `describeApproach` fills them in.
+  const gapNote = gapWarning(gap, null, null);
+  if (gapNote) warnings.unshift(gapNote);
 
   return {
     ...body,
     ok: body.geometry.length >= 2,
     gapToDestinationKm: Number(gap.toFixed(2)),
+    approach: null,
+    nearestRoad: null,
     warnings
+  };
+};
+
+/**
+ * Attach what the road scan learned, and rewrite the shortfall sentence in
+ * light of it.
+ *
+ * The first attempt could only say "it stops 5.2 km short". Once the roads
+ * near the pin are known, the same route can say which road it ends on, or
+ * that a nearer one exists that nothing would route onto. Same number, an
+ * answer instead of a shrug.
+ */
+const describeApproach = (
+  body: RouteBody,
+  approach: ApproachRoad | null,
+  nearestRoad: ApproachRoad | null
+): RouteBody => {
+  const rest = body.warnings.filter((w) => w.key !== 'gap');
+  const gapNote = gapWarning(body.gapToDestinationKm, approach, nearestRoad);
+
+  return {
+    ...body,
+    approach,
+    nearestRoad,
+    warnings: gapNote ? [gapNote, ...rest] : rest
   };
 };
 
@@ -245,12 +423,8 @@ const userAgent = (): string =>
 /* 1. OpenRouteService — dimension aware, routes tracks                */
 /* ------------------------------------------------------------------ */
 
-const viaOrs = async (
-  from: [number, number],
-  to: [number, number],
-  rig: Rig,
-  apiKey: string
-): Promise<RouteBody | null> => {
+const viaOrs = async (leg: Leg, apiKey: string): Promise<RouteBody | null> => {
+  const { from, to, rig } = leg;
   const hasDimensions = Boolean(rig.heightCm || rig.widthCm || rig.lengthCm || rig.weightKg);
   // The HGV profile is the only one that honours dimensions, but it also
   // avoids a lot of the small roads a van is perfectly happy on. Only reach
@@ -280,7 +454,7 @@ const viaOrs = async (
       headers: { Authorization: apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     },
-    12_000
+    leg.budgetMs
   );
   if (!res?.ok) return null;
 
@@ -307,8 +481,7 @@ const viaOrs = async (
         ? 'Route calculated with your rig restrictions'
         : 'Route calculated including unpaved tracks'
     },
-    to,
-    rig,
+    leg,
     hasDimensions
       ? [{
           severity: 'info',
@@ -327,11 +500,8 @@ const viaOrs = async (
 const VALHALLA_URL =
   process.env.VALHALLA_URL || 'https://valhalla1.openstreetmap.de/route';
 
-const viaValhalla = async (
-  from: [number, number],
-  to: [number, number],
-  rig: Rig
-): Promise<RouteBody | null> => {
+const viaValhalla = async (leg: Leg): Promise<RouteBody | null> => {
+  const { from, to, rig } = leg;
   /**
    * `use_tracks: 1` is the whole reason this provider is here.
    *
@@ -374,7 +544,7 @@ const viaValhalla = async (
         units: 'kilometers'
       })
     },
-    15_000
+    leg.budgetMs
   );
   if (!res?.ok) return null;
 
@@ -405,8 +575,7 @@ const viaValhalla = async (
       routesTracks: true,
       message: 'Route includes unpaved tracks and forest roads'
     },
-    to,
-    rig,
+    leg,
     [{
       severity: dimensionAware ? 'info' : 'caution',
       message: dimensionAware
@@ -422,16 +591,13 @@ const viaValhalla = async (
 /* 3. OSRM — last resort, and it cannot see a forest road              */
 /* ------------------------------------------------------------------ */
 
-const viaOsrm = async (
-  from: [number, number],
-  to: [number, number],
-  rig: Rig
-): Promise<RouteBody | null> => {
+const viaOsrm = async (leg: Leg): Promise<RouteBody | null> => {
+  const { from, to } = leg;
   const res = await fetchWithTimeout(
     `https://router.project-osrm.org/route/v1/driving/` +
       `${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`,
     { headers: { 'User-Agent': userAgent() } },
-    12_000
+    leg.budgetMs
   );
   if (!res?.ok) return null;
 
@@ -454,8 +620,7 @@ const viaOsrm = async (
       routesTracks: false,
       message: 'Route calculated on paved and gravel roads only'
     },
-    to,
-    rig,
+    leg,
     [{
       severity: 'critical',
       message:
@@ -464,6 +629,141 @@ const viaOsrm = async (
         'the maintained road ends, well short of most dispersed sites.'
     }]
   );
+};
+
+/* ------------------------------------------------------------------ */
+/* The ladder, and the second opinion                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Tried in order, first success wins. A provider returning null means it was
+ * unreachable or gave nothing usable, never that there is no route.
+ */
+const routeVia = async (leg: Leg, orsKey: string | undefined): Promise<RouteBody | null> =>
+  (orsKey ? await viaOrs(leg, orsKey) : null) ??
+  (await viaValhalla(leg)) ??
+  (await viaOsrm(leg));
+
+/** Below this the route effectively arrived; there is nothing to improve. */
+const GAP_WORTH_RETRYING_KM = 0.25;
+
+/** A retry has to beat the first attempt by this much to be worth swapping in. */
+const IMPROVEMENT_KM = 0.1;
+
+/** At most this many roads get retried. Each one costs a round trip. */
+const MAX_CANDIDATES = 3;
+
+/**
+ * Don't trade a sane drive for a slightly better ending.
+ *
+ * Reaching the closest road sometimes means going round the whole massif. Up
+ * to this much extra is worth it — arriving matters more than an hour — but
+ * past it the original route is kept and the closer road is reported as
+ * information rather than silently driven to.
+ */
+const acceptableDetour = (original: number, candidate: number): boolean =>
+  candidate <= original * 2 + 25;
+
+/** Enough left in the request budget to be worth starting the second pass. */
+const SECOND_PASS_MS = 14_000;
+
+/**
+ * Try to end nearer the pin by aiming at roads OSM knows and the engine did
+ * not pick.
+ *
+ * Returns the body to send — possibly the original one, always with the road
+ * scan's findings attached. The scan is worth running even when no retry wins,
+ * because naming the road the route ends on, or the nearer one nothing could
+ * reach, is most of the value.
+ */
+const improveApproach = async (
+  first: RouteBody,
+  from: [number, number],
+  pin: [number, number],
+  rig: Rig,
+  orsKey: string | undefined,
+  msLeft: number
+): Promise<RouteBody> => {
+  // Look a little past where the route gave up: the useful road is usually
+  // between the pin and the shortfall, but not always on that line.
+  const scan = await findApproachRoads(
+    pin[0], pin[1],
+    Math.min(first.gapToDestinationKm + 1, 8),
+    Math.min(9_000, Math.max(4_000, msLeft - SECOND_PASS_MS + 4_000))
+  );
+
+  if (!scan.ok || scan.roads.length === 0) return describeApproach(first, null, null);
+
+  const nearestRoad = scan.roads[0];
+
+  // Only roads that would actually be an improvement are worth a round trip.
+  const candidates = scan.roads
+    .filter((road) => road.distanceKm < first.gapToDestinationKm - IMPROVEMENT_KM)
+    .slice(0, MAX_CANDIDATES);
+
+  if (candidates.length === 0) {
+    // The route already ends on or beside the closest thing OSM has. Say which
+    // road that is, if the ending is sitting on one.
+    const end = first.geometry[first.geometry.length - 1];
+    const endsOn = end
+      ? scan.roads.find((road) => distanceKm(end[0], end[1], road.lat, road.lon) < 0.1) ?? null
+      : null;
+    return describeApproach(first, endsOn, nearestRoad);
+  }
+
+  /**
+   * All at once, not one after another.
+   *
+   * The whole API is one serverless function with a thirty-second ceiling, and
+   * three sequential twelve-second attempts blow through it. In parallel the
+   * pass costs one attempt's worth of wall clock.
+   */
+  const budgetMs = Math.max(5_000, Math.min(11_000, msLeft - 3_000));
+  const attempts = await Promise.all(
+    candidates.map((road) =>
+      routeVia({ from, to: [road.lat, road.lon], pin, rig, budgetMs }, orsKey)
+        .then((body) => ({ body, road }))
+        .catch(() => ({ body: null, road }))
+    )
+  );
+
+  let best = first;
+  let bestRoad: ApproachRoad | null = null;
+
+  for (const { body, road } of attempts) {
+    if (!body?.ok) continue;
+    // Measured against the pin, like every other gap in this file.
+    if (body.gapToDestinationKm > best.gapToDestinationKm - IMPROVEMENT_KM) continue;
+    if (!acceptableDetour(first.distanceKm, body.distanceKm)) continue;
+    best = body;
+    bestRoad = road;
+  }
+
+  if (best === first) {
+    /**
+     * Nothing routable, but the road is still there.
+     *
+     * This is the case the whole file exists for: OSM draws a track four
+     * hundred metres from the pin, the basemap shows it, and no engine will
+     * touch it. `gapWarning` turns that into a sentence rather than leaving
+     * the camper to assume the app cannot see what they can.
+     */
+    return describeApproach(first, null, nearestRoad);
+  }
+
+  const detour = best.distanceKm - first.distanceKm;
+  if (detour > Math.max(8, first.distanceKm * 0.25)) {
+    best.warnings.push({
+      severity: 'info',
+      message:
+        `This route drives about ${Math.round(detour)} km further than the most ` +
+        `direct line. The closest road to your spot is reached from another ` +
+        `direction, and going that way ends ${readable(best.gapToDestinationKm)} ` +
+        `from the pin instead of ${readable(first.gapToDestinationKm)}.`
+    });
+  }
+
+  return describeApproach(best, bestRoad, nearestRoad);
 };
 
 /* ------------------------------------------------------------------ */
@@ -513,14 +813,19 @@ export const registerRouteRoutes = (app: Express): void => {
 
     const orsKey = process.env.ORS_API_KEY || process.env.VITE_ORS_API_KEY;
 
-    // Tried in order, first success wins. A provider returning null means it
-    // was unreachable or gave nothing usable, never that there is no route.
-    const body =
-      (orsKey ? await viaOrs(from, to, rig, orsKey) : null) ??
-      (await viaValhalla(from, to, rig)) ??
-      (await viaOsrm(from, to, rig));
+    /**
+     * The whole request has to finish inside one serverless invocation, so the
+     * budget is spent rather than assumed: the first attempt gets the long
+     * timeout, and the second pass only starts if there is genuinely time for
+     * it. Running out of clock costs a camper the entire route, which is a far
+     * worse outcome than an unimproved one.
+     */
+    const deadline = Date.now() + 25_000;
+    const msLeft = (): number => deadline - Date.now();
 
-    if (!body) {
+    const first = await routeVia({ from, to, pin: to, rig, budgetMs: 13_000 }, orsKey);
+
+    if (!first) {
       return res.json({
         ...EMPTY,
         message:
@@ -528,6 +833,15 @@ export const registerRouteRoutes = (app: Express): void => {
           'coordinates with an offline map app.'
       });
     }
+
+    // A route that arrived needs no second opinion, and neither does one with
+    // no time left to get one.
+    const body =
+      first.ok &&
+      first.gapToDestinationKm > GAP_WORTH_RETRYING_KM &&
+      msLeft() > SECOND_PASS_MS
+        ? await improveApproach(first, from, to, rig, orsKey, msLeft())
+        : first;
 
     if (cache.size >= CACHE_MAX_ENTRIES) {
       const oldest = cache.keys().next().value;

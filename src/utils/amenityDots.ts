@@ -328,13 +328,40 @@ export const conditionDots = (
     // The gap is its own chip because it is its own problem: the drive is
     // fine and then it simply stops, and that is the bit worth a second look.
     if (route.gapToDestinationKm > 0.15) {
+      /*
+       * Say WHERE it stops, not just how far short.
+       *
+       * "1.8 km short" invites the obvious objection \u2014 there is a road right
+       * there on the map, why can't it see it? Usually it can: the road is
+       * mapped, and either the route ends on it or nothing would route onto
+       * it. Both of those are answers. The bare number is not.
+       */
+      const road = route.approach;
+      const nearer = route.nearestRoad;
+      const roadName = (r: NonNullable<typeof road>): string =>
+        r.name ?? `an unnamed ${r.kind.replace(/_/g, ' ')}`;
+      const away = (km: number): string =>
+        km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+
+      const full = road
+        ? `The route ends on ${roadName(road)}, ` +
+          `${route.gapToDestinationKm.toFixed(1)} km from the spot` +
+          (road.gated ? ', and OpenStreetMap records a gate on it' : '') +
+          ' \u2014 tap to see the road and where it stops'
+        : nearer && nearer.distanceKm < route.gapToDestinationKm - 0.15
+          ? `The route ends ${route.gapToDestinationKm.toFixed(1)} km out. ` +
+            `OpenStreetMap does show ${roadName(nearer)} about ` +
+            `${away(nearer.distanceKm)} from the spot, but nothing would route ` +
+            'onto it \u2014 tap to see both'
+          : `The road this router carries ends ${route.gapToDestinationKm.toFixed(1)} km ` +
+            'from the spot \u2014 usually an unmapped track, sometimes nothing at all ' +
+            '\u2014 tap to see where it stops';
+
       dots.push({
         key: 'route-gap',
         color: COLOR.rough,
         label: `${route.gapToDestinationKm.toFixed(1)} km short`,
-        full: `The road this router carries ends ${route.gapToDestinationKm.toFixed(1)} km ` +
-          'from the spot \u2014 usually an unmapped track, sometimes nothing at all ' +
-          '\u2014 tap to see where it stops',
+        full,
         glyph: '\u{1F6A7}',
         tone: 'bad',
         action: 'gap'

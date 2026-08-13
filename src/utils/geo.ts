@@ -34,6 +34,75 @@ export const distanceKm = (
 export const coarsen = (value: number): number => Math.round(value * 100) / 100;
 
 /* ------------------------------------------------------------------ *
+ * How far to a LINE, not to its corners
+ * ------------------------------------------------------------------ */
+/**
+ * WHY THIS EXISTS.
+ *
+ * OpenStreetMap stores a road as the points a mapper clicked, and on a track
+ * that runs straight for two kilometres that can be two points. Measuring to
+ * the nearer of those answers "how far to the end of this road", which is a
+ * different question and, out here, a wildly different number: a road passing
+ * 350 m from a pin measures 2.2 km if you only look at its vertices.
+ *
+ * That error is the reason a road can sit plainly on the basemap beside a spot
+ * while the app calls a different one nearer. Projecting onto the SEGMENT
+ * gives the distance somebody would actually walk.
+ *
+ * Done in local metres — longitude scaled by cos(lat) — which over one segment
+ * of road is far more precise than anything downstream claims to be.
+ */
+export const nearestPointOnSegment = (
+  lat: number, lon: number,
+  aLat: number, aLon: number,
+  bLat: number, bLon: number
+): { lat: number; lon: number } => {
+  const kx = Math.cos(toRad(lat));
+  const ax = (aLon - lon) * kx;
+  const ay = aLat - lat;
+  const dx = (bLon - aLon) * kx;
+  const dy = bLat - aLat;
+  const lenSq = dx * dx + dy * dy;
+
+  // A zero-length segment is a duplicated vertex; either end will do.
+  if (lenSq === 0) return { lat: aLat, lon: aLon };
+
+  // Clamped to [0, 1] so a road that merely POINTS at the spot, without ever
+  // reaching it, is measured to its actual end rather than to a continuation
+  // that does not exist.
+  const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / lenSq));
+
+  return { lat: aLat + (bLat - aLat) * t, lon: aLon + (bLon - aLon) * t };
+};
+
+/**
+ * Distance in km from a point to the nearest point on a polyline, plus that
+ * point. `null` for a line with nothing in it.
+ */
+export const distanceToLineKm = (
+  lat: number, lon: number,
+  line: { lat: number; lon: number }[]
+): { km: number; lat: number; lon: number; index: number } | null => {
+  if (line.length === 0) return null;
+  if (line.length === 1) {
+    return { km: distanceKm(lat, lon, line[0].lat, line[0].lon), ...line[0], index: 0 };
+  }
+
+  let best: { km: number; lat: number; lon: number; index: number } | null = null;
+
+  for (let i = 0; i < line.length - 1; i += 1) {
+    const point = nearestPointOnSegment(
+      lat, lon, line[i].lat, line[i].lon, line[i + 1].lat, line[i + 1].lon
+    );
+    const km = distanceKm(lat, lon, point.lat, point.lon);
+    if (best && best.km <= km) continue;
+    best = { km, lat: point.lat, lon: point.lon, index: i };
+  }
+
+  return best;
+};
+
+/* ------------------------------------------------------------------ *
  * Point in polygon
  *
  * Used to answer "what land did the user just tap?" from the boundary

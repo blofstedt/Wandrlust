@@ -24,6 +24,31 @@ export interface RouteRequest {
 export interface RouteWarning {
   severity: 'info' | 'caution' | 'critical';
   message: string;
+  /** Set on the warnings the server rewrites as it learns more. */
+  key?: string;
+}
+
+/**
+ * A road OpenStreetMap has near the spot.
+ *
+ * This is what the map is drawing and the router refused to use — see
+ * `server/roadNetwork.ts`. It is a mapped line and a distance to it, and
+ * nothing else: not a way in, not passable, not legal to drive.
+ */
+export interface RouteApproach {
+  /** OSM's name or ref. Most tracks have neither, and null says so. */
+  name: string | null;
+  /** The raw OSM `highway` value — `track`, `service`, `unclassified`… */
+  kind: string;
+  /** The point on this road nearest the spot. */
+  lat: number;
+  lon: number;
+  /** From the spot to the nearest point on this road, in km. */
+  distanceKm: number;
+  /** The stretch of road near the spot, [lat, lon] pairs, for drawing. */
+  line: [number, number][];
+  /** OSM records a gate, permit or seasonal closure on this way. */
+  gated: boolean;
 }
 
 export interface RouteResult {
@@ -44,6 +69,22 @@ export interface RouteResult {
    * drawn as a dashed line that is explicitly not called a route.
    */
   gapToDestinationKm: number;
+  /**
+   * The mapped road the route ends on, when the server could identify one.
+   *
+   * Null means OpenStreetMap could not be reached, or there is nothing
+   * driveable mapped near the spot — never "the route ends nowhere".
+   */
+  approach: RouteApproach | null;
+  /**
+   * The nearest driveable road OSM knows about, whether or not any engine
+   * could route onto it — geometry included, so the map can draw it.
+   *
+   * When its distance is much smaller than `gapToDestinationKm`, the road you
+   * can see on the map is real and simply unroutable: gated, or unconnected in
+   * the map data. Null when the lookup did not run or failed.
+   */
+  nearestRoad: RouteApproach | null;
   warnings: RouteWarning[];
   message: string;
 }
@@ -57,6 +98,8 @@ export const EMPTY_ROUTE: RouteResult = {
   dimensionAware: false,
   routesTracks: false,
   gapToDestinationKm: 0,
+  approach: null,
+  nearestRoad: null,
   warnings: [],
   message: 'No route'
 };
@@ -86,7 +129,11 @@ export const calculateRoute = async (
   try {
     const res = await fetch(`/api/route?${params}`, { signal });
     if (!res.ok) return { ...EMPTY_ROUTE, message: `Routing failed (${res.status})` };
-    return (await res.json()) as RouteResult;
+
+    // Spread over the empty result so a response from an older deployment —
+    // one with no approach fields — reads as "we did not check" rather than
+    // arriving as undefined and blowing up a `.toFixed` three components away.
+    return { ...EMPTY_ROUTE, ...((await res.json()) as Partial<RouteResult>) };
   } catch {
     return { ...EMPTY_ROUTE, message: 'Routing unavailable offline' };
   }
