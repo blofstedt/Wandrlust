@@ -38,6 +38,21 @@
  * mid-session, so a running page can't end up half-updated. The app notices
  * the waiting worker and offers to apply it; if the user ignores that, it
  * activates on the next cold start anyway.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS WORKER TELLS CLIENTS WHICH BUILD IT IS
+ * ---------------------------------------------------------------------------
+ * `clients.claim()` below makes a newly activated worker take over every open
+ * page immediately. That is what we want for fetches, but it creates a page
+ * that is running OLD JavaScript while being served by the NEW worker — a
+ * half-updated state that looks, to the user, like the update they just saw
+ * applied has reverted.
+ *
+ * A page cannot detect this on its own: `controllerchange` only fires in a page
+ * that was already controlled, and it says nothing about WHICH build took over.
+ * So the worker answers `GET_BUILD_ID`, and announces `BUILD_ACTIVATED` when it
+ * takes over. The client compares that against the build it loaded under and
+ * reloads itself if they differ. See `src/services/updateService.ts`.
  */
 
 /**
@@ -90,14 +105,36 @@ self.addEventListener('activate', (event) => {
           .map((n) => caches.delete(n))
       );
       await self.clients.claim();
+
+      // Every page we just took over is still running the PREVIOUS build's
+      // JavaScript. Tell them which build now owns them so they can reload
+      // instead of sitting there looking like the update rolled back.
+      // `includeUncontrolled` matters: a page can still be mid-handover here.
+      const windows = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true
+      });
+      for (const client of windows) {
+        client.postMessage({ type: 'BUILD_ACTIVATED', buildId: BUILD_ID });
+      }
     })()
   );
 });
 
-/** The app asks for this when the user accepts an update. */
 self.addEventListener('message', (event) => {
-  if (event.data === 'SKIP_WAITING' || event.data?.type === 'SKIP_WAITING') {
+  const data = event.data;
+
+  // The app asks for this when the user accepts an update.
+  if (data === 'SKIP_WAITING' || data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
+  }
+
+  // "Which build are you?" — answered over the port the client sent, so the
+  // reply goes only to the page that asked.
+  if (data?.type === 'GET_BUILD_ID') {
+    const port = event.ports && event.ports[0];
+    if (port) port.postMessage({ type: 'BUILD_ID', buildId: BUILD_ID });
   }
 });
 
@@ -173,7 +210,7 @@ self.addEventListener('fetch', (event) => {
   // a hit is always correct and always beats a round trip.
   if (isTile(url)) {
     event.respondWith(
-      caches.match(request).then(
+      caches.match(request, { cacheName: TILE_CACHE }).then(
         (hit) =>
           hit ||
           fetch(request).then((response) => {
@@ -195,9 +232,13 @@ self.addEventListener('fetch', (event) => {
 
   // Content-hashed and therefore immutable: cache-first is safe here, and it
   // is what makes a cold start offline instant rather than impossible.
+  //
+  // Scoped to THIS worker's cache on purpose. Between a new worker installing
+  // and activating, two shell caches exist; an unscoped `caches.match` searches
+  // all of them and can hand this build an asset belonging to the other one.
   if (isAsset(url)) {
     event.respondWith(
-      caches.match(request).then(
+      caches.match(request, { cacheName: CACHE_NAME }).then(
         (hit) =>
           hit ||
           fetch(request).then((response) => {
@@ -214,9 +255,20 @@ self.addEventListener('fetch', (event) => {
 
   // The document. Network-first, always — this is what guarantees a deploy is
   // picked up rather than a stale shell being served forever.
+  //
+  // `cache: 'no-store'` is what makes that sentence true. A plain `fetch(request)`
+  // inherits the navigation's default cache mode, so the browser's own HTTP
+  // cache can answer it without ever touching the network — "network-first"
+  // silently becoming "whatever the HTTP cache last saw". The document is a few
+  // kilobytes and it is the one file that decides which build you get, so it is
+  // always worth fetching for real.
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request)
+      fetch(request.url, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Accept: 'text/html,application/xhtml+xml,*/*' }
+      })
         .then((response) => {
           if (response.ok) {
             const copy = response.clone();
@@ -224,7 +276,13 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(async () => (await caches.match('/')) || Response.error())
+        // Genuinely offline. Fall back to THIS build's shell — an unscoped
+        // match could return the other build's document, whose asset URLs are
+        // not in this cache, giving a page that half-loads and looks reverted.
+        .catch(
+          async () =>
+            (await caches.match('/', { cacheName: CACHE_NAME })) || Response.error()
+        )
     );
     return;
   }
@@ -232,7 +290,7 @@ self.addEventListener('fetch', (event) => {
   // Icons, the manifest, the legal markdown. Serve what we have and refresh
   // it quietly in the background.
   event.respondWith(
-    caches.match(request).then((hit) => {
+    caches.match(request, { cacheName: CACHE_NAME }).then((hit) => {
       const network = fetch(request)
         .then((response) => {
           if (response.ok) {
