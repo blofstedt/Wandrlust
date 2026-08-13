@@ -22,20 +22,42 @@ export const UpdatePrompt: React.FC = () => {
   const toastRef = useRef(toast);
   toastRef.current = toast;
 
-  const announced = useRef(false);
+  /**
+   * Which build we've already shown a toast for. Keyed rather than a plain
+   * boolean: a single `announced` flag meant that if the update failed to
+   * apply, or a second deploy landed during the session, the user was never
+   * told again — the app just sat there on the old version with no way back to
+   * the prompt.
+   */
+  const announcedFor = useRef<ServiceWorker | null>(null);
 
   useEffect(
     () =>
       watchForUpdates((registration) => {
-        if (announced.current) return;
-        announced.current = true;
+        const waiting = registration.waiting;
+        if (!waiting || announcedFor.current === waiting) return;
+        announcedFor.current = waiting;
 
         toastRef.current({
           kind: 'info',
           message: 'A new version of Wandrlust is ready',
           detail: 'Applied automatically next time you open the app.',
           duration: 0,
-          action: { label: 'Update now', onClick: () => applyUpdate(registration) }
+          action: {
+            label: 'Update now',
+            onClick: () => {
+              if (applyUpdate(registration)) return;
+              // The waiting worker went away before we could hand over to it.
+              // Say so instead of leaving a button that appears to do nothing.
+              announcedFor.current = null;
+              toastRef.current({
+                kind: 'info',
+                message: 'Reopen Wandrlust to finish updating',
+                detail: 'The update will apply on the next launch.',
+                duration: 6000
+              });
+            }
+          }
         });
       }),
     []
