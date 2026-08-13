@@ -185,9 +185,20 @@ export const hazardDots = (badges: AlertBadge[]): MarkerDot[] =>
     key: `hz-${b}`,
     color: BADGE_COLOR[b],
     label: WARNING_LABEL[b],
-    // "Where?" is the next question after "what?", and the answer is a shape
-    // an agency drew. Tapping goes and looks at it.
-    full: `${WARNING_LABEL[b]} warning covers this point — tap to see the area it covers`,
+    /*
+     * "Where?" is the next question after "what?", and the answer is a shape
+     * an agency drew. Tapping goes and looks at it.
+     *
+     * The caveat rides along here rather than in a bubble the tour used to pop
+     * over the map. It is the single most important thing to say about a
+     * warning area and the worst possible place to say it was on top of the
+     * area itself, for the two seconds a tour lasts. Here it is on the chip and
+     * in the card, both of which can be read at leisure.
+     */
+    full:
+      `${WARNING_LABEL[b]} warning covers this point — tap to see the area it ` +
+      'covers. The shading is the forecast region the warning was issued for, ' +
+      'not the edge of the weather.',
     glyph: WARNING_EMOJI[b],
     tone: 'bad' as const,
     urgent: true,

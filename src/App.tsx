@@ -93,6 +93,13 @@ export default function App() {
   const [selectedCampsite, setSelectedCampsite] = useState<Campsite | null>(null);
   const [detailModalSite, setDetailModalSite] = useState<Campsite | null>(null);
   const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
+  /**
+   * How much of the screen the spot drawer is covering, in pixels.
+   *
+   * Passed down to the map so it can lift the open pin into the strip of map
+   * left above the drawer, and put the view back when the drawer closes.
+   */
+  const [sheetPx, setSheetPx] = useState(0);
   const [isSearchingSites, setIsSearchingSites] = useState(false);
   const [outOfCoverageNotice, setOutOfCoverageNotice] = useState<string | null>(null);
   const [pinRefusal, setPinRefusal] = useState<'water' | 'outside_coverage' | null>(null);
@@ -1021,6 +1028,7 @@ export default function App() {
                     onOpenDirections={handleOpenDirections}
                     onClearDestination={handleClearDestination}
                     onAddSpotHere={handleAddSpotAt}
+                    bottomSheetPx={sheetSite ? sheetPx : 0}
                   />
                 </ErrorBoundary>
 
@@ -1236,6 +1244,7 @@ export default function App() {
         onClose={() => setSheetSite(null)}
         onToggleSave={handleToggleSave}
         onRequireAuth={() => setIsAuthOpen(true)}
+        onHeightChange={setSheetPx}
       />
 
       <HazardReportCard
