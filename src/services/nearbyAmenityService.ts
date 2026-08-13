@@ -308,7 +308,19 @@ export const fetchNearestDriveableRoad = async (
             name: tags.name?.trim() || tags.ref?.trim() || undefined,
             latitude: point.lat,
             longitude: point.lon,
-            distanceKm: Math.round(km * 100) / 100
+            distanceKm: Math.round(km * 100) / 100,
+            /**
+             * The whole way, kept rather than thrown away.
+             *
+             * We already asked for `out geom`, so the line costs nothing extra
+             * here and is the only way the map can SHOW the road when its chip
+             * is tapped. Capped at 400 vertices: a 40 km forest road is a lot
+             * of points to hang off a marker, and the shape is legible long
+             * before that.
+             */
+            line: (way.geometry ?? [])
+              .slice(0, 400)
+              .map((p) => [p.lat, p.lon] as [number, number])
           };
         }
       }

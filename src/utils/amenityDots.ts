@@ -92,11 +92,28 @@ export interface MarkerDot {
   /**
    * Something the chip DOES when tapped, rather than something it says.
    *
-   * `fires` takes the camera out to the fires the dot is counting, names each
-   * one, and comes back. Only set where the map has somewhere to take you:
-   * a chip with no action is a label and swallows no taps.
+   * EVERY CHIP IS TAPPABLE NOW. The ones listed here take the camera out to
+   * the thing they are talking about — the way the fire chip always did — and
+   * bring it back afterwards. A chip with no action still answers when tapped:
+   * it unfurls into its own full, hedged sentence, which on a phone was
+   * otherwise unreachable because it lived in a `title` attribute.
+   *
+   *   fires      the fires this chip is counting, named one at a time
+   *   alert      the warning area this point is standing in
+   *   land       the parcel the boundary layer matched under this point
+   *   road       the nearest mapped driveable track, drawn as a line
+   *   gap        where the router's road stops, and the walk left after it
+   *   directions hands off to the phone's own maps app — this is the car chip,
+   *              and it is why there is no longer a separate "Go" button
    */
-  action?: 'fires';
+  action?: 'fires' | 'alert' | 'land' | 'road' | 'gap' | 'directions';
+  /**
+   * Which warning family this chip stands for, on hazard chips only.
+   *
+   * Carried so the map can find the alert again when the chip is tapped,
+   * without re-deriving it from the label a human reads.
+   */
+  badge?: AlertBadge;
 }
 
 /**
@@ -168,9 +185,14 @@ export const hazardDots = (badges: AlertBadge[]): MarkerDot[] =>
     key: `hz-${b}`,
     color: BADGE_COLOR[b],
     label: WARNING_LABEL[b],
+    // "Where?" is the next question after "what?", and the answer is a shape
+    // an agency drew. Tapping goes and looks at it.
+    full: `${WARNING_LABEL[b]} warning covers this point — tap to see the area it covers`,
     glyph: WARNING_EMOJI[b],
     tone: 'bad' as const,
-    urgent: true
+    urgent: true,
+    action: 'alert' as const,
+    badge: b
   }));
 
 /**
@@ -293,9 +315,14 @@ export const conditionDots = (
       color: COLOR.route,
       label: `${drive} \u00B7 ${Math.round(route.distanceKm)} km`,
       full: `${drive} drive, ${Math.round(route.distanceKm)} km by road` +
-        (worst ? ` \u2014 ${worst.message}` : ''),
+        (worst ? ` \u2014 ${worst.message}` : '') +
+        ' \u2014 tap to start navigating',
       glyph: '\u{1F697}',
-      tone: 'neutral'
+      tone: 'neutral',
+      // THE CAR CHIP IS THE GO BUTTON NOW. It used to be a green button under
+      // the pin saying the same thing twice: this chip already knows how long
+      // the drive is, so it is the obvious thing to press to start it.
+      action: 'directions'
     });
 
     // The gap is its own chip because it is its own problem: the drive is
@@ -306,9 +333,11 @@ export const conditionDots = (
         color: COLOR.rough,
         label: `${route.gapToDestinationKm.toFixed(1)} km short`,
         full: `The road this router carries ends ${route.gapToDestinationKm.toFixed(1)} km ` +
-          'from the spot \u2014 usually an unmapped track, sometimes nothing at all',
+          'from the spot \u2014 usually an unmapped track, sometimes nothing at all ' +
+          '\u2014 tap to see where it stops',
         glyph: '\u{1F6A7}',
-        tone: 'bad'
+        tone: 'bad',
+        action: 'gap'
       });
     }
   }
@@ -365,9 +394,11 @@ export const conditionDots = (
       key: 'land',
       color: COLOR.land,
       label: land.name,
-      full: detail ? `${land.name} \u2014 ${detail}` : land.name,
+      full: (detail ? `${land.name} \u2014 ${detail}` : land.name) +
+        ' \u2014 tap to see the parcel this came from. Its edges are approximate.',
       glyph: '\u{1F6E1}\uFE0F',
-      tone: 'neutral'
+      tone: 'neutral',
+      action: 'land'
     });
 
     // A permit is a thing to go and get before leaving, so it is not allowed
@@ -402,8 +433,17 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
       key: 'road',
       color: rough ? COLOR.rough : COLOR.road,
       label: `${ROAD_ACCESS_LABEL[a.roadAccess]} road`,
+      /*
+       * Tapping goes and finds the nearest mapped track and draws it. The two
+       * facts are NOT the same fact and the wording keeps them apart: the
+       * rating is a camper's account of the drive in, the line is whatever
+       * OpenStreetMap has near the spot. They usually agree. They can disagree.
+       */
+      full: `A camper recorded the road in as ${ROAD_ACCESS_LABEL[a.roadAccess].toLowerCase()}` +
+        ' — tap to see the nearest track the map has',
       glyph: '🛣️',
-      tone: rough ? 'neutral' : 'good'
+      tone: rough ? 'neutral' : 'good',
+      action: 'road'
     });
   }
 
@@ -563,7 +603,10 @@ export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
             'impassable, or never widen into anywhere you could stop.',
           glyph: FACILITY_GLYPH.road,
           tone: 'good' as const,
-          facility: f
+          facility: f,
+          // Drawn as the line it is, rather than routed to as if it were a
+          // destination: nobody drives TO a road, they drive along it.
+          action: 'road' as const
         };
       }
 

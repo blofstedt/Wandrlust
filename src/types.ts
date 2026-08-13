@@ -381,6 +381,15 @@ export interface NearbyFacility {
   distanceKm: number;
   /** Undefined when nobody recorded whether it costs anything. */
   fee?: boolean;
+  /**
+   * The shape of the thing, when it HAS a shape — `[lat, lon]` pairs.
+   *
+   * Only the road carries one. A toilet is a point and a point is the whole
+   * truth about it, but "there is a road 300 m away" is a claim about a line,
+   * and tapping that chip takes the camera out to draw the line rather than
+   * dropping a dot on the single nearest vertex of it.
+   */
+  line?: [number, number][];
 }
 
 /* ------------------------------------------------------------------ */
