@@ -10,14 +10,18 @@ import {
 } from 'lucide-react';
 
 import type {
-  Campsite, CellCoverage, DestinationLand, MapDestination, MapTileLayer, NearbyFacility,
-  BeaconSpot
+  Campsite, CellCoverage, DestinationLand, FacilityKind, MapDestination, MapFacility,
+  MapTileLayer, NearbyFacility, BeaconSpot
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
 import { hazardReportStyle, reportStanding } from '../config/hazardReports';
 import { beaconTierStyle } from '../config/beacon';
-import { fetchHazardsNear, fetchBeaconSpotsNear, HazardRecord } from '../services/dataService';
+import { facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
+import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
+import {
+  fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
+} from '../services/dataService';
 import {
   fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains, BOUNDARY_STYLES,
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
@@ -41,9 +45,10 @@ import {
   FACILITY_COLOR
 } from '../utils/amenityDots';
 import {
-  fetchNearbyFacilities, fetchNearestDriveableRoad, ROAD_RADIUS_KM,
-  FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM
+  fetchNearbyFacilities, fetchNearestDriveableRoad, fetchFacilitiesInView, ROAD_RADIUS_KM,
+  FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM, FACILITY_MIN_ZOOM
 } from '../services/nearbyAmenityService';
+import type { FacilityLookupState } from './FacilityChips';
 import { calculateRoute, RouteResult } from '../services/routingService';
 import { directionsAppName, openDirections } from '../utils/handoff';
 import {
@@ -856,7 +861,11 @@ const withNavChip = (dots: MarkerDot[]): MarkerDot[] => {
  * pin is what the chips cannot be: everything recorded about the spot, and
  * the way out.
  */
-type PinAction = { action: 'add' | 'details' | 'point'; label: string; glyph: string };
+type PinAction = {
+  action: 'add' | 'add-facility' | 'details' | 'point';
+  label: string;
+  glyph: string;
+};
 
 const pinActionsRow = (secondary: PinAction[] = []): string =>
   `<div class="wl-pin-actions">` +
@@ -888,6 +897,41 @@ const INFO_ACTION_SPOT: PinAction = {
 };
 const INFO_ACTION_POINT: PinAction = {
   action: 'point', label: 'What is known about this point', glyph: INFO_SVG
+};
+
+/**
+ * The tap-and-a-half glyph, for logging a toilet you are looking at.
+ *
+ * A SECOND BUTTON RATHER THAN A CHOICE INSIDE THE FIRST. "Add spot here" means
+ * somewhere to sleep, and a camper reaching for it while meaning "there's a
+ * dump station here" would have had to submit a campsite and then correct it.
+ * Two things, two buttons, and the labels say which is which.
+ *
+ * This is also the only way to mark a facility you are NOT standing at, which
+ * is the common case — you notice the tap on the way past and log it that
+ * evening. Everything else in the app takes its coordinate from the phone's
+ * own fix, which cannot describe the place you drove past this morning.
+ */
+const FACILITY_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">' +
+  '<path d="M7 3v8M7 21v-6M17 3v5a3 3 0 0 1-3 3h-1M17 21v-8"/>' +
+  '<path d="M4.5 7h5"/></svg>';
+
+/**
+ * The "nothing switched on" default, hoisted to module scope.
+ *
+ * A `= []` default in the destructure allocates a NEW array on every render,
+ * and the facility layer's effect depends on that array's identity — so an
+ * omitted prop would re-run the effect, clear the layer and refetch forever.
+ * One frozen instance means the identity is stable.
+ */
+const NO_FACILITY_KINDS: FacilityKind[] = [];
+
+const ADD_FACILITY_ACTION: PinAction = {
+  action: 'add-facility',
+  label: 'Add a toilet, tap or dump station here',
+  glyph: FACILITY_SVG
 };
 
 const buildCampsiteIcon = (
@@ -1027,6 +1071,42 @@ const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
 };
 
 /**
+ * A facility pin — a toilet, a tap, a dump station.
+ *
+ * SMALLER AND QUIETER THAN A CAMPSITE PIN, on purpose. These arrive in
+ * handfuls when a chip is switched on, and at campsite weight a dozen of them
+ * would bury the thing the camper is actually choosing between. A facility is
+ * a detail of a trip, not the trip.
+ *
+ * FILL CARRIES THE EVIDENCE, exactly as it does on the dots above a pin and
+ * on Beacon's ladder. Solid means more than one source says so — it is in
+ * OpenStreetMap, or another camper agreed. A dashed hollow ring means one
+ * person said so and nobody has confirmed it yet. Neither is a promise, and
+ * the card the pin opens says which one it is in words.
+ */
+const buildFacilityIcon = (facility: MapFacility): L.DivIcon => {
+  const color = FACILITY_COLOR[facility.kind];
+  const { hollow } = facilitySourceStyle(facility.fromOsm, facility.confirmations);
+  const size = 24;
+
+  const html =
+    `<div style="width:${size}px;height:${size}px;border-radius:9999px;` +
+    `border:2px ${hollow ? 'dashed' : 'solid'} ${color};` +
+    `background:${hollow ? 'rgba(15,23,42,0.85)' : color};` +
+    `display:flex;align-items:center;justify-content:center;box-sizing:border-box;` +
+    `font-size:11px;line-height:1;box-shadow:0 1px 4px rgba(2,6,23,0.6);">` +
+    `<span aria-hidden="true">${FACILITY_GLYPH[facility.kind]}</span>` +
+    `</div>`;
+
+  return L.divIcon({
+    className: 'facility-marker',
+    html,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2]
+  });
+};
+
+/**
  * The pin the user drops by tapping.
  *
  * A teardrop rather than a circle, so at a glance it never reads as one of the
@@ -1056,7 +1136,10 @@ const buildDestinationIcon = (
           // button — reading about a place and submitting it are different
           // things, and the plus is the only way to do the second.
           INFO_ACTION_POINT,
-          ...(addLabel ? [{ action: 'add' as const, label: addLabel, glyph: PLUS_SVG }] : [])
+          ...(addLabel ? [{ action: 'add' as const, label: addLabel, glyph: PLUS_SVG }] : []),
+          // Always offered, unlike "Add spot here" — a facility is worth
+          // marking on ground you would never sleep on, which is most ground.
+          ADD_FACILITY_ACTION
         ])}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
@@ -1318,6 +1401,15 @@ interface MapComponentProps {
   onClearDestination: () => void;
   /** Starts a submission at the dropped pin. Bare ground only. */
   onAddSpotHere: (lat: number, lon: number) => void;
+  /**
+   * Starts a facility submission at the dropped pin.
+   *
+   * Separate from `onAddSpotHere` because they are separate things: one is
+   * somewhere to sleep, the other is a toilet. Offered on any point, not just
+   * bare ground inside public land — a dump station in a town car park is
+   * worth marking and is nowhere you would camp.
+   */
+  onAddFacilityHere?: (lat: number, lon: number) => void;
   /** Fired when the user taps bare map. Carries the land under the tap. */
   onDropDestination: (lat: number, lon: number, land?: DestinationLand) => void;
   /**
@@ -1350,6 +1442,26 @@ interface MapComponentProps {
    * exactly the pin somebody else is about to drive to.
    */
   beaconRefreshKey?: number;
+
+  /**
+   * The facility layers switched on from the chips under the search.
+   *
+   * Empty means the layer is off entirely and nothing is fetched — this is
+   * the common case, and Overpass is not asked a question nobody posed.
+   */
+  facilityKinds?: FacilityKind[];
+  /** How the current lookup is going, so the chip row can say so in words. */
+  onFacilityStateChange?: (state: FacilityLookupState) => void;
+  /** Fired when a facility pin is tapped. */
+  onSelectFacility?: (facility: MapFacility) => void;
+  /**
+   * Bumped to force the facility layer to refetch.
+   *
+   * Same reason `beaconRefreshKey` exists: without it a camper adds a toilet,
+   * watches the sheet say "added", and sees nothing appear until they pan far
+   * enough to trip a reload. The pin was in the database the whole time.
+   */
+  facilityRefreshKey?: number;
 }
 
 /**
@@ -1398,11 +1510,13 @@ const clusterView = (map: L.Map): L.Map =>
 
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation, weather,
-  coverage, route, onOpenDirections, onClearDestination, onAddSpotHere,
+  coverage, route, onOpenDirections, onClearDestination, onAddSpotHere, onAddFacilityHere,
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert,
-  onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0
+  onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0,
+  facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
+  facilityRefreshKey = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1474,6 +1588,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
   const beaconLayerRef = useRef<L.LayerGroup | null>(null);
+  /**
+   * The facility PINS from the chips under the search.
+   *
+   * Not to be confused with `facilityLayerRef` above, which is the single
+   * route line drawn to one facility the camper tapped a chip for. Different
+   * lifetimes, different panes, and conflating them would have the search
+   * chips wipe the route line every time the map moved.
+   */
+  const facilityPinsLayerRef = useRef<L.LayerGroup | null>(null);
   /** State / province boundary lines. Cleared when `showAdmin1` is off. */
   const admin1LayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
@@ -1499,12 +1622,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   alertTapRef.current = onSelectAlert;
   const beaconTapRef = useRef(onSelectBeaconSpot);
   beaconTapRef.current = onSelectBeaconSpot;
+  const facilityTapRef = useRef(onSelectFacility);
+  facilityTapRef.current = onSelectFacility;
+  const facilityStateRef = useRef(onFacilityStateChange);
+  facilityStateRef.current = onFacilityStateChange;
   const directionsRef = useRef(onOpenDirections);
   directionsRef.current = onOpenDirections;
   const clearDestinationRef = useRef(onClearDestination);
   clearDestinationRef.current = onClearDestination;
   const addSpotRef = useRef(onAddSpotHere);
   addSpotRef.current = onAddSpotHere;
+  const addFacilityRef = useRef(onAddFacilityHere);
+  addFacilityRef.current = onAddFacilityHere;
   const detailRef = useRef(onOpenDetailModal);
   detailRef.current = onOpenDetailModal;
   const destinationRef = useRef(destination);
@@ -2851,6 +2980,165 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       clear();
     };
   }, [isMapReady, isOfflineMode, beaconRefreshKey]);
+
+  /* ------------------------------------------------------------------ */
+  /* Facilities in view — the chips under the search                     */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Every toilet / tap / dump station on screen, from BOTH sources.
+   *
+   * Same shape as the Beacon layer above — own pane, debounced on `moveend`,
+   * cleared at the start of the effect AND in the cleanup, because Leaflet
+   * layers stack up invisibly otherwise. Three things differ.
+   *
+   * ONE: IT IS OFF BY DEFAULT AND ASKS NOTHING WHEN IT IS OFF. No chip on,
+   * no Overpass query. This is the only layer on the map the camper switches
+   * on deliberately, so it must cost nothing when they have not.
+   *
+   * TWO: A ZOOM FLOOR. Overpass will not answer a continent-sized box, and a
+   * toilet drawn at country zoom is a dot in the wrong state anyway. Below
+   * `FACILITY_MIN_ZOOM` the layer clears and reports `zoomed-out`, so the
+   * chip row says "zoom in to look for toilets" — the one thing it must never
+   * do is come back empty and let that read as "there are none".
+   *
+   * THREE: NO "ALREADY LOADED NEARBY" SHORT-CIRCUIT. The Beacon layer skips a
+   * refetch while the centre has moved under 10 km, which it can afford
+   * because it asks about a radius round that centre. The query here IS the
+   * viewport box, so a zoom change with the centre unmoved is a completely
+   * different question — and Leaflet fires `moveend` after a zoom, so the
+   * reload happens without a second listener.
+   *
+   * Every outcome is reported upward — loading, failed, empty, capped — and
+   * the wording lives in `FacilityChips`. An empty result is an absence of
+   * survey, never an absence of facilities.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!facilityPinsLayerRef.current) return;
+      try { map.removeLayer(facilityPinsLayerRef.current); } catch { /* detached */ }
+      facilityPinsLayerRef.current = null;
+    };
+
+    // Nothing switched on, or no map to draw on: spend nothing.
+    if (facilityKinds.length === 0 || isOfflineMode) {
+      clear();
+      facilityStateRef.current?.({ status: 'idle' });
+      return;
+    }
+
+    if (!map.getPane('facilityPane')) {
+      map.createPane('facilityPane');
+      const pane = map.getPane('facilityPane');
+      // Below the Beacon spots (600) and the hazard reports (610). A toilet
+      // is the least urgent thing on this map and must never cover a washout.
+      if (pane) pane.style.zIndex = '580';
+    }
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+
+    const render = (facilities: MapFacility[]) => {
+      clear();
+      if (facilities.length === 0) return;
+
+      const group = L.layerGroup([], { pane: 'facilityPane' });
+      facilities.forEach((facility) => {
+        // Same rule as the alerts, fires, reports and beacons: no icon on the
+        // grey outside the supported region.
+        if (!isWithinCoverage(facility.latitude, facility.longitude)) return;
+
+        const { meaning } = facilitySourceStyle(facility.fromOsm, facility.confirmations);
+        const marker = L.marker([facility.latitude, facility.longitude], {
+          pane: 'facilityPane',
+          icon: buildFacilityIcon(facility),
+          // The tooltip carries where it came from, not just what it is —
+          // hovering an unconfirmed pin says so before the camper drives to it.
+          title: `${facility.name ?? FACILITY_LABEL[facility.kind]} — ${meaning}`,
+          riseOnHover: true
+        });
+        marker.on('click', () => facilityTapRef.current?.(facility));
+        group.addLayer(marker);
+      });
+
+      facilityPinsLayerRef.current = group.addTo(map);
+    };
+
+    const run = async () => {
+      if (map.getZoom() < FACILITY_MIN_ZOOM) {
+        clear();
+        facilityStateRef.current?.({ status: 'zoomed-out' });
+        return;
+      }
+
+      facilityStateRef.current?.({ status: 'loading' });
+
+      const bounds = map.getBounds();
+      const centre = map.getCenter();
+      /* The radius that covers the corners of the box, so the camper-added
+         layer answers for everything the OpenStreetMap box does. Capped,
+         because at low zoom the corner distance grows faster than usefulness. */
+      const radiusKm = Math.min(
+        map.distance(centre, bounds.getNorthEast()) / 1000,
+        200
+      );
+
+      const [osm, pois] = await Promise.all([
+        fetchFacilitiesInView(
+          {
+            south: bounds.getSouth(), west: bounds.getWest(),
+            north: bounds.getNorth(), east: bounds.getEast()
+          },
+          facilityKinds
+        ),
+        fetchPoisNear(centre.lat, centre.lng, Math.max(radiusKm, 1))
+      ]);
+      if (cancelled) return;
+
+      /* Camper rows arrive as every kind at once — the RPC does not filter by
+         kind, because a camper toggling a second chip should not pay for a
+         second round trip. Narrowing happens here. */
+      const wanted = new Set(facilityKinds);
+      const camperAdded = pois
+        .map((row) => {
+          const kind = facilityKindFromDb(row.kind);
+          return kind && wanted.has(kind) ? poiToMapFacility(row, kind) : null;
+        })
+        .filter((f): f is MapFacility => f !== null)
+        .filter((f) => bounds.contains(L.latLng(f.latitude, f.longitude)));
+
+      const merged = mergeFacilities(camperAdded, osm.facilities);
+      render(merged);
+
+      /* `ok: false` means every Overpass mirror failed. Camper-added pins may
+         still have arrived, and they are still drawn — but the row must say
+         "couldn't check" rather than counting them as the whole answer. */
+      facilityStateRef.current?.(
+        osm.ok
+          ? { status: 'done', count: merged.length, truncated: osm.truncated }
+          : { status: 'failed' }
+      );
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 700);
+    };
+
+    load();
+    map.on('moveend', load);
+
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend', load);
+      clear();
+    };
+    // `facilityKinds` is an array from a parent render. App memoises it, so
+    // this depends on the identity rather than on a join of the contents.
+  }, [isMapReady, isOfflineMode, facilityKinds, facilityRefreshKey]);
 
   /* ------------------------------------------------------------------ */
   /* The dropped destination pin                                         */
@@ -4915,6 +5203,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         case 'add': {
           const at = readPointRef.current;
           if (at) addSpotRef.current(at.lat, at.lon);
+          return;
+        }
+        case 'add-facility': {
+          const at = readPointRef.current;
+          if (at) addFacilityRef.current?.(at.lat, at.lon);
           return;
         }
         default: break;

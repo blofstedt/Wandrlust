@@ -198,6 +198,25 @@ await safeRegister(
 );
 
 /**
+ * Spot context: the name a coordinate gets, and the facilities within 5 km.
+ *
+ * MISSING FOR THE SAME REASON FIRES AND ALERTS WERE, which is the third time
+ * this file has grown a route that `server.ts` had and it did not. Every
+ * deployed request to /api/spot/context fell through to the 404 below, the
+ * client turned that into `poiLookupFailed: true` exactly as designed, and the
+ * report sheet therefore asked every camper about showers, restrooms and fuel
+ * that OpenStreetMap could already have answered — while naming their spot
+ * "Spot at 38.573, -109.549" instead of "Manti-La Sal National Forest Pullout".
+ *
+ * A pure Overpass proxy with an in-memory cache; no keys, nothing to configure.
+ */
+await safeRegister(
+  'spot',
+  () => import('../server/spotRoutes.js'),
+  'registerSpotRoutes'
+);
+
+/**
  * Which feature owns a path, so a route that failed to LOAD can say so.
  *
  * THIS EXISTS BECAUSE OF A BUG THAT HID FOR A WHOLE RELEASE. `weatherRoutes`
@@ -218,7 +237,8 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/push/, 'push'],
   [/^\/api\/alerts/, 'alerts'],
   [/^\/api\/fires/, 'fires'],
-  [/^\/api\/beacon/, 'beacon']
+  [/^\/api\/beacon/, 'beacon'],
+  [/^\/api\/spot/, 'spot']
 ];
 
 // Unknown /api routes return JSON, not the SPA's HTML. A typo in a fetch URL

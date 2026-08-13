@@ -4,9 +4,10 @@ import {
   Download, PlusCircle, BookOpen, X, Crosshair, MoreHorizontal,
   Users, Activity, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
 } from 'lucide-react';
-import type { AppView, FilterState, GeocodedLocation } from '../types';
+import type { AppView, FacilityKind, FilterState, GeocodedLocation } from '../types';
 import { geocodeSearch } from '../services/nominatim';
 import { UserMenu } from './UserMenu';
+import { FacilityChips, type FacilityLookupState } from './FacilityChips';
 
 interface NavbarProps {
   activeView: AppView;
@@ -30,6 +31,20 @@ interface NavbarProps {
   nearbyCount?: number;
   activeFilterCount?: number;
   savedCount: number;
+
+  /**
+   * The facility layers switched on, and how the last lookup went.
+   *
+   * These are a DISPLAY layer, not a filter: they add pins to the map and
+   * never change which campsites are shown. That is why they live beside the
+   * search rather than inside the filter drawer — "find me a toilet" and
+   * "only show me campsites with a toilet" are different questions, and
+   * putting them in the same place taught people the wrong one.
+   */
+  facilityKinds: FacilityKind[];
+  onToggleFacilityKind: (kind: FacilityKind) => void;
+  onClearFacilityKinds: () => void;
+  facilityState: FacilityLookupState;
 }
 
 /**
@@ -56,7 +71,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLocateUser, isLocating, isOfflineMode, setIsOfflineMode, onOpenOfflineManager,
   onOpenAddModal, onOpenGuideModal, onOpenFilterDrawer, onOpenAuth, onOpenPresence,
   onOpenScout, onOpenSettings, onOpenReport, nearbyCount = 0,
-  activeFilterCount = 0, savedCount
+  activeFilterCount = 0, savedCount,
+  facilityKinds, onToggleFacilityKind, onClearFacilityKinds, facilityState
 }) => {
   const [query, setQuery] = useState(filterState.searchQuery ?? '');
   const [suggestions, setSuggestions] = useState<GeocodedLocation[]>([]);
@@ -276,8 +292,15 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Search */}
-        <div className="relative w-full md:max-w-md" ref={dropdownRef}>
+        {/*
+          Search, and under it the facility row.
+
+          They share a wrapper so the chips sit at exactly the width of the
+          input on every breakpoint — the geocode dropdown below is absolutely
+          positioned, so nothing else has ever occupied this space.
+        */}
+        <div className="w-full md:max-w-md space-y-1.5">
+        <div className="relative w-full" ref={dropdownRef}>
           <div className="relative flex items-center">
             <Search
               className={`absolute left-3.5 w-4 h-4 pointer-events-none ${
@@ -347,6 +370,21 @@ export const Navbar: React.FC<NavbarProps> = ({
               </ul>
             </div>
           )}
+        </div>
+
+        {/*
+          Only on the map. On the list and the saved views there is no map for
+          a pin to land on, so a row of buttons that quietly does nothing would
+          be worse than no row at all.
+        */}
+        {activeView === 'map' && (
+          <FacilityChips
+            active={facilityKinds}
+            onToggle={onToggleFacilityKind}
+            onClearAll={onClearFacilityKinds}
+            state={facilityState}
+          />
+        )}
         </div>
 
         {/*

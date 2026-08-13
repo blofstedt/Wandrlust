@@ -366,13 +366,21 @@ export interface GuideSection {
  * behaves identically once found — a chip on the pin, framed and routed when
  * tapped — but it is never a claim that the road reaches a place to camp.
  */
-export type NearbyFacilityKind =
-  | 'toilet' | 'shower' | 'water' | 'dump' | 'fuel' | 'groceries'
-  | 'trail' | 'fishing' | 'boat' | 'waste' | 'road';
+export type FacilityKind =
+  | 'toilet' | 'water' | 'shower' | 'dump' | 'fuel' | 'propane' | 'laundry'
+  | 'groceries' | 'waste' | 'air'
+  | 'trail' | 'fishing' | 'boat' | 'road';
+
+/**
+ * The old name, kept because it reads better at the call sites that ask about
+ * ONE spot's surroundings ("the nearby facilities") than a bare `FacilityKind`
+ * would. Same type; `config/facilities.ts` is the table behind both.
+ */
+export type NearbyFacilityKind = FacilityKind;
 
 export interface NearbyFacility {
   id: string;
-  kind: NearbyFacilityKind;
+  kind: FacilityKind;
   /** Only when OSM carries one; most pit toilets are nameless. */
   name?: string;
   latitude: number;
@@ -390,6 +398,44 @@ export interface NearbyFacility {
    * dropping a dot on the single nearest vertex of it.
    */
   line?: [number, number][];
+}
+
+/**
+ * A facility as the MAP LAYER draws it, from either source or both.
+ *
+ * `NearbyFacility` above answers "what is near this one spot", is capped at
+ * the nearest of each kind, and only ever comes from OpenStreetMap. This is
+ * the other question — "show me every toilet in view" — and it has to carry
+ * where each one came from, because that is the difference between "a
+ * volunteer mapped this years ago" and "a camper stood here last week".
+ *
+ * A pin can be BOTH. When an OSM node and a camper's submission of the same
+ * kind land within a few dozen metres, they are drawn as one pin wearing both
+ * facts rather than as two pins claiming two toilets — but neither record is
+ * thrown away, because hiding a real one is the failure that matters. Same
+ * doctrine as `utils/mergeCampsites.ts`.
+ */
+export interface MapFacility {
+  /** Stable across refetches: the OSM id, or the `pois` row id. */
+  id: string;
+  kind: FacilityKind;
+  /** Absent on most pit toilets, and that is normal. Never invented. */
+  name?: string;
+  latitude: number;
+  longitude: number;
+  /** Somebody mapped this in OpenStreetMap. */
+  fromOsm: boolean;
+  /** The `pois` row id, when a camper added or confirmed it. */
+  poiId?: string;
+  /**
+   * Net confirmations from campers. Zero means one person said so and nobody
+   * has agreed yet — NOT that anybody disagreed.
+   */
+  confirmations: number;
+  /** Whatever the camper typed. Never generated. */
+  detail?: string;
+  /** Undefined when nobody recorded whether it costs anything. */
+  fee?: boolean;
 }
 
 /* ------------------------------------------------------------------ */

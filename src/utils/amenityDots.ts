@@ -7,7 +7,7 @@ import {
   ROAD_ACCESS_LABEL, SHADE_LABEL, TOILET_LABEL, WATER_LABEL, bestCellSignal
 } from './amenities';
 import { AlertBadge, BADGE_COLOR, WARNING_EMOJI, WARNING_LABEL } from './alertOverlay';
-import { FACILITY_GLYPH, FACILITY_LABEL } from '../services/nearbyAmenityService';
+import { FACILITY_COLOR, FACILITY_GLYPH, FACILITY_LABEL } from '../config/facilities';
 import { isUnderControl, type ActiveFire } from '../services/fireService';
 
 /**
@@ -153,20 +153,14 @@ const COLOR = {
   land: '#A78BFA'
 } as const;
 
-/** The colour a nearby facility's dot and its route line are drawn in. */
-export const FACILITY_COLOR: Record<NearbyFacilityKind, string> = {
-  toilet: COLOR.toilet,
-  shower: COLOR.shower,
-  water: COLOR.water,
-  dump: COLOR.dump,
-  fuel: COLOR.fuel,
-  groceries: COLOR.groceries,
-  trail: COLOR.trail,
-  fishing: COLOR.fishing,
-  boat: COLOR.boat,
-  waste: COLOR.waste,
-  road: COLOR.road
-};
+/**
+ * The colour a facility's dot, its pin and its route line are drawn in.
+ *
+ * Re-exported from `config/facilities.ts` rather than restated here. It used
+ * to be a second copy keyed off `COLOR` above, which meant a facility could
+ * be violet as a chip on a pin and something else as a pin of its own.
+ */
+export { FACILITY_COLOR };
 
 /** "300 m" under a kilometre, "1.4 km" over it. */
 const nearDistance = (km: number): string =>
