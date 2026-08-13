@@ -32,8 +32,8 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  AlertBadge, LocalizedKind, BADGE_COLOR, CLOUD_TINT, badgesForPoint, alertBadge, WARNING_LABEL,
-  WARNING_EMOJI, localizedPinHtml, centroidBadgeHtml, isGeneralized, cloudPieces,
+  AlertBadge, LocalizedKind, BADGE_COLOR, CLOUD_TINT, badgesForPoint, alertBadge,
+  WARNING_EMOJI, localizedPinHtml, isGeneralized, cloudPieces,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
@@ -137,15 +137,6 @@ const CAMPSITE_FOCUS_ZOOM = 14;
  * it stops, because there isn't one.
  */
 const CLOUD_BLUR_PX = 11;
-
-/**
- * Most badges one weather family may put on the map at once.
- *
- * One per contiguous warned area, so on a normal day this is one or two. The
- * cap is only there so a feed that returns hundreds of scattered fragments
- * cannot flood the DOM with markers.
- */
-const MAX_WARNING_BADGES = 8;
 
 /**
  * The frame the map lives in — the box the user pans inside and cannot
@@ -828,19 +819,39 @@ const withNavChip = (dots: MarkerDot[]): MarkerDot[] => {
  * pin is what the chips cannot be: everything recorded about the spot, and
  * the way out.
  */
-const pinActionsRow = (
-  secondary?: { action: 'add' | 'details'; label: string; glyph: string }
-): string =>
+type PinAction = { action: 'add' | 'details' | 'point'; label: string; glyph: string };
+
+const pinActionsRow = (secondary: PinAction[] = []): string =>
   `<div class="wl-pin-actions">` +
-  (secondary
-    ? `<span class="wl-pin-action" data-action="${secondary.action}" ` +
-      `role="button" tabindex="0" title="${escapeHtml(secondary.label)}" ` +
-      `aria-label="${escapeHtml(secondary.label)}">${secondary.glyph}</span>`
-    : '') +
+  secondary
+    .map(
+      (s) =>
+        `<span class="wl-pin-action" data-action="${s.action}" ` +
+        `role="button" tabindex="0" title="${escapeHtml(s.label)}" ` +
+        `aria-label="${escapeHtml(s.label)}">${s.glyph}</span>`
+    )
+    .join('') +
   `<span class="wl-pin-action wl-pin-action-close" data-action="close" ` +
   `role="button" tabindex="0" aria-label="Close this spot" title="Close">` +
   `${CLOSE_SVG}</span>` +
   `</div>`;
+
+/**
+ * The "more info" button, on both kinds of pin.
+ *
+ * A submitted spot's version opens everything recorded about it. A dropped
+ * pin has no record to open — it is bare ground somebody tapped — so its
+ * version opens what the map DOES know about that point: it unfurls every
+ * chip on the pin at once, each into its own full, hedged sentence. Same
+ * glyph, same place under the pin, same promise ("tell me more about this"),
+ * answered from whatever there is to answer with.
+ */
+const INFO_ACTION_SPOT: PinAction = {
+  action: 'details', label: 'Everything recorded about this spot', glyph: INFO_SVG
+};
+const INFO_ACTION_POINT: PinAction = {
+  action: 'point', label: 'What is known about this point', glyph: INFO_SVG
+};
 
 const buildCampsiteIcon = (
   isSelected: boolean,
@@ -867,11 +878,7 @@ const buildCampsiteIcon = (
       `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
       `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
-      `${isSelected
-        ? pinActionsRow({
-          action: 'details', label: 'Everything recorded about this spot', glyph: INFO_SVG
-        })
-        : ''}` +
+      `${isSelected ? pinActionsRow([INFO_ACTION_SPOT]) : ''}` +
       `</div>`,
     iconSize: [32, 32],
     iconAnchor: [16, 16]
@@ -1006,9 +1013,14 @@ const buildDestinationIcon = (
     html: `
       <div class="relative flex items-end justify-center anim-pin-drop">
         ${dots.length ? expandedDotRow(dots, animateKeys) : ''}
-        ${pinActionsRow(
-          addLabel ? { action: 'add', label: addLabel, glyph: PLUS_SVG } : undefined
-        )}
+        ${pinActionsRow([
+          // The same "i" a submitted spot wears, for the same reason: this is
+          // where you ask the pin to say more. "Add spot here" keeps its own
+          // button — reading about a place and submitting it are different
+          // things, and the plus is the only way to do the second.
+          INFO_ACTION_POINT,
+          ...(addLabel ? [{ action: 'add' as const, label: addLabel, glyph: PLUS_SVG }] : [])
+        ])}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
           <path d="M12 1c5.2 0 9.4 4.2 9.4 9.4 0 6.8-9.4 20.6-9.4 20.6S2.6 17.2 2.6 10.4C2.6 5.2 6.8 1 12 1z"
@@ -3179,12 +3191,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       areas.forEach((familyAlerts, badge) => {
         const pieces = cloudPieces(familyAlerts.map((a) => a.geometry));
         if (pieces.length === 0) return;
-        // The wash is the light tint; the badge in the middle of it keeps the
-        // saturated family colour. See CLOUD_TINT for why they differ.
+        // The wash is the light tint; anything that names this family keeps the
+        // saturated colour. See CLOUD_TINT for why they differ.
         const color = CLOUD_TINT[badge] ?? BADGE_COLOR[badge];
-        const largest = pieces[0].extent;
 
-        pieces.forEach((piece, index) => {
+        pieces.forEach((piece) => {
           /**
            * ONE PATH PER AREA, and the softening is already in the geometry.
            *
@@ -3221,42 +3232,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           );
 
           /**
-           * ONE BADGE PER AREA. This is the "two icons on one area" bug.
+           * NO BADGE ON A GENERALIZED AREA. There used to be one per area.
            *
-           * Slivers get the cloud but not a badge, and the count is capped, so
-           * a pathological response cannot flood the map with markers. A badge
-           * outside coverage is refused outright — the cloud under it is
-           * already greyed out by the mask, and a chip out there would be the
-           * app claiming to know something about ground it has said it does not
-           * cover.
+           * A cloud covers ground the camper is not asking about. Pinning an
+           * icon in the middle of it put a tappable thing on the map at a
+           * point that means nothing — the centre of a smoke area is not
+           * where the smoke is, it is just the middle of some forecast
+           * regions — and it competed for the thumb with the campsite pins,
+           * which are what the map is actually for.
+           *
+           * These warnings are read where they matter instead: as a chip on
+           * the pin you are standing on, whether that is a submitted spot or
+           * a pin you dropped on bare ground. That chip knows the warning
+           * covers THAT point, which the badge never did, and tapping it runs
+           * the tour that goes and shows you the area. See `runAlertTour`.
            */
-          if (index >= MAX_WARNING_BADGES || piece.extent < largest * 0.04) return;
-          const point = piece.labelPoint;
-          if (!isWithinCoverage(point[0], point[1])) return;
-
-          // Which alert this badge opens: the one whose own geometry covers the
-          // spot the badge sits on. Several warnings of a family can share one
-          // area, and the badge over Alberta should open Alberta's.
-          const owner =
-            familyAlerts.find(
-              (a) => a.geometry && pointInGeometry(point[0], point[1], a.geometry)
-            ) ?? familyAlerts[0];
-          const marker = L.marker(point, {
-            pane: 'warningIconPane',
-            icon: L.divIcon({
-              className: 'weather-warning-badge',
-              html: centroidBadgeHtml(badge),
-              iconSize: [44, 44],
-              iconAnchor: [22, 22]
-            }),
-            title:
-              familyAlerts.length > 1
-                ? `${WARNING_LABEL[badge]} — ${familyAlerts.length} active warnings here, tap for details`
-                : `${owner.event} — tap for details`,
-            riseOnHover: true
-          });
-          marker.on('click', () => alertTapRef.current?.(owner));
-          group.addLayer(marker);
         });
       });
 
@@ -4074,6 +4064,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       label: (at: L.LatLngExpression, opts: {
         title: string; detail?: string; glyph: string; color: string;
       }) => void;
+      /**
+       * Run a glowing tracker once around the outside of these bounds.
+       * Resolves when the lap finishes.
+       */
+      orbit: (bounds: L.LatLngBounds, color: string, ms: number) => Promise<void>;
       /** False once this tour has been torn down — check it after every await. */
       alive: () => boolean;
     }) => Promise<void>
@@ -4118,6 +4113,64 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             });
           } catch { /* degenerate bounds */ }
         },
+        /**
+         * A LITTLE NEON TRACKER, ONCE AROUND THE THING YOU ASKED ABOUT.
+         *
+         * A cloud has no edge to point at, so there is no outline to flash to
+         * say "this one". The tracker says it with motion instead: a glowing
+         * dot with a short comet tail runs a single lap around the outside of
+         * the area in the warning's own colour, and is gone.
+         *
+         * It runs OUTSIDE the shape, on a plain ellipse, and it is deliberate
+         * that the path is obviously not the shape of the cloud. A ring that
+         * hugged the cloud's edge would read as the boundary of the weather,
+         * which is the one thing nothing on this map is allowed to imply.
+         *
+         * Under `prefers-reduced-motion` there is no lap: the tracker simply
+         * appears at the top of the ring, holds, and goes.
+         */
+        orbit: (bounds, color, ms) => new Promise<void>((resolve) => {
+          const centre = bounds.getCenter();
+          // A margin outside the shape, and a floor so a point-sized area
+          // still gets a visible ring rather than a stationary dot.
+          const rLat = Math.max((bounds.getNorth() - bounds.getSouth()) / 2, 0.02) * 1.18;
+          const rLon = Math.max((bounds.getEast() - bounds.getWest()) / 2, 0.02) * 1.18;
+          const at = (theta: number): L.LatLngExpression =>
+            [centre.lat + rLat * Math.sin(theta), centre.lng + rLon * Math.cos(theta)];
+
+          const start = -Math.PI / 2;
+          const tracker = L.marker(at(start), {
+            icon: L.divIcon({
+              className: 'wl-tour-tracker',
+              html: `<span class="wl-tour-tracker-dot" style="--wl-tracker-color:${color}"></span>`,
+              iconSize: [16, 16],
+              iconAnchor: [8, 8]
+            }),
+            interactive: false,
+            zIndexOffset: 900
+          }).addTo(layer);
+
+          const done = () => {
+            try { tracker.remove(); } catch { /* layer already torn down */ }
+            resolve();
+          };
+
+          if (reduced) { setTimeout(done, ms / 3); return; }
+
+          const t0 = performance.now();
+          const step = (now: number) => {
+            // The tour was torn down under us — stop moving a dead marker.
+            if (tourLayerRef.current !== layer) { done(); return; }
+            const p = Math.min(1, (now - t0) / ms);
+            // Ease the lap so it leaves and arrives softly instead of
+            // snapping into motion at full speed.
+            const eased = p < 0.5 ? 2 * p * p : 1 - ((-2 * p + 2) ** 2) / 2;
+            try { tracker.setLatLng(at(start + eased * Math.PI * 2)); } catch { done(); return; }
+            if (p >= 1) { done(); return; }
+            requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        }),
         label: (at, { title, detail, glyph, color }) => {
           L.marker(at, {
             icon: L.divIcon({
@@ -4219,17 +4272,42 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!covering.length) return;
 
     const color = BADGE_COLOR[badge];
+
+    /**
+     * The SAME cloud that is on the map, lifted a little.
+     *
+     * This used to draw the raw alert geometry with a crisp 2.5px stroke —
+     * the surveyed parcel edges, hard, directly on top of the soft cloud
+     * already drawn for the same warning. Two different shapes for one
+     * warning, and the sharper of the two was the one this app is least
+     * entitled to draw. `cloudPieces` gives back exactly the shape the cloud
+     * layer uses, so the tour highlights the thing you are looking at instead
+     * of contradicting it.
+     */
+    const pieces = cloudPieces(covering.map((a) => a.geometry));
+    if (!pieces.length) return;
+
     const shapes = L.geoJSON(
       {
         type: 'FeatureCollection',
-        features: covering.map((a) => ({
-          type: 'Feature', properties: {}, geometry: a.geometry
-        }))
+        features: pieces.map((p) => p.shape)
       } as any,
-      { style: { color, weight: 2.5, opacity: 0.95, fillColor: color, fillOpacity: 0.28 } }
+      {
+        style: {
+          color,
+          weight: 10,
+          opacity: 0.35,
+          fillColor: color,
+          fillOpacity: 0.26,
+          fillRule: 'nonzero',
+          lineJoin: 'round',
+          lineCap: 'round'
+        }
+      } as RenderedGeoJSONOptions
     ).addTo(t.layer);
 
-    t.frame(shapes.getBounds(), 9);
+    const bounds = shapes.getBounds();
+    t.frame(bounds, 9);
     await t.wait(700);
     if (!t.alive()) return;
 
@@ -4239,13 +4317,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       detail: covering.length > 1
         ? `${covering.length} warnings cover this point`
         : lead.areaSource === 'zone'
-          ? 'This outline is the forecast region, not the edge of the weather'
+          ? 'The shading is the forecast region, not the edge of the weather'
           : lead.areaDescription || 'Issued for the shaded area',
       glyph: WARNING_EMOJI[badge],
       color
     });
 
-    await t.wait(2400);
+    await t.orbit(bounds, color, 2200);
+    await t.wait(600);
   }), [runTour]);
 
   /**
@@ -4518,6 +4597,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }, 5200));
   }, []);
 
+  /**
+   * The "i" under a dropped pin: say everything at once.
+   *
+   * A submitted spot's "i" opens the record somebody filed. A dropped pin has
+   * no record, so the honest equivalent is the full version of every chip it
+   * is already wearing — the whole hedged sentence behind each short label,
+   * which on a phone is otherwise unreachable because the long form lives in
+   * a `title` attribute.
+   *
+   * Chips that are already open are left open rather than being toggled shut,
+   * so tapping "i" always ends with everything showing rather than flipping
+   * half the row closed. They put themselves away on the same timer a single
+   * tap uses.
+   */
+  const unfurlPin = useCallback((button: HTMLElement) => {
+    const wrap = button.closest('.destination-marker, .wl-pin-wrap') ?? button.parentElement;
+    const chips = wrap?.querySelectorAll<HTMLElement>('.wl-chip');
+    if (!chips?.length) return;
+    chips.forEach((chip) => {
+      if (chip.classList.contains('wl-chip-open')) return;
+      unfurlChip(chip);
+    });
+  }, [unfurlChip]);
+
   useEffect(() => () => {
     unfurlTimersRef.current.forEach((id) => window.clearTimeout(id));
     unfurlTimersRef.current.clear();
@@ -4578,6 +4681,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         case 'details':
           if (destinationRef.current?.campsite) detailRef.current(destinationRef.current.campsite);
           return;
+        case 'point': unfurlPin(hit); return;
         case 'add': {
           const at = readPointRef.current;
           if (at) addSpotRef.current(at.lat, at.lon);
@@ -4595,7 +4699,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     container.addEventListener('click', onTap, true);
     return () => container.removeEventListener('click', onTap, true);
   }, [
-    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour, unfurlChip
+    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour, unfurlChip,
+    unfurlPin
   ]);
 
   /**
