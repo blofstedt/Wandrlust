@@ -99,8 +99,9 @@ export const AlertCard: React.FC<AlertCardProps> = ({ alert, onClose }) => {
         */}
         {alert.areaSource === 'zone' && (
           <p className="px-3.5 pb-2 text-[10px] text-slate-500 leading-snug">
-            The shaded area is the forecast region this warning names, not a
-            measured edge of the hazard itself.
+            The soft area on the map is roughly the forecast region this warning
+            names. Its edge is drawn blurred because nobody measured one — the
+            hazard is not spread evenly inside it and does not stop at the line.
           </p>
         )}
 
