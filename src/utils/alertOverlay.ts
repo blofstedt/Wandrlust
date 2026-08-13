@@ -1235,6 +1235,73 @@ const groupTouchingPolygons = (boxes: [number, number, number, number][]): numbe
 };
 
 /**
+ * How close two parcel edges must be to count as the same edge.
+ *
+ * ~110 m. Forecast zones are coarse administrative polygons digitised
+ * independently, so two that abut on the ground rarely share bit-exact
+ * vertices. The same tolerance the boundary layer dissolves Crown land with.
+ */
+const CLOUD_DISSOLVE_SNAP = 1e-3;
+
+/**
+ * ONE OUTLINE FOR A WHOLE WARNED AREA, WITH THE INTERNAL SEAMS GONE.
+ *
+ * This is the fix for the clouds falling apart as you zoom in.
+ *
+ * The parcels of an area were being softened ONE AT A TIME and handed to the
+ * map as a MultiPolygon of separate shapes. Rounding a corner pulls the shape
+ * back from it, so every place four forecast zones met, the four rounded
+ * corners retreated from the junction and opened a little concave diamond of
+ * bare ground between them. Zoomed out those gaps are sub-pixel and the pane
+ * blur smears over them, so the area really does read as one cloud. Zoom in
+ * and every one of them opens up: the "cloud" becomes a lattice of blobs with
+ * holes punched at every junction — the exact mesh of forecast parcels the
+ * cloud rendering exists to get rid of, reappearing at the zoom where the
+ * camper is actually reading the map.
+ *
+ * Scaling each parcel up to bridge its neighbours would only paper over it,
+ * and would claim ground nobody warned about. The real answer is to stop
+ * having internal edges at all: cancel the edges the parcels share, chain what
+ * is left into the outline of the whole area, and soften THAT. A merged
+ * outline has no internal corners, so there is nothing left for the rounding
+ * to open up, at any zoom.
+ *
+ * Returns null when the merge cannot be trusted, and the caller falls back to
+ * per-parcel softening. The chaining can fail to close a ring on messy input
+ * and close it with a straight chord instead, which would silently move the
+ * edge of a warning — so the result is only accepted if it still covers about
+ * the same ground the parcels did. Seams are a cosmetic problem; a warning
+ * drawn over the wrong ground is not, and it is the one we refuse to trade for.
+ */
+const mergedOutline = (
+  parcels: [number, number][][][]
+): [number, number][][] | null => {
+  // A single parcel has no seams to remove.
+  if (parcels.length < 2) return null;
+
+  const segments = dissolveSegments(
+    parcels.map((rings) => ({ geometry: { type: 'Polygon', coordinates: rings } })),
+    CLOUD_DISSOLVE_SNAP
+  );
+  if (segments.length === 0) return null;
+
+  const rings = segmentsToRings(segments, CLOUD_DISSOLVE_SNAP)
+    .filter((ring) => ring.length >= 4);
+  if (rings.length === 0) return null;
+
+  const before = parcels.reduce(
+    (sum, rings2) => sum + Math.abs(ringSignedArea(rings2[0])), 0
+  );
+  const after = rings.reduce((sum, ring) => sum + Math.abs(ringSignedArea(ring)), 0);
+  // Under-covering means the chain closed across the shape and cut a piece of
+  // the warning off. Wildly over-covering means it wrapped something it should
+  // not have. Either way the parcels themselves are the safer drawing.
+  if (!(before > 0) || after < before * 0.9 || after > before * 1.3) return null;
+
+  return rings;
+};
+
+/**
  * THE WARNED AREA, AS CLOUDS.
  *
  * Hand it every geometry of one family in view; get back one piece per
@@ -1246,6 +1313,10 @@ const groupTouchingPolygons = (boxes: [number, number, number, number][]): numbe
  * map stroked it — which drew the forecast regions' surveyed edges as a hard
  * line, and drew a straight chord across the shape whenever the dissolve could
  * not close a chain. Both were the map claiming to know an edge it does not.
+ *
+ * The dissolve is still used, but only to decide WHAT SHAPE TO SOFTEN — the
+ * merged outline goes straight into `cloudRing` and is never stroked as an
+ * edge. See `mergedOutline`.
  */
 export const cloudPieces = (geometries: unknown[]): CloudPiece[] => {
   const polygons: [number, number][][][] = [];
@@ -1270,7 +1341,20 @@ export const cloudPieces = (geometries: unknown[]): CloudPiece[] => {
 
   return groupTouchingPolygons(boxes)
     .map((indices) => {
-      const softened = indices.map((i) => polygons[i].map((ring) => cloudRing(ring)));
+      const parcels = indices.map((i) => polygons[i]);
+      const merged = mergedOutline(parcels);
+      /**
+       * Soften the merged outline when there is one, the parcels when there
+       * is not. A merged result can be several rings — genuinely separate
+       * blocks the grouping pulled together, or a hole the area curves
+       * around. Each becomes its own softened polygon, which fills a hole
+       * rather than preserving it: over-shading a warning is the direction
+       * this app is allowed to be wrong in, and a softened hole was never a
+       * real edge anyway.
+       */
+      const softened = merged
+        ? merged.map((ring) => [cloudRing(ring)])
+        : parcels.map((rings) => rings.map((ring) => cloudRing(ring)));
 
       // The badge goes in the BIGGEST parcel of the area, at a point proven to
       // be inside it — never at the average of several parcels, which for a
