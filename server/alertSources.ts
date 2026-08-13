@@ -626,6 +626,21 @@ export const fetchNwsActiveAlerts = async (): Promise<NormalisedAlert[] | null> 
   return Array.isArray(data.features) ? data.features.map(nwsAlertToHazard) : [];
 };
 
+/**
+ * ECCC alerts around a point.
+ *
+ * ---------------------------------------------------------------------------
+ * THE LIMIT IS ROWS, NOT ALERTS, AND 50 WAS NOT ENOUGH.
+ * ---------------------------------------------------------------------------
+ *
+ * Environment Canada publishes one row PER AFFECTED FORECAST REGION, so a
+ * single smoke advisory over British Columbia can be forty rows on its own. At
+ * `limit=50` a busy fire-season viewport hit the ceiling constantly, and which
+ * alerts made the cut depended on where the box happened to sit — so panning a
+ * few kilometres swapped one warning out for another and the smoke area
+ * appeared and disappeared as you dragged. The nationwide ingest already asks
+ * for 500; the viewport query has no reason to ask for less.
+ */
 export const fetchEcccAlerts = async (
   lat: number, lon: number, spanDeg = 1.0
 ): Promise<NormalisedAlert[]> => {
@@ -634,7 +649,7 @@ export const fetchEcccAlerts = async (
     (lon + spanDeg).toFixed(3), (lat + spanDeg).toFixed(3)
   ].join(',');
 
-  const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=50&f=json`);
+  const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=500&f=json`);
   if (!Array.isArray(data?.features)) return [];
   return mergeZoneAlerts(
     data.features.filter((f: any) => !isEndedEcccAlert(f)).map(ecccAlertToHazard)

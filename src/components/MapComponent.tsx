@@ -32,8 +32,8 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  AlertBadge, LocalizedKind, BADGE_COLOR, badgesForPoint, alertBadge, WARNING_LABEL,
-  WARNING_EMOJI, localizedPinHtml, centroidBadgeHtml, isGeneralized, mergeAreas,
+  AlertBadge, LocalizedKind, BADGE_COLOR, CLOUD_TINT, badgesForPoint, alertBadge, WARNING_LABEL,
+  WARNING_EMOJI, localizedPinHtml, centroidBadgeHtml, isGeneralized, cloudPieces,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
@@ -127,6 +127,25 @@ const UNDERLAY_NATIVE_ZOOM = 8;
  * Never zooms OUT to reach it — see the effect that uses it.
  */
 const CAMPSITE_FOCUS_ZOOM = 14;
+
+/**
+ * How soft the edge of a weather cloud is, in screen pixels.
+ *
+ * Enough that no straight survey line from a forecast region survives, not so
+ * much that the area stops having a shape. A camper has to be able to tell
+ * roughly where the smoke is and must NOT be able to point at the line where
+ * it stops, because there isn't one.
+ */
+const CLOUD_BLUR_PX = 11;
+
+/**
+ * Most badges one weather family may put on the map at once.
+ *
+ * One per contiguous warned area, so on a normal day this is one or two. The
+ * cap is only there so a feed that returns hundreds of scattered fragments
+ * cannot flood the DOM with markers.
+ */
+const MAX_WARNING_BADGES = 8;
 
 /**
  * The frame the map lives in — the box the user pans inside and cannot
@@ -1371,6 +1390,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /** State / province boundary lines. Cleared when `showAdmin1` is off. */
   const admin1LayerRef = useRef<L.LayerGroup | null>(null);
   const warningRendererRef = useRef<L.Renderer | null>(null);
+  /** Canvas the generalized-warning clouds are painted on. See CLOUD_BLUR_PX. */
+  const warningCloudRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
 
   /**
@@ -2955,16 +2976,44 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
 
-    // TWO panes, because the two kinds of event behave differently.
+    // THREE panes, because the three things behave differently.
     //
-    //   warningPane      — every generalized area: its fill and its outer
-    //                      stroke. pointer-events:none, so a tap on the area
-    //                      falls straight through to the map (which drops a spot
-    //                      and shows the warning in the sheet).
-    //   warningIconPane  — the things you tap: localized fire/flood pins and the
-    //                      one badge at the centre of each generalized area.
-    //                      Above the campsite pins, because a flame on the map is
+    //   warningCloudPane — the generalized areas, and nothing else. Blurred as
+    //                      a whole (see CLOUD_BLUR_PX), which is what turns a
+    //                      shape with an edge into a cloud without one.
+    //   warningPane      — the faint hint of the area behind a localized fire
+    //                      or flood pin. NOT blurred: that shape is one the
+    //                      agency actually drew around the event.
+    //   warningIconPane  — the things you tap: localized fire/flood pins and
+    //                      the one badge on each generalized area. Sharp, above
+    //                      the campsite pins, because a flame on the map is
     //                      worth more than the pin beneath it.
+    //
+    // All three are pointer-events:none for the areas, so a tap on a cloud
+    // falls straight through to the map (which drops a spot and shows the
+    // warning in the sheet).
+    if (!map.getPane('warningCloudPane')) {
+      map.createPane('warningCloudPane');
+      const cpane = map.getPane('warningCloudPane');
+      if (cpane) {
+        cpane.style.zIndex = '455';
+        cpane.style.pointerEvents = 'none';
+        /**
+         * THE CLOUD'S SOFT EDGE, IN ONE LINE.
+         *
+         * A compositor blur over the whole pane, exactly how the boundary
+         * layer draws its uncertainty band. The alternative — feathering each
+         * shape with a stack of translucent strokes — costs a path per ring
+         * per step, and an SVG filter per shape was what made the old cloud
+         * layer re-rasterise the map on every frame of a pan. This is one
+         * GPU-composited blur for every warning on screen.
+         *
+         * Screen-space on purpose: the softness is a statement about how well
+         * the edge is known, which does not sharpen up because you zoomed in.
+         */
+        cpane.style.filter = `blur(${CLOUD_BLUR_PX}px)`;
+      }
+    }
     if (!map.getPane('warningPane')) {
       map.createPane('warningPane');
       const wpane = map.getPane('warningPane');
@@ -2979,32 +3028,43 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (ipane) ipane.style.zIndex = '616';
     }
 
-    // One SVG renderer for the areas. SVG rather than the boundary canvas
-    // because the fill and the outline have to be two separate paths sharing a
-    // pane, and SVG gives per-path control the canvas renderer does not.
+    // One SVG renderer for the localized areas, which are small, few, and want
+    // a crisp thin stroke.
     if (!warningRendererRef.current) {
       warningRendererRef.current = L.svg({ pane: 'warningPane', padding: 0.3 });
     }
-    // Non-null: just created above if missing.
+    // Canvas for the clouds: they are big, they are blurred, and a canvas is
+    // what the pane-level blur is cheap on — the GPU blurs one bitmap rather
+    // than re-rasterising a tree of paths.
+    if (!warningCloudRendererRef.current) {
+      warningCloudRendererRef.current = L.canvas({ pane: 'warningCloudPane', padding: 0.3 });
+    }
+    // Non-null: both just created above if missing.
     const warningRenderer = warningRendererRef.current!;
+    const cloudRenderer = warningCloudRendererRef.current!;
 
     /**
-     * WHAT USED TO BE HERE, AND WHY IT IS GONE.
+     * WHAT USED TO BE HERE, AND WHY IT IS GONE. TWICE.
      *
-     * Every area event was drawn as a soft "cloud": a per-polygon radial
-     * gradient built by hand into the renderer's <defs>, a per-path CSS blur to
-     * feather the edge, and the family's glyph TILED across the whole shape.
-     * Three separate mechanisms, all of them re-measured on every zoom because
-     * the gradients lived in projected screen space.
+     * FIRST VERSION. Every area event was a "cloud" built three ways at once:
+     * a per-polygon radial gradient hand-written into the renderer's <defs>, a
+     * per-path CSS blur, and the family's glyph TILED across the whole shape.
+     * All of it re-measured on every zoom, because the gradients lived in
+     * projected screen space. The tiling is what put a dozen lightning bolts
+     * across one valley for a single storm warning.
      *
-     * It cost a lot and read badly. The tiling is what put a dozen lightning
-     * bolts across one valley for a single storm warning, and the blur made the
-     * satellite imagery under a warning unreadable without making the warning's
-     * own extent any clearer.
+     * SECOND VERSION. A flat fill with a crisp 2px outer stroke on the merged
+     * forecast zones. Cheap and legible, and wrong in the one way this app
+     * cannot be wrong: it drew the SURVEYED EDGES of administrative regions as
+     * the edge of the weather. Smoke does not stop at a township line. The
+     * outline also had to be reconstructed from cancelled segments, and when
+     * that reconstruction could not close a chain it drew a straight line
+     * across the shape and left the rest over as a second phantom polygon.
      *
-     * An area is now a flat semi-transparent fill with a solid outer stroke,
-     * and one badge at the middle. No gradients, no defs, no blur, nothing to
-     * re-measure on zoom.
+     * NOW. The zones are grouped into contiguous areas, simplified, rounded
+     * off, and drawn on a canvas in a pane with one compositor blur over it.
+     * No gradients, no defs, no tiling, no reconstructed outline, and no edge
+     * anywhere that claims to be where the hazard stops.
      */
 
     let cancelled = false;
@@ -3040,45 +3100,58 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * products once per forecast zone, so a single rainfall warning arrives as
      * eleven adjacent blocks. Drawn as they come, that is a honeycomb of
      * internal lines with an icon in every cell — which is what the map looked
-     * like before, and it read as eleven separate warnings. `mergeAreas`
-     * cancels the shared edges so only the outer boundary is stroked, and the
-     * badge count drops from one-per-zone to one-per-region.
+     * like before, and it read as eleven separate warnings. `cloudPieces`
+     * groups the blocks that touch into ONE area, softens their surveyed edges
+     * away, and hands back one badge position per area.
      *
      * Alerts the feed gave no geometry for are counted, never pinned to a guess.
      *
-     * NOTHING IS DRAWN OUTSIDE THE COVERAGE AREA. The weather feeds are wider
+     * NOTHING IS CLAIMED OUTSIDE THE COVERAGE AREA. The weather feeds are wider
      * than this app is: a viewport near the border pulls back marine zones out
-     * in the Atlantic, Mexican border counties, whole territories north of
-     * 60°. Those were landing as icons and areas on top of the grey — a
-     * "Storm" chip floating over an area the map has just finished saying it
-     * knows nothing about. The alert is still in `hazards` state, so a pin near
-     * the line still reports it in its card; it just doesn't get drawn out
-     * there.
+     * in the Atlantic, Mexican border counties, whole territories north of 60°.
+     * The grey coverage mask sits above every layer on the map (pane 645), so
+     * anything reaching past the line is greyed out with the ground it covers.
+     * Pins and badges are additionally refused out there, because a chip
+     * floating over an area the map has just said it knows nothing about reads
+     * as knowledge.
      */
     const render = (alerts: HazardAlert[]) => {
-      const placeable = alerts.filter(
-        (a) =>
-          Array.isArray(a.centroid) &&
-          a.geometry &&
-          isWithinCoverage(a.centroid[0], a.centroid[1])
-      );
-
       const group = L.layerGroup([]);
-      /** Generalized alerts, gathered by family so each family merges as one. */
+      /** Generalized alerts, gathered by family so each family clouds as one. */
       const areas = new Map<AlertBadge, HazardAlert[]>();
 
-      placeable.forEach((alert) => {
+      alerts.forEach((alert) => {
+        if (!alert.geometry) return;
         const badge = alertBadge(alert);
         if (!badge) return;
 
         if (isGeneralized(badge)) {
+          /**
+           * NO CENTROID TEST HERE, and that is the fix for the smoke area that
+           * blinked in and out over BC.
+           *
+           * A generalized area is drawn from its geometry, so it never needed
+           * the alert's single centroid — but it was being filtered on it, and
+           * that centroid is the average of the biggest region in the alert.
+           * For a coastal BC region it lands in the Pacific, outside coverage,
+           * and the whole warning was dropped. Worse, Environment Canada
+           * publishes one row per region and the server merges the rows it can
+           * see, so panning changed which regions were merged, which moved the
+           * centroid, which flipped the test — the area appeared and vanished
+           * as you dragged.
+           */
           const bucket = areas.get(badge);
           if (bucket) bucket.push(alert);
           else areas.set(badge, [alert]);
           return;
         }
 
-        // A localized event: the area is context, the pin is the event.
+        // A localized event: the area is context, the pin is the event. A pin
+        // IS a point, so this one does need a placeable centroid.
+        if (
+          !Array.isArray(alert.centroid) ||
+          !isWithinCoverage(alert.centroid[0], alert.centroid[1])
+        ) return;
         const color = BADGE_COLOR[badge];
         group.addLayer(
           L.geoJSON(alert.geometry as any, {
@@ -3104,50 +3177,66 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       });
 
       areas.forEach((familyAlerts, badge) => {
-        const merged = mergeAreas(familyAlerts.map((a) => a.geometry));
-        if (!merged) return;
-        const color = BADGE_COLOR[badge];
+        const pieces = cloudPieces(familyAlerts.map((a) => a.geometry));
+        if (pieces.length === 0) return;
+        // The wash is the light tint; the badge in the middle of it keeps the
+        // saturated family colour. See CLOUD_TINT for why they differ.
+        const color = CLOUD_TINT[badge] ?? BADGE_COLOR[badge];
+        const largest = pieces[0].extent;
 
-        // The fill: every source piece in one path. `nonzero` is what makes two
-        // overlapping warnings of the same family read as one mass instead of
-        // punching a hole where they cross — Leaflet's default is `evenodd`,
-        // which does exactly that hole.
-        group.addLayer(
-          L.geoJSON(merged.fill, {
-            pane: 'warningPane',
-            renderer: warningRenderer,
-            interactive: false,
-            style: {
-              stroke: false,
-              fill: true,
-              fillColor: color,
-              fillOpacity: 0.22,
-              fillRule: 'nonzero'
-            }
-          } as RenderedGeoJSONOptions)
-        );
+        pieces.forEach((piece, index) => {
+          /**
+           * ONE PATH PER AREA, and the softening is already in the geometry.
+           *
+           * `fillRule: 'nonzero'` is what makes two overlapping warnings of the
+           * same family read as one mass instead of punching a hole where they
+           * cross — Leaflet's default is `evenodd`, which does exactly that
+           * hole. The stroke is wide, dim and the same colour as the fill: once
+           * the pane blur lands on it, it is a slightly denser rim rather than
+           * a line, which is what stops the cloud from looking like a spill.
+           */
+          group.addLayer(
+            L.geoJSON(piece.shape, {
+              pane: 'warningCloudPane',
+              renderer: cloudRenderer,
+              interactive: false,
+              style: {
+                color,
+                // The rim: wide, soft, and denser than the middle. Blurred it
+                // stops being a line and becomes the edge of a bank of weather,
+                // which is what gives the cloud a shape you can see at a glance
+                // without ever drawing an edge you could point at.
+                weight: 14,
+                opacity: 0.45,
+                fill: true,
+                // Dense enough to see over bright green farmland and dark
+                // forest alike, light enough to read the ground through. A
+                // warning you cannot see is the same as no warning.
+                fillOpacity: 0.3,
+                fillRule: 'nonzero',
+                lineJoin: 'round',
+                lineCap: 'round'
+              }
+            } as RenderedGeoJSONOptions)
+          );
 
-        // The outer boundary, and only the outer boundary.
-        group.addLayer(
-          L.geoJSON(merged.outline, {
-            pane: 'warningPane',
-            renderer: warningRenderer,
-            interactive: false,
-            style: {
-              color,
-              weight: 2,
-              opacity: 0.95,
-              fill: false,
-              lineJoin: 'round',
-              lineCap: 'round'
-            }
-          } as RenderedGeoJSONOptions)
-        );
+          /**
+           * ONE BADGE PER AREA. This is the "two icons on one area" bug.
+           *
+           * Slivers get the cloud but not a badge, and the count is capped, so
+           * a pathological response cannot flood the map with markers. A badge
+           * outside coverage is refused outright — the cloud under it is
+           * already greyed out by the mask, and a chip out there would be the
+           * app claiming to know something about ground it has said it does not
+           * cover.
+           */
+          if (index >= MAX_WARNING_BADGES || piece.extent < largest * 0.04) return;
+          const point = piece.labelPoint;
+          if (!isWithinCoverage(point[0], point[1])) return;
 
-        merged.labelPoints.forEach((point) => {
           // Which alert this badge opens: the one whose own geometry covers the
-          // spot the badge sits on. Several warnings of a family can be merged
-          // into one shape, and the badge over Alberta should open Alberta's.
+          // spot the badge sits on. Several warnings of a family can share one
+          // area, and the badge over Alberta should open Alberta's.
           const owner =
             familyAlerts.find(
               (a) => a.geometry && pointInGeometry(point[0], point[1], a.geometry)
@@ -3231,10 +3320,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (debounce) clearTimeout(debounce);
       map.off('moveend zoomend', load);
       clear();
-      // Drop the SVG renderer too, so a remount does not stack a second one.
+      // Drop the renderers too, so a remount does not stack a second one.
       if (warningRendererRef.current) {
         try { map.removeLayer(warningRendererRef.current); } catch { /* detached */ }
         warningRendererRef.current = null;
+      }
+      if (warningCloudRendererRef.current) {
+        try { map.removeLayer(warningCloudRendererRef.current); } catch { /* detached */ }
+        warningCloudRendererRef.current = null;
       }
     };
   }, [isMapReady, isOfflineMode, showWarnings]);

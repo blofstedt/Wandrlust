@@ -62,6 +62,33 @@ export const BADGE_COLOR: Record<AlertBadge, string> = {
   wind: '#94A3B8'    // slate
 };
 
+/**
+ * THE WASH A GENERALIZED AREA IS PAINTED IN, WHICH IS NOT THE BADGE COLOUR.
+ *
+ * A translucent layer over satellite imagery is only visible if it is a lot
+ * LIGHTER or a lot darker than the ground under it. The badge colours are
+ * mid-tone and saturated — right for a 44px disc with a white ring, useless
+ * spread thin over a valley. Smoke's stone grey over green farmland lifted the
+ * brightness by about a tenth, which is less than the imagery's own variation:
+ * measurably drawn, genuinely invisible, and a warning nobody can see is the
+ * same as no warning at all.
+ *
+ * So the wash is a light version of the family's colour, in the direction
+ * weather actually looks from above — haze, not paint. Identity still comes
+ * from the badge sitting in the middle of it, which keeps the saturated
+ * colour, and from the wash's hue.
+ */
+export const CLOUD_TINT: Record<AlertBadge, string> = {
+  fire: '#FDBA8C',   // unused for the wash today; fire draws as a pin
+  flood: '#7FE3D4',  // likewise
+  rain: '#93B4FF',
+  storm: '#C9B0FC',
+  heat: '#FCA5A5',
+  winter: '#BAE6FD',
+  smoke: '#DBD4CB',
+  wind: '#CBD5E1'
+};
+
 /** Wildfire smoke and air-quality products, which the classifier files as fire. */
 const SMOKE_TEXT = /smoke|air quality|air stagnation|blowing dust/i;
 
@@ -331,70 +358,132 @@ export const segmentsToRings = (
 ): [number, number][][] => {
   if (segments.length === 0) return [];
 
-  // endpoint -> list of (otherEndpoint, segmentIndex)
-  const hash = new Map<string, [number, number, number][]>();
+  // endpoint -> the segments that start or end there
+  const hash = new Map<string, { to: [number, number]; index: number }[]>();
   const keyOf = (p: [number, number]) =>
     `${Math.round(p[0] / snap)},${Math.round(p[1] / snap)}`;
 
-  segments.forEach((seg, i) => {
-    const [a, b] = seg;
+  segments.forEach(([a, b], index) => {
     const ka = keyOf(a);
     const kb = keyOf(b);
     let aList = hash.get(ka);
     if (!aList) { aList = []; hash.set(ka, aList); }
-    aList.push([b[0], b[1], i]);
+    aList.push({ to: [b[0], b[1]], index });
     let bList = hash.get(kb);
     if (!bList) { bList = []; hash.set(kb, bList); }
-    bList.push([a[0], a[1], i]);
+    bList.push({ to: [a[0], a[1]], index });
   });
 
   const used = new Set<number>();
+
+  /**
+   * WHICH WAY TO GO AT A JUNCTION.
+   *
+   * Three parcels meeting at a point put four or six unused segments on one
+   * vertex, and the old code took whichever it happened to hash first. That is
+   * how a walk hopped from one shape's boundary onto another's: the chain
+   * wandered off, closed somewhere it shouldn't, and left the rest of the real
+   * boundary behind as a second phantom ring — the extra polygon overlapping
+   * the top of a shape, with a straight line cutting across it.
+   *
+   * Taking the sharpest turn instead keeps the walk hugging the SAME face of
+   * the shape all the way round, which is the standard way to trace a polygon
+   * out of a soup of edges. Angles are compared anticlockwise from the way we
+   * came in, so the smallest one is the hardest right turn available.
+   */
+  const nextFrom = (
+    from: [number, number], at: [number, number]
+  ): { to: [number, number]; index: number } | null => {
+    const candidates = (hash.get(keyOf(at)) ?? []).filter((c) => !used.has(c.index));
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    const incoming = Math.atan2(at[1] - from[1], at[0] - from[0]) + Math.PI;
+    let best = candidates[0];
+    let bestTurn = Infinity;
+    for (const candidate of candidates) {
+      const outgoing = Math.atan2(candidate.to[1] - at[1], candidate.to[0] - at[0]);
+      let turn = outgoing - incoming;
+      while (turn <= 1e-9) turn += Math.PI * 2;
+      while (turn > Math.PI * 2) turn -= Math.PI * 2;
+      if (turn < bestTurn) { bestTurn = turn; best = candidate; }
+    }
+    return best;
+  };
+
+  /**
+   * Extend a chain from its last vertex until it closes or runs out.
+   *
+   * The cap is a safety valve: a chain running to tens of thousands of
+   * vertices has gone wrong somewhere, and locking up the UI thread over it
+   * would be worse than dropping it.
+   */
+  const MAX_CHAIN = 50000;
+  const extend = (points: [number, number][]): boolean => {
+    while (points.length < MAX_CHAIN) {
+      const current = points[points.length - 1];
+      if (points.length > 2 && keyOf(current) === keyOf(points[0])) return true;
+      const next = nextFrom(points[points.length - 2], current);
+      if (!next) return false;
+      used.add(next.index);
+      points.push([next.to[0], next.to[1]]);
+    }
+    return false;
+  };
+
   const rings: [number, number][][] = [];
 
-  // Walk from any unused segment. A chain that doesn't close is still
-  // kept — we close it by appending the first vertex. Real-world data
-  // has the occasional near-miss where two adjacent parcels' shared
-  // edge differs by a fraction of a degree at one end, and dropping
-  // the ring entirely means that whole group loses its fill. The
-  // small straight line back to the start is invisible against the
-  // heavy outline blur that draws the same group's edge.
   for (let start = 0; start < segments.length; start += 1) {
     if (used.has(start)) continue;
-
-    const ring: [number, number][] = [];
-    const [a0, b0] = segments[start];
-    ring.push([a0[0], a0[1]]);
-    let current: [number, number] = [b0[0], b0[1]];
     used.add(start);
 
-    const startKey = keyOf([a0[0], a0[1]]);
-    // Hard cap on chain length. A chain that goes on for thousands of
-    // vertices has gone wrong somewhere (a segment that double-counts,
-    // a self-intersection) and we should bail rather than lock up the
-    // UI thread.
-    const MAX_CHAIN = 50000;
-    let safety = MAX_CHAIN;
+    const [a0, b0] = segments[start];
+    const points: [number, number][] = [[a0[0], a0[1]], [b0[0], b0[1]]];
 
-    while (safety-- > 0) {
-      const ck = keyOf(current);
-      if (ck === startKey && ring.length > 2) break;
-      const candidates = hash.get(ck) ?? [];
-      // Find the first candidate whose segment hasn't been used.
-      let next: [number, number, number] | null = null;
-      for (const c of candidates) {
-        if (!used.has(c[2])) { next = c; break; }
-      }
-      if (!next) break; // dead end — close below
-      used.add(next[2]);
-      ring.push([current[0], current[1]]);
-      current = [next[0], next[1]];
+    /**
+     * BOTH DIRECTIONS, and this is the fix for the diagonal line across a
+     * shape.
+     *
+     * The old walk only ran forwards. Seeded in the MIDDLE of an open chain —
+     * which is where it lands most of the time, since segments come out of the
+     * dissolve in no particular order — it collected one half, hit the far end,
+     * and gave up. Half a boundary joined end to end is a shape with a chord
+     * straight through it, and the other half was left to be picked up later as
+     * a second bogus ring. Walking out of both ends of the seed collects the
+     * whole chain before anything is closed.
+     */
+    let closed = extend(points);
+    if (!closed) {
+      points.reverse();
+      closed = extend(points);
     }
 
-    // Close the ring by appending the first vertex. If the chain
-    // didn't loop back, this is a near-miss; if it did loop, this is
-    // the conventional duplicate of the first point.
-    ring.push([a0[0], a0[1]]);
-    rings.push(ring);
+    if (closed) {
+      points.push([points[0][0], points[0][1]]);
+      rings.push(points);
+      continue;
+    }
+
+    /**
+     * A chain that still won't close has a genuine gap in it.
+     *
+     * A small one is a near-miss — two parcels whose shared edge disagrees at
+     * one end by a few metres — and joining it is invisible. A large one means
+     * we are holding a fragment of a boundary, and joining THAT is the straight
+     * line across the map that has no business being there. Fragments are
+     * dropped instead; the group's other rings still draw, and the edge itself
+     * is drawn by the outline layer, which never invents a segment.
+     */
+    if (points.length < 4) continue;
+    const first = points[0];
+    const last = points[points.length - 1];
+    const gap = Math.hypot(last[0] - first[0], last[1] - first[1]);
+    const [minX, minY, maxX, maxY] = ringBbox(points);
+    const span = Math.hypot(maxX - minX, maxY - minY);
+    if (gap > Math.max(snap * 4, span * 0.2)) continue;
+
+    points.push([first[0], first[1]]);
+    rings.push(points);
   }
 
   return rings;
@@ -461,7 +550,33 @@ export const dissolvedFill = (
       const extent = (maxLon - minLon) * (maxLat - minLat);
       return extent >= minRingArea;
     });
-    if (keptRings.length === 0) return;
+    /**
+     * Nothing survived the dissolve: draw the parcels themselves instead.
+     *
+     * `segmentsToRings` refuses to close a boundary fragment across a real gap
+     * rather than draw a line nobody surveyed, so a group whose edges are too
+     * broken to chain now yields no rings at all. Falling back to the raw
+     * parcels keeps the group's fill on the map — the internal seams are
+     * invisible because the fill is drawn with no stroke — where dropping it
+     * would silently erase public land from the map.
+     */
+    if (keptRings.length === 0) {
+      const parts: unknown[] = [];
+      groupFeatures.forEach((f) => {
+        const g = f.geometry as { type?: string; coordinates?: unknown };
+        if (g?.type === 'Polygon') parts.push(g.coordinates);
+        else if (g?.type === 'MultiPolygon' && Array.isArray(g.coordinates)) {
+          parts.push(...(g.coordinates as unknown[]));
+        }
+      });
+      if (parts.length === 0) return;
+      out.push({
+        type: 'Feature',
+        properties: groupFeatures[0].properties ?? {},
+        geometry: { type: 'MultiPolygon', coordinates: parts }
+      } as any);
+      return;
+    }
 
     // Every kept ring becomes its own Polygon, and the group as a whole
     // becomes a MultiPolygon. This is what fixes the "yellow fill
@@ -856,23 +971,37 @@ export const ringLabelPoint = (ring: [number, number][]): [number, number] => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Merging the parcels of one generalized event                        */
+/* Turning forecast zones into a cloud                                 */
 /* ------------------------------------------------------------------ */
 
-export interface MergedArea {
+/**
+ * ONE CONTIGUOUS WARNED AREA, DRAWN AS A CLOUD.
+ *
+ * A generalized warning arrives as forecast-region parcels — administrative
+ * boxes with surveyed corners, stair-stepping along township lines. Drawing
+ * those parcels is the thing this replaces. Smoke does not stop at a survey
+ * line; nothing about the shape of an air-quality region is a statement about
+ * where the air is bad. A hard-edged parcel says "the hazard ends here", which
+ * is a claim nobody made.
+ *
+ * So the parcels are generalised into a soft blob: the small stair-steps are
+ * simplified away, the corners are rounded off, and the map pane the cloud is
+ * drawn in carries a blur so the edge fades instead of stopping. What is left
+ * says "roughly this area, edges unknown" — which is exactly what the feed
+ * said.
+ */
+export interface CloudPiece {
   /**
-   * Every source piece in ONE Feature. Draw it with `fillRule: 'nonzero'` and
-   * overlapping pieces union themselves in the renderer — no seams, no holes
-   * punched where two warnings overlap.
+   * The smoothed shape, as one Feature holding every parcel in this piece.
+   * Draw it with `fillRule: 'nonzero'`: overlapping parcels then union
+   * themselves in the renderer instead of punching a hole where they cross,
+   * and the internal edges between abutting parcels never draw at all.
    */
-  fill: GeoJSON.Feature;
-  /**
-   * The outer boundary only, as a MultiLineString. Internal edges between
-   * abutting forecast zones are gone, so the merged area reads as one shape.
-   */
-  outline: GeoJSON.Feature;
-  /** One badge position per merged piece, biggest first, as `[lat, lon]`. */
-  labelPoints: [number, number][];
+  shape: GeoJSON.Feature;
+  /** Where this piece's single badge goes, as `[lat, lon]`. Always inside. */
+  labelPoint: [number, number];
+  /** Rough size in square degrees. Used to rank pieces and drop slivers. */
+  extent: number;
 }
 
 /**
@@ -894,42 +1023,231 @@ const polygonKey = (rings: [number, number][][]): string => {
   return `${rings.length}:${outer.length}:${at(0)}:${at(Math.floor(outer.length / 2))}:${at(outer.length - 1)}`;
 };
 
+/* ---- Softening a parcel into a cloud ------------------------------- */
+
+/** Perpendicular distance from `p` to the segment `a`–`b`, in degrees. */
+const perpDistance = (
+  p: [number, number], a: [number, number], b: [number, number]
+): number => {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  if (dx === 0 && dy === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+};
+
 /**
- * MERGE THE PARCELS OF ONE GENERALIZED EVENT INTO ONE SHAPE.
+ * Douglas–Peucker, iterative rather than recursive.
  *
- * The redesign asks for a union — an `ST_Union`, if these polygons came from
- * our database. They do not: warning geometry arrives live from the National
- * Weather Service and Environment Canada, one polygon per forecast zone, and
- * there is no table to union it in. So the union happens here, on the client,
- * with the same segment-cancelling dissolve the boundary layer already uses:
- *
- *   FILL     — every source piece kept, drawn as one path with fill-rule
- *              nonzero. Overlaps merge instead of punching holes, and there is
- *              no internal division to see because it is a single fill.
- *   OUTLINE  — an edge shared by two abutting zones appears twice in the
- *              vertex data, once from each side. Hash every segment; the ones
- *              appearing exactly once are the true outer boundary. That is the
- *              only stroke drawn, so a rainfall warning over eleven zones is
- *              one outlined region rather than an eleven-cell honeycomb.
- *
- * The vertex-matching tolerance absorbs the mismatch between zones digitised
- * separately, which is what stops a hairline seam surviving between two blocks
- * that really do abut. It is derived from the shapes themselves — see
- * `autoSnap` in the body.
- *
- * Returns null when there is nothing drawable.
+ * A forecast region can carry a few thousand vertices, and a recursive
+ * implementation on the UI thread is one deep call stack away from a blown
+ * stack on a phone. The explicit stack costs nothing and cannot overflow.
  */
-export const mergeAreas = (
-  geometries: unknown[],
+const simplifyLine = (
+  points: [number, number][], tolerance: number
+): [number, number][] => {
+  if (points.length < 3) return points.slice();
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+
+  const stack: [number, number][] = [[0, points.length - 1]];
+  while (stack.length > 0) {
+    const [i, j] = stack.pop() as [number, number];
+    if (j <= i + 1) continue;
+    let farthest = -1;
+    let farthestDistance = tolerance;
+    for (let k = i + 1; k < j; k += 1) {
+      const d = perpDistance(points[k], points[i], points[j]);
+      if (d > farthestDistance) { farthestDistance = d; farthest = k; }
+    }
+    if (farthest < 0) continue;
+    keep[farthest] = 1;
+    stack.push([i, farthest], [farthest, j]);
+  }
+
+  const out: [number, number][] = [];
+  for (let i = 0; i < points.length; i += 1) if (keep[i]) out.push(points[i]);
+  return out;
+};
+
+const isClosed = (ring: [number, number][]): boolean =>
+  ring.length > 2 &&
+  ring[0][0] === ring[ring.length - 1][0] &&
+  ring[0][1] === ring[ring.length - 1][1];
+
+/**
+ * Simplify a CLOSED ring without letting it collapse.
+ *
+ * Douglas–Peucker needs two fixed endpoints, and a ring's first and last
+ * vertex are the same point — run it straight and the whole ring reduces to
+ * that one vertex. Splitting at the vertex farthest from the start gives two
+ * open halves with four real endpoints between them, which is the standard fix
+ * and keeps the ring's overall extent intact.
+ */
+const simplifyRing = (
+  ring: [number, number][], tolerance: number
+): [number, number][] => {
+  const open = isClosed(ring) ? ring.slice(0, -1) : ring.slice();
+  // Below this there is no detail to remove and every vertex is load-bearing.
+  if (open.length < 8) return ring.slice();
+
+  let farthest = 0;
+  let farthestDistance = -1;
+  for (let i = 1; i < open.length; i += 1) {
+    const d = (open[i][0] - open[0][0]) ** 2 + (open[i][1] - open[0][1]) ** 2;
+    if (d > farthestDistance) { farthestDistance = d; farthest = i; }
+  }
+
+  const front = simplifyLine(open.slice(0, farthest + 1), tolerance);
+  const back = simplifyLine([...open.slice(farthest), open[0]], tolerance);
+  const merged = [...front, ...back.slice(1)];
+  // Too little left to be a shape: keep the original rather than draw a sliver.
+  return merged.length < 5 ? ring.slice() : merged;
+};
+
+/**
+ * Chaikin corner cutting — what actually turns a surveyed box into a blob.
+ *
+ * Each pass replaces every corner with two points a quarter of the way along
+ * its two edges, so a right angle becomes a bevel, then a curve. Three passes
+ * over a simplified ring is enough that no straight survey line survives at
+ * map zoom, and cheap: the work is linear in vertices, and the simplify pass
+ * has already cut those to a few dozen.
+ */
+const chaikinRing = (
+  ring: [number, number][], iterations: number
+): [number, number][] => {
+  let points = isClosed(ring) ? ring.slice(0, -1) : ring.slice();
+  if (points.length < 3) return ring.slice();
+
+  for (let pass = 0; pass < iterations && points.length < 3000; pass += 1) {
+    const next: [number, number][] = [];
+    for (let i = 0; i < points.length; i += 1) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    points = next;
+  }
+
+  points.push([points[0][0], points[0][1]]);
+  return points;
+};
+
+/**
+ * One parcel ring, softened into part of a cloud.
+ *
+ * The simplify tolerance is a fraction of the ring's own size, so a
+ * province-sized region and a single county both lose about the same
+ * PROPORTION of their detail and both read as the same kind of soft shape.
+ * A fixed tolerance would leave a big region looking surveyed and erase a
+ * small one entirely.
+ */
+export const cloudRing = (ring: [number, number][]): [number, number][] => {
+  const [minX, minY, maxX, maxY] = ringBbox(ring);
+  const diagonal = Math.hypot(maxX - minX, maxY - minY);
+  if (!Number.isFinite(diagonal) || diagonal <= 0) return ring.slice();
+
+  const softened = chaikinRing(simplifyRing(ring, diagonal / 70), 3);
+
   /**
-   * Vertex-matching tolerance in degrees. Left unset it is derived from the
-   * SMALLEST piece being merged — see `autoSnap` below, which is the guard
-   * against a fixed 100 m tolerance eating a small warning's outline whole.
+   * PUT BACK THE GROUND THE ROUNDING TOOK OFF.
+   *
+   * Cutting a corner always removes area, and on a blocky region with only a
+   * few corners it removes a lot of it — a plain rectangle loses about a
+   * quarter. Every acre of that is ground the agency warned about and the map
+   * would have quietly stopped shading. Under-drawing a hazard is the one
+   * direction this app is not allowed to be wrong in.
+   *
+   * So the softened ring is scaled about its own centre until it covers the
+   * same area it started with. The shape stays round; only its extent is
+   * restored. The cap stops a degenerate ring from ballooning, and growing
+   * slightly is fine — over-including a warning is the safe way to be wrong.
    */
-  snap?: number,
-  /** Rings whose bbox is smaller than this (in square degrees) are dropped. */
-  minRingExtent = 1e-8
-): MergedArea | null => {
+  const before = Math.abs(ringSignedArea(ring));
+  const after = Math.abs(ringSignedArea(softened));
+  if (!(before > 0) || !(after > 0) || after >= before) return softened;
+
+  const scale = Math.min(1.15, Math.sqrt(before / after));
+  const [cx, cy] = ringCentroid(softened);
+  return softened.map(([x, y]) => [cx + (x - cx) * scale, cy + (y - cy) * scale]);
+};
+
+/* ---- Which parcels are the same warned area ------------------------ */
+
+/**
+ * Group parcels that belong to ONE warned area.
+ *
+ * This is what fixes two badges sitting on a single smoke area. The old code
+ * counted areas by reconstructing the merged outline and treating every closed
+ * ring it produced as a separate region — so one warning whose outline came
+ * back as two chains got two badges, and a warned area with a hole in it got a
+ * badge floating in the hole.
+ *
+ * Counting the parcels themselves is both simpler and steadier: two parcels
+ * are the same area when their bounding boxes touch or overlap, allowing a few
+ * kilometres of slack for regions digitised separately. Grouping is
+ * transitive, so a chain of eleven abutting forecast zones collapses to one
+ * area with one badge — while Environment Canada's prairie warnings, which
+ * really are blocks hundreds of kilometres apart, stay separate and keep a
+ * badge each.
+ *
+ * It errs toward MERGING, deliberately: two badges on one area is the bug,
+ * and one badge on two areas that nearly touch is not.
+ */
+const TOUCH_TOLERANCE_DEG = 0.05; // ~5 km
+
+const groupTouchingPolygons = (boxes: [number, number, number, number][]): number[][] => {
+  const parent = boxes.map((_, i) => i);
+  const find = (i: number): number => {
+    let root = i;
+    while (parent[root] !== root) root = parent[root];
+    // Path compression, so a long chain of abutting zones stays cheap.
+    let node = i;
+    while (parent[node] !== node) { const up = parent[node]; parent[node] = root; node = up; }
+    return root;
+  };
+
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const apart =
+        a[2] + TOUCH_TOLERANCE_DEG < b[0] || b[2] + TOUCH_TOLERANCE_DEG < a[0] ||
+        a[3] + TOUCH_TOLERANCE_DEG < b[1] || b[3] + TOUCH_TOLERANCE_DEG < a[1];
+      if (apart) continue;
+      const rootA = find(i);
+      const rootB = find(j);
+      if (rootA !== rootB) parent[rootA] = rootB;
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  boxes.forEach((_, i) => {
+    const root = find(i);
+    const bucket = groups.get(root);
+    if (bucket) bucket.push(i);
+    else groups.set(root, [i]);
+  });
+  return [...groups.values()];
+};
+
+/**
+ * THE WARNED AREA, AS CLOUDS.
+ *
+ * Hand it every geometry of one family in view; get back one piece per
+ * contiguous warned area, biggest first, each already softened and each
+ * carrying the single point its badge belongs on.
+ *
+ * There is no outline in the result and that is the point. The previous
+ * version returned the dissolved outer boundary as a MultiLineString and the
+ * map stroked it — which drew the forecast regions' surveyed edges as a hard
+ * line, and drew a straight chord across the shape whenever the dissolve could
+ * not close a chain. Both were the map claiming to know an edge it does not.
+ */
+export const cloudPieces = (geometries: unknown[]): CloudPiece[] => {
   const polygons: [number, number][][][] = [];
   const seen = new Set<string>();
 
@@ -946,79 +1264,37 @@ export const mergeAreas = (
     });
   });
 
-  if (polygons.length === 0) return null;
+  if (polygons.length === 0) return [];
 
-  const fill: GeoJSON.Feature = {
-    type: 'Feature',
-    properties: {},
-    geometry: { type: 'MultiPolygon', coordinates: polygons as any }
-  } as GeoJSON.Feature;
+  const boxes = polygons.map((rings) => ringBbox(rings[0]));
 
-  /**
-   * TOLERANCE HAS TO SCALE WITH THE SHAPES, or it destroys the small ones.
-   *
-   * A flat 1e-3 (about 100 m) is right for a forecast zone the size of a
-   * county, whose vertices sit kilometres apart. Handed a compact
-   * storm-based polygon whose vertices are 50 m apart, the same tolerance
-   * snaps neighbouring vertices onto one grid cell and the outline comes
-   * apart. So the smallest piece in the set sets the tolerance — the safe
-   * direction to err, because an exactly shared edge cancels at ANY
-   * tolerance and only the near-miss case needs the slack.
-   */
-  const autoSnap = (): number => {
-    let smallest = Infinity;
-    for (const rings of polygons) {
-      const [minX, minY, maxX, maxY] = ringBbox(rings[0]);
-      smallest = Math.min(smallest, Math.max(maxX - minX, maxY - minY));
-    }
-    if (!Number.isFinite(smallest)) return 1e-3;
-    return Math.min(1e-3, Math.max(1e-6, smallest / 400));
-  };
-  const tolerance = snap ?? autoSnap();
+  return groupTouchingPolygons(boxes)
+    .map((indices) => {
+      const softened = indices.map((i) => polygons[i].map((ring) => cloudRing(ring)));
 
-  const rings = segmentsToRings(
-    dissolveSegments(
-      polygons.map((coordinates) => ({ geometry: { type: 'Polygon', coordinates } })),
-      tolerance
-    ),
-    tolerance
-  ).filter((ring) => {
-    if (ring.length < 4) return false;
-    const [minX, minY, maxX, maxY] = ringBbox(ring);
-    return (maxX - minX) * (maxY - minY) >= minRingExtent;
-  });
+      // The badge goes in the BIGGEST parcel of the area, at a point proven to
+      // be inside it — never at the average of several parcels, which for a
+      // horseshoe of regions lands in the gap they curve around.
+      let biggest = 0;
+      let biggestArea = -1;
+      let extent = 0;
+      softened.forEach((rings, k) => {
+        const area = Math.abs(ringSignedArea(rings[0]));
+        extent += area;
+        if (area > biggestArea) { biggestArea = area; biggest = k; }
+      });
 
-  const outline: GeoJSON.Feature = {
-    type: 'Feature',
-    properties: {},
-    geometry: { type: 'MultiLineString', coordinates: rings as any }
-  } as GeoJSON.Feature;
-
-  /**
-   * One badge per merged piece — not per source zone, and not one for the
-   * whole event.
-   *
-   * Per zone is the scatter this refactor exists to remove. One for the whole
-   * event is worse than it sounds: Environment Canada's prairie warnings come
-   * as blocks hundreds of kilometres apart, and a single badge averaged across
-   * them would sit over land no warning covers at all. A badge per merged
-   * piece means every drawn area carries exactly one, wherever you have
-   * panned to.
-   *
-   * Slivers left over from the dissolve are dropped by area, and the count is
-   * capped so a pathological response cannot flood the DOM with markers.
-   */
-  const MAX_BADGES = 8;
-  const byArea = rings
-    .map((ring) => ({ ring, area: Math.abs(ringSignedArea(ring)) }))
-    .sort((a, b) => b.area - a.area);
-  const largest = byArea[0]?.area ?? 0;
-  const labelPoints = byArea
-    .filter(({ area }) => area >= largest * 0.04)
-    .slice(0, MAX_BADGES)
-    .map(({ ring }) => ringLabelPoint(ring));
-
-  return { fill, outline, labelPoints };
+      return {
+        shape: {
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'MultiPolygon', coordinates: softened as any }
+        } as GeoJSON.Feature,
+        labelPoint: ringLabelPoint(softened[biggest][0]),
+        extent
+      };
+    })
+    .sort((a, b) => b.extent - a.extent);
 };
 
 /** The active alerts whose drawn area contains a point — for the bottom card. */
