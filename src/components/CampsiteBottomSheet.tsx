@@ -35,12 +35,24 @@ const CAPACITY_STYLE: Record<string, { label: string; className: string }> = {
   unknown: { label: 'Unknown', className: 'bg-slate-700/40 text-slate-400 border-slate-600' }
 };
 
+/** How much of the screen each snap point takes, as one source of truth. */
+const SNAP_FRACTION = { peek: 0.26, half: 0.58, full: 0.92 } as const;
+type Snap = keyof typeof SNAP_FRACTION;
+
 interface CampsiteBottomSheetProps {
   campsite: Campsite | null;
   isSaved: boolean;
   onClose: () => void;
   onToggleSave: (site: Campsite) => void;
   onRequireAuth: () => void;
+  /**
+   * How many pixels of screen this drawer is covering, whenever that changes.
+   *
+   * The map is behind it and has to get the pin out from under it, which it
+   * can only do against a real measurement — `vh` on a phone means one thing
+   * with the browser's address bar showing and another without it.
+   */
+  onHeightChange?: (px: number) => void;
 }
 
 /**
@@ -53,10 +65,10 @@ interface CampsiteBottomSheetProps {
  * differs between "which of these three?" and "am I sleeping here tonight?".
  */
 export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
-  campsite, isSaved, onClose, onToggleSave, onRequireAuth
+  campsite, isSaved, onClose, onToggleSave, onRequireAuth, onHeightChange
 }) => {
   const { user } = useAuth();
-  const [snap, setSnap] = useState<'peek' | 'half' | 'full'>('half');
+  const [snap, setSnap] = useState<Snap>('half');
   const [weather, setWeather] = useState<WeatherSnapshot>(EMPTY_WEATHER);
   const [rules, setRules] = useState<PointRules[]>([]);
   const [hazards, setHazards] = useState<PointHazard[]>([]);
@@ -91,6 +103,19 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
     return () => { cancelled = true; };
   }, [campsite]);
 
+  /** Tell the map how much of itself is behind this drawer. */
+  useEffect(() => {
+    if (!onHeightChange) return;
+    if (!campsite) { onHeightChange(0); return; }
+    const report = () => onHeightChange(window.innerHeight * SNAP_FRACTION[snap]);
+    report();
+    window.addEventListener('resize', report);
+    return () => {
+      window.removeEventListener('resize', report);
+      onHeightChange(0);
+    };
+  }, [campsite, snap, onHeightChange]);
+
   const handleCheckIn = useCallback(
     async (capacity: Capacity) => {
       if (!campsite) return;
@@ -113,15 +138,18 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   const capacityKey = campsite.capacityStatus ?? 'unknown';
   const capacity = CAPACITY_STYLE[capacityKey] ?? CAPACITY_STYLE.unknown;
 
-  const heightClass = snap === 'peek' ? 'h-[26vh]' : snap === 'half' ? 'h-[58vh]' : 'h-[92vh]';
-
   const amenities = campsite.amenities;
   const bestSignal = bestCellSignal(amenities);
 
   return (
     <div
-      className={`fixed inset-x-0 bottom-0 z-[1500] ${heightClass}`}
-      style={{ transition: 'height 320ms cubic-bezier(0.16, 1.36, 0.36, 1)' }}
+      className="fixed inset-x-0 bottom-0 z-[1500]"
+      style={{
+        // Off the same fractions the map is told about, so what it moves out
+        // from under is exactly what is on screen.
+        height: `${SNAP_FRACTION[snap] * 100}vh`,
+        transition: 'height 320ms cubic-bezier(0.16, 1.36, 0.36, 1)'
+      }}
     >
       <div className="h-full mx-auto max-w-2xl bg-slate-900 border-t border-x border-slate-700 rounded-t-3xl shadow-2xl flex flex-col overflow-hidden anim-sheet-up">
         {/* Drag handle cycles the snap points */}

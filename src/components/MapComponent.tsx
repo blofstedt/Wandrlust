@@ -33,7 +33,7 @@ import {
 } from '../utils/fuzzyBoundary';
 import {
   AlertBadge, LocalizedKind, BADGE_COLOR, CLOUD_TINT, badgesForPoint, alertBadge,
-  WARNING_EMOJI, localizedPinHtml, isGeneralized, cloudPieces,
+  localizedPinHtml, isGeneralized, cloudPieces,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
@@ -55,6 +55,7 @@ import {
   fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts, WeatherSnapshot
 } from '../services/weatherService';
 import { prefersReducedMotion, haptic } from '../utils/animation';
+import { PointInfoSheet } from './PointInfoSheet';
 
 /** 1x1 transparent GIF, shown where no offline tile has been cached. */
 const TRANSPARENT_PIXEL =
@@ -291,6 +292,42 @@ const escapeHtml = (s: string): string => s
   .replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;');
+
+/**
+ * The outline of a shape, as Leaflet wants it: the biggest ring, `[lat, lon]`.
+ *
+ * A cloud piece is a MultiPolygon — several parcels the grouping pulled
+ * together — and the tracker follows the largest of them. Not all of them:
+ * a dot that teleported between blocks would read as several separate things
+ * being pointed at rather than one area being outlined. Holes are ignored for
+ * the same reason; the softened cloud fills them in anyway.
+ */
+const outerRing = (shape: GeoJSON.Feature): [number, number][] => {
+  const geometry = shape.geometry as { type?: string; coordinates?: unknown };
+  const polygons: [number, number][][][] =
+    geometry?.type === 'MultiPolygon'
+      ? (geometry.coordinates as [number, number][][][])
+      : geometry?.type === 'Polygon'
+        ? [geometry.coordinates as [number, number][][]]
+        : [];
+
+  let best: [number, number][] = [];
+  let bestArea = -1;
+  polygons.forEach((rings) => {
+    const ring = rings?.[0];
+    if (!Array.isArray(ring) || ring.length < 4) return;
+    // Shoelace, in square degrees. Only ever compared against itself.
+    let twice = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+      twice += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    }
+    const area = Math.abs(twice) / 2;
+    if (area > bestArea) { bestArea = area; best = ring; }
+  });
+
+  // GeoJSON counts [lon, lat]; everything Leaflet takes is the other way round.
+  return best.map(([lon, lat]) => [lat, lon] as [number, number]);
+};
 
 /**
  * Tapped: the same dots, each grown into the fact it stood for.
@@ -1290,6 +1327,15 @@ interface MapComponentProps {
    * reason chooses which notice to show.
    */
   onPinRefused?: (reason: 'water' | 'outside_coverage') => void;
+  /**
+   * How many pixels of the map are covered by a card App is showing over it —
+   * the campsite drawer, in practice. Zero when nothing is over the map.
+   *
+   * The map does not render that card, but it does have to get out from under
+   * it: the open pin is centred in the strip of screen that is left, and the
+   * view is given back when the card closes. See the effect that uses it.
+   */
+  bottomSheetPx?: number;
   /** Fired when a camper's hazard report is tapped. */
   onSelectHazardReport?: (record: HazardRecord) => void;
   /** Fired when a precise official warning (fire / flood / storm) is tapped. */
@@ -1305,6 +1351,27 @@ interface MapComponentProps {
    */
   beaconRefreshKey?: number;
 }
+
+/**
+ * Where to centre the map so `at` sits in the middle of what a card has left.
+ *
+ * A card over the bottom of the screen does not make the map smaller — Leaflet
+ * still thinks it owns the whole container — so the "centre" it flies to is
+ * behind the card. Everything the camper opened the card to look at ends up
+ * hidden by the card describing it.
+ *
+ * The fix is to move the centre DOWN by half of what is covered, which lifts
+ * the point up by the same amount into the middle of the strip that is showing.
+ * A floor keeps at least a band of map on screen, so a card dragged to full
+ * height cannot shove the pin off the top.
+ */
+const centreLeavingRoom = (
+  map: L.Map, at: L.LatLng, coveredPx: number, zoom: number
+): L.LatLng => {
+  const covered = Math.max(0, Math.min(coveredPx, map.getSize().y - 140));
+  if (covered <= 0) return at;
+  return map.unproject(map.project(at, zoom).add(L.point(0, covered / 2)), zoom);
+};
 
 /**
  * The map as the clustering plugin needs to see it: whole-number minimum zoom.
@@ -1335,7 +1402,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert,
-  onSelectBeaconSpot, beaconRefreshKey = 0
+  onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1369,6 +1436,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * hundred metres of one clearing with no idea where it sat.
    */
   const preFocusViewRef = useRef<{ center: L.LatLng; zoom: number } | null>(null);
+  /**
+   * And where it was before a card slid up over the bottom of the screen.
+   *
+   * Separate from `preFocusViewRef` on purpose: a card can open and close
+   * several times over one pin, and each of those has to give back the view it
+   * borrowed without disturbing the wider one the pin borrowed first.
+   */
+  const preSheetViewRef = useRef<{ center: L.LatLng; zoom: number } | null>(null);
   /** Facilities near the selected spot, for the tappable chips. */
   const facilitiesRef = useRef<NearbyFacility[]>([]);
   /** Fires near the open point, read by the icon builders. */
@@ -1516,6 +1591,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [nearbyFires, setNearbyFires] = useState<
     Array<{ fire: ActiveFire; distanceKm: number }>
   >([]);
+
+  /** The card the "i" under a dropped pin opens, and how tall it currently is. */
+  const [pointCardOpen, setPointCardOpen] = useState(false);
+  const [pointCardPx, setPointCardPx] = useState(0);
+  /**
+   * How much of the map is under a card right now, whoever is rendering it.
+   *
+   * Never both at once in practice — bare ground gets the point card, a
+   * submitted spot gets App's campsite drawer — so the larger of the two is
+   * simply whichever one is open.
+   */
+  const overlayPx = Math.max(bottomSheetPx, pointCardPx);
+  /** The same number, for the camera effects that read it outside a render. */
+  const overlayPxRef = useRef(0);
+  overlayPxRef.current = overlayPx;
 
   /**
    * The one point the app is currently answering questions about.
@@ -2863,12 +2953,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [destinationDots]);
 
   /**
-   * The open pin sits dead centre.
+   * The open pin sits dead centre — or in the middle of whatever a card leaves.
    *
-   * It used to be parked in the strip of map left over above a half-screen
-   * panel, because the panel described the pin and covered it at the same
-   * time. There is no panel any more — everything it said is on the pin — so
-   * the pin gets the middle of the screen, which is where a camper looks.
+   * Dead centre is the ordinary case: nothing is over the map, so the pin gets
+   * the middle of the screen, which is where a camper looks. When a card IS up
+   * — the point card, or a spot's drawer — the pin is centred in the strip
+   * above it instead, so the thing being described is never behind the thing
+   * describing it. See `centreLeavingRoom`.
    *
    * Tapping a submitted spot also moves the camera IN, once per selection, so
    * the chips that just unfolded have room and the roads into the spot are
@@ -2890,7 +2981,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           ? Math.max(map.getZoom(), CAMPSITE_FOCUS_ZOOM)
           : map.getZoom();
 
-        const centre = L.latLng(destination.latitude, destination.longitude);
+        const centre = centreLeavingRoom(
+          map,
+          L.latLng(destination.latitude, destination.longitude),
+          overlayPxRef.current,
+          zoomTo
+        );
 
         // Already close enough that moving would just look twitchy.
         const shift = map
@@ -2915,6 +3011,70 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     return () => clearTimeout(timer);
   }, [destination, isMapReady]);
+
+  /**
+   * A card slides up, the map slides the pin out from under it — and back.
+   *
+   * Opening a card takes half the screen away, and the half it takes is the
+   * half the pin was sitting in. So the map lifts the pin into the strip that
+   * is left, and when the card closes it gives that borrowed view straight
+   * back. Dragging the card between its snap points re-aims without saving
+   * anything new, so however many times it is resized, closing it still returns
+   * to the one view it interrupted.
+   *
+   * It does NOT give the view back when the pin itself has gone. Closing a pin
+   * already restores the wider view the camper was browsing in, and two
+   * restores racing each other on one frame is how you land somewhere neither
+   * of them meant.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    if (overlayPx > 0) {
+      if (readLat === null || readLon === null) return;
+      if (!preSheetViewRef.current) {
+        preSheetViewRef.current = { center: map.getCenter(), zoom: map.getZoom() };
+      }
+      // A beat, so the card has finished growing before the pin is aimed at
+      // the gap above it.
+      const timer = setTimeout(() => {
+        try {
+          const zoomNow = map.getZoom();
+          const centre = centreLeavingRoom(
+            map, L.latLng(readLat, readLon), overlayPx, zoomNow
+          );
+          const shift = map
+            .latLngToContainerPoint(centre)
+            .distanceTo(map.getSize().divideBy(2));
+          if (shift < 8) return;
+          if (prefersReducedMotion()) map.setView(centre, zoomNow, { animate: false });
+          else map.panTo(centre, { animate: true, duration: 0.45 });
+        } catch { /* map torn down mid-timeout */ }
+      }, 120);
+      return () => clearTimeout(timer);
+    }
+
+    const previous = preSheetViewRef.current;
+    preSheetViewRef.current = null;
+    if (!previous || readLat === null || readLon === null) return;
+
+    try {
+      if (prefersReducedMotion()) {
+        map.setView(previous.center, previous.zoom, { animate: false });
+      } else {
+        map.panTo(previous.center, { animate: true, duration: 0.45 });
+      }
+    } catch { /* map torn down */ }
+  }, [overlayPx, readLat, readLon, isMapReady]);
+
+  /**
+   * The point card belongs to the pin that opened it.
+   *
+   * Picking somewhere else, or letting the pin go, takes the card with it —
+   * otherwise it sits there describing a point that is no longer on screen.
+   */
+  useEffect(() => { setPointCardOpen(false); }, [destination]);
 
   /**
    * Closing the card gives the camera back.
@@ -4058,17 +4218,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       /** Scaled down under prefers-reduced-motion, never to zero. */
       wait: (ms: number) => Promise<void>;
       reduced: boolean;
-      /** Frame these bounds, pulling out but never in past `maxZoom`. */
-      frame: (bounds: L.LatLngBounds, maxZoom?: number) => void;
+      /**
+       * Frame these bounds, never closer than `maxZoom` and never further out
+       * than `minZoom`. The floor is the important half — see the note on the
+       * implementation. `anchor` is what stays centred when the floor means
+       * the bounds cannot all fit.
+       */
+      frame: (
+        bounds: L.LatLngBounds, maxZoom?: number, minZoom?: number, anchor?: L.LatLng
+      ) => void;
       /** A named marker pinned on the map, in a colour. */
       label: (at: L.LatLngExpression, opts: {
         title: string; detail?: string; glyph: string; color: string;
       }) => void;
       /**
-       * Run a glowing tracker once around the outside of these bounds.
-       * Resolves when the lap finishes.
+       * Run a glowing tracker once along this path. Resolves at the end of it.
        */
-      orbit: (bounds: L.LatLngBounds, color: string, ms: number) => Promise<void>;
+      trace: (path: [number, number][], color: string, ms: number) => Promise<void>;
       /** False once this tour has been torn down — check it after every await. */
       alive: () => boolean;
     }) => Promise<void>
@@ -4103,43 +4269,100 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         wait,
         reduced,
         alive: () => tourLayerRef.current === layer,
-        frame: (bounds, maxZoom = 11) => {
+        /**
+         * PULL OUT ONLY AS FAR AS THE ANSWER NEEDS.
+         *
+         * This was a plain `fitBounds`, and Leaflet's `fitBounds` takes a
+         * maximum zoom and no minimum — so a warning issued for half a
+         * province threw the camera out to the continent, and the answer to
+         * "where is this smoke?" became a map of the west coast with the pin
+         * lost somewhere in it. Nobody can see anything at that scale.
+         *
+         * So the fit is worked out first and then FLOORED, which means an area
+         * bigger than the floor allows is deliberately shown part-framed: a
+         * recognisable piece of ground with the shading over it beats the whole
+         * shape at a zoom where neither the shape nor the ground reads.
+         *
+         * When the floor does bite, the `anchor` — the pin the camper is asking
+         * from — is what stays in the middle. Centring on the middle of an area
+         * that does not fit can leave the pin off the screen entirely, which is
+         * the one thing a tour must never do: it is answering a question about
+         * that pin.
+         *
+         * The centring is otherwise Leaflet's own `fitBounds` maths, lifted
+         * here because `fitBounds` takes no minimum and would drop the floor.
+         */
+        frame: (bounds, maxZoom = 11, minZoom, anchor) => {
           try {
-            map.fitBounds(bounds, {
-              paddingTopLeft: L.point(60, 90),
-              paddingBottomRight: L.point(60, 110),
-              maxZoom,
-              animate: !reduced
-            });
+            const padTL = L.point(60, 90);
+            const padBR = L.point(60, 110);
+            const fit = map.getBoundsZoom(bounds, false, padTL.add(padBR));
+            let z = Math.min(fit, maxZoom);
+            const floored = minZoom != null && z < minZoom;
+            if (floored) z = minZoom as number;
+            z = Math.max(z, map.getMinZoom());
+
+            const offset = padBR.subtract(padTL).divideBy(2);
+            const sw = map.project(bounds.getSouthWest(), z);
+            const ne = map.project(bounds.getNorthEast(), z);
+            const centre = floored && anchor
+              ? anchor
+              : map.unproject(sw.add(ne).divideBy(2).add(offset), z);
+
+            if (reduced) map.setView(centre, z, { animate: false });
+            else map.flyTo(centre, z, { duration: 0.8 });
           } catch { /* degenerate bounds */ }
         },
         /**
          * A LITTLE NEON TRACKER, ONCE AROUND THE THING YOU ASKED ABOUT.
          *
-         * A cloud has no edge to point at, so there is no outline to flash to
-         * say "this one". The tracker says it with motion instead: a glowing
-         * dot with a short comet tail runs a single lap around the outside of
-         * the area in the warning's own colour, and is gone.
+         * It runs along the EDGE OF THE SHADING that is already on the map.
+         * It used to run around a plain ellipse drawn outside the bounding box
+         * instead, on the reasoning that a path hugging the cloud would read
+         * as the boundary of the weather — but an ellipse round a bounding box
+         * is not a smaller claim, it is a bigger one: on a long diagonal area
+         * it flung the dot hundreds of kilometres off the shape, over ground
+         * the warning had nothing to do with, and it never once looked like it
+         * was pointing at the cloud.
          *
-         * It runs OUTSIDE the shape, on a plain ellipse, and it is deliberate
-         * that the path is obviously not the shape of the cloud. A ring that
-         * hugged the cloud's edge would read as the boundary of the weather,
-         * which is the one thing nothing on this map is allowed to imply.
+         * Following the shading claims nothing new. That soft edge is drawn on
+         * the map already, it is the forecast region and not the weather, and
+         * the tracker leaves no stroke behind it — it is a moving glow, gone in
+         * two seconds, that says "this shape, this one" and nothing else.
          *
          * Under `prefers-reduced-motion` there is no lap: the tracker simply
-         * appears at the top of the ring, holds, and goes.
+         * appears at the start of the path, holds, and goes.
          */
-        orbit: (bounds, color, ms) => new Promise<void>((resolve) => {
-          const centre = bounds.getCenter();
-          // A margin outside the shape, and a floor so a point-sized area
-          // still gets a visible ring rather than a stationary dot.
-          const rLat = Math.max((bounds.getNorth() - bounds.getSouth()) / 2, 0.02) * 1.18;
-          const rLon = Math.max((bounds.getEast() - bounds.getWest()) / 2, 0.02) * 1.18;
-          const at = (theta: number): L.LatLngExpression =>
-            [centre.lat + rLat * Math.sin(theta), centre.lng + rLon * Math.cos(theta)];
+        trace: (path, color, ms) => new Promise<void>((resolve) => {
+          if (path.length < 2) { resolve(); return; }
 
-          const start = -Math.PI / 2;
-          const tracker = L.marker(at(start), {
+          // Distance along the path, in degrees. Crude next to a great-circle
+          // measure and exactly right for the job: it only has to pace a dot
+          // evenly over a shape a few degrees across.
+          const run: number[] = [0];
+          for (let i = 1; i < path.length; i += 1) {
+            run.push(run[i - 1] + Math.hypot(
+              path[i][0] - path[i - 1][0],
+              path[i][1] - path[i - 1][1]
+            ));
+          }
+          const total = run[run.length - 1];
+          if (total <= 0) { resolve(); return; }
+
+          // `p` only ever moves forward, so the segment search carries on from
+          // where the last frame left it rather than starting over.
+          let seg = 1;
+          const at = (p: number): L.LatLngExpression => {
+            const want = p * total;
+            while (seg < run.length - 1 && run[seg] < want) seg += 1;
+            const span = run[seg] - run[seg - 1];
+            const k = span > 0 ? (want - run[seg - 1]) / span : 0;
+            const a = path[seg - 1];
+            const b = path[seg];
+            return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+          };
+
+          const tracker = L.marker(at(0), {
             icon: L.divIcon({
               className: 'wl-tour-tracker',
               html: `<span class="wl-tour-tracker-dot" style="--wl-tracker-color:${color}"></span>`,
@@ -4165,7 +4388,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             // Ease the lap so it leaves and arrives softly instead of
             // snapping into motion at full speed.
             const eased = p < 0.5 ? 2 * p * p : 1 - ((-2 * p + 2) ** 2) / 2;
-            try { tracker.setLatLng(at(start + eased * Math.PI * 2)); } catch { done(); return; }
+            try { tracker.setLatLng(at(eased)); } catch { done(); return; }
             if (p >= 1) { done(); return; }
             requestAnimationFrame(step);
           };
@@ -4306,25 +4529,52 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       } as RenderedGeoJSONOptions
     ).addTo(t.layer);
 
-    const bounds = shapes.getBounds();
-    t.frame(bounds, 9);
-    await t.wait(700);
+    /**
+     * FRAME THE PIECE THE CAMPER IS STANDING IN, NOT EVERY PIECE THERE IS.
+     *
+     * `covering` is the whole family — one air quality statement can arrive as
+     * a dozen disjoint regions strung along a mountain range, and framing all
+     * of them together is what used to throw the camera out to a map of the
+     * west coast. The camper asked about the one over their head. The rest
+     * stay drawn, because they are the same warning, and the camera simply
+     * does not try to hold them.
+     */
+    const here =
+      pieces.find((p) => pointInGeometry(point.lat, point.lon, p.shape.geometry)) ?? pieces[0];
+    const edge = outerRing(here.shape);
+    const bounds = (edge.length ? L.latLngBounds(edge) : shapes.getBounds())
+      .extend([point.lat, point.lon]);
+
+    /**
+     * A LIMIT ON HOW FAR OUT THIS IS ALLOWED TO GO.
+     *
+     * Warning areas run from a single valley to most of a province, and fitting
+     * the big ones threw the camera to a map of the west coast — the shading a
+     * smear across it, the pin a speck, and no way to tell what ground any of
+     * it was over. Past roughly zoom 7 there is nothing left to recognise, and
+     * seven levels out is already further than anyone means by "zoom out a bit".
+     * Beyond that the tour shows part of the area properly instead of all of it
+     * uselessly, with the pin held in the middle.
+     */
+    const floor = Math.max(t.map.getZoom() - 7, 7);
+    t.frame(bounds, 11, floor, L.latLng(point.lat, point.lon));
+    // Longer than the other tours wait: the camera is flying, and the tracker
+    // has to set off along an edge that has stopped moving.
+    await t.wait(1000);
     if (!t.alive()) return;
 
-    const lead = covering[0];
-    t.label([point.lat, point.lon], {
-      title: lead.event,
-      detail: covering.length > 1
-        ? `${covering.length} warnings cover this point`
-        : lead.areaSource === 'zone'
-          ? 'The shading is the forecast region, not the edge of the weather'
-          : lead.areaDescription || 'Issued for the shaded area',
-      glyph: WARNING_EMOJI[badge],
-      color
-    });
-
-    await t.orbit(bounds, color, 2200);
-    await t.wait(600);
+    /*
+     * NO LABEL OVER THE PIN ANY MORE.
+     *
+     * There used to be a bubble here naming the warning and carrying its
+     * caveat. It landed on top of the shape it was describing, at the exact
+     * moment the camper was trying to look at that shape, and the caveat it
+     * carried is not a thing to read in the two seconds a tour lasts. Both now
+     * live where they can be read properly: on the chip itself, and in the
+     * card the "i" opens.
+     */
+    await t.trace(edge, color, 2400);
+    await t.wait(500);
   }), [runTour]);
 
   /**
@@ -4597,30 +4847,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }, 5200));
   }, []);
 
-  /**
-   * The "i" under a dropped pin: say everything at once.
-   *
-   * A submitted spot's "i" opens the record somebody filed. A dropped pin has
-   * no record, so the honest equivalent is the full version of every chip it
-   * is already wearing — the whole hedged sentence behind each short label,
-   * which on a phone is otherwise unreachable because the long form lives in
-   * a `title` attribute.
-   *
-   * Chips that are already open are left open rather than being toggled shut,
-   * so tapping "i" always ends with everything showing rather than flipping
-   * half the row closed. They put themselves away on the same timer a single
-   * tap uses.
-   */
-  const unfurlPin = useCallback((button: HTMLElement) => {
-    const wrap = button.closest('.destination-marker, .wl-pin-wrap') ?? button.parentElement;
-    const chips = wrap?.querySelectorAll<HTMLElement>('.wl-chip');
-    if (!chips?.length) return;
-    chips.forEach((chip) => {
-      if (chip.classList.contains('wl-chip-open')) return;
-      unfurlChip(chip);
-    });
-  }, [unfurlChip]);
-
   useEffect(() => () => {
     unfurlTimersRef.current.forEach((id) => window.clearTimeout(id));
     unfurlTimersRef.current.clear();
@@ -4681,7 +4907,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         case 'details':
           if (destinationRef.current?.campsite) detailRef.current(destinationRef.current.campsite);
           return;
-        case 'point': unfurlPin(hit); return;
+        // The "i" under a dropped pin. It used to unfurl every chip in place,
+        // above a pin that might be anywhere on the screen; now it opens the
+        // card at the bottom, which reads the same at any zoom. See
+        // `PointInfoSheet`.
+        case 'point': setPointCardOpen(true); return;
         case 'add': {
           const at = readPointRef.current;
           if (at) addSpotRef.current(at.lat, at.lon);
@@ -4699,9 +4929,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     container.addEventListener('click', onTap, true);
     return () => container.removeEventListener('click', onTap, true);
   }, [
-    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour, unfurlChip,
-    unfurlPin
+    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour, unfurlChip
   ]);
+
+  /**
+   * "Show me on the map", from a line in the point card.
+   *
+   * The card is the long-form version of the pin's chips, so its rows run the
+   * same tours those chips do. The card gets out of the way first: a tour
+   * borrows the camera, and it cannot borrow a screen that is half covered.
+   */
+  const showDotOnMap = useCallback((dot: MarkerDot) => {
+    setPointCardOpen(false);
+    // A beat, so the map has its full height back before a tour measures it.
+    window.setTimeout(() => {
+      switch (dot.action) {
+        case 'fires': void runFireTour(); return;
+        case 'alert': if (dot.badge) void runAlertTour(dot.badge); return;
+        case 'land': void runLandTour(); return;
+        case 'gap': void runGapTour(); return;
+        case 'road': void runRoadTour(dot.facility ?? null); return;
+        case 'directions': directionsRef.current(); return;
+        default:
+          if (dot.facility) {
+            setFacilityTrip({ facility: dot.facility, route: null, loading: true });
+          }
+      }
+    }, 380);
+  }, [runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour]);
 
   /**
    * Frame the spot and the facility together, then ask for a route.
@@ -5246,7 +5501,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         covers the entire screen is invisible until somebody tells you it's
         there — but once you know, the hint is clutter, so it removes itself.
       */}
-      {!destination && (
+      {!destination && !pointCardOpen && (
         <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
           <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl">
             <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -5255,6 +5510,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             </span>
           </div>
         </div>
+      )}
+
+      {/*
+        Everything known about a dropped pin, as a card rather than as a stack
+        of pills unfurling over the map. Rendered here rather than in App
+        because the map already holds the answers this card lists — they are
+        the same dots the pin is wearing — and because the map has to know how
+        much screen the card is taking to keep the pin above it.
+      */}
+      {readLat !== null && readLon !== null && (
+        <PointInfoSheet
+          isOpen={pointCardOpen}
+          dots={destinationDots}
+          latitude={readLat}
+          longitude={readLon}
+          land={destination?.land}
+          onClose={() => setPointCardOpen(false)}
+          onShowOnMap={showDotOnMap}
+          onHeightChange={setPointCardPx}
+        />
       )}
     </div>
   );
