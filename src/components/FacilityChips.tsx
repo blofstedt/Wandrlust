@@ -84,7 +84,10 @@ const statusLine = (
       }
       return {
         text: state.truncated
-          ? `Showing the first ${state.count} — there are more than fit on screen.`
+          // Covers both "more than we will draw" and "a wider view than we can
+          // ask about at once". Either way the map is a sample, and a gap in
+          // it is not evidence of anything.
+          ? `${state.count} on the map — there are more here than fit in one look.`
           : `${state.count} on the map. Tap one to see where it came from.`,
         tone: 'quiet'
       };
