@@ -14,7 +14,7 @@ import { campsiteIdKind } from '../utils/campsiteId';
 import type {
   Campsite, CamperReview,
   BeaconSpot, BeaconDwellState, BeaconOutcome, BeaconVerificationAnswers,
-  BeaconModelSummary, BeaconTier, SpotVisitReport
+  BeaconModelSummary, BeaconTier, SpotVisitReport, SpotRemovalState
 } from '../types';
 
 /* ------------------------------------------------------------------ */
@@ -405,6 +405,124 @@ export const fetchMySubmissionStates = async (): Promise<Map<string, boolean>> =
   if (error || !Array.isArray(data)) return out;
   for (const row of data) out.set(String(row.id), Boolean(row.is_published));
   return out;
+};
+
+/* ------------------------------------------------------------------ */
+/* Taking a spot back down                                             */
+/* ------------------------------------------------------------------ */
+
+/** Nothing is removable until the server has said otherwise. */
+export const NO_REMOVAL: SpotRemovalState = {
+  exists: false, mine: false, removable: false, others: 0, message: ''
+};
+
+/** The RPC's jsonb, in the app's shape. Anything unexpected reads as "no". */
+const asRemovalState = (row: unknown): SpotRemovalState => {
+  const r = (row ?? {}) as Record<string, unknown>;
+  return {
+    exists: r.exists === true,
+    mine: r.mine === true,
+    removable: r.removable === true,
+    others: Number(r.others ?? 0),
+    message: (r.message as string) ?? ''
+  };
+};
+
+/**
+ * May the signed-in camper take this campsite back down?
+ *
+ * Asked before the button is drawn rather than after it is pressed — see
+ * `SpotRemovalState`. `exists: false` means the server has never heard of this
+ * id, which is what a spot added offline or signed-out looks like; the caller
+ * treats that as "yours, on this device, remove it there".
+ */
+export const fetchCampsiteRemovalState = async (
+  campsiteId: string
+): Promise<SpotRemovalState> => {
+  if (!supabase) return NO_REMOVAL;
+
+  const { data, error } = await supabase.rpc('campsite_removal_state', {
+    in_id: campsiteId
+  });
+  if (error) return NO_REMOVAL;
+
+  return asRemovalState(data);
+};
+
+/**
+ * Delete a campsite the caller submitted.
+ *
+ * The server re-checks ownership and that nobody else has touched it, so a
+ * refusal here is a real answer and its message is written to be shown as-is.
+ * Returning ok with `removed: false` means there was no server row to delete —
+ * the device copy was the only copy, and the caller has already dealt with it.
+ */
+export const removeMyCampsite = async (
+  campsiteId: string
+): Promise<Result<{ removed: boolean }>> => {
+  if (!supabase) return success({ removed: false });
+
+  const { data, error } = await supabase.rpc('withdraw_my_campsite', {
+    in_id: campsiteId
+  });
+
+  if (error) return failure('Could not reach the server just now. Nothing was removed.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success({ removed: row.removed === true }, message)
+    : failure(message || 'That spot could not be taken down.');
+};
+
+/**
+ * The same question about a Beacon spot.
+ *
+ * Only ever true for a spot the caller themselves put on the map. A lead the
+ * scan found belongs to nobody, and one camper deciding a lead is no good is
+ * what the report scales are for — not grounds to delete it for everyone.
+ */
+export const fetchBeaconRemovalState = async (
+  spotId: string
+): Promise<SpotRemovalState> => {
+  if (!supabase) return NO_REMOVAL;
+
+  const { data, error } = await supabase.rpc('beacon_spot_removal_state', {
+    in_spot: spotId
+  });
+  if (error) return NO_REMOVAL;
+
+  return asRemovalState(data);
+};
+
+/**
+ * Take down a Beacon spot the caller added.
+ *
+ * Deliberately NOT `reportBeaconSpot`. That one is the knock path: it records
+ * enforcement and turns the pin red for everyone. This is a camper tidying up
+ * their own pin, which is a different fact, and recording it as the other one
+ * would put a police warning on a place where nothing happened.
+ */
+export const removeMyBeaconSpot = async (
+  spotId: string,
+  reason?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_withdraw_my_spot', {
+    in_spot: spotId,
+    in_reason: reason ?? null
+  });
+
+  if (error) return failure('Could not reach the server just now. Nothing was removed.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success(true, message)
+    : failure(message || 'That spot could not be taken down.');
 };
 
 /* ------------------------------------------------------------------ */

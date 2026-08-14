@@ -525,6 +525,42 @@ export interface BeaconSpot {
 }
 
 /* ------------------------------------------------------------------ */
+/* Taking a spot back down                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Whether the person looking at a spot is allowed to remove it.
+ *
+ * One shape for both kinds of spot — a campsite submission and a Beacon pin —
+ * because it is one rule: you may take down what you added, for exactly as
+ * long as it is still only yours. As soon as anybody else reviews it, checks
+ * in, saves it or reports on it, it is on their map too and deleting it would
+ * throw away their work, not yours.
+ *
+ * Read BEFORE the button is drawn, never after it is pressed. A remove button
+ * that turns out to be refused is worse than no button at all: the camper has
+ * already decided the spot is gone by the time they read the error.
+ */
+export interface SpotRemovalState {
+  /**
+   * Whether the server has a row for this spot at all.
+   *
+   * `false` is the normal state of a spot added with no account or no signal.
+   * That copy lives on the phone and only the phone, so removing it is between
+   * the camper and their own device and needs nobody's permission.
+   */
+  exists: boolean;
+  /** The signed-in camper is the one who added it. */
+  mine: boolean;
+  /** Theirs AND untouched by anybody else. The only state that allows removal. */
+  removable: boolean;
+  /** How many other campers have engaged with it. Zero whenever removable. */
+  others: number;
+  /** Plain English, from the server, for why it can or cannot go. May be empty. */
+  message: string;
+}
+
+/* ------------------------------------------------------------------ */
 /* Spot reports — what a camper says after being somewhere              */
 /* ------------------------------------------------------------------ */
 

@@ -10,7 +10,8 @@ import {
   toggleSaveCampsite,
   mergeSavedCampsites,
   getCustomCampsites,
-  addCustomCampsite
+  addCustomCampsite,
+  deleteCustomCampsite
 } from './services/offlineStorage';
 import { Navbar } from './components/Navbar';
 import { MapComponent } from './components/MapComponent';
@@ -639,6 +640,40 @@ export default function App() {
       toast.info('Removed from this device', `Still on your account — ${result.message}`);
     }
   }, [user, toast]);
+
+  /**
+   * A camper took their own spot back down.
+   *
+   * The sheet has already asked the server and the server has already agreed —
+   * this is the tidy-up, and it has to be thorough. The same spot can be in
+   * five places at once: the map's list, the device's user-submitted list, the
+   * saved list, whatever is selected, and the destination panel. Clearing four
+   * of them leaves a ghost pin that reappears the moment the view changes.
+   *
+   * The device copy goes unconditionally. It is the one the app falls back to
+   * with no server at all, so leaving it behind would put the spot straight
+   * back on the map on the next reload.
+   */
+  const handleSpotRemoved = useCallback(async (site: Campsite) => {
+    await deleteCustomCampsite(site.id);
+
+    // A bookmark to a spot that no longer exists is a dead end in the Saved
+    // tab, so it goes with it — through the same toggle the bookmark button
+    // uses, never by writing the list here.
+    const saved = await getSavedCampsites();
+    if (saved.some((s) => s.id === site.id)) {
+      await toggleSaveCampsite(site);
+      setSavedSites(await getSavedCampsites());
+    }
+
+    setCampsites((prev) => prev.filter((s) => s.id !== site.id));
+    setSheetSite(null);
+    setSelectedCampsite((prev) => (prev?.id === site.id ? null : prev));
+    setDetailModalSite((prev) => (prev?.id === site.id ? null : prev));
+    setDestination((prev) => (prev?.campsite?.id === site.id ? null : prev));
+
+    toast.success('Spot removed', 'It is off the map.');
+  }, [toast]);
 
   /**
    * Reconcile the saved list with the account, once per sign-in.
@@ -1343,6 +1378,7 @@ export default function App() {
         onClose={() => setSheetSite(null)}
         onToggleSave={handleToggleSave}
         onRequireAuth={() => setIsAuthOpen(true)}
+        onRemoved={handleSpotRemoved}
         onHeightChange={setSheetPx}
       />
 
