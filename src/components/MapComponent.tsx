@@ -1032,31 +1032,56 @@ const BEACON_RUNG: Partial<Record<BeaconSpot['tier'], number>> = {
   confirmed: 1
 };
 
+/**
+ * A Beacon pin you can actually find on the map.
+ *
+ * WHAT WAS WRONG. A lead was a 26px circle with a 2px DASHED border at 45%
+ * opacity over a 16%-opacity fill, wrapped round a 5px dot. Every one of
+ * those choices says "tentative", which is the right thing to say and the
+ * wrong way to say it: over satellite imagery — dappled forest, bright
+ * gravel, water — a translucent grey dashed hairline is not subtle, it is
+ * invisible. A camper cannot read a hedge off a pin they cannot see.
+ *
+ * WHAT CARRIES THE HEDGE INSTEAD. Colour and fill, exactly as everywhere else
+ * in this app: grey still means "nobody has been here", and the pin still
+ * fills in as the ladder is climbed. What changed is that all of it is now
+ * drawn on an opaque dark disc with a light outer ring, so the shape reads at
+ * a glance against anything underneath. Being legible is not the same as
+ * being confident, and the tooltip and card still say which one this is.
+ */
 const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
   const style = beaconTierStyle(spot.tier);
-  const size = 26;
+  const size = 30;
   const isLead = spot.tier === 'lead';
   const isFlagged = spot.tier === 'flagged';
   const rung = BEACON_RUNG[spot.tier] ?? 0;
 
   // The progress ring, drawn with a conic gradient behind the hollow centre.
-  // Cheap enough to put on 200 markers; no SVG, no extra DOM.
+  // Cheap enough to put on 200 markers; no SVG, no extra DOM. A lead has no
+  // arc to draw, so it gets the flat dark disc.
   const progress = rung > 0 && !isFlagged
-    ? `background:conic-gradient(${style.color} ${rung * 360}deg, ` +
-      `rgba(148,163,184,0.22) ${rung * 360}deg);`
-    : `background:${style.colorSoft};`;
+    ? `background:conic-gradient(${style.color} ${rung * 360}deg, rgba(15,23,42,0.92) ${rung * 360}deg);`
+    : `background:rgba(15,23,42,0.92);`;
 
-  const inner = isFlagged ? 11 : isLead ? 5 : 9;
+  const inner = isFlagged ? 12 : isLead ? 9 : 11;
 
   const html =
     `<div style="width:${size}px;height:${size}px;border-radius:9999px;` +
-    `border:2px ${isLead ? 'dashed' : 'solid'} ${style.ring};${progress}` +
+    // Solid, not dashed, and at full opacity. The dash was the single biggest
+    // reason a lead vanished into gravel.
+    `border:2px solid ${style.color};${progress}` +
     `display:flex;align-items:center;justify-content:center;box-sizing:border-box;` +
-    `${isFlagged ? `box-shadow:0 0 0 3px ${style.colorSoft};` : ''}">` +
+    // A dark halo under everything, so the pin has an edge over pale ground
+    // (a bright gravel pit) as well as dark (forest canopy).
+    `box-shadow:0 0 0 1.5px rgba(2,6,23,0.85), 0 2px 6px rgba(2,6,23,0.55)` +
+    `${isFlagged ? `, 0 0 0 5px ${style.colorSoft}` : ''};">` +
     `<div style="width:${inner}px;height:${inner}px;border-radius:9999px;` +
-    `background:${style.color};` +
-    // The centre of a mid-ladder pin sits on the panel colour rather than the
-    // tier colour, so the filled arc stays the thing that reads as progress.
+    // A lead's centre is hollow — a ring of its own colour rather than a
+    // solid dot — which is the same "recorded, unconfirmed" language the
+    // facility pins and the chips above a spot already use.
+    `${isLead
+      ? `background:transparent;box-shadow:inset 0 0 0 2.5px ${style.color};`
+      : `background:${style.color};`}` +
     `${!isFlagged && rung > 0 && rung < 1 ? 'box-shadow:0 0 0 2px #0f172a;' : ''}"></div>` +
     `</div>`;
 

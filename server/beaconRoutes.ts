@@ -170,9 +170,24 @@ const DISCLAIMER =
  * Kept verbatim because it tells the camper what to DO next, which is a great
  * deal more useful than an empty list.
  */
+/**
+ * THIS TEXT USED TO SEND PEOPLE SOMEWHERE BEACON NOW REFUSES TO LOOK.
+ *
+ * It said "try closer to the city edge or adjacent to municipal parks" —
+ * written when any ground scored, and directly contradicted by the rule that
+ * a candidate must sit on named public land. A municipal park is now rejected
+ * outright, and so is a town.
+ *
+ * What replaces it says the two things that are actually true: nothing was
+ * found ON PUBLIC LAND here, and an empty answer is about the MAP rather than
+ * about the ground — public land whose boundary nobody has drawn in
+ * OpenStreetMap is invisible to this scan and very common.
+ */
 const NOTHING_FOUND =
-  'No high-confidence spots found nearby. Try dropping a beacon closer to the ' +
-  'city edge or adjacent to municipal parks.';
+  'Nothing on public land here cleared the bar. Beacon only suggests places ' +
+  'inside land the map names as public — national forest, BLM, Crown land — ' +
+  'so a blank answer often means the boundary is not mapped rather than that ' +
+  'there is nowhere to stay. Try a beacon further out, on land you know is public.';
 
 /* ------------------------------------------------------------------ */
 
