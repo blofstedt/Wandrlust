@@ -46,7 +46,8 @@ import {
   FACILITY_COLOR
 } from '../utils/amenityDots';
 import {
-  fetchNearbyFacilities, fetchNearestDriveableRoad, fetchFacilitiesInView, ROAD_RADIUS_KM,
+  fetchNearbyFacilities, fetchNearestDriveableRoad, findNearestDriveableRoad,
+  fetchFacilitiesInView, ROAD_RADIUS_KM,
   FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM, FACILITY_MIN_ZOOM
 } from '../services/nearbyAmenityService';
 import type { FacilityLookupState } from './FacilityChips';
@@ -5114,23 +5115,39 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!point) return;
 
     let road = facility;
+    /**
+     * `checked` is the difference between two sentences that look alike and
+     * mean opposite things: "nobody has mapped a track here" and "we could not
+     * find out". The chip already carries its own line when the facility lookup
+     * found one, so that path never has to ask.
+     */
+    let checked = true;
     if (!road?.line?.length) {
       t.label([point.lat, point.lon], {
         title: 'Looking for the track…', glyph: '\u{1F6E3}️', color: '#FDE047'
       });
-      road = await fetchNearestDriveableRoad(point.lat, point.lon, ROAD_RADIUS_KM);
+      const found = await findNearestDriveableRoad(point.lat, point.lon, ROAD_RADIUS_KM);
       if (!t.alive()) return;
+      road = found.road;
+      checked = found.ok;
       t.layer.clearLayers();
     }
 
     if (!road?.line?.length) {
-      t.label([point.lat, point.lon], {
-        title: 'No mapped track within 2 km',
-        detail: 'OpenStreetMap has nothing here, which is not the same as nothing being here',
-        glyph: '\u{1F6E3}️',
-        color: '#FDE047'
-      });
-      await t.wait(2200);
+      t.label([point.lat, point.lon], checked
+        ? {
+            title: 'No mapped track within 2 km',
+            detail: 'OpenStreetMap has nothing here, which is not the same as nothing being here',
+            glyph: '\u{1F6E3}️',
+            color: '#FDE047'
+          }
+        : {
+            title: 'Could not check for a track',
+            detail: 'OpenStreetMap did not answer. That is not a report that there is no road',
+            glyph: '\u{1F6E3}️',
+            color: '#FDE047'
+          });
+      await t.wait(2600);
       return;
     }
 
@@ -5155,7 +5172,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       color: '#FDE047'
     });
 
-    await t.wait(2400);
+    /**
+     * LONG ENOUGH TO ACTUALLY LOOK AT THE ROAD.
+     *
+     * The line was on screen for about three seconds all in, and most of that
+     * went on the camera still settling and the label arriving. By the time you
+     * had found the yellow line against the imagery it was being taken away —
+     * so the answer to "where is the track" was one you had to ask for twice.
+     * Five seconds is a glance, a second glance, and time to see where it goes.
+     */
+    await t.wait(4500);
   }), [runTour]);
 
   /**
