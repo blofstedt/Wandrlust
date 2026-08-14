@@ -3543,6 +3543,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // same pattern; doing it here too is what stops the "shows up then
     // disappears" flicker on the warning layer.
     let requestId = 0;
+    /**
+     * Backoff for a lookup that could not complete.
+     *
+     * A camper who reopens the app on a waking radio gets one failed request
+     * and then, with the box-loaded guard suppressing `moveend` refetches,
+     * nothing at all until they pan. So a failure schedules its own retry —
+     * doubling from 4 seconds up to a minute, reset the moment one succeeds.
+     *
+     * Capped rather than infinite-backoff-forever because the common case here
+     * is a phone that will be back on signal within a minute, and the whole
+     * point is that the warnings return without the camper doing anything.
+     */
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = 4000;
+    const RETRY_MAX = 60_000;
+
+    const scheduleAlertRetry = () => {
+      if (retryTimer) return;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        retryDelay = Math.min(retryDelay * 2, RETRY_MAX);
+        void run();
+      }, retryDelay);
+    };
 
     /**
      * Draw the active warnings, split into the two kinds of event.
@@ -3725,7 +3749,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // disappeared mid-pan. 1.0 is the floor that keeps a multi-zoom-out
       // gesture from churning the layer.
       const padded = b.pad(1.0);
-      const alerts = await fetchAreaAlerts(
+      const result = await fetchAreaAlerts(
         {
           minLat: padded.getSouth(), minLon: padded.getWest(),
           maxLat: padded.getNorth(), maxLon: padded.getEast()
@@ -3736,8 +3760,37 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // way, do not write over fresher data.
       if (cancelled || myId !== requestId) return;
 
+      /**
+       * A LOOKUP THAT FAILED LEAVES THE WARNINGS EXACTLY WHERE THEY ARE.
+       *
+       * This is the "I came back to the app and the clouds were gone" bug, and
+       * it had two halves that made each other worse.
+       *
+       * Backgrounding a phone browser kills in-flight requests and drops the
+       * radio. Coming back fires a resize, which fires `moveend`, which ran
+       * this — against a network that had not woken up yet. The fetch failed,
+       * failure was indistinguishable from an empty sky, and `render([])` wiped
+       * every cloud off the map.
+       *
+       * Then the second half: `loadedAlertBox` was set REGARDLESS of the
+       * outcome, so the "we already have this area" guard at the top of `run`
+       * suppressed every retry. The warnings did not come back when the signal
+       * did — they stayed gone until the camper panned clean out of the box.
+       *
+       * So: on a failure, keep the layer, do not record the box, and let the
+       * next `moveend` — or the retry below — have another go. Drawing nothing
+       * is a claim that there is nothing, and that is the one claim this app
+       * must never make about a weather warning.
+       */
+      if (!result.ok) {
+        if (!result.aborted) scheduleAlertRetry();
+        return;
+      }
+
+      // A clean answer: the area is loaded and the backoff starts over.
       loadedAlertBox = padded;
-      const sorted = sortAlerts(alerts);
+      retryDelay = 4000;
+      const sorted = sortAlerts(result.alerts);
       setHazards(sorted);
       render(sorted);
     };
@@ -3752,11 +3805,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // badge are all plain geometry Leaflet re-projects itself.
     map.on('moveend zoomend', load);
 
+    /**
+     * Coming back to the app re-checks the warnings.
+     *
+     * A phone that has been in a pocket for two hours is showing warnings from
+     * two hours ago, and a warning that has since been cancelled — or a new one
+     * that has since been issued — is exactly the thing a camper reopens the
+     * app to find out about. `moveend` does not reliably fire on return, and
+     * when it does the box-loaded guard swallows it, so ask explicitly.
+     *
+     * `loadedAlertBox` is dropped first so the guard cannot suppress this one.
+     */
+    const onWake = () => {
+      if (document.visibilityState !== 'visible') return;
+      loadedAlertBox = null;
+      load();
+    };
+    document.addEventListener('visibilitychange', onWake);
+    window.addEventListener('online', onWake);
+
     return () => {
       cancelled = true;
       controller?.abort();
       if (debounce) clearTimeout(debounce);
+      if (retryTimer) clearTimeout(retryTimer);
       map.off('moveend zoomend', load);
+      document.removeEventListener('visibilitychange', onWake);
+      window.removeEventListener('online', onWake);
       clear();
       // Drop the renderers too, so a remount does not stack a second one.
       if (warningRendererRef.current) {

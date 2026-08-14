@@ -284,11 +284,28 @@ export const fetchWeather = async (
   }
 };
 
+export interface AreaAlertResult {
+  /**
+   * False when the lookup did not complete — offline, a 5xx, a cold serverless
+   * function, a phone whose radio has not woken up yet.
+   *
+   * THIS FLAG IS THE WHOLE POINT OF THIS TYPE. It used to return a bare array
+   * and fold every one of those cases into `[]`, which the map then drew as
+   * fact: the warning clouds were wiped off the screen by a request that never
+   * got an answer. "We could not check" and "there is nothing in force" are
+   * different facts about the weather, and only one of them is safe to draw.
+   */
+  ok: boolean;
+  alerts: HazardAlert[];
+  /** True when the request was cancelled by the caller. Not a failure. */
+  aborted: boolean;
+}
+
 /** Alerts only, for a wide area — the map-wide hazard layer. */
 export const fetchAreaAlerts = async (
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   signal?: AbortSignal
-): Promise<HazardAlert[]> => {
+): Promise<AreaAlertResult> => {
   try {
     const params = new URLSearchParams({
       minLat: bbox.minLat.toFixed(4),
@@ -298,12 +315,17 @@ export const fetchAreaAlerts = async (
     });
 
     const res = await fetch(`/api/weather/alerts?${params}`, { signal });
-    if (!res.ok) return [];
+    if (!res.ok) return { ok: false, alerts: [], aborted: false };
 
     const data = await res.json();
-    return Array.isArray(data?.alerts) ? sortAlerts(data.alerts) : [];
+    // A 200 carrying no `alerts` array is a broken response, not a quiet sky.
+    if (!Array.isArray(data?.alerts)) return { ok: false, alerts: [], aborted: false };
+
+    return { ok: true, alerts: sortAlerts(data.alerts), aborted: false };
   } catch {
-    return [];
+    // An abort is the caller changing their mind, and the caller already
+    // ignores superseded responses. It is neither a failure nor an answer.
+    return { ok: false, alerts: [], aborted: Boolean(signal?.aborted) };
   }
 };
 

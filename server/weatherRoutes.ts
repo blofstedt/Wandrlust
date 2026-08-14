@@ -227,27 +227,48 @@ export const registerWeatherRoutes = (app: Express): void => {
        * RDPS model output, so this is the same forecast through a door that
        * answers. Alerts still come from ECCC and only from ECCC.
        */
-      const [alerts, forecast] = await Promise.all([
+      const [ecccAlerts, forecast] = await Promise.all([
         fetchEcccAlerts(lat, lon),
         fetchOpenMeteo(lat, lon, false)
       ]);
+
+      /*
+       * Null means GeoMet did not answer. There is nothing to draw either way,
+       * but the NOTE has to change: "no warnings here" and "we could not ask
+       * about warnings here" are the two different things this app exists to
+       * keep apart, and a camper reading the second as the first is exactly
+       * the failure that matters.
+       */
+      const alertsUnavailable = ecccAlerts === null;
+      const alerts = ecccAlerts ?? [];
 
       payload = {
         updatedAt: new Date().toISOString(),
         timezone: forecast.timezone,
         periods: forecast.periods,
         alerts,
+        alertsUnavailable,
         source: forecast.periods.length > 0 ? 'open-meteo' : alerts.length > 0 ? 'eccc' : 'none',
         resolution: 'hourly',
-        note: forecast.periods.length > 0
-          ? 'Forecast from Open-Meteo, which serves Environment Canada model data. ' +
-            'Warnings and watches come from Environment Canada directly.'
-          : 'No forecast is available for this point right now. Warnings, if any, ' +
-            'are still shown and still come from Environment Canada.'
+        note: alertsUnavailable
+          ? 'Environment Canada could not be reached, so warnings could not be checked ' +
+            'for this point. That is not the same as there being none.'
+          : forecast.periods.length > 0
+            ? 'Forecast from Open-Meteo, which serves Environment Canada model data. ' +
+              'Warnings and watches come from Environment Canada directly.'
+            : 'No forecast is available for this point right now. Warnings, if any, ' +
+              'are still shown and still come from Environment Canada.'
       };
     }
 
-    store(key, payload);
+    /*
+     * Never cache a lookup that could not reach the alert feed. Ten minutes is
+     * the right TTL for a forecast and far too long to keep repeating "we
+     * could not check for warnings" after the feed has come back.
+     */
+    if (!(payload as { alertsUnavailable?: boolean })?.alertsUnavailable) {
+      store(key, payload);
+    }
     return res.json(payload);
   });
 
@@ -265,6 +286,18 @@ export const registerWeatherRoutes = (app: Express): void => {
     const span = Math.max(Math.abs(maxLat - minLat), Math.abs(maxLon - minLon)) / 2;
 
     const collected: any[] = [];
+    /**
+     * Did every feed we asked actually answer?
+     *
+     * A feed that could not be reached must not come out of here looking like
+     * a quiet sky — and above all must not be CACHED as one. The empty payload
+     * used to be stored for five minutes and served to everyone in the region,
+     * so a ten-second NWS blip became ten minutes of a map confidently showing
+     * no warnings at all. The client draws nothing either way; the difference
+     * is that it now keeps whatever it already had, retries, and never records
+     * the area as loaded.
+     */
+    let allFeedsAnswered = true;
 
     /**
      * ASK BY STATE, NOT BY POINT.
@@ -280,7 +313,16 @@ export const registerWeatherRoutes = (app: Express): void => {
       // Zone-based products (heat, cold, smoke, wind, red flag) arrive with a
       // null geometry and a list of the zones they cover. Fetch those outlines
       // before anything else looks at the alerts.
-      collected.push(...(await resolveNwsZoneGeometry(await fetchNwsAlertsForStates(states))));
+      const nws = await fetchNwsAlertsForStates(states);
+      if (nws === null) allFeedsAnswered = false;
+      else {
+        collected.push(...(await resolveNwsZoneGeometry(
+          nws,
+          // Resolve the zones nearest the middle of the view first: the lookup
+          // budget decides which alerts can be drawn at all.
+          { lat: centreLat, lon: centreLon }
+        )));
+      }
     }
 
     /**
@@ -293,7 +335,9 @@ export const registerWeatherRoutes = (app: Express): void => {
      */
     const touchesCanada = maxLat > 48.5 || (maxLat > 41.6 && maxLon > -95.5);
     if (touchesCanada) {
-      collected.push(...(await fetchEcccAlerts(centreLat, centreLon, Math.max(span, 1.5))));
+      const eccc = await fetchEcccAlerts(centreLat, centreLon, Math.max(span, 1.5));
+      if (eccc === null) allFeedsAnswered = false;
+      else collected.push(...eccc);
     }
 
     // De-duplicate by id; the two feeds overlap near the border.
@@ -317,6 +361,24 @@ export const registerWeatherRoutes = (app: Express): void => {
     const alerts = deduped.filter((a) => !a.geometry || intersectsBox(
       a.geometry, minLat, minLon, maxLat, maxLon
     ));
+
+    /**
+     * A feed went missing. Say so with a 503 rather than a confident empty
+     * list, and do not cache it.
+     *
+     * 503 and not 200-with-a-flag because the client's contract is already
+     * "any non-OK response means we could not check" — which is exactly what
+     * happened — and that path keeps the warnings already on the map instead
+     * of wiping them. Partial results are dropped rather than half-drawn: a
+     * map showing the Canadian half of the border while NWS is down is more
+     * misleading than one that admits it does not know.
+     */
+    if (!allFeedsAnswered) {
+      return res.status(503).json({
+        error: 'A weather alert feed could not be reached.',
+        detail: 'This is not a report that no warnings are in force.'
+      });
+    }
 
     const payload = { alerts, fetchedAt: new Date().toISOString() };
     store(key, payload);
