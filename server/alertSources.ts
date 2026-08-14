@@ -23,6 +23,37 @@ export const ECCC_ALERTS = 'https://api.weather.gc.ca/collections/weather-alerts
 
 /**
  * ---------------------------------------------------------------------------
+ * NEVER PUT `limit` ON `/alerts/active`. IT IS NOT A PAGINATED ENDPOINT.
+ * ---------------------------------------------------------------------------
+ *
+ * `/alerts` accepts `limit` and `cursor`. `/alerts/active` accepts neither,
+ * and it does not ignore them — it answers 400:
+ *
+ *     { "parameterErrors": [ { "parameter": "query.limit",
+ *         "message": "Query parameter \"limit\" is not recognized" } ] }
+ *
+ * Both the viewport query and the nationwide ingest sent `&limit=500`, so
+ * EVERY American alert lookup this app has ever made was rejected before it
+ * left the building. Not intermittently, not under load — always, since the
+ * day the by-state query was written. The map has never once drawn a warning
+ * from the National Weather Service.
+ *
+ * It looked exactly like an outage because of how carefully everything
+ * downstream handles one: a 400 became `null`, `null` became "we could not
+ * reach the feed", and the honest empty answer that follows is
+ * indistinguishable from a genuinely quiet sky. Two whole rounds of
+ * investigation went into flakiness that was not there — the fix was deleting
+ * eleven characters, and the reason it took so long is that nothing in the
+ * pipeline ever read the sentence NWS was sending back explaining itself.
+ * That is why `getJson` now keeps the body of a refusal.
+ *
+ * `/alerts/active` returns every alert matching the filter with no cap, which
+ * is what we wanted anyway. `/zones` below is genuinely paginated and its
+ * `limit` is correct.
+ */
+
+/**
+ * ---------------------------------------------------------------------------
  * THE USER-AGENT IS PART OF THE API CONTRACT, NOT A NICETY
  * ---------------------------------------------------------------------------
  *
@@ -427,9 +458,17 @@ const fetchZoneGeometries = async (ids: string[]): Promise<Map<string, unknown>>
   }
   const requested = new Set(batches.flat());
 
+  /*
+   * Logged, not swallowed. `/alerts/active` was rejecting every request for an
+   * unrecognised query parameter and nothing noticed for months, because the
+   * refusal was turned into `null` and `null` reads as "the feed is down". A
+   * zone lookup that fails takes the CLOUDS off the map while leaving the
+   * alerts in the list, which is an even quieter way to be broken.
+   */
   const results = await Promise.all(batches.map((batch) => getJson(
     `${NWS_BASE}/zones?id=${batch.join(',')}&include_geometry=true&limit=${ZONE_BATCH}`,
-    12000
+    12000,
+    (failure) => console.warn(`[alerts] zone outlines unavailable: ${describeFailure(failure)}`)
   )));
 
   const seen = new Set<string>();
@@ -738,7 +777,7 @@ export const fetchNwsAlertsForStates = async (
   if (states.length === 0) return [];
   const data = await getJson(
     `${NWS_BASE}/alerts/active?status=actual&message_type=alert` +
-    `&area=${states.join(',')}&limit=500`,
+    `&area=${states.join(',')}`,
     15000,
     onFailure
   );
@@ -755,7 +794,7 @@ export const fetchNwsAlertsForStates = async (
  */
 export const fetchNwsActiveAlerts = async (): Promise<NormalisedAlert[] | null> => {
   const data = await getJson(
-    `${NWS_BASE}/alerts/active?status=actual&message_type=alert&limit=500`,
+    `${NWS_BASE}/alerts/active?status=actual&message_type=alert`,
     20000
   );
   if (!data) return null;
