@@ -27,7 +27,7 @@ import {
   fetchNwsAlertsForStates, resolveNwsZoneGeometry
 } from './alertSources.js';
 import { fetchOpenMeteo } from './openMeteo.js';
-import { statesInBbox } from './usStates.js';
+import { statesInBbox, stateDistanceRank } from './usStates.js';
 
 const POINT_TTL_MS = 24 * 60 * 60 * 1000;
 const FORECAST_TTL_MS = 10 * 60 * 1000;
@@ -81,6 +81,80 @@ const intersectsBox = (
   if (!Number.isFinite(w) || !Number.isFinite(s)) return true;
   return !(e < minLon || w > maxLon || n < minLat || s > maxLat);
 };
+
+/* ------------------------------------------------------------------ */
+/* How much ground one alerts query may ask about                      */
+/* ------------------------------------------------------------------ */
+/**
+ * THE VIEWPORT IS NOT ALLOWED TO BE A CONTINENT, AND THIS IS WHY.
+ *
+ * The client asks for its viewport padded to three times its own size, so a
+ * camper zoomed out to "the west" was asking this endpoint about roughly forty
+ * degrees of latitude. That box touches twenty states, and every zone-based
+ * product in twenty states — every heat advisory, every cold snap, every air
+ * quality statement — arrives with a null geometry and has to have its forecast
+ * zones fetched one batch at a time before it can be drawn at all.
+ *
+ * One gesture therefore fanned out into a hundred-odd requests to
+ * api.weather.gov, several such gestures were in flight at once because a pan
+ * is a stream of them, and NWS did the only sensible thing and started refusing
+ * them. A refused feed came back null, null meant "we could not check", and the
+ * whole response was thrown away — which is what put the map in the state it
+ * was reported in: American clouds left over from an earlier, tighter view,
+ * nothing at all over Canada, and the layer blinking as the occasional request
+ * squeaked through.
+ *
+ * So the query is clamped. Past this much ground a cloud is a smear a few
+ * pixels wide that tells a camper nothing anyway, and asking for it costs the
+ * warnings they CAN read. The response says when it has been clamped, and the
+ * client keeps asking rather than recording the whole padded box as loaded.
+ */
+const MAX_SPAN_LAT = 14;
+const MAX_SPAN_LON = 24;
+
+/**
+ * Most states one query will ask NWS about, nearest the middle of the view
+ * first.
+ *
+ * The cap is on the ZONE LOOKUPS that follow, not really on the alert query
+ * itself — twenty states of zone-based products is what blows the budget. Ten
+ * comfortably covers a clamped box, and `stateDistanceRank` makes sure the ten
+ * are the ones under the camper rather than the ones the table happened to
+ * list first.
+ */
+const MAX_STATES = 10;
+
+interface ClampedBox {
+  minLat: number; minLon: number; maxLat: number; maxLon: number;
+  /** True when the caller asked about more ground than this box covers. */
+  clipped: boolean;
+}
+
+const clampBox = (
+  minLat: number, minLon: number, maxLat: number, maxLon: number
+): ClampedBox => {
+  const centreLat = (minLat + maxLat) / 2;
+  const centreLon = (minLon + maxLon) / 2;
+  const spanLat = Math.abs(maxLat - minLat);
+  const spanLon = Math.abs(maxLon - minLon);
+
+  const clipped = spanLat > MAX_SPAN_LAT || spanLon > MAX_SPAN_LON;
+  if (!clipped) return { minLat, minLon, maxLat, maxLon, clipped: false };
+
+  const halfLat = Math.min(spanLat, MAX_SPAN_LAT) / 2;
+  const halfLon = Math.min(spanLon, MAX_SPAN_LON) / 2;
+
+  return {
+    minLat: centreLat - halfLat,
+    maxLat: centreLat + halfLat,
+    minLon: centreLon - halfLon,
+    maxLon: centreLon + halfLon,
+    clipped: true
+  };
+};
+
+/** Whether a feed answered, per feed, in the shape the client reads. */
+type FeedState = 'ok' | 'unreachable' | 'skipped';
 
 const fetchNwsPoint = async (lat: number, lon: number) => {
   const key = `nws:point:${lat.toFixed(3)},${lon.toFixed(3)}`;
@@ -277,27 +351,19 @@ export const registerWeatherRoutes = (app: Express): void => {
     if (!coords) return res.status(400).json({ error: 'minLat, minLon, maxLat, maxLon required' });
     const [minLat, minLon, maxLat, maxLon] = coords;
 
-    const key = `alerts:${coords.map((n) => n.toFixed(1)).join(',')}`;
+    const box = clampBox(minLat, minLon, maxLat, maxLon);
+
+    const key = `alerts:${[box.minLat, box.minLon, box.maxLat, box.maxLon]
+      .map((n) => n.toFixed(1)).join(',')}`;
     const hit = cached<any>(key, ALERTS_TTL_MS);
     if (hit) return res.json(hit);
 
-    const centreLat = (minLat + maxLat) / 2;
-    const centreLon = (minLon + maxLon) / 2;
-    const span = Math.max(Math.abs(maxLat - minLat), Math.abs(maxLon - minLon)) / 2;
-
-    const collected: any[] = [];
-    /**
-     * Did every feed we asked actually answer?
-     *
-     * A feed that could not be reached must not come out of here looking like
-     * a quiet sky — and above all must not be CACHED as one. The empty payload
-     * used to be stored for five minutes and served to everyone in the region,
-     * so a ten-second NWS blip became ten minutes of a map confidently showing
-     * no warnings at all. The client draws nothing either way; the difference
-     * is that it now keeps whatever it already had, retries, and never records
-     * the area as loaded.
-     */
-    let allFeedsAnswered = true;
+    const centreLat = (box.minLat + box.maxLat) / 2;
+    const centreLon = (box.minLon + box.maxLon) / 2;
+    // Half-height and half-width separately: GeoMet is asked about the box on
+    // screen, not about a square drawn round its longer side.
+    const halfLat = Math.max(Math.abs(box.maxLat - box.minLat) / 2, 1.0);
+    const halfLon = Math.max(Math.abs(box.maxLon - box.minLon) / 2, 1.5);
 
     /**
      * ASK BY STATE, NOT BY POINT.
@@ -307,23 +373,14 @@ export const registerWeatherRoutes = (app: Express): void => {
      * heat advisory over the next range, the smoke two counties north — was
      * never requested, so it could never be drawn. States are the coarsest
      * thing the NWS API will answer for, and one request covers the screen.
+     *
+     * Capped and sorted nearest-first: see MAX_STATES.
      */
-    const states = statesInBbox(minLon, minLat, maxLon, maxLat);
-    if (states.length > 0) {
-      // Zone-based products (heat, cold, smoke, wind, red flag) arrive with a
-      // null geometry and a list of the zones they cover. Fetch those outlines
-      // before anything else looks at the alerts.
-      const nws = await fetchNwsAlertsForStates(states);
-      if (nws === null) allFeedsAnswered = false;
-      else {
-        collected.push(...(await resolveNwsZoneGeometry(
-          nws,
-          // Resolve the zones nearest the middle of the view first: the lookup
-          // budget decides which alerts can be drawn at all.
-          { lat: centreLat, lon: centreLon }
-        )));
-      }
-    }
+    const states = statesInBbox(box.minLon, box.minLat, box.maxLon, box.maxLat)
+      .map((code) => ({ code, rank: stateDistanceRank(code, centreLat, centreLon) }))
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, MAX_STATES)
+      .map((entry) => entry.code);
 
     /**
      * Canada does not start at the 49th parallel everywhere.
@@ -333,12 +390,41 @@ export const registerWeatherRoutes = (app: Express): void => {
      * sits at 42–44°N, so every Environment Canada warning around Toronto,
      * Windsor and the north shore of Lake Erie was skipped outright.
      */
-    const touchesCanada = maxLat > 48.5 || (maxLat > 41.6 && maxLon > -95.5);
-    if (touchesCanada) {
-      const eccc = await fetchEcccAlerts(centreLat, centreLon, Math.max(span, 1.5));
-      if (eccc === null) allFeedsAnswered = false;
-      else collected.push(...eccc);
-    }
+    const touchesCanada =
+      box.maxLat > 48.5 || (box.maxLat > 41.6 && box.maxLon > -95.5);
+
+    /**
+     * BOTH FEEDS AT ONCE, WHICH THEY NEVER WERE.
+     *
+     * NWS was awaited, then its zone outlines were awaited, and only then was
+     * Environment Canada asked. Three timeouts end to end came to more than
+     * the thirty seconds this function is allowed to live, so on a slow morning
+     * the Canadian half of the map was being fetched by a request the platform
+     * had already killed. They do not depend on each other and never did.
+     */
+    const [nwsAlerts, ecccAlerts] = await Promise.all([
+      states.length > 0
+        ? fetchNwsAlertsForStates(states).then((rows) => (
+            rows === null
+              ? null
+              // Zone-based products (heat, cold, smoke, wind, red flag) arrive
+              // with a null geometry and a list of the zones they cover.
+              // Resolve the zones nearest the middle of the view first: the
+              // lookup budget decides which alerts can be drawn at all.
+              : resolveNwsZoneGeometry(rows, { lat: centreLat, lon: centreLon })
+          ))
+        : Promise.resolve<any[] | null>([]),
+      touchesCanada
+        ? fetchEcccAlerts(centreLat, centreLon, halfLat, halfLon)
+        : Promise.resolve<any[] | null>(null)
+    ]);
+
+    const feeds: Record<'nws' | 'eccc', FeedState> = {
+      nws: states.length === 0 ? 'skipped' : nwsAlerts === null ? 'unreachable' : 'ok',
+      eccc: !touchesCanada ? 'skipped' : ecccAlerts === null ? 'unreachable' : 'ok'
+    };
+
+    const collected: any[] = [...(nwsAlerts ?? []), ...(ecccAlerts ?? [])];
 
     // De-duplicate by id; the two feeds overlap near the border.
     const seen = new Set<string>();
@@ -359,29 +445,64 @@ export const registerWeatherRoutes = (app: Express): void => {
      * silent one.
      */
     const alerts = deduped.filter((a) => !a.geometry || intersectsBox(
-      a.geometry, minLat, minLon, maxLat, maxLon
+      a.geometry, box.minLat, box.minLon, box.maxLat, box.maxLon
     ));
 
     /**
-     * A feed went missing. Say so with a 503 rather than a confident empty
-     * list, and do not cache it.
+     * NOTHING ANSWERED AT ALL. That, and only that, is a 503.
      *
-     * 503 and not 200-with-a-flag because the client's contract is already
-     * "any non-OK response means we could not check" — which is exactly what
-     * happened — and that path keeps the warnings already on the map instead
-     * of wiping them. Partial results are dropped rather than half-drawn: a
-     * map showing the Canadian half of the border while NWS is down is more
-     * misleading than one that admits it does not know.
+     * There is no half of this worth drawing and nothing worth caching, and the
+     * client's contract for a non-OK response is to keep whatever warnings it
+     * already has and try again — which is the right thing to do when we know
+     * nothing.
      */
-    if (!allFeedsAnswered) {
+    const answered = Object.values(feeds).filter((state) => state === 'ok').length;
+    const asked = Object.values(feeds).filter((state) => state !== 'skipped').length;
+
+    if (asked > 0 && answered === 0) {
       return res.status(503).json({
-        error: 'A weather alert feed could not be reached.',
-        detail: 'This is not a report that no warnings are in force.'
+        error: 'The weather alert feeds could not be reached.',
+        detail: 'This is not a report that no warnings are in force.',
+        feeds
       });
     }
 
-    const payload = { alerts, fetchedAt: new Date().toISOString() };
-    store(key, payload);
+    /**
+     * ONE FEED ANSWERED AND THE OTHER DID NOT — DRAW THE HALF WE HAVE, AND SAY
+     * WHICH HALF IS MISSING.
+     *
+     * This used to be a 503 as well, on the reasoning that a map showing the
+     * Canadian half of the border while NWS is down is more misleading than one
+     * that admits it does not know. That reasoning was right about the danger
+     * and wrong about what the code actually did: throwing the response away
+     * did not make the map admit anything. It left the previous answer sitting
+     * on screen, unlabelled and now stale, which is the same lie with an extra
+     * step — and it is exactly what was reported: American warnings drawn
+     * beside a blank Canada.
+     *
+     * So the half we have is returned WITH the gap named, and the client puts
+     * the gap on the screen where the camper can read it. `partial` is what
+     * stops the client recording the area as loaded, so it keeps retrying until
+     * the missing feed comes back.
+     */
+    const partial = asked > 0 && answered < asked;
+
+    const payload = {
+      alerts,
+      fetchedAt: new Date().toISOString(),
+      feeds,
+      partial,
+      /** True when this answer covers less ground than the caller asked about. */
+      clipped: box.clipped,
+      area: {
+        minLat: box.minLat, minLon: box.minLon,
+        maxLat: box.maxLat, maxLon: box.maxLon
+      }
+    };
+
+    // A partial answer is never cached. Five minutes of serving one feed's
+    // silence to every camper in the region is how a blip becomes an outage.
+    if (!partial) store(key, payload);
     return res.json(payload);
   });
 };

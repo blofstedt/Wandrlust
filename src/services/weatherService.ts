@@ -284,6 +284,21 @@ export const fetchWeather = async (
   }
 };
 
+/** Which agency was asked, and whether it answered. */
+export type AlertFeedId = 'nws' | 'eccc';
+export type AlertFeedState = 'ok' | 'unreachable' | 'skipped';
+
+export const ALERT_FEED_LABEL: Record<AlertFeedId, string> = {
+  nws: 'the US National Weather Service',
+  eccc: 'Environment Canada'
+};
+
+/** Which side of the border a silent feed leaves blank. */
+export const ALERT_FEED_AREA: Record<AlertFeedId, string> = {
+  nws: 'the US side',
+  eccc: 'the Canadian side'
+};
+
 export interface AreaAlertResult {
   /**
    * False when the lookup did not complete — offline, a 5xx, a cold serverless
@@ -299,7 +314,50 @@ export interface AreaAlertResult {
   alerts: HazardAlert[];
   /** True when the request was cancelled by the caller. Not a failure. */
   aborted: boolean;
+  /**
+   * Per-agency outcome, present whenever the server answered at all.
+   *
+   * `ok` here does NOT mean every warning in force came back — it means the
+   * agency was asked and replied. A feed marked `unreachable` alongside an
+   * `ok` one is the case this exists for: half the border was checked and the
+   * other half was not, and the map has to say which half.
+   */
+  feeds: Record<AlertFeedId, AlertFeedState>;
+  /**
+   * True when at least one agency we asked did not answer.
+   *
+   * The alerts that DID come back are still real and still drawn. What this
+   * changes is that the map must not treat the area as covered: it keeps
+   * retrying, and it puts the gap on screen rather than leaving a half-checked
+   * sky looking like a whole one.
+   */
+  partial: boolean;
+  /**
+   * True when the server answered about less ground than was asked for.
+   *
+   * The alerts endpoint clamps very wide viewports — see MAX_SPAN_LAT in
+   * server/weatherRoutes.ts. Warnings outside the clamp were never looked up,
+   * so the map must not record the whole padded box as loaded.
+   */
+  clipped: boolean;
 }
+
+/** Nothing was learned. Every field says so rather than implying a clear sky. */
+const NO_AREA_ALERTS = (aborted: boolean): AreaAlertResult => ({
+  ok: false,
+  alerts: [],
+  aborted,
+  feeds: { nws: 'skipped', eccc: 'skipped' },
+  partial: false,
+  clipped: false
+});
+
+const asFeeds = (raw: unknown): Record<AlertFeedId, AlertFeedState> => {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const read = (id: AlertFeedId): AlertFeedState =>
+    r[id] === 'ok' || r[id] === 'unreachable' ? (r[id] as AlertFeedState) : 'skipped';
+  return { nws: read('nws'), eccc: read('eccc') };
+};
 
 /** Alerts only, for a wide area — the map-wide hazard layer. */
 export const fetchAreaAlerts = async (
@@ -315,18 +373,46 @@ export const fetchAreaAlerts = async (
     });
 
     const res = await fetch(`/api/weather/alerts?${params}`, { signal });
-    if (!res.ok) return { ok: false, alerts: [], aborted: false };
+    if (!res.ok) return NO_AREA_ALERTS(false);
 
     const data = await res.json();
     // A 200 carrying no `alerts` array is a broken response, not a quiet sky.
-    if (!Array.isArray(data?.alerts)) return { ok: false, alerts: [], aborted: false };
+    if (!Array.isArray(data?.alerts)) return NO_AREA_ALERTS(false);
 
-    return { ok: true, alerts: sortAlerts(data.alerts), aborted: false };
+    return {
+      ok: true,
+      alerts: sortAlerts(data.alerts),
+      aborted: false,
+      feeds: asFeeds(data.feeds),
+      partial: data.partial === true,
+      clipped: data.clipped === true
+    };
   } catch {
     // An abort is the caller changing their mind, and the caller already
     // ignores superseded responses. It is neither a failure nor an answer.
-    return { ok: false, alerts: [], aborted: Boolean(signal?.aborted) };
+    return NO_AREA_ALERTS(Boolean(signal?.aborted));
   }
+};
+
+/**
+ * The sentence to put on the map when a feed went missing, or null when none
+ * did.
+ *
+ * Names the agency and the ground it leaves unchecked, because "some warnings
+ * may be missing" is the kind of hedge a camper learns to scroll past. "No
+ * warnings were checked on the Canadian side" is a fact they can act on.
+ */
+export const alertGapNote = (result: AreaAlertResult): string | null => {
+  const missing = (Object.keys(result.feeds) as AlertFeedId[])
+    .filter((id) => result.feeds[id] === 'unreachable');
+
+  if (missing.length === 0) return null;
+
+  const areas = missing.map((id) => ALERT_FEED_AREA[id]).join(' or ');
+  const who = missing.map((id) => ALERT_FEED_LABEL[id]).join(' and ');
+
+  return `No warnings could be checked on ${areas} — ${who} did not answer. ` +
+    'That is not the same as there being none.';
 };
 
 /* ------------------------------------------------------------------ *

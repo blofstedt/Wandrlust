@@ -162,6 +162,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
       // the server said, and stop offering something it will not do.
       setConfirmingRemove(false);
       setRemoval({
+        asked: true,
         exists: true, mine: true, removable: false, others: 0,
         message: result.message
       });
@@ -216,8 +217,16 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
    * all — added with no account or no signal, so the copy on this phone is the
    * only copy in existence. `removal === null` means the answer is not back
    * yet and nothing is offered.
+   *
+   * `removal.asked` GATES BOTH, and it is not optional. A failed lookup used to
+   * arrive looking exactly like "no server row", which is the second case above
+   * — so a camper whose connection dropped, or whose deployment was missing the
+   * migration, was offered a Remove button on a published spot that the server
+   * would then refuse. Asking first is the whole design; a default that reads
+   * as a yes throws it away.
    */
-  const canRemove = removal !== null && (removal.removable || !removal.exists);
+  const canRemove =
+    removal !== null && removal.asked && (removal.removable || !removal.exists);
 
   return (
     <div

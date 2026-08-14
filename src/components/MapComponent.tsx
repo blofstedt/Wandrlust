@@ -6,7 +6,8 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
-  Crosshair, Eye, Info, Layers, Loader2, MousePointerClick, Navigation, X
+  AlertTriangle, Crosshair, Eye, Info, Layers, Loader2, MousePointerClick,
+  Navigation, X
 } from 'lucide-react';
 
 import type {
@@ -57,7 +58,8 @@ import {
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
-  fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts, WeatherSnapshot
+  fetchAreaAlerts, alertGapNote, HazardAlert, HAZARD_STYLE, sortAlerts,
+  WeatherSnapshot
 } from '../services/weatherService';
 import { prefersReducedMotion, haptic } from '../utils/animation';
 import { PointInfoSheet } from './PointInfoSheet';
@@ -1722,6 +1724,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /** The same alerts, for the chip tours, which run outside React's render. */
   const hazardsRef = useRef<HazardAlert[]>([]);
   hazardsRef.current = hazards;
+  /**
+   * Which side of the border went unchecked, in words, or null when both
+   * agencies answered.
+   *
+   * A warning layer with a hole in it looks exactly like a warning layer over
+   * quiet ground, and there is no way for a camper to tell them apart by
+   * looking. This is the difference, printed on the map. See `alertGapNote`.
+   */
+  const [alertGap, setAlertGap] = useState<string | null>(null);
   /**
    * Toilets, taps and fuel within `FACILITY_RADIUS_KM` of the selected spot.
    *
@@ -3483,6 +3494,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (isOfflineMode) {
       clear();
       setHazards([]);
+      // Offline is its own notice, top-left. A second one naming an agency
+      // that was never going to be asked would just be noise.
+      setAlertGap(null);
       return;
     }
 
@@ -3845,13 +3859,49 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * must never make about a weather warning.
        */
       if (!result.ok) {
-        if (!result.aborted) scheduleAlertRetry();
+        if (!result.aborted) {
+          scheduleAlertRetry();
+          /*
+           * The clouds already drawn stay, and now they carry a date stamp of
+           * sorts: a line saying the check did not go through. Warnings left on
+           * screen with nothing said about them are the stale-and-silent case
+           * this whole path exists to avoid.
+           */
+          setAlertGap(
+            'Warnings could not be checked just now. Anything shaded below is ' +
+            'from the last successful check, and may have changed.'
+          );
+        }
         return;
       }
 
-      // A clean answer: the area is loaded and the backoff starts over.
-      loadedAlertBox = padded;
-      retryDelay = 4000;
+      /**
+       * A HALF-ANSWER IS DRAWN, AND THEN SAID OUT LOUD.
+       *
+       * `partial` means one agency answered and the other did not; `clipped`
+       * means the server narrowed the query because the view was too wide to
+       * ask about (see MAX_SPAN_LAT in server/weatherRoutes.ts). Either way the
+       * warnings that came back are real and get drawn — but the area is NOT
+       * recorded as loaded, so the guard at the top of `run` cannot suppress
+       * the next attempt, and the retry keeps going until the gap closes.
+       *
+       * This is the other half of the fix for the map that shaded the American
+       * side of the border and left Canada blank. The server used to throw a
+       * half-answer away entirely, which did not make the map honest — it just
+       * left the previous answer on screen with nothing saying it was stale.
+       */
+      const complete = !result.partial && !result.clipped;
+
+      if (complete) {
+        loadedAlertBox = padded;
+        retryDelay = 4000;
+      } else {
+        loadedAlertBox = null;
+        if (result.partial) scheduleAlertRetry();
+      }
+
+      setAlertGap(alertGapNote(result));
+
       const sorted = sortAlerts(result.alerts);
       setHazards(sorted);
       render(sorted);
@@ -5652,6 +5702,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           <div className="bg-slate-800/95 backdrop-blur-md border border-slate-600 text-slate-300 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
             <Eye className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
             <span>Outside coverage. Wandrlust supports {COVERAGE_LABEL}.</span>
+          </div>
+        )}
+
+        {/*
+          A HOLE IN THE WARNING LAYER, NAMED.
+
+          The shading over one country and nothing over the next looks
+          identical whether the second country is quiet or simply was not
+          asked. Amber rather than red: nothing is known to be wrong, and
+          dressing "we could not check" as a hazard would be its own kind of
+          overstatement. It clears itself the moment both feeds answer.
+        */}
+        {showWarnings && alertGap && (
+          <div className="bg-amber-950/90 backdrop-blur-md border border-amber-700/70 text-amber-100 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+            <span className="leading-snug">{alertGap}</span>
           </div>
         )}
       </div>

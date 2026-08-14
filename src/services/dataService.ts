@@ -411,15 +411,26 @@ export const fetchMySubmissionStates = async (): Promise<Map<string, boolean>> =
 /* Taking a spot back down                                             */
 /* ------------------------------------------------------------------ */
 
-/** Nothing is removable until the server has said otherwise. */
+/**
+ * The lookup did not happen. Nothing below is a finding — see `asked`.
+ *
+ * Carries the reason as the message, so a sheet that cannot offer the button
+ * can still tell the camper why rather than leaving a blank where a control
+ * used to be.
+ */
 export const NO_REMOVAL: SpotRemovalState = {
-  exists: false, mine: false, removable: false, others: 0, message: ''
+  asked: false,
+  exists: false, mine: false, removable: false, others: 0,
+  message:
+    'Could not check with the server whether this one is still yours to take ' +
+    'down. Nothing has been changed.'
 };
 
 /** The RPC's jsonb, in the app's shape. Anything unexpected reads as "no". */
 const asRemovalState = (row: unknown): SpotRemovalState => {
   const r = (row ?? {}) as Record<string, unknown>;
   return {
+    asked: true,
     exists: r.exists === true,
     mine: r.mine === true,
     removable: r.removable === true,

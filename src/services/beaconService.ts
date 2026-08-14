@@ -37,15 +37,40 @@ import type { BeaconQueryResult, BeaconDwellState } from '../types';
 /* The scan                                                            */
 /* ------------------------------------------------------------------ */
 
+const DISCLAIMER =
+  'These are leads worked out from public map data, not permission to stay. ' +
+  'Check the signs when you arrive.';
+
 const UNREACHABLE: BeaconQueryResult = {
   ok: false,
   spots: [],
   cached: false,
-  disclaimer:
-    'These are leads worked out from public map data, not permission to stay. ' +
-    'Check the signs when you arrive.',
+  disclaimer: DISCLAIMER,
   note: 'Could not reach the server to send out a beacon.'
 };
+
+/**
+ * THE SCAN RAN AND THE PLATFORM CUT IT OFF, WHICH IS NOT THE SAME THING.
+ *
+ * A beacon scan that overran its thirty seconds came back as the hosting
+ * platform's own gateway error page — HTML, not JSON — so `res.json()` threw,
+ * the catch below ran, and every camper was told the server could not be
+ * reached. It could. It was working on their answer when it was killed, and
+ * "try again" is the useful thing to say about that, not "you have no
+ * connection", which sends somebody looking for signal they already have.
+ */
+const TIMED_OUT: BeaconQueryResult = {
+  ok: false,
+  spots: [],
+  cached: false,
+  disclaimer: DISCLAIMER,
+  note:
+    'The scan took too long and was cut off before it finished, so no ground ' +
+    'here was ruled out. Give it another go in a moment.'
+};
+
+/** Status codes a gateway returns when it gave up waiting on the function. */
+const GATEWAY_TIMEOUT = new Set([408, 502, 503, 504]);
 
 /**
  * Drop a beacon and see what comes back.
@@ -74,7 +99,13 @@ export const queryBeacon = async (
     // 429 and 401 carry a real body with a real explanation in it. Reading the
     // JSON rather than the status is what lets the panel say "that is all three
     // beacons for now" instead of "error 429".
-    const data = (await res.json()) as BeaconQueryResult;
+    //
+    // A gateway timeout carries no body worth reading, and parsing its HTML
+    // would throw into the catch and be reported as an unreachable server —
+    // see TIMED_OUT.
+    if (GATEWAY_TIMEOUT.has(res.status)) return TIMED_OUT;
+
+    const data = (await res.json().catch(() => null)) as BeaconQueryResult | null;
     if (!data || typeof data !== 'object') return UNREACHABLE;
     return data;
   } catch {

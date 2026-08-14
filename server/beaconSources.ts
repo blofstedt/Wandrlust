@@ -314,6 +314,21 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
   return { areas, roads, features, context, clearings };
 };
 
+/**
+ * `timeoutMs` IS THE BUDGET FOR THE WHOLE CALL, NOT FOR EACH MIRROR.
+ *
+ * This is the bug that made Beacon report "could not reach the server". The
+ * timeout used to be armed fresh for every mirror in the list, so three slow
+ * mirrors at eleven seconds each came to thirty-three — past the serverless
+ * ceiling on its own, before the sign lookup, the land lookup or a single line
+ * of scoring had run. The platform killed the function and returned its own
+ * error page, the client could not parse it, and a scan that was merely slow
+ * was reported to the camper as no connection.
+ *
+ * Now the deadline is set once and each mirror gets what is left of it. Three
+ * dead mirrors cost the same wall-clock as one, and the caller's budget means
+ * what it says.
+ */
 export const fetchOverpassScan = async (
   lat: number,
   lon: number,
@@ -321,10 +336,16 @@ export const fetchOverpassScan = async (
   timeoutMs = 11_000
 ): Promise<OverpassScan> => {
   const query = buildQuery(lat, lon, radiusM);
+  const deadline = Date.now() + timeoutMs;
 
   for (const mirror of OVERPASS_MIRRORS) {
+    const left = deadline - Date.now();
+    // Under a second is not worth a round trip to a mirror that has to parse
+    // and run the query before it can answer.
+    if (left < 1_000) break;
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), left);
     try {
       const res = await fetch(mirror, {
         method: 'POST',
