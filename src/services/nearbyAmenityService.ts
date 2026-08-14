@@ -223,28 +223,125 @@ interface OverpassWay extends OverpassElement {
   geometry?: { lat: number; lon: number }[];
 }
 
-export const fetchNearestDriveableRoad = async (
+/**
+ * OUR OWN API FIRST, AND THIS IS THE FIX FOR "IT WORKS SOMETIMES".
+ *
+ * `/api/roads/nearest` runs the good version of this query — filtered on the
+ * server side of Overpass rather than after the results arrive, bounded by a
+ * real timeout per mirror, and cached across every camper who asks about the
+ * same pullout. See the note on the route itself for what each of those was
+ * costing when the phone asked Overpass directly.
+ *
+ * Returns `undefined` when our API could not answer at all, which is different
+ * from it answering that nothing is mapped — the caller falls through to asking
+ * Overpass itself in the first case and stops in the second.
+ */
+const nearestRoadFromApi = async (
+  latitude: number,
+  longitude: number,
+  radiusKm: number,
+  signal?: AbortSignal
+): Promise<NearbyFacility | null | undefined> => {
+  try {
+    const params = new URLSearchParams({
+      lat: latitude.toFixed(5),
+      lon: longitude.toFixed(5),
+      radiusKm: String(radiusKm)
+    });
+    const res = await fetch(`/api/roads/nearest?${params}`, { signal });
+    if (!res.ok) return undefined;
+
+    const data = await res.json();
+    // `ok: false` is "we could not check". Try the direct route rather than
+    // reporting an empty answer the server never made.
+    if (data?.ok !== true) return undefined;
+
+    const road = data.road;
+    if (!road || typeof road.lat !== 'number' || typeof road.lon !== 'number') return null;
+
+    return {
+      id: `road-${road.lat.toFixed(5)},${road.lon.toFixed(5)}`,
+      kind: 'road',
+      name: typeof road.name === 'string' && road.name.trim() ? road.name.trim() : undefined,
+      latitude: road.lat,
+      longitude: road.lon,
+      distanceKm: Math.round((road.distanceKm ?? 0) * 100) / 100,
+      line: Array.isArray(road.line) ? road.line : []
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * How long one Overpass mirror gets before we move to the next.
+ *
+ * There used to be no limit at all on the direct path, so a mirror having a bad
+ * minute left the map showing "Looking for the track…" until it timed out on
+ * its own — which reads as the app having hung. Nine seconds is longer than a
+ * healthy mirror needs and short enough that all three can still be tried.
+ */
+const OVERPASS_TIMEOUT_MS = 9000;
+
+export interface NearestRoadResult {
+  /**
+   * False when nothing could be checked — our API down, every Overpass mirror
+   * refusing, no signal.
+   *
+   * THIS IS NOT A COSMETIC DISTINCTION. The map used to get a bare `null` for
+   * both outcomes and print "No mapped track within 2 km — OpenStreetMap has
+   * nothing here", which is a confident statement about the ground made out of
+   * a failed request. A camper reading that decides there is no way in.
+   */
+  ok: boolean;
+  /** Null with `ok: true` means nobody has mapped one. That much is true. */
+  road: NearbyFacility | null;
+}
+
+export const findNearestDriveableRoad = async (
   latitude: number,
   longitude: number,
   radiusKm = ROAD_RADIUS_KM,
   signal?: AbortSignal
-): Promise<NearbyFacility | null> => {
+): Promise<NearestRoadResult> => {
+  const viaApi = await nearestRoadFromApi(latitude, longitude, radiusKm, signal);
+  if (viaApi !== undefined) return { ok: true, road: viaApi };
+  if (signal?.aborted) return { ok: false, road: null };
+
   const metres = Math.round(radiusKm * 1000);
   const around = `(around:${metres},${latitude.toFixed(5)},${longitude.toFixed(5)})`;
-  // `out geom` rather than `out center`: a road is a line, and the centre of a
-  // 20 km forest road can be nowhere near the point that matters.
+  /*
+   * FILTERED IN THE QUERY, NOT AFTER IT ARRIVES.
+   *
+   * This used to ask for every `highway` in the radius and drop the wrong kinds
+   * once they were here, under `out geom 120`. Overpass fills that cap in its
+   * own order rather than by distance, so anywhere with a couple of hundred
+   * mapped ways in two kilometres — which is anywhere with houses — the track
+   * beside the pin simply did not come back, and the app said there was nothing
+   * mapped while a road sat plainly on the screen underneath it. Asking only
+   * for the kinds we would keep is what makes the cap stop deciding.
+   *
+   * `out geom` rather than `out center`: a road is a line, and the centre of a
+   * 20 km forest road can be nowhere near the point that matters.
+   */
   const query =
     `[out:json][timeout:15];\n` +
-    `way["highway"]["highway"!~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|footway|path|cycleway|steps|bridleway)$"]${around};\n` +
-    `out geom 120;`;
+    `way["highway"~"^(track|unclassified|service|residential|tertiary)$"]` +
+    `["access"!~"^(private|no)$"]["motor_vehicle"!~"^(private|no)$"]${around};\n` +
+    `out geom 300;`;
 
   for (const mirror of OVERPASS_MIRRORS) {
+    // A mirror gets its own clock. The caller's signal still wins.
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort);
+    const timer = setTimeout(abort, OVERPASS_TIMEOUT_MS);
     try {
       const res = await fetch(mirror, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: `data=${encodeURIComponent(query)}`,
-        signal
+        signal: controller.signal
       });
       if (!res.ok) continue;
 
@@ -303,14 +400,37 @@ export const fetchNearestDriveableRoad = async (
         }
       }
 
-      return best;
+      // A mirror that answered is an answer, even when it found nothing.
+      return { ok: true, road: best };
     } catch {
-      if (signal?.aborted) return null;
+      // The caller changed their mind: stop, rather than working through the
+      // other mirrors for an answer nobody is waiting for. This mirror simply
+      // running out of its own clock is not that — try the next one.
+      if (signal?.aborted) return { ok: false, road: null };
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
     }
   }
 
-  return null;
+  // Every door was shut. We know nothing about this ground.
+  return { ok: false, road: null };
 };
+
+/**
+ * The road alone, for callers that draw a chip or nothing.
+ *
+ * The chip row genuinely cannot tell the two outcomes apart — it draws no chip
+ * either way — so it does not have to. Anything that puts a SENTENCE on the
+ * screen must use `findNearestDriveableRoad` and say which it got.
+ */
+export const fetchNearestDriveableRoad = async (
+  latitude: number,
+  longitude: number,
+  radiusKm = ROAD_RADIUS_KM,
+  signal?: AbortSignal
+): Promise<NearbyFacility | null> =>
+  (await findNearestDriveableRoad(latitude, longitude, radiusKm, signal)).road;
 
 /* ------------------------------------------------------------------ *
  * Every facility of a chosen kind, across the map in view

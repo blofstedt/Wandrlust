@@ -790,6 +790,90 @@ const readRig = (req: Request): Rig => {
 };
 
 export const registerRouteRoutes = (app: Express): void => {
+  /**
+   * The nearest mapped track to a point.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THIS IS A ROUTE AND NOT A FETCH FROM THE BROWSER
+   * ---------------------------------------------------------------------------
+   *
+   * The map already asks this question — it is what the road chip's "show me
+   * the track" does — and it used to ask Overpass itself, from the phone. That
+   * worked some of the time, which is the worst way for something to work.
+   * Three things were wrong with it and all three are fixed by asking from
+   * here instead:
+   *
+   *   THE FILTERING WAS ON THE WRONG SIDE. The query asked for every `highway`
+   *   within two kilometres and threw away the wrong kinds after they arrived,
+   *   under a 120-element cap. Two kilometres of anywhere with houses on it is
+   *   more than 120 ways, Overpass fills the cap in its own order rather than
+   *   by distance, and the track the camper was standing beside was routinely
+   *   not in what came back — so the app said "no mapped track within 2 km"
+   *   with a road plainly drawn on the screen underneath it. `findApproachRoads`
+   *   filters in the query, so the cap is never the thing that decides.
+   *
+   *   NOTHING BOUNDED THE WAIT. There was no timeout on the request and no
+   *   abort, so a mirror having a bad minute left "Looking for the track…"
+   *   sitting on the map until it gave up on its own. Each mirror here gets a
+   *   hard nine seconds and then the next one is tried.
+   *
+   *   EVERY CAMPER PAID FOR EVERY LOOKUP. Overpass mirrors rate-limit by IP and
+   *   ask people not to hammer them; a phone asking directly gets no benefit
+   *   from the answer any other phone already got. This path is cached for six
+   *   hours per point, which is conservative for something that changes on a
+   *   timescale of years.
+   *
+   * It answers with the same honesty as everything else that reads OSM:
+   * `ok: false` means we could not check, and `road: null` with `ok: true`
+   * means nobody has mapped one — which is not the same as there not being one,
+   * and the caller says so.
+   */
+  app.get('/api/roads/nearest', async (req: Request, res: ExpressResponse) => {
+    const lat = parseFloat(req.query.lat as string);
+    const lon = parseFloat(req.query.lon as string);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+      return res.status(400).json({
+        ok: false, road: null, message: 'lat and lon are required numbers.'
+      });
+    }
+
+    const asked = parseFloat(req.query.radiusKm as string);
+    const radiusKm = Number.isFinite(asked) ? Math.max(0.3, Math.min(asked, 8)) : 2;
+
+    // Seven seconds a mirror, not the nine the router allows itself. Somebody
+    // is watching a "Looking for the track…" label while this runs.
+    const scan = await findApproachRoads(lat, lon, radiusKm, 7000);
+
+    /**
+     * THE CHIP IS ABOUT A TRACK, NOT ABOUT ANY ROAD.
+     *
+     * `findApproachRoads` casts wider than this on purpose — it exists to give
+     * a ROUTER somewhere better to aim, and a secondary highway is a perfectly
+     * good thing to aim at. The chip is answering a different question: can a
+     * vehicle get in HERE, on the kind of surface a dispersed site sits off.
+     * Naming a paved secondary two hundred metres away as "the nearest track"
+     * when there is a forest road four hundred metres away is the wrong answer
+     * to what was asked, so the narrower kinds are preferred and the wider ones
+     * are only used when there is nothing else.
+     */
+    const CAMPING_ACCESS = /^(track|unclassified|service|residential|tertiary)$/;
+    const nearest =
+      scan.roads.find((road) => CAMPING_ACCESS.test(road.kind)) ?? scan.roads[0] ?? null;
+
+    return res.json({
+      ok: scan.ok,
+      road: nearest && {
+        name: nearest.name,
+        kind: nearest.kind,
+        lat: nearest.lat,
+        lon: nearest.lon,
+        distanceKm: nearest.distanceKm,
+        line: nearest.line,
+        gated: nearest.gated
+      }
+    });
+  });
+
   app.get('/api/route', async (req: Request, res: ExpressResponse) => {
     const nums = ['fromLat', 'fromLon', 'toLat', 'toLon'].map((k) =>
       parseFloat(req.query[k] as string)

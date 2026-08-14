@@ -24,7 +24,7 @@ import type { Express, Request, Response } from 'express';
  */
 import {
   NWS_BASE, getJson, fetchNwsAlertsAtPoint, fetchEcccAlerts, looksUS,
-  fetchNwsAlertsForStates, resolveNwsZoneGeometry, describeFailure,
+  fetchNwsAlertsForStates, resolveNwsZoneGeometry, describeFailure, withoutZoneUrls,
   type FetchFailure
 } from './alertSources.js';
 import { fetchOpenMeteo } from './openMeteo.js';
@@ -467,9 +467,9 @@ export const registerWeatherRoutes = (app: Express): void => {
      * position, and quietly dropping them would turn an honest gap into a
      * silent one.
      */
-    const alerts = deduped.filter((a) => !a.geometry || intersectsBox(
+    const alerts = withoutZoneUrls(deduped.filter((a) => !a.geometry || intersectsBox(
       a.geometry, box.minLat, box.minLon, box.maxLat, box.maxLon
-    ));
+    )));
 
     /**
      * NOTHING ANSWERED AT ALL. That, and only that, is a 503.
