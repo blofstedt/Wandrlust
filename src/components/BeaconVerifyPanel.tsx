@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Clock, Loader2, AlertTriangle, MapPin, ShieldAlert, Star, Moon, Radar
+  Clock, Loader2, AlertTriangle, MapPin, ShieldAlert, Star, Moon, Radar, Trash2
 } from 'lucide-react';
 import { Sheet } from './ui/Sheet';
 import { useToast } from './ui/Feedback';
 import { useAuth } from '../contexts/AuthContext';
 import { DwellRecorder, clearStoredArrival } from '../services/beaconService';
 import {
-  submitBeaconVerification, reportBeaconSpot, submitSpotVisit
+  submitBeaconVerification, reportBeaconSpot, submitSpotVisit,
+  fetchBeaconRemovalState, removeMyBeaconSpot
 } from '../services/dataService';
 import {
   BEACON_TAKEDOWN_OPTIONS, DWELL_EXPLAINER, DWELL_MINUTES_REQUIRED,
@@ -15,7 +16,9 @@ import {
 } from '../config/beacon';
 import { SPOT_SCALE_FIELDS, scaleLabel } from '../config/spotReport';
 import { SpotReportSheet, type SpotReportSubmission } from './SpotReportSheet';
-import type { BeaconSpot, BeaconDwellState, BeaconOutcome } from '../types';
+import type {
+  BeaconSpot, BeaconDwellState, BeaconOutcome, SpotRemovalState
+} from '../types';
 
 interface BeaconVerifyPanelProps {
   isOpen: boolean;
@@ -62,6 +65,9 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
   const [busy, setBusy] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportIsOvernight, setReportIsOvernight] = useState(false);
+  /** null until the server has answered. Nothing about removal is drawn before. */
+  const [removal, setRemoval] = useState<SpotRemovalState | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   // Always stop the watch on unmount. A geolocation watch nobody stopped keeps
   // the GPS warm and flattens a battery overnight — the exact battery somebody
@@ -73,6 +79,58 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
   useEffect(() => {
     if (!spot) { void recorderRef.current?.stop(); recorderRef.current = null; }
   }, [spot]);
+
+  /**
+   * Is this spot still the camper's own to take back down?
+   *
+   * True only for a pin they added themselves that no other camper has
+   * reported on. Asked when the sheet opens, so the button is never drawn on a
+   * spot the server would refuse.
+   */
+  useEffect(() => {
+    setRemoval(null);
+    setConfirmingRemove(false);
+    if (!spot || !isOpen || !user) return;
+
+    let cancelled = false;
+    fetchBeaconRemovalState(spot.id).then((state) => {
+      if (!cancelled) setRemoval(state);
+    });
+
+    return () => { cancelled = true; };
+  }, [spot, isOpen, user]);
+
+  /**
+   * Take down a spot you added, before anybody else has been here.
+   *
+   * Deliberately separate from `takeDown` below. That one is the knock path:
+   * it records enforcement and turns the pin red for everybody. This is a
+   * camper correcting their own pin — a driveway they mistook for a pullout,
+   * a bend they got wrong — and filing it as enforcement would put a police
+   * warning on a place where nothing happened.
+   */
+  const removeMine = useCallback(async () => {
+    if (!spot) return;
+
+    setBusy(true);
+    const result = await removeMyBeaconSpot(spot.id);
+    setBusy(false);
+
+    if (!result.ok) {
+      // Somebody reported on it between the check and the tap. Say what the
+      // server said and stop offering something it will not do.
+      setConfirmingRemove(false);
+      setRemoval({
+        exists: true, mine: true, removable: false, others: 0,
+        message: result.message
+      });
+      return;
+    }
+
+    toast.success('Taken down', result.message);
+    onSpotWithdrawn(spot.id);
+    onClose();
+  }, [spot, toast, onSpotWithdrawn, onClose]);
 
   const startTracking = useCallback(async () => {
     if (!spot) return;
@@ -350,6 +408,82 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
               entirely — there is nothing there to warn about.
             </p>
           </div>
+
+          {/*
+            ------------------------------------------------------------
+            THE ONE THAT UNDOES YOUR OWN PIN
+            ------------------------------------------------------------
+
+            Only on a spot this camper added, and only while nobody else has
+            reported on it. Separate from the takedown grid above on purpose:
+            those four say something happened HERE, and go on the record for
+            every camper who reads this map afterwards. This one says "I
+            should not have pinned this", which is a different sentence and
+            must not be filed as the other.
+
+            The moment a second camper reports on it, the spot stops being
+            one person's to delete — it is on their map too — and this block
+            says so rather than quietly disappearing.
+          */}
+          {removal !== null && removal.mine && (
+            <div className="pt-2 border-t border-slate-800">
+              <div className="flex items-center gap-1.5 mb-2">
+                <MapPin className="w-3 h-3 text-slate-400" />
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                  You added this spot
+                </p>
+              </div>
+
+              {removal.removable ? (
+                confirmingRemove ? (
+                  <div className="rounded-2xl border border-red-800/60 bg-red-950/30 p-3 anim-in-up">
+                    <p className="text-[11px] text-red-100 leading-snug">
+                      Take it off the map for good? Nobody else has reported
+                      here, so nothing of anybody else&apos;s goes with it — but
+                      it cannot be undone.
+                    </p>
+                    <div className="flex gap-2 mt-2.5">
+                      <button
+                        onClick={() => setConfirmingRemove(false)}
+                        disabled={busy}
+                        className="flex-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold disabled:opacity-50"
+                      >
+                        Keep it
+                      </button>
+                      <button
+                        onClick={removeMine}
+                        disabled={busy}
+                        className="flex-1 px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      >
+                        {busy
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : <Trash2 className="w-3.5 h-3.5" />}
+                        Remove it
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setConfirmingRemove(true)}
+                      disabled={busy}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-slate-800/50 text-slate-300 hover:border-red-600/60 hover:text-red-200 text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Remove this spot
+                    </button>
+                    <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
+                      {removal.message}
+                    </p>
+                  </>
+                )
+              ) : (
+                <p className="text-[10px] text-slate-500 leading-snug">
+                  {removal.message}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </Sheet>
 

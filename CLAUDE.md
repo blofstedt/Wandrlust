@@ -144,8 +144,16 @@ npm run vapid    # generate push notification keys
   the rest. Absence of a polygon means "no data", never "no public land".
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
-- **Migrations must run in order,** `supabase_schema.sql` then 02 through 14.
+- **Migrations must run in order,** `supabase_schema.sql` then 02 through 17.
   `supabase_schema.sql` is destructive — it drops and recreates.
+- **A spot is only yours to delete while it is only yours.** The camper who
+  added a spot can remove it — from the pin's info sheet, and from the Beacon
+  sheet — right up until somebody else reviews it, checks in, saves it or
+  reports on it. After that it is on other people's maps and the remove control
+  is replaced by a sentence saying so. Migration 17 decides; the client asks
+  first only so it never draws a button that would be refused. This is not the
+  knock path and must never be folded into it: taking down your own pin records
+  no enforcement and never turns anything red.
 - **An unanswered question is not a zero.** Every scale in a spot report is
   nullable, and null means nobody answered. Never `coalesce(..., 0)` one of
   them on the way out — a spot nobody has rated must not read as "pitch black,

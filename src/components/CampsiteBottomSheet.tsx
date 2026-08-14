@@ -2,9 +2,9 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   X, MapPin, Star, Navigation, Bookmark, Signal, Droplet,
   Flame, Dog, Clock, ShieldCheck, Loader2, CheckCircle2,
-  ChevronUp, Camera, ThermometerSun, Copy, Check, Flag
+  ChevronUp, Camera, ThermometerSun, Copy, Check, Flag, Trash2
 } from 'lucide-react';
-import type { Campsite } from '../types';
+import type { Campsite, SpotRemovalState } from '../types';
 import {
   ROAD_ACCESS_LABEL, WATER_LABEL, UNKNOWN_LABEL, bestCellSignal
 } from '../utils/amenities';
@@ -15,7 +15,11 @@ import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import { fetchWeather, WeatherSnapshot, EMPTY_WEATHER, summarise } from '../services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from '../services/cellCoverageService';
 import type { CellCoverage } from '../types';
-import { fetchRulesAtPoint, fetchHazardsAtPoint, checkIn, PointRules, PointHazard } from '../services/dataService';
+import {
+  fetchRulesAtPoint, fetchHazardsAtPoint, checkIn,
+  fetchCampsiteRemovalState, removeMyCampsite,
+  PointRules, PointHazard
+} from '../services/dataService';
 import { HazardAlertPanel } from './HazardAlertPanel';
 import { CellCoverageCard } from './TripConditions';
 import { NearbyFiresCard } from './NearbyFiresCard';
@@ -46,6 +50,15 @@ interface CampsiteBottomSheetProps {
   onToggleSave: (site: Campsite) => void;
   onRequireAuth: () => void;
   /**
+   * The camper took their own spot back down.
+   *
+   * Fired only after the removal has actually happened. The parent owns what
+   * follows — dropping the pin from the map, deleting the device copy and
+   * closing this drawer — because this component knows about one spot and the
+   * spot now needs to disappear from four places.
+   */
+  onRemoved?: (site: Campsite) => void;
+  /**
    * How many pixels of screen this drawer is covering, whenever that changes.
    *
    * The map is behind it and has to get the pin out from under it, which it
@@ -65,7 +78,7 @@ interface CampsiteBottomSheetProps {
  * differs between "which of these three?" and "am I sleeping here tonight?".
  */
 export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
-  campsite, isSaved, onClose, onToggleSave, onRequireAuth, onHeightChange
+  campsite, isSaved, onClose, onToggleSave, onRequireAuth, onRemoved, onHeightChange
 }) => {
   const { user } = useAuth();
   const [snap, setSnap] = useState<Snap>('half');
@@ -78,6 +91,10 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   const [notice, setNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [isReporting, setIsReporting] = useState(false);
+  /** null until the server has answered. Nothing about removal is drawn before. */
+  const [removal, setRemoval] = useState<SpotRemovalState | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   // Load everything context-dependent when the pin changes.
   useEffect(() => {
@@ -102,6 +119,58 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
 
     return () => { cancelled = true; };
   }, [campsite]);
+
+  /**
+   * Ask whether this spot is still the camper's to take down.
+   *
+   * Separate from the conditions load above because it asks a different kind
+   * of question and only for spots this camper added. Asked up front so the
+   * button is never drawn on a spot that would refuse it — a remove button
+   * that errors is worse than no button, because by the time the error is read
+   * the camper has already decided the spot is gone.
+   */
+  useEffect(() => {
+    setRemoval(null);
+    setConfirmingRemove(false);
+    if (!campsite?.submittedByMe) return;
+
+    let cancelled = false;
+    fetchCampsiteRemovalState(campsite.id).then((state) => {
+      if (!cancelled) setRemoval(state);
+    });
+
+    return () => { cancelled = true; };
+  }, [campsite]);
+
+  /**
+   * Take it down.
+   *
+   * A spot that never reached the server comes back `removed: false` and that
+   * is still a success — the device copy was the only copy, and the parent is
+   * about to delete it. Either way the parent is told exactly once, after the
+   * server has agreed.
+   */
+  const handleRemove = useCallback(async () => {
+    if (!campsite) return;
+
+    setRemoving(true);
+    const result = await removeMyCampsite(campsite.id);
+    setRemoving(false);
+
+    if (!result.ok) {
+      // Somebody engaged with the spot between the check and the tap. Say what
+      // the server said, and stop offering something it will not do.
+      setConfirmingRemove(false);
+      setRemoval({
+        exists: true, mine: true, removable: false, others: 0,
+        message: result.message
+      });
+      return;
+    }
+
+    haptic('success');
+    onRemoved?.(campsite);
+  }, [campsite, onRemoved]);
 
   /** Tell the map how much of itself is behind this drawer. */
   useEffect(() => {
@@ -140,6 +209,15 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
 
   const amenities = campsite.amenities;
   const bestSignal = bestCellSignal(amenities);
+
+  /**
+   * Two ways a spot the camper added is still theirs to remove: the server
+   * says nobody else has touched it, or the server has never heard of it at
+   * all — added with no account or no signal, so the copy on this phone is the
+   * only copy in existence. `removal === null` means the answer is not back
+   * yet and nothing is offered.
+   */
+  const canRemove = removal !== null && (removal.removable || !removal.exists);
 
   return (
     <div
@@ -482,6 +560,83 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 Directions
               </a>
             </section>
+
+            {/*
+              ------------------------------------------------------------
+              THE ONE THAT UNDOES A SUBMISSION
+              ------------------------------------------------------------
+
+              Only for the camper who added this spot, and only while it is
+              still only theirs. Somebody pins a pullout from the side of the
+              road, gets home and realises it was a driveway — until now the
+              only route off the map was the report flow, which is built for
+              enforcement and would have turned the pin red with a warning on
+              a place where nothing happened.
+
+              Once anybody else has reviewed, checked in, saved or
+              photographed it, the section says so plainly instead of
+              disappearing. A control that silently vanishes reads as a bug;
+              a sentence explaining that other campers are using the spot now
+              reads as the truth, which is what it is.
+            */}
+            {campsite.submittedByMe && removal !== null && (
+              <section className="pt-3 border-t border-slate-800 anim-in-up">
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                  You added this spot
+                </h3>
+
+                {canRemove ? (
+                  confirmingRemove ? (
+                    <div className="rounded-xl border border-rose-800/60 bg-rose-950/30 p-3 anim-in-up">
+                      <p className="text-[11px] text-rose-100 leading-snug">
+                        Take it off the map for good? Nobody else has used this
+                        one, so nothing of anybody else&apos;s goes with it — but
+                        it cannot be undone.
+                      </p>
+                      <div className="flex gap-2 mt-2.5">
+                        <button
+                          onClick={() => { haptic('tap'); setConfirmingRemove(false); }}
+                          disabled={removing}
+                          className="flex-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold disabled:opacity-50"
+                        >
+                          Keep it
+                        </button>
+                        <button
+                          onClick={handleRemove}
+                          disabled={removing}
+                          className="flex-1 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
+                        >
+                          {removing
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Trash2 className="w-3.5 h-3.5" />}
+                          Remove it
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => { haptic('tap'); setConfirmingRemove(true); }}
+                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:border-rose-600/60 hover:text-rose-200 text-[11px] font-bold flex items-center justify-center gap-1.5"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Remove this spot
+                      </button>
+                      <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
+                        {removal.exists
+                          ? 'Nobody else has reviewed, saved or checked in here, so it is still yours to take down.'
+                          : 'This one is saved on your device only, so removing it affects nobody else.'}
+                      </p>
+                    </>
+                  )
+                ) : (
+                  <p className="text-[10px] text-slate-500 leading-snug">
+                    {removal.message ||
+                      'Other campers are using this spot now, so it stays on the map.'}
+                  </p>
+                )}
+              </section>
+            )}
           </div>
         )}
       </div>
