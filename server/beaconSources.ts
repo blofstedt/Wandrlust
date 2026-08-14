@@ -139,15 +139,50 @@ const pointInRing = (lat: number, lon: number, ring: Ring): boolean => {
 /* ------------------------------------------------------------------ */
 
 /**
- * Mirrors tried in order — the same list `cellSources.ts` uses, for the same
- * reason: Overpass instances rate-limit and go down routinely, and that has to
- * be survivable.
+ * Mirrors, fastest-and-least-rationed FIRST.
+ *
+ * `overpass-api.de` used to lead this list and it is the reason Beacon
+ * returned "could not reach OpenStreetMap" on every scan. It is the main
+ * public instance, it rations by client IP, and a serverless deployment shares
+ * its address with everybody else on that machine — so this app arrives
+ * already near the limit and gets put in a queue. Production logs showed the
+ * whole thing plainly:
+ *
+ *   [beacon] every Overpass mirror refused —
+ *     overpass-api.de: timed out | overpass.kumi.systems: no time left
+ *
+ * The lead mirror sat in a queue until the budget ran out and the two behind
+ * it — the ones that exist for exactly this — were never asked. `kumi.systems`
+ * is a donated high-capacity instance that answers a 500 m query in about a
+ * second, so it goes first now.
+ *
+ * The order matters much less than it did, because the mirrors are now HEDGED
+ * rather than tried one after another. See `fetchOverpassScan`.
  */
 const OVERPASS_MIRRORS = [
-  'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
   'https://overpass.osm.ch/api/interpreter'
 ];
+
+/**
+ * How long a mirror gets to itself before the next one is asked ALONGSIDE it.
+ *
+ * Not a timeout — the first mirror is not cancelled when this elapses, it just
+ * stops being the only hope. A healthy Overpass answers a 500 m query well
+ * inside this, so the usual scan still sends exactly one query and the other
+ * mirrors are never contacted at all. Only a slow or queued lead mirror costs
+ * the commons a second request, which is the case the fallbacks exist for.
+ */
+const HEDGE_DELAY_MS = 2_500;
+
+/** A pause that gives up the moment the scan is over. */
+const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
 
 interface OverpassElement {
   type: 'node' | 'way' | 'relation';
@@ -339,25 +374,39 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
 };
 
 /**
- * `timeoutMs` IS THE BUDGET FOR THE WHOLE CALL, NOT FOR EACH MIRROR.
+ * THE MIRRORS ARE HEDGED, NOT QUEUED, AND THAT IS THE WHOLE FIX.
  *
- * This is the bug that made Beacon report "could not reach the server". The
- * timeout used to be armed fresh for every mirror in the list, so three slow
- * mirrors at eleven seconds each came to thirty-three — past the serverless
- * ceiling on its own, before the sign lookup, the land lookup or a single line
- * of scoring had run. The platform killed the function and returned its own
- * error page, the client could not parse it, and a scan that was merely slow
- * was reported to the camper as no connection.
+ * `timeoutMs` is the budget for the WHOLE call. It always was — the previous
+ * version cut a slice of it for each mirror and worked through them one at a
+ * time, which is the arrangement that made Beacon say "could not reach
+ * OpenStreetMap" on every single scan. Production said so in as many words:
  *
- * Now there is one deadline for the whole call, and each mirror gets a SLICE
- * of what is left rather than all of it. That distinction is load-bearing and
- * the first version of this fix got it wrong: handing mirror one the entire
- * budget means a single slow mirror leaves nothing for the two behind it, so
- * the fallbacks that exist precisely for this case can never be tried. A
- * fallback you cannot afford to call is not a fallback.
+ *   [beacon] every Overpass mirror refused —
+ *     overpass-api.de: timed out | overpass.kumi.systems: no time left
  *
- * Overpass is also told the same number (see `[timeout:N]` in buildQuery), so
- * it is not still working on a query nobody is waiting for.
+ * Read that twice. The lead mirror was queued and burnt its slice. Coming out
+ * of it there was less than one round trip left, so the loop gave up and the
+ * two healthy mirrors behind it were NEVER CONTACTED. Every fallback in the
+ * list was unaffordable by the time it was reached. A fallback you cannot
+ * afford to call is not a fallback — the old comment said exactly that about
+ * the bug before it, and the slicing rewrite reintroduced it in a new shape.
+ *
+ * Serial retry is the wrong structure here. It is right when the fallbacks are
+ * WORSE — try the good source, settle for the poor one — but these three are
+ * interchangeable: same database, same query, same answer. There is nothing to
+ * prefer and therefore nothing to wait for. So the first mirror is asked, and
+ * if it has not answered within HEDGE_DELAY_MS the second is asked ALONGSIDE
+ * it, then the third. First good answer wins and cancels the rest.
+ *
+ * WHY THIS IS NOT JUST FIRING THREE QUERIES AT A VOLUNTEER SERVICE. A healthy
+ * mirror answers the 500 m rung in about a second, so the ordinary scan sends
+ * one query and the hedges never start. A second request goes out only when
+ * the first has already gone quiet — the situation the mirror list exists for
+ * — and the losers are aborted the moment a winner lands, which Overpass
+ * honours by dropping the query.
+ *
+ * Overpass is told our budget too (see `[timeout:N]` in buildQuery), so a
+ * mirror is never left working on a query nobody is waiting for.
  */
 export const fetchOverpassScan = async (
   lat: number,
@@ -365,7 +414,22 @@ export const fetchOverpassScan = async (
   radiusM: number,
   timeoutMs = 11_000
 ): Promise<OverpassScan> => {
-  const deadline = Date.now() + timeoutMs;
+  const budget = Math.max(0, Math.round(timeoutMs));
+
+  /**
+   * Under three seconds there is no point starting: Overpass has to parse,
+   * schedule and run the query before a byte comes back. Said plainly in the
+   * log, because "no time left" is a different fault from "the mirror is down"
+   * and the fix for it is upstream of this file.
+   */
+  if (budget < 3_000) {
+    console.warn(`[beacon] Overpass not asked — only ${budget} ms of budget left`);
+    return {
+      ...EMPTY_SCAN,
+      note: 'Could not reach OpenStreetMap just now, so nothing was scanned here.'
+    };
+  }
+
   /**
    * What each mirror said, for the log.
    *
@@ -377,67 +441,115 @@ export const fetchOverpassScan = async (
    */
   const tried: string[] = [];
 
-  for (let i = 0; i < OVERPASS_MIRRORS.length; i += 1) {
-    const mirror = OVERPASS_MIRRORS[i];
+  /**
+   * One signal for the lot: the shared deadline, and the winner, both end it.
+   *
+   * This is also what stops a hedge outliving the answer. A mirror that comes
+   * second is aborted mid-flight rather than left to finish into nothing.
+   */
+  const done = new AbortController();
+  const deadline = setTimeout(() => done.abort(), budget);
+  const query = buildQuery(lat, lon, radiusM, budget / 1000);
+
+  /**
+   * A MIRROR THAT SAYS NO IMMEDIATELY MUST NOT COST THE NEXT ONE ITS STAGGER.
+   *
+   * The hedge delay is there to avoid bothering a second mirror while the
+   * first might still be about to answer. A 429, a 504 or a refused connection
+   * settles that question in milliseconds — there is nothing left to wait for,
+   * and sitting out the rest of the stagger would burn two and a half seconds
+   * of a budget that is already tight. So a failure hands its turn straight to
+   * whoever is next in the queue.
+   *
+   * FIFO, and each waiter takes itself out of the queue whichever way it
+   * starts, so handing the turn on never lands on a mirror that is already
+   * running and leaves a genuinely waiting one asleep.
+   */
+  const waiting: { go: () => void }[] = [];
+  const handTurnOn = () => waiting.shift()?.go();
+
+  const waitTurn = (index: number): Promise<void> =>
+    new Promise((resolve) => {
+      if (index === 0 || done.signal.aborted) return resolve();
+      const entry = {
+        go: () => {
+          clearTimeout(timer);
+          const at = waiting.indexOf(entry);
+          if (at >= 0) waiting.splice(at, 1);
+          resolve();
+        }
+      };
+      const timer = setTimeout(() => entry.go(), Math.min(index * HEDGE_DELAY_MS, budget));
+      waiting.push(entry);
+      done.signal.addEventListener('abort', () => entry.go(), { once: true });
+    });
+
+  const ask = async (mirror: string, index: number): Promise<OverpassScan> => {
     const host = new URL(mirror).host;
-    const left = deadline - Date.now();
-    // Under four seconds is not worth a round trip: Overpass has to parse,
-    // schedule and run the query before a single byte comes back.
-    if (left < 4_000) { tried.push(`${host}: no time left`); break; }
 
-    /*
-     * An even share of what remains, so the mirrors behind this one are still
-     * affordable. The last mirror gets everything left over — there is nobody
-     * after it to save any for.
-     */
-    const mirrorsLeft = OVERPASS_MIRRORS.length - i;
-    const slice = mirrorsLeft === 1 ? left : Math.max(4_000, Math.floor(left / mirrorsLeft));
-    const attempt = Math.min(slice, left);
+    // The hedge. Mirror 0 starts immediately; each one after it waits its turn
+    // and then joins in, unless somebody has already won.
+    await waitTurn(index);
+    if (done.signal.aborted) throw new Error(`${host}: not needed`);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), attempt);
-    try {
-      const res = await fetch(mirror, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': UA
-        },
-        // Overpass is told the same limit we are holding it to.
-        body: `data=${encodeURIComponent(buildQuery(lat, lon, radiusM, attempt / 1000))}`,
-        signal: controller.signal
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        tried.push(
-          `${host}: HTTP ${res.status}${body ? ` ${body.slice(0, 120).replace(/\s+/g, ' ').trim()}` : ''}`
-        );
-        continue;
-      }
+    const startedAt = Date.now();
+    const res = await fetch(mirror, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': UA
+      },
+      body: `data=${encodeURIComponent(query)}`,
+      signal: done.signal
+    }).catch((err: any) => {
+      const why = done.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 120);
+      tried.push(`${host}: ${why} after ${Date.now() - startedAt} ms`);
+      handTurnOn();
+      throw err;
+    });
 
-      const data = (await res.json()) as { elements?: unknown };
-      if (!Array.isArray(data?.elements)) {
-        tried.push(`${host}: answered without an element list`);
-        continue;
-      }
-
-      return { ok: true, ...sortElements(data.elements as OverpassElement[]) };
-    } catch (err: any) {
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
       tried.push(
-        `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 120)}`
+        `${host}: HTTP ${res.status}${body ? ` ${body.slice(0, 120).replace(/\s+/g, ' ').trim()}` : ''}`
       );
-      // Next mirror. Only every mirror failing is an outage.
-    } finally {
-      clearTimeout(timer);
+      handTurnOn();
+      throw new Error(`${host}: HTTP ${res.status}`);
     }
-  }
 
-  console.warn(`[beacon] every Overpass mirror refused — ${tried.join(' | ')}`);
+    const data = (await res.json().catch(() => null)) as { elements?: unknown } | null;
+    if (!Array.isArray(data?.elements)) {
+      tried.push(`${host}: answered without an element list`);
+      handTurnOn();
+      throw new Error(`${host}: no elements`);
+    }
 
-  return {
-    ...EMPTY_SCAN,
-    note: 'Could not reach OpenStreetMap just now, so nothing was scanned here.'
+    tried.push(`${host}: ok in ${Date.now() - startedAt} ms`);
+    return { ok: true, ...sortElements(data.elements as OverpassElement[]) };
   };
+
+  try {
+    /*
+     * First one home wins. `Promise.any` rejects only when EVERY mirror has
+     * failed, which is the one case that is genuinely an outage — and it
+     * collects the individual failures rather than letting them surface as
+     * unhandled rejections.
+     */
+    const scan = await Promise.any(OVERPASS_MIRRORS.map(ask));
+    console.info(`[beacon] Overpass answered — ${tried.join(' | ')}`);
+    return scan;
+  } catch {
+    console.warn(`[beacon] every Overpass mirror refused — ${tried.join(' | ')}`);
+    return {
+      ...EMPTY_SCAN,
+      note: 'Could not reach OpenStreetMap just now, so nothing was scanned here.'
+    };
+  } finally {
+    // Stops the losing hedges, and the deadline timer that would otherwise
+    // hold the serverless function open after the answer has gone out.
+    clearTimeout(deadline);
+    done.abort();
+  }
 };
 
 /* ------------------------------------------------------------------ */

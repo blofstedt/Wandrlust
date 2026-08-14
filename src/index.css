@@ -563,6 +563,26 @@
 }
 .wl-chip-glyph { font-size: 9px; line-height: 1; }
 
+/* A CEILING ON HOW WIDE ONE CHIP MAY GET.
+   Most chips are two or three words and never come near this. A warning chip
+   carries the agency's own product name — "Special air quality statement" —
+   and an unlucky one could otherwise run wider than the phone, centred on a
+   pin, with half of it off both edges of the screen. Clamped and ellipsised
+   instead; the whole name is in the title, the aria-label, and the sheet.
+   `.wl-chip-open` overrides this when a chip unfurls, so nothing is
+   permanently hidden behind the clamp. */
+.wl-chip-text {
+  display: inline-block;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+.wl-chip-open .wl-chip-text {
+  max-width: none;
+  overflow: visible;
+}
+
 /* Pressed. The one piece of feedback that makes a thing feel like a button
    before you have found out what it does. */
 .wl-chip:active { transform: scale(0.94); }

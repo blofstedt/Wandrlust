@@ -341,8 +341,27 @@ export const registerBeaconRoutes = (app: Express): void => {
         sources.budget = rungsRun === 0
           ? 'There was not enough time left to scan at all, so nothing here was ruled out.'
           : `Stopped after ${scannedRadius / 1000} km to answer inside the time limit.`;
+        console.warn(
+          `[beacon] stopping before the ${radiusM} m rung — ${left} ms left ` +
+          `after ${Date.now() - startedAt} ms of work, ${rungsRun} rung(s) run`
+        );
         break;
       }
+
+      /**
+       * How much budget each rung actually started with.
+       *
+       * One line, and it is the line that would have identified the last
+       * outage in seconds instead of an afternoon. When Overpass reported
+       * "no time left" for its second mirror, nothing anywhere recorded how
+       * much time the scan had handed it — so whether the mirrors were slow
+       * or the budget was already spent upstream could only be inferred from
+       * arithmetic. Now it says so.
+       */
+      console.info(
+        `[beacon] ${radiusM} m rung starting with ${left} ms ` +
+        `(${Date.now() - startedAt} ms already spent)`
+      );
 
       scannedRadius = radiusM;
       rungsRun += 1;
@@ -417,21 +436,57 @@ export const registerBeaconRoutes = (app: Express): void => {
     const ranOutOfTime = rungsRun === 0;
     const couldNotAsk = !ranOutOfTime && sources.openstreetmap !== 'ok';
 
+    /**
+     * NOTHING WAS SCANNED, SO THE BEACON GOES BACK.
+     *
+     * The token is claimed before the scan, which is right — a quota applied
+     * after the expensive work is not a quota. But nothing ever gave it back,
+     * and the sentence below promised in as many words that a failed scan
+     * "did not use up a beacon". It did. Three failures in a row cost a camper
+     * their whole twelve-hour allowance while telling them each time that they
+     * still had it.
+     *
+     * Refunded only when NO GROUND WAS SWEPT — every mirror refused, or the
+     * request ran out of time before a rung could start. A scan that ran and
+     * found nothing keeps its token: that is a real answer about real ground,
+     * and it is the answer Beacon exists to give.
+     *
+     * If the refund itself fails, the wording below changes rather than the
+     * promise being made anyway. See `refunded`.
+     */
+    let refunded = false;
+    let beaconsLeft = claim.remaining;
+    let resetsAt = claim.resets_at;
+    if (ranOutOfTime || couldNotAsk) {
+      const { data: back, error: refundError } = await caller.rpc('refund_beacon_token');
+      if (refundError) {
+        console.warn('[beacon] refund failed:', refundError.message);
+      } else if (back?.ok === true) {
+        refunded = true;
+        beaconsLeft = back.remaining;
+        resetsAt = back.resets_at ?? resetsAt;
+      }
+    }
+
+    /** Only claimed when it is true. */
+    const kept = refunded ? ' This did not use up a beacon — you still have it.' : '';
+
     return res.json({
       ok: spots.length > 0,
       spots,
       cached: false,
-      remaining: claim.remaining,
-      resetsAt: claim.resets_at,
+      remaining: beaconsLeft,
+      resetsAt,
       radiusScannedM: scannedRadius,
       sources,
       disclaimer: DISCLAIMER,
       note: spots.length > 0
         ? undefined
         : ranOutOfTime
-        ? 'The map services were too slow to answer, so no ground here was actually scanned. Nothing below has been ruled out — try again in a moment.'
+        ? 'The map services were too slow to answer, so no ground here was actually scanned. ' +
+          `Nothing below has been ruled out — try again in a moment.${kept}`
         : couldNotAsk
-        ? 'Could not reach OpenStreetMap just now, so nothing was scanned. This did not use up a beacon you can spend later.'
+        ? `Could not reach OpenStreetMap just now, so nothing was scanned.${kept}`
         : NOTHING_FOUND,
       signageNote: sources.mapillary?.startsWith('ok')
         ? undefined
