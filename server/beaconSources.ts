@@ -161,9 +161,19 @@ export interface OverpassScan extends SourceNote {
    * having, the last is why it is risky.
    */
   context: OverpassElement[];
+  /**
+   * Small open patches — grassland, heath, scrub, meadow, recreation ground.
+   *
+   * Carried separately from `features` because they arrive WITH geometry and
+   * have to be measured before their centre can be used, and separately from
+   * `areas` because a meadow is not a statement about who owns the ground.
+   */
+  clearings: OverpassElement[];
 }
 
-const EMPTY_SCAN: OverpassScan = { ok: false, areas: [], roads: [], features: [], context: [] };
+const EMPTY_SCAN: OverpassScan = {
+  ok: false, areas: [], roads: [], features: [], context: [], clearings: []
+};
 
 /**
  * One request, three result sets.
@@ -200,8 +210,34 @@ const buildQuery = (lat: number, lon: number, radiusM: number): string => {
     `way["highway"="services"]${around};`,
     `node["highway"="passing_place"]${around};`,
     `node["highway"="turning_circle"]${around};`,
+    `node["highway"="turning_loop"]${around};`,
     `node["tourism"="camp_site"]${around};`,
-    `way["tourism"="camp_site"]${around};`
+    `way["tourism"="camp_site"]${around};`,
+    /* A picnic site on a forest road IS the pull-off — a widening with a table
+       on it. One of the commonest shapes a dispersed spot actually takes, and
+       it was not being asked for at all. */
+    `node["tourism"="picnic_site"]${around};`,
+    `way["tourism"="picnic_site"]${around};`
+  ].join('');
+
+  /**
+   * CLEARINGS, and the one place this file bends its own first rule.
+   *
+   * Rule 1 in the header says only compact, point-like features become
+   * candidates, because the centroid of a sprawling polygon is meaningless
+   * and often in a river. That rule was written about 4 km forest roads and
+   * it is right about them.
+   *
+   * A SMALL clearing is the opposite case: a two-hundred-metre patch of
+   * grassland off a track has a centre that means exactly what a camper
+   * thinks it means, and it is one of the things they are actually looking
+   * for. So these are fetched WITH GEOMETRY, measured, and only kept when
+   * they are small enough for the centre to be honest — see `MAX_CLEARING_M`.
+   * A big one is dropped rather than pinned at its middle.
+   */
+  const clearings = [
+    `way["natural"~"^(grassland|heath|scrub)$"]${around};`,
+    `way["landuse"~"^(meadow|recreation_ground)$"]${around};`
   ].join('');
 
   /**
@@ -230,7 +266,10 @@ const buildQuery = (lat: number, lon: number, radiusM: number): string => {
     `(${areas});out geom 150;` +
     `(${roads});out geom 250;` +
     `(${features});out center 150;` +
-    `(${context});out center 120;`
+    `(${context});out center 120;` +
+    // Geometry, not centres: a clearing has to be MEASURED before its centre
+    // can be trusted, and `out center` throws away the shape that decides it.
+    `(${clearings});out geom 80;`
   );
 };
 
@@ -246,12 +285,19 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
   const roads: OverpassElement[] = [];
   const features: OverpassElement[] = [];
   const context: OverpassElement[] = [];
+  const clearings: OverpassElement[] = [];
 
   for (const el of elements) {
     const tags = el.tags ?? {};
-    // Context first: a viewpoint carries no `highway` or `amenity`, so it
-    // would otherwise fall through to `areas` and be tested as a boundary.
+    /* Clearings before everything: `natural=grassland` carries no highway,
+       amenity or place tag, so without this it lands in `areas` and gets
+       tested as an ownership boundary — which it is not. */
     if (
+      /^(grassland|heath|scrub)$/.test(tags.natural ?? '') ||
+      /^(meadow|recreation_ground)$/.test(tags.landuse ?? '')
+    ) {
+      clearings.push(el);
+    } else if (
       tags.tourism === 'viewpoint' || tags.natural === 'peak' ||
       tags.natural === 'water' || tags.waterway === 'riverbank' || tags.place
     ) {
@@ -265,7 +311,7 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
       areas.push(el);
     }
   }
-  return { areas, roads, features, context };
+  return { areas, roads, features, context, clearings };
 };
 
 export const fetchOverpassScan = async (
@@ -662,10 +708,19 @@ const describeFeature = (
     return { label: tags.name ?? 'Rest area', tokens: ['feature=rest_area'], score: 2 };
   }
   if (tags.highway === 'passing_place') {
-    return { label: 'Passing place', tokens: ['feature=passing_place'], score: 1 };
+    return { label: 'Pull-off beside the road', tokens: ['feature=passing_place'], score: 1 };
   }
-  if (tags.highway === 'turning_circle') {
+  if (tags.highway === 'turning_circle' || tags.highway === 'turning_loop') {
     return { label: 'Turning circle at a road end', tokens: ['feature=turning_circle'], score: 0.5 };
+  }
+  /*
+   * A picnic site on a forest road is the pull-off, with a table on it. Scored
+   * near a rest area because it is the same thing at a smaller scale — but a
+   * picnic site in a town park is day-use only, which the land tier and the
+   * settlement penalty between them already push down.
+   */
+  if (tags.tourism === 'picnic_site') {
+    return { label: tags.name ?? 'Picnic site', tokens: ['feature=picnic_site'], score: 1.5 };
   }
   if (tags.tourism === 'camp_site') {
     const free = tags.fee === 'no';
@@ -801,6 +856,60 @@ const riskScore = (
   };
 };
 
+/**
+ * How wide a clearing may be before its centre stops meaning anything.
+ *
+ * 400 m across. Past that the middle of the polygon is a point in a field
+ * with no particular claim to be where you would stop — and the pin would be
+ * exactly the invented coordinate rule 1 exists to prevent. Under it, "the
+ * middle of that clearing" is a place a camper can find and recognise.
+ */
+const MAX_CLEARING_M = 400;
+
+/**
+ * A small open patch, turned into one candidate at its centre.
+ *
+ * Returns null for anything too big, anything with no geometry, and anything
+ * whose ring is degenerate. Measured by the diagonal of the bounding box
+ * rather than by area, because a long thin strip beside a road is 400 m of
+ * verge and not a clearing anybody camps in the middle of.
+ */
+const clearingCandidate = (
+  el: OverpassElement
+): { lat: number; lon: number; label: string; tokens: Token[]; score: number } | null => {
+  const ring = el.geometry ?? [];
+  if (ring.length < 3) return null;
+
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (const p of ring) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+  }
+  if (!Number.isFinite(minLat) || !Number.isFinite(minLon)) return null;
+
+  const across = metresBetween(minLat, minLon, maxLat, maxLon);
+  if (across > MAX_CLEARING_M || across < 15) return null;
+
+  const tags = el.tags ?? {};
+  const kind = tags.natural ?? tags.landuse ?? 'clearing';
+  return {
+    lat: (minLat + maxLat) / 2,
+    lon: (minLon + maxLon) / 2,
+    label: tags.name ?? (kind === 'recreation_ground' ? 'Recreation ground' : 'Clearing'),
+    tokens: ['feature=clearing', `clearing=${kind}`],
+    /*
+     * Below a rest area and above a bare parking lot. A clearing is genuinely
+     * what a lot of dispersed camping looks like, but nothing about it says
+     * anyone has ever driven in — the road-access check below is what decides
+     * whether this one is reachable, and it is the reason a clearing with no
+     * track near it loses a point.
+     */
+    score: 1.25
+  };
+};
+
 /** Nearest point on any mapped road, and that road's tags. */
 const nearestRoad = (
   lat: number, lon: number, roads: OverpassElement[]
@@ -915,17 +1024,39 @@ export const buildCandidates = (
 ): Candidate[] => {
   const candidates: Candidate[] = [];
 
+  /**
+   * Compact features and small clearings go through ONE pipeline.
+   *
+   * They differ only in how their coordinate and label are worked out — after
+   * that every check that matters (the vetoes, the land tier, road access,
+   * signage, view, risk) has to apply identically. Running clearings down a
+   * second path would be the obvious way to end up with a clearing that
+   * skipped the private-land test.
+   */
+  const targets: { el: OverpassElement; centre: { lat: number; lon: number };
+                   described: { label: string; tokens: Token[]; score: number } }[] = [];
+
   for (const el of scan.features) {
     const centre = centreOf(el);
-    if (!centre) continue;
+    const described = centre ? describeFeature(el.tags ?? {}) : null;
+    if (centre && described) targets.push({ el, centre, described });
+  }
 
+  for (const el of scan.clearings ?? []) {
+    const c = clearingCandidate(el);
+    if (!c) continue;
+    targets.push({
+      el,
+      centre: { lat: c.lat, lon: c.lon },
+      described: { label: c.label, tokens: c.tokens, score: c.score }
+    });
+  }
+
+  for (const { el, centre, described } of targets) {
     const tags = el.tags ?? {};
 
     // ---- Veto: the feature's own tags.
     if (isForbidden(tags)) continue;
-
-    const described = describeFeature(tags);
-    if (!described) continue;
 
     const tokens: Token[] = [...described.tokens];
     let score = described.score;
