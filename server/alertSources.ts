@@ -489,8 +489,17 @@ const fetchZoneGeometries = async (ids: string[]): Promise<Map<string, unknown>>
       continue;
     }
     for (const feature of data.features) {
-      const id = feature?.properties?.id;
-      if (typeof id !== 'string' || !feature?.geometry) continue;
+      /*
+       * The zone code, from `properties.id` or from the tail of the feature's
+       * own URL — NWS carries it in both places (`.../zones/forecast/WAZ695`)
+       * and reading only one of them makes a single field the difference
+       * between every American cloud drawing and none of them. Cheap
+       * insurance in a lookup whose failure is otherwise silent.
+       */
+      const id = typeof feature?.properties?.id === 'string' && feature.properties.id
+        ? feature.properties.id
+        : String(feature?.id ?? '').split('/').pop() ?? '';
+      if (!id || !feature?.geometry) continue;
       seen.add(id);
       rememberZone(id, feature.geometry);
       found.set(id, feature.geometry);
