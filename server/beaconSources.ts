@@ -738,10 +738,78 @@ const nearestRoad = (
  * road context; then signage; and the learned model is applied later, in the
  * database, on top of the rule score computed here.
  */
+/**
+ * Government public-land polygons, as `fetchPublicLand` returns them.
+ *
+ * Kept as a loose shape on purpose: this module is meant to be liftable, and
+ * a hard import of the boundary route would drag the whole Express surface in
+ * with it.
+ */
+export interface PublicLandCover {
+  ok: boolean;
+  features: {
+    geometry?: { type?: string; coordinates?: any };
+    properties?: Record<string, any>;
+  }[];
+}
+
+/** Every outer ring of a Polygon or MultiPolygon, as `{lat, lon}` points. */
+const ringsOf = (geometry: any): Ring[] => {
+  if (!geometry?.coordinates) return [];
+  const toRing = (coords: any): Ring =>
+    Array.isArray(coords)
+      ? coords
+          .filter((p: any) => Array.isArray(p) && p.length >= 2)
+          .map((p: any) => ({ lat: Number(p[1]), lon: Number(p[0]) }))
+      : [];
+
+  if (geometry.type === 'Polygon') return [toRing(geometry.coordinates[0])];
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates
+      .map((poly: any) => toRing(poly?.[0]))
+      .filter((r: Ring) => r.length >= 3);
+  }
+  return [];
+};
+
+/**
+ * Which named public parcel a point sits inside, from the authoritative data.
+ *
+ * This replaces reading `operator` strings off OpenStreetMap. The polygons
+ * here come from BLM, the Forest Service, PAD-US, Alberta and Ontario — the
+ * same ones the map itself draws — so a spot is on public land when the
+ * agency that manages it says so, not when a volunteer happened to tag it.
+ */
+const publicParcelAt = (
+  lat: number, lon: number, cover: PublicLandCover
+): { name: string; designation: string; source: string } | null => {
+  for (const feature of cover.features) {
+    for (const ring of ringsOf(feature.geometry)) {
+      if (ring.length >= 3 && pointInRing(lat, lon, ring)) {
+        const props = feature.properties ?? {};
+        return {
+          name: String(props._name ?? 'Public land'),
+          designation: String(props._designation ?? ''),
+          source: String(props._sourceName ?? props._source ?? 'a public land dataset')
+        };
+      }
+    }
+  }
+  return null;
+};
+
 export const buildCandidates = (
   scan: OverpassScan,
   signs: SignScan,
-  origin: { lat: number; lon: number }
+  origin: { lat: number; lon: number },
+  /**
+   * Government public-land polygons for the scanned box.
+   *
+   * Optional so the module still works standalone, but when it is absent the
+   * only remaining public-land evidence is OpenStreetMap's own tagging, which
+   * is thin. The caller says which it had.
+   */
+  publicLand: PublicLandCover = { ok: false, features: [] }
 ): Candidate[] => {
   const candidates: Candidate[] = [];
 
@@ -795,21 +863,49 @@ export const buildCandidates = (
      * driving on, and a wrong answer is a camper parked in a supermarket lot
      * being told it was a lead.
      */
-    if (!containing) {
-      // No polygon at all: ownership unknown, which is not public.
-      continue;
+    // ---- Veto: the OSM land it sits on, when there is any. `access=private`
+    // over a parcel the government calls public is still a locked gate.
+    if (containing && isForbidden(containing.tags)) continue;
+
+    /**
+     * ---- PUBLIC LAND, FROM THE AGENCY THAT MANAGES IT.
+     *
+     * The government polygons are asked first and they are the answer. Only
+     * if the boundary layer had nothing to say here does OpenStreetMap's own
+     * tagging get a turn — and OSM alone can only produce a lead when it
+     * names an agency, never from a bare `boundary=protected_area`.
+     *
+     * Either way the requirement stands: no named public land, no candidate.
+     */
+    const parcel = publicParcelAt(centre.lat, centre.lon, publicLand);
+
+    if (parcel) {
+      tokens.push('land=official', `land_src=${parcel.source.toLowerCase().replace(/\s+/g, '_')}`);
+      /*
+       * Name, then designation, then who says so — skipping any of the three
+       * that just repeats the one before it. Without this a Forest Service
+       * parcel read "Inside Gallatin National Forest — National Forest, from
+       * National Forest", which is the same words three times and reads like
+       * a template that got away.
+       */
+      const parts = [parcel.name];
+      if (parcel.designation && parcel.designation !== parcel.name) parts.push(parcel.designation);
+      const said = parts.join(' — ');
+      basis = said.toLowerCase().includes(parcel.source.toLowerCase())
+        ? `Inside ${said}, from the managing agency's own boundary data.`
+        : `Inside ${said}, from ${parcel.source}.`;
+      generator = 'public_land';
+      score += 3;
+    } else {
+      const land = containing ? landFromArea(containing.tags) : null;
+      if (!land || !land.isPublic) continue;
+
+      tokens.push(land.token, 'land_src=openstreetmap');
+      // Said out loud: this one rests on a volunteer's tag, not on an agency.
+      basis = `${land.basis} This is from OpenStreetMap's tagging rather than from the managing agency's own boundary.`;
+      generator = 'public_land';
+      score += 2;
     }
-
-    // ---- Veto: the land it sits on.
-    if (isForbidden(containing.tags)) continue;
-
-    const land = landFromArea(containing.tags);
-    if (!land || !land.isPublic) continue;
-
-    tokens.push(land.token);
-    basis = land.basis;
-    generator = 'public_land';
-    score += 3;
 
     // ---- Road context. Somewhere you cannot drive to is not a place to sleep.
     const road = nearestRoad(centre.lat, centre.lon, scan.roads);

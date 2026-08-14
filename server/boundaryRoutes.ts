@@ -330,6 +330,44 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     name: (p) => pick(p, 'NAME_ENG') ?? 'General Use Area',
     designation: (p) => pick(p, 'DESIGNATION_ENG') ?? 'General Use Area',
     extent: { minLat: 41.6, minLon: -95.2, maxLat: 56.9, maxLon: -74.3 }
+  },
+  {
+    /**
+     * PAD-US — THE NATIONAL INVENTORY, AND THE ONLY SOURCE HERE THAT KNOWS
+     * ABOUT STATE LAND.
+     *
+     * BLM and the Forest Service between them cover federal land and nothing
+     * else, so every state forest, state trust parcel, national grassland and
+     * county holding in the country was invisible to this app — which is
+     * exactly the gap `COVERAGE_GAPS` records as "US state trust and state
+     * forest lands". PAD-US is USGS's national roll-up of all of it.
+     *
+     * `Pub_Access = 'OA'` is the filter that makes it usable: PAD-US grades
+     * every polygon Open / Restricted / Closed, and only OA means the public
+     * may walk in. Restricted and Closed are excluded rather than shown with a
+     * caveat, because a polygon a camper cannot enter is not a lead.
+     *
+     * WHAT OA STILL DOES NOT MEAN. Open access is a statement about entry, not
+     * about sleeping — a state park is usually OA and usually forbids
+     * overnight parking. So this source's `campingBasisKind` is the weakest of
+     * the three, and Beacon leans on the agency-specific sources above it
+     * before this one.
+     *
+     * Definition lifted from `scripts/landSources.ts`, where the field names
+     * were already worked out for the seeder.
+     */
+    id: 'padus_open_access',
+    label: 'Public land (PAD-US open access)',
+    attribution: 'USGS Gap Analysis Project, Protected Areas Database of the US',
+    url: 'https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/PADUS_Public_Access/FeatureServer/0/query',
+    where: "Pub_Access = 'OA'",
+    outFields: 'BndryName,Unit_Nm,Des_Tp,Mang_Name,Pub_Access',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'open_access_flag',
+    name: (p) => pick(p, 'BndryName', 'Unit_Nm') ?? 'Public land',
+    designation: (p) => pick(p, 'Des_Tp', 'Mang_Name') ?? 'Open access public land',
+    extent: CONUS
   }
 ];
 
@@ -632,6 +670,69 @@ const DISCLAIMER =
   'Agency data does not illustrate ownership boundaries. Private ' +
   'inholdings are not shown. These polygons do not constitute ' +
   'permission to camp. Confirm local regulations before travelling.';
+
+/**
+ * THE PUBLIC-LAND POLYGONS FOR ONE BOX, FOR ANYTHING THAT IS NOT THE MAP.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS
+ * ---------------------------------------------------------------------------
+ *
+ * Beacon used to decide "is this public land?" by reading OpenStreetMap tags
+ * — `boundary=protected_area`, an `operator` string it pattern-matched — while
+ * this file sat next to it holding the actual government surface-management
+ * data the map has drawn all along. Two answers to one question, and the
+ * weaker one was wired to the feature that sends campers somewhere.
+ *
+ * That mismatch is the whole reason a scan came back as a list of car parks
+ * AND missed real public land at the same time: OSM's protected-area coverage
+ * is volunteer-drawn and thin, so a national forest with no OSM polygon looked
+ * exactly like a supermarket, and a conservancy easement with one looked
+ * exactly like a national forest.
+ *
+ * Same sources, same cache, same seeded-database-first path as `/api/boundaries`.
+ * If the map can draw it, Beacon can stand on it.
+ *
+ * Never throws. A source that is down contributes nothing and says so through
+ * `ok`, which the caller must report rather than reading as "not public".
+ */
+export interface PublicLandLookup {
+  /** False when every source failed — "could not check", never "not public". */
+  ok: boolean;
+  /** GeoJSON polygons carrying `_name`, `_designation`, `_source`. */
+  features: any[];
+}
+
+export const fetchPublicLand = async (
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  recordLimit = 400
+): Promise<PublicLandLookup> => {
+  const span = Math.max(
+    Math.abs(bbox.maxLat - bbox.minLat),
+    Math.abs(bbox.maxLon - bbox.minLon)
+  );
+  // A beacon scan is a few kilometres across, so the geometry can stay sharp.
+  // This is a point-in-polygon test, not something being drawn.
+  const simplifyDegrees = Math.max(0.00005, span / 2000);
+
+  try {
+    const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, 0);
+    if (seeded && seeded.features.length > 0) {
+      return { ok: true, features: seeded.features };
+    }
+
+    const results = await Promise.all(
+      BOUNDARY_SOURCES.map((source) => cachedQuery(source, bbox, simplifyDegrees, recordLimit))
+    );
+    return {
+      // Every single source failing is an outage, not an empty countryside.
+      ok: results.some((r) => r.ok),
+      features: results.flatMap((r) => r.features)
+    };
+  } catch {
+    return { ok: false, features: [] };
+  }
+};
 
 export const registerBoundaryRoutes = (app: Express): void => {
   app.get('/api/boundaries', async (req: Request, res: Response) => {

@@ -44,6 +44,7 @@ import {
   fetchOverpassScan, fetchSignsNear, buildCandidates, metresBetween,
   type Candidate
 } from './beaconSources.js';
+import { fetchPublicLand } from './boundaryRoutes.js';
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON = process.env.VITE_SUPABASE_ANON_KEY;
@@ -166,11 +167,6 @@ const DISCLAIMER =
   'beats anything in here. Check when you arrive.';
 
 /**
- * The exact words for "we found nothing", from the original specification.
- * Kept verbatim because it tells the camper what to DO next, which is a great
- * deal more useful than an empty list.
- */
-/**
  * THIS TEXT USED TO SEND PEOPLE SOMEWHERE BEACON NOW REFUSES TO LOOK.
  *
  * It said "try closer to the city edge or adjacent to municipal parks" —
@@ -289,15 +285,35 @@ export const registerBeaconRoutes = (app: Express): void => {
         break;
       }
 
-      const [scan, signs] = await Promise.all([
+      /*
+       * The government boundary layer is asked alongside the other two, and
+       * it is the one that decides whether a candidate is on public land at
+       * all. Same sources and same cache the map draws from — see
+       * `fetchPublicLand`. A degree of padding either side of the scan radius
+       * so a parcel edge just outside the circle still contains a spot on it.
+       */
+      const pad = (radiusM / 111_000) * 1.4;
+      const [scan, signs, publicLand] = await Promise.all([
         fetchOverpassScan(lat, lon, radiusM),
-        fetchSignsNear(lat, lon, radiusM)
+        fetchSignsNear(lat, lon, radiusM),
+        fetchPublicLand({
+          minLat: lat - pad, minLon: lon - pad,
+          maxLat: lat + pad, maxLon: lon + pad
+        })
       ]);
 
       sources.openstreetmap = scan.ok ? 'ok' : (scan.note ?? 'unavailable');
       sources.mapillary = signs.ok ? `ok (${signs.coverage} coverage)` : (signs.note ?? 'unavailable');
+      /*
+       * Reported like any other source, because when this one is down every
+       * candidate falls back to OpenStreetMap's thinner tagging — and a
+       * camper reading a short list deserves to know that is why.
+       */
+      sources.publicLand = publicLand.ok
+        ? `ok (${publicLand.features.length} parcels in range)`
+        : 'unavailable — public land could not be confirmed from agency data';
 
-      found = buildCandidates(scan, signs, { lat, lon })
+      found = buildCandidates(scan, signs, { lat, lon }, publicLand)
         .filter((c) => c.ruleScore >= REMEMBER_SCORE);
 
       if (found.filter((c) => c.ruleScore >= SURFACE_SCORE).length >= WANTED) break;

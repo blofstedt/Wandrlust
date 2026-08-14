@@ -377,6 +377,11 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'US-STATE',
     region: 'US state trust and state forest lands',
     reason:
-      'State-level camping rules vary by state and are not in the federal SMA layer. PAD-US includes some state lands where Pub_Access is populated, but coverage is uneven.'
+      'PAD-US is now queried live as well as seeded, so state forests, state trust ' +
+      'parcels, national grasslands and county holdings appear wherever USGS has ' +
+      'populated Pub_Access = OA. That is most of the country and not all of it, and ' +
+      'the flag means the public may ENTER — not that anyone may sleep there. State ' +
+      'camping rules still vary by state and are in no layer here, so a PAD-US parcel ' +
+      'is the weakest kind of lead this app produces.'
   }
 ];
