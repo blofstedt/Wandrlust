@@ -7,12 +7,11 @@ import type { LocalizedKind } from '../utils/alertOverlay';
  * them. They were previously two hand-kept lists and would have drifted the
  * first time somebody added a kind.
  *
- * Every one of these is a LOCALIZED event — something at a spot on a road — so
- * the map draws it as a teardrop pin, the same shape an official fire or flood
- * warning wears. `pin` says which of the four point families it belongs to, and
- * that decides the pin's colour and symbol: a fire, water, a barricade for
- * anything blocking the way, or a plain warning triangle. Weather over a whole
- * region never appears here; that is drawn as a merged area instead.
+ * Every one of these is something at a spot on a road, so the map draws it as
+ * a teardrop pin — the only hazard left wearing one, now that official
+ * warnings all draw as soft areas. `pin` says which of the four point families
+ * it belongs to, and that decides the pin's colour and symbol: a fire, water,
+ * a barricade for anything blocking the way, or a plain warning triangle.
  *
  * What keeps a report apart from an agency warning is behaviour, not looks: a
  * report is tappable and opens a card saying, in as many words, that it is one
@@ -39,7 +38,7 @@ export interface HazardReportStyle {
    * legible when the map is busy.
    */
   prominent?: boolean;
-  /** Which localized pin family the map draws this kind as. */
+  /** Which of the four pin families the map draws this kind as. */
   pin: LocalizedKind;
 }
 

@@ -38,7 +38,6 @@ import { createSpot } from './services/dataService';
 import { flushPendingSpots } from './services/spotSync';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
-import { AlertCard } from './components/AlertCard';
 import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
 import {
@@ -58,7 +57,7 @@ import {
 } from './services/dataService';
 import { mergeCampsites } from './utils/mergeCampsites';
 import { calculateRoute, type RouteResult } from './services/routingService';
-import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot, type HazardAlert } from './services/weatherService';
+import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
 import { useAuth } from './contexts/AuthContext';
 import { Search, Bookmark, MapPinOff, SlidersHorizontal, Waves, Radar } from 'lucide-react';
@@ -116,8 +115,6 @@ export default function App() {
   const [destination, setDestination] = useState<MapDestination | null>(null);
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [selectedReport, setSelectedReport] = useState<HazardRecord | null>(null);
-  /** An official warning (fire/flood/storm) tapped on the map. */
-  const [selectedAlert, setSelectedAlert] = useState<HazardAlert | null>(null);
 
   /**
    * The rig, which exists only to make the route warnings specific to it.
@@ -461,7 +458,6 @@ export default function App() {
   const handleSelectMapCampsite = useCallback((site: Campsite) => {
     setSelectedCampsite(site);
     setSelectedReport(null);
-    setSelectedAlert(null);
     // A tapped pin becomes the destination, exactly like a dropped one. The
     // map draws no extra marker for it — the pin it already has lights up.
     setDestination({ latitude: site.latitude, longitude: site.longitude, campsite: site });
@@ -491,7 +487,6 @@ export default function App() {
     (lat: number, lon: number, land?: DestinationLand) => {
       setSelectedCampsite(null);
       setSelectedReport(null);
-      setSelectedAlert(null);
       setPinRefusal(null);
       setDestination({ latitude: lat, longitude: lon, land });
     },
@@ -588,7 +583,6 @@ export default function App() {
       setIsBeaconOpen(false);
       setSelectedCampsite(null);
       setSelectedReport(null);
-      setSelectedAlert(null);
       setDestination({ latitude, longitude });
       setCenter([latitude, longitude]);
       setZoom((current) => Math.max(current, 14));
@@ -1249,8 +1243,7 @@ export default function App() {
                     destination={destination}
                     onDropDestination={handleDropDestination}
                     onPinRefused={handlePinRefused}
-                    onSelectHazardReport={(r) => { setSelectedReport(r); setSelectedAlert(null); }}
-                    onSelectAlert={(a) => { setSelectedAlert(a); setSelectedReport(null); }}
+                    onSelectHazardReport={setSelectedReport}
                     onSelectBeaconSpot={setBeaconSpot}
                     beaconRefreshKey={beaconRefreshKey}
                     weather={destWeather}
@@ -1524,7 +1517,6 @@ export default function App() {
         onClose={() => setSelectedReport(null)}
         onRequireAuth={() => setIsAuthOpen(true)}
       />
-      <AlertCard alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
 
       <PresencePanel
         isOpen={isPresenceOpen}

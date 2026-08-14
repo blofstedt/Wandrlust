@@ -3,14 +3,14 @@
  * MapComponent so the geometry is testable on its own.
  *
  * Four jobs:
- *   1. Sorting every active alert into ONE OF TWO KINDS — a localized incident
- *      with a place (drawn as a teardrop pin) or a generalized weather event
- *      over a region (drawn as one merged area with a single badge at its
- *      centre). See EVENT_SCOPE, well down the file.
+ *   1. Turning every active official alert into a CLOUD — one soft area per
+ *      contiguous warned region, with no hard edge anywhere. Fire, flood,
+ *      smoke, rain, storm, heat, cold and wind all draw the same way; see
+ *      "Every official warning is an area", well down the file.
  *   2. A short badge word (Fire / Flood / Smoke …) for a POINT sitting inside an
  *      active alert — drawn on the campsite pins.
- *   3. Merging the separate forecast-zone parcels of one generalized event into
- *      a single shape, so the client draws only the outer boundary.
+ *   3. Merging the separate forecast-zone parcels of one event into a single
+ *      shape, so the client softens and draws one outline.
  *   4. Dissolving the shared edges between same-category land parcels, so
  *      adjacent public land reads as one shape rather than a web of lines.
  *
@@ -43,17 +43,18 @@ export const BADGE_LABEL: Record<AlertBadge, string> = {
 /**
  * ONE COLOUR PER EVENT KIND, AND IT MEANS THE SAME THING EVERYWHERE.
  *
- * The same hex paints the pin, the area, the centroid badge and the little dot
+ * The same hex names the family on a chip, in a card, and in the little dot
  * that sits over a campsite pin standing inside the event. Two families that a
  * camper has to tell apart at a glance never share a hue: flood is teal and
  * heavy rain is dark blue precisely because "the river is up" and "it is
  * raining hard over the region" are different decisions.
+ *
+ * These are the SATURATED colours, for things the size of a chip. The wash a
+ * cloud is painted in is a paler version — see CLOUD_TINT.
  */
 export const BADGE_COLOR: Record<AlertBadge, string> = {
-  // Localized — a place, drawn as a teardrop pin.
   fire: '#EA580C',   // red-orange
   flood: '#14B8A6',  // teal
-  // Generalized — a region, drawn as one merged area with a badge at its centre.
   rain: '#1D4ED8',   // dark blue
   storm: '#7C3AED',  // purple
   heat: '#B91C1C',   // dark red
@@ -79,8 +80,8 @@ export const BADGE_COLOR: Record<AlertBadge, string> = {
  * colour, and from the wash's hue.
  */
 export const CLOUD_TINT: Record<AlertBadge, string> = {
-  fire: '#FDBA8C',   // unused for the wash today; fire draws as a pin
-  flood: '#7FE3D4',  // likewise
+  fire: '#FDBA8C',   // pale ember
+  flood: '#7FE3D4',  // pale teal
   rain: '#93B4FF',
   storm: '#C9B0FC',
   heat: '#FCA5A5',
@@ -105,11 +106,11 @@ const AIR_QUALITY_EVENT = /smoke|air quality|air stagnation/i;
  * Water that has ARRIVED somewhere, as opposed to water still falling.
  *
  * `shared/hazards.ts` folds both into the 'flood' family, because for pushing a
- * warning they are one decision. On the map they are not: a flood warning is a
- * place you must not drive into, and a rainfall warning covers a whole forecast
- * region and changes nothing about where a road is. Drawing a regional rainfall
- * product as a pin on a single point was the thing that made the map claim to
- * know more than it does — the pin looked like someone had seen water there.
+ * warning they are one decision. On the map they are not: a flood warning means
+ * water where you might drive, a rainfall warning means the sky over a forecast
+ * region. Both draw as clouds now, but in different colours, and the card names
+ * the actual product — so the two stay tellable apart without either of them
+ * getting a pin that would claim someone stood there and looked.
  *
  * Flood words are tested FIRST, so an alert that mentions both ("heavy rain and
  * flooding") stays a flood. Over-calling flood is the safe direction to err in.
@@ -597,29 +598,37 @@ export const dissolvedFill = (
 };
 
 /* ================================================================== */
-/* THE TWO KINDS OF EVENT THE MAP DRAWS                                */
+/* EVERY OFFICIAL WARNING IS AN AREA                                   */
 /* ================================================================== */
 /**
- * Everything below exists to keep one distinction visible from across the
- * room, because it is the distinction a camper actually acts on:
+ * THERE IS ONE WAY TO DRAW AN AGENCY WARNING, AND IT IS A CLOUD.
  *
- *   LOCALIZED  — something is happening AT A PLACE. A fire. Water over a road.
- *                A bridge that is out. Drawn as a TEARDROP PIN on the point,
- *                tappable, opening the detail card.
+ * This used to be two ways. Fire and flood were treated as LOCALIZED — drawn
+ * as teardrop pins on the alert's centroid — on the theory that an agency
+ * draws those around an actual event, so they have a place. The rest were
+ * GENERALIZED and drawn as soft areas.
  *
- *   GENERALIZED — something is happening OVER A REGION. Heavy rain, a storm,
- *                a heatwave, a cold snap, smoke. Drawn as ONE merged area with
- *                a semi-transparent fill and a solid outer stroke, and ONE
- *                badge at the centre of each merged piece.
+ * Both halves of that theory were wrong in practice.
  *
- * The old version drew every family as a soft tinted cloud with its glyph
- * TILED across the whole polygon, which is what put a dozen purple lightning
- * bolts across a valley for a single storm warning and made the satellite
- * imagery underneath unreadable. One area, one badge.
+ * The products that actually arrive are red flag warnings, fire weather
+ * watches, burn bans and flash flood warnings, and every one of them is issued
+ * over a POLYGON — a forecast zone, a county, a river basin. The centroid of
+ * that polygon is not where the fire is and not where the water is; it is the
+ * arithmetic middle of an administrative shape. A pin there is the map's
+ * strongest possible claim — "somebody stood here and saw this" — attached to
+ * a number nobody surveyed.
  *
- * The honesty rule is unchanged and is the reason a generalized event may
- * never be drawn as a pin: a rainfall warning covers a forecast region, and a
- * pin on a point inside it would claim someone looked at that point.
+ * It looked wrong too, which is how it got caught: a dozen identical teal
+ * teardrops stitched across Indiana for what was one regional flood product,
+ * each pin sitting on nothing in particular, all of them shouting over the
+ * campsite pins the map exists to show.
+ *
+ * So every family clouds. Fire is pale ember, flood pale teal, and the colours
+ * still tell them apart at a glance. The blurred edge says what a pin never
+ * could: roughly this area, edges unknown.
+ *
+ * PINS STILL EXIST — for camper reports, below. Those are the one thing on
+ * this map that really is a point somebody stood on.
  */
 
 /** Emoji + human label per family, for pin chips and lists. */
@@ -635,47 +644,23 @@ export const WARNING_LABEL: Record<AlertBadge, string> = {
   wind: 'Wind'
 };
 
-export type EventScope = 'localized' | 'generalized';
-
-/**
- * WHICH FAMILY IS WHICH, AND WHY.
- *
- * Fire and flood are the two things an agency draws around an actual event —
- * a perimeter, a flooded reach — so they earn a point on the map.
- *
- * Everything else is issued PER FORECAST REGION. Rain, storms, heat, cold and
- * smoke are all weather over an area; none of them has a point, and pretending
- * otherwise is the mistake this table exists to prevent.
- */
-export const EVENT_SCOPE: Record<AlertBadge, EventScope> = {
-  fire: 'localized',
-  flood: 'localized',
-  rain: 'generalized',
-  storm: 'generalized',
-  heat: 'generalized',
-  winter: 'generalized',
-  smoke: 'generalized',
-  wind: 'generalized'
-};
-
-export const isGeneralized = (badge: AlertBadge): boolean =>
-  EVENT_SCOPE[badge] === 'generalized';
-
-export const isLocalized = (badge: AlertBadge): boolean =>
-  EVENT_SCOPE[badge] === 'localized';
-
 /* ------------------------------------------------------------------ */
-/* Localized events — teardrop pins                                    */
+/* Camper reports — teardrop pins                                      */
 /* ------------------------------------------------------------------ */
 
 /**
- * The point-event families, shared by official alerts and camper reports.
+ * The four pin families a camper's report can wear.
  *
- * A washed-out road reported by a camper and a flood warning issued by an
- * agency are the same SHAPE of fact — something is wrong at this spot — so
- * they wear the same shape of marker. What separates them is what the card
- * says when you tap it, which is where the "one person's report, not verified"
- * wording lives.
+ * A report IS a point: somebody drove up to a washed-out crossing, stopped,
+ * and said so. That is the only kind of fact on this map entitled to a
+ * teardrop, which is why official warnings gave theirs up (see above) and
+ * these kept them.
+ *
+ * Twelve report kinds collapse into four pins on purpose — see
+ * `src/config/hazardReports.ts`. Twelve colours of teardrop is noise; a
+ * downed tree and deep mud are the same decision for a driver, and the card
+ * names the actual kind when you tap it. The card is also where the "one
+ * person's report, not verified" wording lives, because the pin cannot say it.
  */
 export type LocalizedKind = 'fire' | 'flood' | 'infrastructure' | 'other';
 
@@ -725,10 +710,10 @@ const LOCALIZED_GLYPH: Record<LocalizedKind, string> = {
 };
 
 /**
- * A teardrop pin for a LOCALIZED event.
+ * A teardrop pin for a camper's report.
  *
- * Hard-edged on purpose: a point event has a place, and the pin claims one.
- * The dark outline keeps it readable over both bright snow and dark forest on
+ * Hard-edged on purpose: a report has a place, and the pin claims one. The
+ * dark outline keeps it readable over both bright snow and dark forest on
  * satellite imagery, which a white outline alone does not.
  *
  * `ring` draws a pale halo — used to mark a camper report several people have
@@ -760,7 +745,7 @@ export const localizedPinHtml = (opts: {
 };
 
 /* ------------------------------------------------------------------ */
-/* Generalized events — one merged area, one badge                     */
+/* Official warnings — one merged area per family                      */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -779,6 +764,18 @@ const glyphInk = (hex: string): string => {
 
 /** Glyphs for the centroid badge, on a 24x24 grid, drawn in `ink`. */
 const GENERALIZED_GLYPH: Record<string, (ink: string, color: string) => string> = {
+  // A flame with a hot inner tongue, the colour showing through it.
+  fire: (ink, color) =>
+    `<path d="M12 3c2 4 6 5.9 6 11.1A6 6 0 0 1 6 14.1c0-2.3.9-4 2.3-5.4.4 3 2.9 3 ` +
+    `2.9 0 0-2.7.2-4.6.8-5.7z" fill="${ink}"/>` +
+    `<path d="M12 11.4c1 1.6 2.4 2.4 2.4 4.3a2.4 2.4 0 0 1-4.8 0c0-1.3.8-2.4 ` +
+    `2.4-4.3z" fill="${color}"/>`,
+  // Three rising crests — water where it should not be.
+  flood: (ink) =>
+    '<path d="M2.5 8c1.9-1.9 4.1-1.9 6 0s4.1 1.9 6 0 4.1-1.9 6 0' +
+    'M2.5 13c1.9-1.9 4.1-1.9 6 0s4.1 1.9 6 0 4.1-1.9 6 0' +
+    'M2.5 18c1.9-1.9 4.1-1.9 6 0s4.1 1.9 6 0 4.1-1.9 6 0" ' +
+    `fill="none" stroke="${ink}" stroke-width="2.2" stroke-linecap="round"/>`,
   // Raincloud with heavy drops.
   rain: (ink) =>
     `<g fill="${ink}"><circle cx="9" cy="10.6" r="3.6"/><circle cx="14" cy="9" r="4.6"/>` +

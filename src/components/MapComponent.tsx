@@ -37,8 +37,8 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  AlertBadge, LocalizedKind, BADGE_COLOR, CLOUD_TINT, badgesForPoint, alertBadge,
-  localizedPinHtml, isGeneralized, cloudPieces,
+  AlertBadge, BADGE_COLOR, CLOUD_TINT, badgesForPoint, alertBadge,
+  localizedPinHtml, cloudPieces,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
@@ -972,16 +972,21 @@ const buildCampsiteIcon = (
 /**
  * A camper's hazard report.
  *
- * A TEARDROP PIN, the same shape an official fire or flood warning wears,
- * because it is the same shape of fact: something is wrong AT THIS SPOT. A
- * washout, a weak bridge and a downed tree all read as one dark-grey barricade
- * pin — they are the same decision for a driver, and the card names the actual
- * kind when you tap it. Fire and flooding keep the fire and flood colours, so a
- * camper's flood report and an agency's flood warning look alike on purpose.
+ * A TEARDROP PIN, and now the only HAZARD on this map wearing one. Official
+ * warnings gave theirs up because an agency warns over a polygon and the
+ * middle of a polygon is nobody's location; a camper report is the opposite —
+ * somebody drove up to this exact spot and told us what they found, which is
+ * the one kind of hazard a pin can honestly claim.
  *
- * The look matches an official pin; the behaviour is where the honesty lives.
- * This marker opens a card that spells out it is one person's report and not
- * verified, and a report several people have confirmed gets a pale ring.
+ * A washout, a weak bridge and a downed tree all read as one dark-grey
+ * barricade pin — they are the same decision for a driver, and the card names
+ * the actual kind when you tap it. Fire and flooding keep the fire and flood
+ * colours, so a camper's flood report matches the colour of the flood cloud an
+ * agency issued.
+ *
+ * The behaviour is where the honesty lives: this marker opens a card that
+ * spells out it is one person's report and not verified, and a report several
+ * people have confirmed gets a pale ring.
  */
 const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
   const style = hazardReportStyle(record.kind);
@@ -1458,8 +1463,6 @@ interface MapComponentProps {
   bottomSheetPx?: number;
   /** Fired when a camper's hazard report is tapped. */
   onSelectHazardReport?: (record: HazardRecord) => void;
-  /** Fired when a precise official warning (fire / flood / storm) is tapped. */
-  onSelectAlert?: (alert: HazardAlert) => void;
   /** Fired when a Beacon spot is tapped. */
   onSelectBeaconSpot?: (spot: BeaconSpot) => void;
   /**
@@ -1541,7 +1544,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   coverage, route, onOpenDirections, onClearDestination, onAddSpotHere, onAddFacilityHere,
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
-  destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert,
+  destination, onDropDestination, onPinRefused, onSelectHazardReport,
   onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0,
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
   facilityRefreshKey = 0
@@ -1627,8 +1630,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const facilityPinsLayerRef = useRef<L.LayerGroup | null>(null);
   /** State / province boundary lines. Cleared when `showAdmin1` is off. */
   const admin1LayerRef = useRef<L.LayerGroup | null>(null);
-  const warningRendererRef = useRef<L.Renderer | null>(null);
-  /** Canvas the generalized-warning clouds are painted on. See CLOUD_BLUR_PX. */
+  /** Canvas the warning clouds are painted on. See CLOUD_BLUR_PX. */
   const warningCloudRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
 
@@ -1646,8 +1648,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   pinRefusedRef.current = onPinRefused;
   const reportTapRef = useRef(onSelectHazardReport);
   reportTapRef.current = onSelectHazardReport;
-  const alertTapRef = useRef(onSelectAlert);
-  alertTapRef.current = onSelectAlert;
   const beaconTapRef = useRef(onSelectBeaconSpot);
   beaconTapRef.current = onSelectBeaconSpot;
   const facilityTapRef = useRef(onSelectFacility);
@@ -3469,18 +3469,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [destination, isMapReady]);
 
   /* ------------------------------------------------------------------ */
-  /* Weather alerts — localized pins and generalized areas                */
+  /* Weather alerts — one soft area per warned region                     */
   /* ------------------------------------------------------------------ */
   /**
-   * Active alerts, drawn as one of two things: a teardrop pin where the event
-   * has a place, or a single merged area with one badge where it covers a
-   * region. `EVENT_SCOPE` in alertOverlay.ts decides which, per family.
+   * Active alerts, every one of them drawn as a cloud over the ground the
+   * agency named. Fire, flood, smoke, rain, storm, heat, cold and wind differ
+   * only in colour.
    *
-   * Only alerts the feed gave a geometry for can be placed. NWS sends
+   * Only alerts the feed gave a geometry for can be drawn. NWS sends
    * `geometry: null` for its zone-based products, and those are counted and
-   * reported rather than dropped silently or, worse, pinned to a guessed
-   * location — a fire warning shown over the wrong valley is actively
-   * dangerous. The count of unplaceable alerts is surfaced in the status chip.
+   * reported rather than dropped silently or, worse, shaded over a guessed
+   * area — a fire warning shown over the wrong valley is actively dangerous.
+   * The count of undrawable alerts is surfaced in the status chip.
    */
   useEffect(() => {
     const map = mapRef.current;
@@ -3513,22 +3513,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
 
-    // THREE panes, because the three things behave differently.
+    // ONE pane, because there is now one thing to draw.
     //
-    //   warningCloudPane — the generalized areas, and nothing else. Blurred as
-    //                      a whole (see CLOUD_BLUR_PX), which is what turns a
+    //   warningCloudPane — every warned area, whatever the family. Blurred as a
+    //                      whole (see CLOUD_BLUR_PX), which is what turns a
     //                      shape with an edge into a cloud without one.
-    //   warningPane      — the faint hint of the area behind a localized fire
-    //                      or flood pin. NOT blurred: that shape is one the
-    //                      agency actually drew around the event.
-    //   warningIconPane  — the things you tap: localized fire/flood pins and
-    //                      the one badge on each generalized area. Sharp, above
-    //                      the campsite pins, because a flame on the map is
-    //                      worth more than the pin beneath it.
     //
-    // All three are pointer-events:none for the areas, so a tap on a cloud
-    // falls straight through to the map (which drops a spot and shows the
-    // warning in the sheet).
+    // There used to be two more: a sharp pane for the outline of a fire or
+    // flood polygon, and an icon pane for the teardrop pins that sat on top of
+    // them. Both went when those families started clouding like everything
+    // else — see alertOverlay.ts.
+    //
+    // pointer-events:none, so a tap on a cloud falls straight through to the
+    // map, which drops a spot and shows the warning in that spot's sheet. That
+    // is deliberately the only way to read a warning: the sheet knows the
+    // alert covers the point under your thumb, which an icon floating in the
+    // middle of a forecast region never did.
     if (!map.getPane('warningCloudPane')) {
       map.createPane('warningCloudPane');
       const cpane = map.getPane('warningCloudPane');
@@ -3551,33 +3551,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         cpane.style.filter = `blur(${CLOUD_BLUR_PX}px)`;
       }
     }
-    if (!map.getPane('warningPane')) {
-      map.createPane('warningPane');
-      const wpane = map.getPane('warningPane');
-      if (wpane) {
-        wpane.style.zIndex = '460';
-        wpane.style.pointerEvents = 'none';
-      }
-    }
-    if (!map.getPane('warningIconPane')) {
-      map.createPane('warningIconPane');
-      const ipane = map.getPane('warningIconPane');
-      if (ipane) ipane.style.zIndex = '616';
-    }
-
-    // One SVG renderer for the localized areas, which are small, few, and want
-    // a crisp thin stroke.
-    if (!warningRendererRef.current) {
-      warningRendererRef.current = L.svg({ pane: 'warningPane', padding: 0.3 });
-    }
     // Canvas for the clouds: they are big, they are blurred, and a canvas is
     // what the pane-level blur is cheap on — the GPU blurs one bitmap rather
     // than re-rasterising a tree of paths.
     if (!warningCloudRendererRef.current) {
       warningCloudRendererRef.current = L.canvas({ pane: 'warningCloudPane', padding: 0.3 });
     }
-    // Non-null: both just created above if missing.
-    const warningRenderer = warningRendererRef.current!;
+    // Non-null: just created above if missing.
     const cloudRenderer = warningCloudRendererRef.current!;
 
     /**
@@ -3646,24 +3626,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
 
     /**
-     * Draw the active warnings, split into the two kinds of event.
+     * Draw the active warnings. Every family draws the same way: one soft area
+     * per contiguous warned region, in that family's colour, no icons.
      *
-     *   LOCALIZED (fire / flood) — a faint hint of the area the agency drew,
-     *   plus a crisp, TAPPABLE teardrop pin on the point. Tapping it opens the
-     *   warning in the bottom card.
-     *
-     *   GENERALIZED (heavy rain / storm / heat / cold / smoke / wind) — every
-     *   alert of that family in view MERGED into one area, drawn as a
-     *   semi-transparent fill with a solid outer stroke, plus ONE tappable
-     *   badge at the centre of each merged piece.
+     * Fire and flood used to be the exception, drawn as teardrop pins on the
+     * alert's centroid. They are not any more, and alertOverlay.ts carries the
+     * reasoning — the short version is that a red flag warning and a flash
+     * flood warning are issued over a polygon like everything else, so the
+     * centroid was the middle of an administrative shape and a pin on it
+     * claimed somebody had stood there.
      *
      * THE MERGE IS THE POINT. Environment Canada and the NWS issue these
      * products once per forecast zone, so a single rainfall warning arrives as
      * eleven adjacent blocks. Drawn as they come, that is a honeycomb of
-     * internal lines with an icon in every cell — which is what the map looked
-     * like before, and it read as eleven separate warnings. `cloudPieces`
-     * groups the blocks that touch into ONE area, softens their surveyed edges
-     * away, and hands back one badge position per area.
+     * internal lines — which is what the map looked like before, and it read
+     * as eleven separate warnings. `cloudPieces` groups the blocks that touch
+     * into ONE area and softens their surveyed edges away.
      *
      * Alerts the feed gave no geometry for are counted, never pinned to a guess.
      *
@@ -3672,13 +3650,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * in the Atlantic, Mexican border counties, whole territories north of 60°.
      * The grey coverage mask sits above every layer on the map (pane 645), so
      * anything reaching past the line is greyed out with the ground it covers.
-     * Pins and badges are additionally refused out there, because a chip
-     * floating over an area the map has just said it knows nothing about reads
-     * as knowledge.
      */
     const render = (alerts: HazardAlert[]) => {
       const group = L.layerGroup([]);
-      /** Generalized alerts, gathered by family so each family clouds as one. */
+      /** Alerts gathered by family, so each family clouds as one. */
       const areas = new Map<AlertBadge, HazardAlert[]>();
 
       alerts.forEach((alert) => {
@@ -3686,55 +3661,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         const badge = alertBadge(alert);
         if (!badge) return;
 
-        if (isGeneralized(badge)) {
-          /**
-           * NO CENTROID TEST HERE, and that is the fix for the smoke area that
-           * blinked in and out over BC.
-           *
-           * A generalized area is drawn from its geometry, so it never needed
-           * the alert's single centroid — but it was being filtered on it, and
-           * that centroid is the average of the biggest region in the alert.
-           * For a coastal BC region it lands in the Pacific, outside coverage,
-           * and the whole warning was dropped. Worse, Environment Canada
-           * publishes one row per region and the server merges the rows it can
-           * see, so panning changed which regions were merged, which moved the
-           * centroid, which flipped the test — the area appeared and vanished
-           * as you dragged.
-           */
-          const bucket = areas.get(badge);
-          if (bucket) bucket.push(alert);
-          else areas.set(badge, [alert]);
-          return;
-        }
-
-        // A localized event: the area is context, the pin is the event. A pin
-        // IS a point, so this one does need a placeable centroid.
-        if (
-          !Array.isArray(alert.centroid) ||
-          !isWithinCoverage(alert.centroid[0], alert.centroid[1])
-        ) return;
-        const color = BADGE_COLOR[badge];
-        group.addLayer(
-          L.geoJSON(alert.geometry as any, {
-            pane: 'warningPane',
-            renderer: warningRenderer,
-            interactive: false,
-            style: { color, weight: 1.4, opacity: 0.55, fillColor: color, fillOpacity: 0.1 }
-          } as RenderedGeoJSONOptions)
-        );
-        const marker = L.marker(alert.centroid as [number, number], {
-          pane: 'warningIconPane',
-          icon: L.divIcon({
-            className: 'weather-warning-icon',
-            html: localizedPinHtml({ kind: badge as LocalizedKind }),
-            iconSize: [36, 44],
-            iconAnchor: [18, 44]
-          }),
-          title: `${alert.event} — tap for details`,
-          riseOnHover: true
-        });
-        marker.on('click', () => alertTapRef.current?.(alert));
-        group.addLayer(marker);
+        /**
+         * NO CENTROID TEST HERE, and that is the fix for the smoke area that
+         * blinked in and out over BC.
+         *
+         * An area is drawn from its geometry, so it never needed the alert's
+         * single centroid — but it was being filtered on it, and that centroid
+         * is the average of the biggest region in the alert. For a coastal BC
+         * region it lands in the Pacific, outside coverage, and the whole
+         * warning was dropped. Worse, Environment Canada publishes one row per
+         * region and the server merges the rows it can see, so panning changed
+         * which regions were merged, which moved the centroid, which flipped
+         * the test — the area appeared and vanished as you dragged.
+         *
+         * The centroid is not used to DRAW anything any more either. Fire and
+         * flood used to be pinned on it; see the note at the top of the
+         * "EVERY OFFICIAL WARNING IS AN AREA" section in alertOverlay.ts.
+         */
+        const bucket = areas.get(badge);
+        if (bucket) bucket.push(alert);
+        else areas.set(badge, [alert]);
       });
 
       areas.forEach((familyAlerts, badge) => {
@@ -3781,7 +3727,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           );
 
           /**
-           * NO BADGE ON A GENERALIZED AREA. There used to be one per area.
+           * NO BADGE ON A WARNED AREA. There used to be one per area.
            *
            * A cloud covers ground the camper is not asking about. Pinning an
            * icon in the middle of it put a tappable thing on the map at a
@@ -3946,11 +3892,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       document.removeEventListener('visibilitychange', onWake);
       window.removeEventListener('online', onWake);
       clear();
-      // Drop the renderers too, so a remount does not stack a second one.
-      if (warningRendererRef.current) {
-        try { map.removeLayer(warningRendererRef.current); } catch { /* detached */ }
-        warningRendererRef.current = null;
-      }
+      // Drop the renderer too, so a remount does not stack a second one.
       if (warningCloudRendererRef.current) {
         try { map.removeLayer(warningCloudRendererRef.current); } catch { /* detached */ }
         warningCloudRendererRef.current = null;
