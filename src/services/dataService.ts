@@ -303,8 +303,58 @@ const mapCampsiteRow = (row: any, uid: string | null): Campsite[] => {
     // though it were surveyed.
     isApproximate: Boolean(row.is_approximate),
     submissionState: row.is_published ? 'published' : 'pending_review',
-    submittedByMe: Boolean(uid) && row.submitted_by === uid
+    submittedByMe: Boolean(uid) && row.submitted_by === uid,
+    submittedBy: typeof row.submitted_by === 'string' ? row.submitted_by : undefined
   }];
+};
+
+/* ------------------------------------------------------------------ */
+/* Who put a spot on the map                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The camper behind a submission, for the byline on a spot's detail sheet.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT RETURN. No email, no account id, nothing
+ * that identifies a person off this app. `profiles` is world-readable by
+ * design — it is the handle people chose to be known by — and the handle is
+ * the most this is allowed to show. A camper who has set no display name is
+ * credited by handle, and one the lookup cannot find is credited as "a camper",
+ * which is true and is better than a blank where an author should be.
+ *
+ * Cached for the session: a sheet reopened ten times is one lookup, and the
+ * name behind an id does not change while somebody is reading a map.
+ *
+ * Returns null only when there is nothing to say — no Supabase, no id, or the
+ * lookup failed. The caller draws no byline at all rather than inventing one.
+ */
+const authorCache = new Map<string, string | null>();
+
+export const fetchSpotAuthor = async (userId: string): Promise<string | null> => {
+  if (!supabase || !userId) return null;
+
+  const hit = authorCache.get(userId);
+  if (hit !== undefined) return hit;
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('handle, display_name')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error || !data) {
+    // NOT cached. A failed lookup is a moment on the network, and remembering
+    // it would leave the spot unattributed for the rest of the session.
+    return null;
+  }
+
+  const name =
+    (typeof data.display_name === 'string' && data.display_name.trim()) ||
+    (typeof data.handle === 'string' && data.handle.trim()) ||
+    null;
+
+  authorCache.set(userId, name);
+  return name;
 };
 
 export const fetchCampsitesNear = async (
@@ -356,17 +406,46 @@ export const submitCampsite = async (
   const uid = await currentUserId();
   if (!uid) return failure('Saved on this device. Sign in to share it with other campers.');
 
+  /**
+   * ---------------------------------------------------------------------------
+   * EMPTY STRING, NEVER NULL. THIS IS WHY NO SPOT EVER REACHED THE SERVER.
+   * ---------------------------------------------------------------------------
+   *
+   * `land_manager`, `nearest_city`, `state_province`, `country` and
+   * `description` are all NOT NULL with a default of `''`. These five were
+   * being sent as `|| null`, and an explicit NULL does not fall back to a
+   * column default — it is a not-null violation. So every submission from a
+   * spot without a land manager, which is every spot added from the map, came
+   * back
+   *
+   *     23502 null value in column "land_manager" violates not-null constraint
+   *
+   * and the app did exactly what it is built to do with a failed share: kept
+   * the pin on the device and said "Saved on this device". Quietly, every time,
+   * since the day submissions were wired up. The live database holds twenty-one
+   * seeded campsites and not one user row.
+   *
+   * The knock-on is the reason this was reported as something else entirely. A
+   * spot that never reaches the server has no `submitted_by`, so the server
+   * cannot say the spot is yours, so the Remove control is never drawn — and
+   * "I can't delete my own spots" is the symptom of a submission that failed
+   * hours earlier.
+   *
+   * The amenity columns are still OMITTED rather than sent — that is the
+   * separate, deliberate decision documented above, and it works because an
+   * omitted column DOES take its default. Only explicit NULLs are the problem.
+   */
   const { error } = await supabase.from('campsites').insert({
     id: site.id,
     name: site.name,
     land_type: site.landType,
-    land_manager: site.landManager || null,
+    land_manager: site.landManager ?? '',
     latitude: site.latitude,
     longitude: site.longitude,
-    nearest_city: site.address?.nearestCity || null,
-    state_province: site.address?.stateProvince || null,
-    country: site.address?.country || null,
-    description: site.description || null,
+    nearest_city: site.address?.nearestCity ?? '',
+    state_province: site.address?.stateProvince ?? '',
+    country: site.address?.country ?? '',
+    description: site.description ?? '',
     images: Array.isArray(site.images) ? site.images : [],
     source: 'user_submitted',
     is_published: false,

@@ -11,7 +11,8 @@ import {
   mergeSavedCampsites,
   getCustomCampsites,
   addCustomCampsite,
-  deleteCustomCampsite
+  deleteCustomCampsite,
+  getOfflineCampsites
 } from './services/offlineStorage';
 import { Navbar } from './components/Navbar';
 import { MapComponent } from './components/MapComponent';
@@ -34,6 +35,7 @@ import { BeaconPanel } from './components/BeaconPanel';
 import { BeaconVerifyPanel } from './components/BeaconVerifyPanel';
 import { SpotReportSheet, type SpotReportSubmission } from './components/SpotReportSheet';
 import { createSpot } from './services/dataService';
+import { flushPendingSpots } from './services/spotSync';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
 import { AlertCard } from './components/AlertCard';
@@ -203,23 +205,120 @@ export default function App() {
     let cancelled = false;
 
     (async () => {
-      const [saved, custom] = await Promise.all([
+      const [saved, custom, packed] = await Promise.all([
         getSavedCampsites(),
-        getCustomCampsites()
+        getCustomCampsites(),
+        getOfflineCampsites()
       ]);
       if (cancelled) return;
 
       setSavedSites(saved);
+
+      /**
+       * Spots that came down with a map pack go on the MAP, not in Saved.
+       *
+       * They are the one category of spot this device holds that the camper
+       * neither submitted nor bookmarked, and they are here because a pack was
+       * downloaded for the area. They are added at the back so that anything
+       * the server has to say about the same spot wins — a cached record is a
+       * photograph of how things were on the day the pack came down.
+       */
+      if (packed.length > 0) {
+        setCampsites((prev) => {
+          const ids = new Set(prev.map((s) => s.id));
+          return [...prev, ...packed.filter((p) => !ids.has(p.id))];
+        });
+      }
+
       if (custom.length > 0) {
         setCampsites((prev) => {
           const ids = new Set(prev.map((s) => s.id));
-          return [...prev, ...custom.filter((c) => !ids.has(c.id))];
+          return [
+            ...prev,
+            ...custom
+              .filter((c) => !ids.has(c.id))
+              /**
+               * EVERY SPOT IN THIS LIST IS ONE OF THIS DEVICE'S OWN, WAITING
+               * TO GO UP. THAT IS WHAT THE LIST IS NOW — see `spotSync`.
+               *
+               * Nothing gets in here except by somebody tapping "add" in this
+               * app, and nothing stays once the server has accepted it. So
+               * `submittedByMe` is a fact about these records rather than a
+               * guess, and `local_only` is the state they are actually in.
+               * Both are restated on load because the spots written before this
+               * was fixed carry neither, which left them undeletable — the flag
+               * is what draws the whole removal section.
+               *
+               * Neither decides anything on its own. Whether a spot can come
+               * down is still the server's answer (`campsite_removal_state`),
+               * so one that other campers have since used, or one added here
+               * while signed into another account, gets the sentence explaining
+               * why rather than a button that would be refused.
+               */
+              .map((c) => ({
+                ...c,
+                submittedByMe: true,
+                submissionState: c.submissionState ?? 'local_only'
+              }))
+          ];
         });
       }
     })();
 
     return () => { cancelled = true; };
   }, []);
+
+  /**
+   * EMPTY THE OUTBOX WHENEVER THERE IS A CHANCE OF IT WORKING.
+   *
+   * A spot only sits on the device because it could not be shared — no signal,
+   * no account, a server having a bad minute. All three of those end without
+   * the camper doing anything in particular, and none of them fires an event
+   * that says "your spot can go up now". So this listens for the three moments
+   * that are worth another try:
+   *
+   *   the app opening      — the failure may have been hours ago
+   *   the radio returning  — the `online` event, which is what it is for
+   *   signing in           — the commonest reason a share is refused
+   *
+   * `flushPendingSpots` deletes the device copy only after the server has taken
+   * it, so a run that half-succeeds leaves the rest queued for the next one.
+   * Silent by design: an upload the camper did not ask for, of a spot they
+   * already believe is saved, does not need a toast. What it does need is for
+   * the chip on the pin to stop saying "on this device", which is what
+   * restating the uploaded records does.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const flush = async () => {
+      const { uploaded } = await flushPendingSpots();
+      if (cancelled || uploaded.length === 0) return;
+
+      const byId = new Map(uploaded.map((site) => [site.id, site]));
+      setCampsites((prev) => {
+        /**
+         * Both this and the restore-from-device effect run on mount, in no
+         * fixed order. If the upload wins the race it has already deleted the
+         * device copy the other one was about to read, so an uploaded spot can
+         * be missing from the list entirely rather than merely stale — and it
+         * would then not reappear until the camper happened to search near it.
+         * Anything not already here is added rather than assumed present.
+         */
+        const known = new Set(prev.map((site) => site.id));
+        const updated = prev.map((site) => byId.get(site.id) ?? site);
+        const missing = uploaded.filter((site) => !known.has(site.id));
+        return missing.length > 0 ? [...missing, ...updated] : updated;
+      });
+    };
+
+    void flush();
+    window.addEventListener('online', flush);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', flush);
+    };
+  }, [user]);
 
   /**
    * Catch up on what happened to this user's own submissions.
@@ -293,7 +392,25 @@ export default function App() {
           fetchOverpassCampsites(loc.lat, loc.lon, filterState.maxDistanceMiles)
         ]);
 
-        setCampsites((prev) => mergeCampsites(prev, shared, liveSites));
+        /**
+         * THE SERVER'S COPY WINS. `shared` GOES FIRST AND THAT IS WHY.
+         *
+         * `mergeCampsites` breaks a tie in favour of whichever group it saw
+         * first, and this used to pass `prev` — so a spot the app was already
+         * holding beat the same spot coming back from the server. That is
+         * backwards. The device's copy is a snapshot from whenever it was
+         * written; the server's carries the current review state, the position
+         * as it stands now, and whether other campers have since touched it.
+         * A stale local record quietly overriding all of that is how a spot
+         * ends up looking unshared long after it went up.
+         *
+         * Nothing is lost by the flip. The merge never overwrites a recorded
+         * value with an empty one — the amenities a camper filled in here, which
+         * the server deliberately does not return, are still donated to the
+         * winning record. And a spot that is only on this phone is not in
+         * `shared` at all, so it survives untouched from `prev`.
+         */
+        setCampsites((prev) => mergeCampsites(shared, prev, liveSites));
       } catch (err) {
         console.warn('Campsite lookup failed:', err);
       } finally {
@@ -749,9 +866,26 @@ export default function App() {
      */
     silent = false
   ) => {
-    await addCustomCampsite(site);
+    /**
+     * DEVICE FIRST, SERVER SECOND, DEVICE COPY DROPPED LAST.
+     *
+     * The device write still happens before anything is attempted, because a
+     * camper standing at a pullout with one bar has just typed coordinates they
+     * may not be able to recover. There is no moment in this sequence where the
+     * spot exists nowhere.
+     *
+     * But it no longer STAYS there once the server has it. A spot in browser
+     * storage is invisible to every other camper and one cleared cache from
+     * gone; the server copy is the real one, and the device list is now an
+     * outbox for the spots that could not get there yet. See `spotSync`.
+     */
+    await addCustomCampsite({
+      ...site, submissionState: 'local_only', submittedByMe: true
+    });
 
     const shared = await submitCampsite(site);
+    if (shared.ok) await deleteCustomCampsite(site.id);
+
     const stored: Campsite = {
       ...site,
       submissionState: shared.ok ? 'pending_review' : 'local_only',
@@ -765,7 +899,10 @@ export default function App() {
           'Only you can see it until it is approved.'
         );
       } else {
-        toast.info('Saved on this device', shared.message);
+        // "Waiting", not "saved": it is held on this phone and it is going up
+        // by itself the moment it can. A camper told only that it was saved
+        // has no idea anything is still outstanding.
+        toast.info('Held on this device', `${shared.message} It will upload by itself once it can.`);
       }
     }
 

@@ -90,6 +90,14 @@ export interface Campsite {
   submissionState?: SubmissionState;
   /** True when the signed-in camper is the one who submitted this. */
   submittedByMe?: boolean;
+  /**
+   * The account that put this spot on the map, when a camper did.
+   *
+   * Absent on the curated sites — nobody submitted those — and absent on a
+   * spot that only exists on this device. The name behind the id is looked up
+   * separately (`fetchSpotAuthor`); the id itself is not shown to anybody.
+   */
+  submittedBy?: string;
 }
 
 /**
