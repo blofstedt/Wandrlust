@@ -42,6 +42,22 @@ export interface LandSourceSpec {
   attribution: string;
   licence: string;
   jurisdiction: string;
+  /**
+   * How this source is read.
+   *
+   * `arcgis` (the default) pages a Feature/MapServer query endpoint with
+   * `where`, `outFields` and a bbox, which is what every source here used to
+   * be. `geojson` downloads one whole file in a single request.
+   *
+   * The second exists because MOST OF CANADA HAS NO QUERYABLE SERVICE. The
+   * provinces that publish campable Crown land at all publish it as a
+   * periodic file, so a fetcher that can only page ArcGIS could never reach
+   * them — and that, rather than anything about the code, is why Beacon has
+   * been blind everywhere but Ontario and Alberta. A downloaded file is
+   * seeded into `public_lands` exactly like a paged one, and from there the
+   * map and Beacon both read it without knowing the difference.
+   */
+  kind?: 'arcgis' | 'geojson';
   url: string;
   where: string;
   outFields: string;
