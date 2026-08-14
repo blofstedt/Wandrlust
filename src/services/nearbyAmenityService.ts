@@ -338,11 +338,29 @@ export const fetchNearestDriveableRoad = async (
  * the UI must render as "couldn't check" — never as "there are none here".
  */
 
-/** Below this the box is too big for Overpass and too coarse to be useful. */
-export const FACILITY_MIN_ZOOM = 10;
+/**
+ * Below this the box is too big for Overpass to answer.
+ *
+ * WAS 10, WHICH IS ABOUT ONE CITY. A camper looking at "southern Alberta" —
+ * the zoom you actually browse at when deciding where to go — tapped Toilets
+ * and got nothing but a line of small text, which reads as a broken button.
+ * Nine roughly doubles the ground covered and is still a box Overpass will
+ * answer for a single amenity type.
+ */
+export const FACILITY_MIN_ZOOM = 9;
 
-/** Degrees of latitude/longitude. ~110 km — a generous phone screen at z10. */
-const MAX_BOX_DEGREES = 1.2;
+/**
+ * Degrees of latitude/longitude the query box may span.
+ *
+ * This used to be 1.2° and the box was silently CLAMPED to it, which is the
+ * dishonest failure: a camper at the edge of the gate got results for the
+ * middle of their screen only, drawn as though that were the whole answer,
+ * with no way to tell the difference from "there is nothing at the edges".
+ * It is now wide enough to cover any viewport that clears the zoom gate, so
+ * the clamp below is a backstop rather than something that fires in normal
+ * use — and `fetchFacilitiesInView` reports when it does.
+ */
+const MAX_BOX_DEGREES = 3.0;
 
 export interface FacilityViewBounds {
   south: number;
@@ -355,7 +373,12 @@ export interface FacilityViewResult {
   /** False when every mirror failed. "Couldn't check", never "nothing here". */
   ok: boolean;
   facilities: MapFacility[];
-  /** True when the answer hit the row cap, so it is a sample, not the set. */
+  /**
+   * True when what came back is a SAMPLE rather than the set — either the row
+   * cap was hit, or the viewport was too wide and only its middle was asked
+   * about. Both mean the same thing to a camper: there is more here than is
+   * drawn, so an empty patch of screen proves nothing.
+   */
   truncated: boolean;
 }
 
@@ -379,6 +402,11 @@ export const fetchFacilitiesInView = async (
   const midLon = (bounds.west + bounds.east) / 2;
   const halfLat = Math.min((bounds.north - bounds.south) / 2, MAX_BOX_DEGREES / 2);
   const halfLon = Math.min((bounds.east - bounds.west) / 2, MAX_BOX_DEGREES / 2);
+  // The box did not fit, so the answer covers the middle of the screen only.
+  // Said out loud rather than drawn as if it were everything.
+  const clamped =
+    halfLat < (bounds.north - bounds.south) / 2 ||
+    halfLon < (bounds.east - bounds.west) / 2;
 
   const box = [
     (midLat - halfLat).toFixed(5), (midLon - halfLon).toFixed(5),
@@ -442,7 +470,7 @@ export const fetchFacilitiesInView = async (
       return {
         ok: true,
         facilities: facilities.slice(0, MAX_IN_VIEW),
-        truncated: facilities.length > MAX_IN_VIEW
+        truncated: clamped || facilities.length > MAX_IN_VIEW
       };
     } catch {
       // An abort is the caller changing their mind, not a mirror failing.

@@ -2920,6 +2920,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let cancelled = false;
     let debounce: ReturnType<typeof setTimeout> | null = null;
     let loadedAt: [number, number] | null = null;
+    /** The radius the held spots were fetched at, so a zoom-out re-asks. */
+    let loadedRadiusKm: number | null = null;
 
     const render = (spots: BeaconSpot[]) => {
       clear();
@@ -2953,15 +2955,50 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const run = async () => {
       const centre = map.getCenter();
-      // Already loaded within ~10 km: the 25 km fetch still covers the view.
-      // Tighter than the hazard layer's 50 km because these are small rings
-      // that matter at close zoom, not region-wide warnings.
-      if (loadedAt && map.distance(centre, L.latLng(loadedAt)) < 10_000) return;
 
-      const spots = await fetchBeaconSpotsNear(centre.lat, centre.lng, 25);
+      /**
+       * ASK FOR WHAT IS ON SCREEN, NOT FOR A FIXED 25 km.
+       *
+       * The radius was hard-coded at 25 km round the map centre, which is
+       * fine at close zoom and invisible at any other. A camper who scanned a
+       * forest road and then went back to looking at their home town had
+       * leads sitting in the database a hundred-odd kilometres away, on a map
+       * showing that whole region, with nothing drawn and nothing said. The
+       * feature looked broken because the query was smaller than the view.
+       *
+       * Reaching the corner of the viewport means the layer answers for
+       * exactly the ground being looked at. Floored at 25 km so a close zoom
+       * still picks up spots just off-screen, and capped at 200 because that
+       * is where `beacon_spots_near` clamps anyway.
+       */
+      const radiusKm = Math.min(
+        200,
+        Math.max(25, map.distance(centre, map.getBounds().getNorthEast()) / 1000)
+      );
+
+      /*
+       * The "already loaded" guard has to scale with that radius. At 25 km a
+       * 10 km move was a sixth of the loaded area; against a 200 km fetch it
+       * was refetching the same rows on every small pan.
+       */
+      const reuseWithinM = Math.max(10_000, radiusKm * 1000 * 0.4);
+      /*
+       * And the guard has to know what radius the held data was fetched AT.
+       * Zooming out without panning leaves the centre where it was, so a
+       * distance-only test would keep serving the small answer forever and
+       * the new ground would stay empty. Only a LARGER ask invalidates.
+       */
+      const staleRadius = loadedRadiusKm !== null && radiusKm > loadedRadiusKm * 1.25;
+      if (
+        loadedAt && !staleRadius &&
+        map.distance(centre, L.latLng(loadedAt)) < reuseWithinM
+      ) return;
+
+      const spots = await fetchBeaconSpotsNear(centre.lat, centre.lng, radiusKm);
       if (cancelled) return;
 
       loadedAt = [centre.lat, centre.lng];
+      loadedRadiusKm = radiusKm;
       render(spots);
     };
 
