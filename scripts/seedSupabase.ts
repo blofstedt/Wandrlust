@@ -17,7 +17,7 @@ import { createClient } from '@supabase/supabase-js';
 import { CURATED_CAMPSITES } from '../src/data/curatedCampsites';
 import type { Campsite } from '../src/types';
 import { LAND_SOURCES, COVERAGE_GAPS, LandSourceSpec } from './landSources';
-import { fetchAllTiled, FetchStats } from './arcgisTiledFetch';
+import { fetchAllTiled, fetchGeoJsonFile, FetchStats } from './arcgisTiledFetch';
 
 const url = process.env.VITE_SUPABASE_URL;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -239,7 +239,15 @@ const seedSource = async (spec: LandSourceSpec) => {
   };
 
   let lastLog = Date.now();
-  const stats: FetchStats = await fetchAllTiled(
+
+  /*
+   * A file source is one download, not a tile walk. Everything downstream —
+   * the camping gate, the geometry check, the upsert, the audit row — is
+   * identical, so the two paths only differ in how the features arrive.
+   */
+  const stats: FetchStats = spec.kind === 'geojson'
+    ? await fetchGeoJsonFile(spec.url, handleFeatures)
+    : await fetchAllTiled(
     {
       url: spec.url,
       where: spec.where,
@@ -260,7 +268,7 @@ const seedSource = async (spec: LandSourceSpec) => {
       }
     },
     handleFeatures
-  );
+      );
 
   process.stdout.write('\r' + ' '.repeat(100) + '\r');
 
@@ -334,4 +342,4 @@ const main = async () => {
 main().catch((err) => {
   console.error('\nSeed failed:', err.message);
   process.exit(1);
-});
+});

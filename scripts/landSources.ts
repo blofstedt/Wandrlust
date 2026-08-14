@@ -42,6 +42,22 @@ export interface LandSourceSpec {
   attribution: string;
   licence: string;
   jurisdiction: string;
+  /**
+   * How this source is read.
+   *
+   * `arcgis` (the default) pages a Feature/MapServer query endpoint with
+   * `where`, `outFields` and a bbox, which is what every source here used to
+   * be. `geojson` downloads one whole file in a single request.
+   *
+   * The second exists because MOST OF CANADA HAS NO QUERYABLE SERVICE. The
+   * provinces that publish campable Crown land at all publish it as a
+   * periodic file, so a fetcher that can only page ArcGIS could never reach
+   * them — and that, rather than anything about the code, is why Beacon has
+   * been blind everywhere but Ontario and Alberta. A downloaded file is
+   * seeded into `public_lands` exactly like a paged one, and from there the
+   * map and Beacon both read it without knowing the difference.
+   */
+  kind?: 'arcgis' | 'geojson';
   url: string;
   where: string;
   outFields: string;
@@ -377,6 +393,11 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'US-STATE',
     region: 'US state trust and state forest lands',
     reason:
-      'State-level camping rules vary by state and are not in the federal SMA layer. PAD-US includes some state lands where Pub_Access is populated, but coverage is uneven.'
+      'PAD-US is now queried live as well as seeded, so state forests, state trust ' +
+      'parcels, national grasslands and county holdings appear wherever USGS has ' +
+      'populated Pub_Access = OA. That is most of the country and not all of it, and ' +
+      'the flag means the public may ENTER — not that anyone may sleep there. State ' +
+      'camping rules still vary by state and are in no layer here, so a PAD-US parcel ' +
+      'is the weakest kind of lead this app produces.'
   }
 ];

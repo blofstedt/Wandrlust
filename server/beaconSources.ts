@@ -153,9 +153,27 @@ export interface OverpassScan extends SourceNote {
   roads: OverpassElement[];
   /** Compact features whose centre is a coordinate worth sending someone to. */
   features: OverpassElement[];
+  /**
+   * Viewpoints, peaks, water and settlements.
+   *
+   * Never candidates — you do not sleep on a summit marker. These are what a
+   * candidate is scored AGAINST: the first three are why a spot is worth
+   * having, the last is why it is risky.
+   */
+  context: OverpassElement[];
+  /**
+   * Small open patches — grassland, heath, scrub, meadow, recreation ground.
+   *
+   * Carried separately from `features` because they arrive WITH geometry and
+   * have to be measured before their centre can be used, and separately from
+   * `areas` because a meadow is not a statement about who owns the ground.
+   */
+  clearings: OverpassElement[];
 }
 
-const EMPTY_SCAN: OverpassScan = { ok: false, areas: [], roads: [], features: [] };
+const EMPTY_SCAN: OverpassScan = {
+  ok: false, areas: [], roads: [], features: [], context: [], clearings: []
+};
 
 /**
  * One request, three result sets.
@@ -192,15 +210,66 @@ const buildQuery = (lat: number, lon: number, radiusM: number): string => {
     `way["highway"="services"]${around};`,
     `node["highway"="passing_place"]${around};`,
     `node["highway"="turning_circle"]${around};`,
+    `node["highway"="turning_loop"]${around};`,
     `node["tourism"="camp_site"]${around};`,
-    `way["tourism"="camp_site"]${around};`
+    `way["tourism"="camp_site"]${around};`,
+    /* A picnic site on a forest road IS the pull-off — a widening with a table
+       on it. One of the commonest shapes a dispersed spot actually takes, and
+       it was not being asked for at all. */
+    `node["tourism"="picnic_site"]${around};`,
+    `way["tourism"="picnic_site"]${around};`
+  ].join('');
+
+  /**
+   * CLEARINGS, and the one place this file bends its own first rule.
+   *
+   * Rule 1 in the header says only compact, point-like features become
+   * candidates, because the centroid of a sprawling polygon is meaningless
+   * and often in a river. That rule was written about 4 km forest roads and
+   * it is right about them.
+   *
+   * A SMALL clearing is the opposite case: a two-hundred-metre patch of
+   * grassland off a track has a centre that means exactly what a camper
+   * thinks it means, and it is one of the things they are actually looking
+   * for. So these are fetched WITH GEOMETRY, measured, and only kept when
+   * they are small enough for the centre to be honest — see `MAX_CLEARING_M`.
+   * A big one is dropped rather than pinned at its middle.
+   */
+  const clearings = [
+    `way["natural"~"^(grassland|heath|scrub)$"]${around};`,
+    `way["landuse"~"^(meadow|recreation_ground)$"]${around};`
+  ].join('');
+
+  /**
+   * What makes a spot WORTH having, and what makes it RISKY.
+   *
+   * Neither of these was ever asked for, which is why the scan could only
+   * rank places by their paperwork. A free parking area on unmapped ground
+   * beside a track scored exactly as well as a pullout on a ridge over a
+   * lake, because nothing in the query knew the ridge or the lake were
+   * there. So the map filled up with car parks.
+   *
+   * Viewpoints, peaks and water are the view. Settlements are the risk: the
+   * single best predictor of being moved on at 2am is how close you are to
+   * people who did not expect you.
+   */
+  const context = [
+    `node["tourism"="viewpoint"]${around};`,
+    `node["natural"="peak"]${around};`,
+    `way["natural"="water"]${around};`,
+    `way["waterway"="riverbank"]${around};`,
+    `node["place"~"^(city|town|village|hamlet|suburb)$"]${around};`
   ].join('');
 
   return (
     `[out:json][timeout:25];` +
     `(${areas});out geom 150;` +
     `(${roads});out geom 250;` +
-    `(${features});out center 150;`
+    `(${features});out center 150;` +
+    `(${context});out center 120;` +
+    // Geometry, not centres: a clearing has to be MEASURED before its centre
+    // can be trusted, and `out center` throws away the shape that decides it.
+    `(${clearings});out geom 80;`
   );
 };
 
@@ -215,10 +284,25 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
   const areas: OverpassElement[] = [];
   const roads: OverpassElement[] = [];
   const features: OverpassElement[] = [];
+  const context: OverpassElement[] = [];
+  const clearings: OverpassElement[] = [];
 
   for (const el of elements) {
     const tags = el.tags ?? {};
-    if (tags.highway && !['rest_area', 'services', 'passing_place', 'turning_circle'].includes(tags.highway)) {
+    /* Clearings before everything: `natural=grassland` carries no highway,
+       amenity or place tag, so without this it lands in `areas` and gets
+       tested as an ownership boundary — which it is not. */
+    if (
+      /^(grassland|heath|scrub)$/.test(tags.natural ?? '') ||
+      /^(meadow|recreation_ground)$/.test(tags.landuse ?? '')
+    ) {
+      clearings.push(el);
+    } else if (
+      tags.tourism === 'viewpoint' || tags.natural === 'peak' ||
+      tags.natural === 'water' || tags.waterway === 'riverbank' || tags.place
+    ) {
+      context.push(el);
+    } else if (tags.highway && !['rest_area', 'services', 'passing_place', 'turning_circle'].includes(tags.highway)) {
       roads.push(el);
     } else if (tags.amenity === 'parking' || tags.amenity === 'parking_space' ||
                tags.tourism === 'camp_site' || tags.highway) {
@@ -227,7 +311,7 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
       areas.push(el);
     }
   }
-  return { areas, roads, features };
+  return { areas, roads, features, context, clearings };
 };
 
 export const fetchOverpassScan = async (
@@ -452,30 +536,148 @@ const isForbidden = (tags: Record<string, string>): string | null => {
 };
 
 /** Land-ownership token and the plain-English basis that goes with it. */
-const landFromArea = (tags: Record<string, string>): { token: Token; basis: string } | null => {
-  const operator = (tags.operator ?? '').toLowerCase();
-  const protectTitle = (tags.protect_title ?? '').toLowerCase();
+/**
+ * ---------------------------------------------------------------------------
+ * THE THREE ANSWERS TO "WHOSE GROUND IS THIS", AND WHY THERE ARE THREE
+ * ---------------------------------------------------------------------------
+ *
+ * There was a boolean here, and a boolean was wrong in both directions.
+ *
+ * `dispersed` — Crown land, BLM, National Forest, national grassland, state
+ * forest and trust land. Land where sleeping in a vehicle away from a
+ * developed site is the GENERAL RULE rather than an exception. This is what
+ * Beacon is for and it ranks first, always.
+ *
+ * `public` — everything else the public owns and may enter: municipal and
+ * county land, provincial holdings, open-access parcels with no agency named,
+ * ordinary public space. Far more of both countries by area than the first
+ * category, and a real answer for a camper — a gravel pull-off on county land
+ * is a place people sleep. It ranks BELOW the first, and its wording never
+ * pretends overnight use is the rule there, because usually it is not.
+ *
+ * `null` — REJECTED. Private land, land whose owner nobody recorded, and the
+ * handful of public designations where overnight stays are prohibited outright
+ * rather than merely unmentioned. Unknown ownership is rejected on purpose:
+ * "nobody said it was private" is not "it is public", and the one thing this
+ * feature must never do is send somebody onto private ground.
+ */
+export type LandTier = 'dispersed' | 'public';
 
-  if (operator.includes('bureau of land management') || protectTitle.includes('national monument')) {
-    return { token: 'land=blm', basis: 'Inside land mapped as Bureau of Land Management, where dispersed camping is often the general rule.' };
+interface LandReading {
+  token: Token;
+  basis: string;
+  /** Null means reject: private, unknown, or prohibited outright. */
+  tier: LandTier | null;
+}
+
+/**
+ * Public land where overnight stays are banned, not merely unaddressed.
+ *
+ * These are rejected despite being public, and that is not a contradiction of
+ * "public land can be used" — it is the difference between a rule that is
+ * silent and a rule that says no. A national park campground has a gate and a
+ * reservation system; a wildlife refuge closes at dusk. Sending a camper to
+ * either is sending them somewhere they will be moved on from.
+ *
+ * Mirrors EXCLUDED_DESIGNATIONS in scripts/landSources.ts, which encodes the
+ * same judgement for the seeder.
+ */
+const OVERNIGHT_PROHIBITED =
+  /national park|provincial park|state park|wildlife refuge|wildlife management|wilderness|national monument|historic site|battlefield|memorial|military|proving ground|test range|botanical|arboretum|cemetery|golf/i;
+
+/**
+ * Land where dispersed camping is the general rule, by name.
+ *
+ * Deliberately a name test rather than a tag test: the same words appear in
+ * an OpenStreetMap `operator`, in a PAD-US `Des_Tp` and in an Alberta layer's
+ * designation, so one regex serves every source and they cannot drift apart.
+ */
+const DISPERSED_LAND =
+  /bureau of land management|\bblm\b|forest service|national forest|\busfs\b|national grassland|crown land|crown|state forest|state trust|department of natural resources|public land use zone|general use area/i;
+
+const landFromArea = (tags: Record<string, string>): LandReading | null => {
+  const operator = tags.operator ?? '';
+  const ownership = tags.ownership ?? '';
+  const protectTitle = tags.protect_title ?? '';
+  const name = tags.name ?? '';
+  const haystack = `${operator} ${ownership} ${protectTitle} ${name}`;
+
+  // Prohibited outright beats everything, including a dispersed-land keyword:
+  // "Yellowstone National Park" contains no dispersed word, but "Custer
+  // National Forest Wilderness" contains both and the ban is the answer.
+  if (OVERNIGHT_PROHIBITED.test(haystack)) {
+    return {
+      token: 'land=overnight_banned',
+      tier: null,
+      basis: 'Public, but this designation normally forbids overnight stays.'
+    };
   }
-  if (operator.includes('forest service') || protectTitle.includes('national forest')) {
-    return { token: 'land=usfs', basis: 'Inside land mapped as National Forest, where dispersed camping is often allowed away from developed sites.' };
+
+  if (DISPERSED_LAND.test(haystack)) {
+    if (/bureau of land management|\bblm\b/i.test(haystack)) {
+      return { token: 'land=blm', tier: 'dispersed', basis: 'Inside land mapped as Bureau of Land Management, where dispersed camping is often the general rule.' };
+    }
+    if (/forest service|national forest|\busfs\b/i.test(haystack)) {
+      return { token: 'land=usfs', tier: 'dispersed', basis: 'Inside land mapped as National Forest, where dispersed camping is often allowed away from developed sites.' };
+    }
+    if (/crown/i.test(haystack)) {
+      return { token: 'land=crown', tier: 'dispersed', basis: 'Inside land mapped as Crown land, where camping rules vary by province.' };
+    }
+    if (/national grassland/i.test(haystack)) {
+      return { token: 'land=grassland', tier: 'dispersed', basis: 'Inside a mapped National Grassland, where dispersed camping is often allowed.' };
+    }
+    return { token: 'land=state_forest', tier: 'dispersed', basis: 'Inside land mapped as a state forest or state trust land. Rules vary by state and some require a permit.' };
   }
-  if (operator.includes('crown') || protectTitle.includes('crown')) {
-    return { token: 'land=crown', basis: 'Inside land mapped as Crown land, where camping rules vary by province.' };
+
+  /*
+   * ---- Public, but not dispersed-camping land. ----
+   *
+   * These used to be rejected outright, and that threw away most of the
+   * publicly-owned ground in both countries. A county gravel lot and a
+   * municipal common are places people do sleep, and a camper is better served
+   * by a ranked lead carrying a warning than by silence. What they are NOT is
+   * land where staying the night is the default, and none of the wording below
+   * suggests it is.
+   */
+  const publicOperator =
+    /county|municipal|city of|town of|township|regional district|district of|province|provincial|state of|department|ministry|bureau|authority|conservation authority|parks board|public/i
+      .test(haystack);
+
+  if (tags.leisure === 'park' || tags.leisure === 'nature_reserve') {
+    return {
+      token: 'land=park',
+      tier: 'public',
+      basis: 'Inside mapped public parkland. Parks very often close overnight or post against sleeping in a vehicle — read the signs before you settle.'
+    };
+  }
+  if (publicOperator) {
+    return {
+      token: 'land=public_other',
+      tier: 'public',
+      basis: `Public land, managed by ${operator || protectTitle || 'a public body'}. Public ownership is not permission to stay overnight.`
+    };
   }
   if (tags.boundary === 'protected_area') {
-    return { token: 'land=protected', basis: 'Inside a mapped protected area. Protected does not mean open — check the managing agency.' };
+    return {
+      token: 'land=protected',
+      tier: 'public',
+      basis: 'Inside a mapped protected area with no managing agency recorded. Public to enter; whether you may stay the night is a separate question nobody has answered here.'
+    };
   }
+
+  /*
+   * ---- Rejected: nobody said whose this is. ----
+   *
+   * Unmapped forest and a bare residential polygon are the two commonest
+   * shapes here, and neither is public. "Nobody tagged an owner" is not
+   * ownership, and timber company land and a farmer's woodlot both look
+   * exactly like `landuse=forest`.
+   */
   if (tags.landuse === 'forest') {
-    return { token: 'land=forest', basis: 'Inside mapped forest. Ownership is not recorded, so this could be public or private.' };
-  }
-  if (tags.leisure === 'park' || tags.leisure === 'nature_reserve') {
-    return { token: 'land=park_edge', basis: 'Beside a mapped park. Municipal parks very often forbid overnight parking.' };
+    return { token: 'land=forest', tier: null, basis: 'Mapped forest with no owner recorded. Timber company land looks exactly like this.' };
   }
   if (tags.landuse === 'residential') {
-    return { token: 'land=residential', basis: 'On a residential street. Legal in many towns, unwelcome in plenty of them.' };
+    return { token: 'land=residential', tier: null, basis: 'Residential ground. Private property.' };
   }
   return null;
 };
@@ -486,20 +688,39 @@ const describeFeature = (
 ): { label: string; tokens: Token[]; score: number } | null => {
   if (tags.amenity === 'parking' || tags.amenity === 'parking_space') {
     const free = tags.fee === 'no' || tags.fee === undefined;
+    /*
+     * A CAR PARK IS THE WEAKEST THING ON THIS LIST, not the strongest.
+     *
+     * It used to open at 1.5, half a point under the surfacing bar, so a free
+     * parking area beside a track cleared it on road context alone. That is
+     * how a scan came back as a list of car parks. On a forest road a
+     * `amenity=parking` really is the pullout you want — which is why this is
+     * still a candidate at all — but it earns its place from the public land
+     * it sits on and the view it has, not from being a car park.
+     */
     return {
       label: tags.name ?? 'Parking area',
       tokens: ['feature=parking', free ? 'parking=free' : 'parking=fee'],
-      score: free ? 1.5 : -1
+      score: free ? 0.25 : -1
     };
   }
   if (tags.highway === 'rest_area' || tags.highway === 'services') {
     return { label: tags.name ?? 'Rest area', tokens: ['feature=rest_area'], score: 2 };
   }
   if (tags.highway === 'passing_place') {
-    return { label: 'Passing place', tokens: ['feature=passing_place'], score: 1 };
+    return { label: 'Pull-off beside the road', tokens: ['feature=passing_place'], score: 1 };
   }
-  if (tags.highway === 'turning_circle') {
+  if (tags.highway === 'turning_circle' || tags.highway === 'turning_loop') {
     return { label: 'Turning circle at a road end', tokens: ['feature=turning_circle'], score: 0.5 };
+  }
+  /*
+   * A picnic site on a forest road is the pull-off, with a table on it. Scored
+   * near a rest area because it is the same thing at a smaller scale — but a
+   * picnic site in a town park is day-use only, which the land tier and the
+   * settlement penalty between them already push down.
+   */
+  if (tags.tourism === 'picnic_site') {
+    return { label: tags.name ?? 'Picnic site', tokens: ['feature=picnic_site'], score: 1.5 };
   }
   if (tags.tourism === 'camp_site') {
     const free = tags.fee === 'no';
@@ -520,6 +741,173 @@ const centreOf = (el: OverpassElement): { lat: number; lon: number } | null => {
   if (typeof el.lat === 'number' && typeof el.lon === 'number') return { lat: el.lat, lon: el.lon };
   if (el.center) return el.center;
   return null;
+};
+
+/**
+ * What a spot LOOKS OUT ON, scored from what the map knows is near it.
+ *
+ * A viewpoint is somebody having said "the view from here is the point". A
+ * peak is terrain. Water is the other thing campers drive for. None of these
+ * proves you can see anything — trees, a rise, or the wrong orientation all
+ * beat this — so the wording that reaches the camper says "near a mapped
+ * viewpoint", never "great view".
+ *
+ * Distances are deliberately short. A lake four kilometres away is not your
+ * view, it is just in the same valley.
+ */
+const viewScore = (
+  lat: number, lon: number, context: OverpassElement[]
+): { score: number; tokens: Token[]; note: string | null } => {
+  const tokens: Token[] = [];
+  let score = 0;
+  let note: string | null = null;
+
+  let nearestView = Infinity;
+  let nearestWater = Infinity;
+
+  for (const el of context) {
+    const tags = el.tags ?? {};
+    const centre = el.lat !== undefined && el.lon !== undefined
+      ? { lat: el.lat, lon: el.lon }
+      : el.center;
+    if (!centre) continue;
+    const metres = metresBetween(lat, lon, centre.lat, centre.lon);
+
+    if (tags.tourism === 'viewpoint' || tags.natural === 'peak') {
+      if (metres < nearestView) nearestView = metres;
+    } else if (tags.natural === 'water' || tags.waterway === 'riverbank') {
+      if (metres < nearestWater) nearestWater = metres;
+    }
+  }
+
+  if (nearestView <= 400) {
+    score += 2; tokens.push('view=viewpoint_near');
+    note = 'Within a few hundred metres of a mapped viewpoint or summit.';
+  } else if (nearestView <= 1200) {
+    score += 1; tokens.push('view=viewpoint_walk');
+    note = 'A mapped viewpoint or summit is within about a kilometre.';
+  }
+
+  if (nearestWater <= 300) {
+    score += 1.5; tokens.push('view=water_near');
+    note = note
+      ? `${note} There is mapped water beside it too.`
+      : 'Beside mapped water.';
+  } else if (nearestWater <= 1000) {
+    score += 0.5; tokens.push('view=water_walk');
+  }
+
+  if (tokens.length === 0) tokens.push('view=none_mapped');
+  return { score, tokens, note };
+};
+
+/**
+ * How likely somebody is to knock on the window, from how close the people are.
+ *
+ * This is the only honest proxy available without a law database: the risk of
+ * being moved on rises steeply with proximity to a settlement, because that is
+ * where bylaws, enforcement and irritated residents all live. It is a
+ * PENALTY-ONLY signal — being far from town does not make a place legal, it
+ * makes being noticed less likely, and those are different claims.
+ */
+const riskScore = (
+  lat: number, lon: number, context: OverpassElement[]
+): { score: number; tokens: Token[]; note: string | null } => {
+  let nearestPlace = Infinity;
+  let placeKind = '';
+
+  for (const el of context) {
+    const tags = el.tags ?? {};
+    if (!tags.place) continue;
+    const centre = el.lat !== undefined && el.lon !== undefined
+      ? { lat: el.lat, lon: el.lon }
+      : el.center;
+    if (!centre) continue;
+    const metres = metresBetween(lat, lon, centre.lat, centre.lon);
+    if (metres < nearestPlace) { nearestPlace = metres; placeKind = tags.place; }
+  }
+
+  // A city centre and a hamlet are not the same amount of attention.
+  const weight = placeKind === 'city' ? 1.5
+    : placeKind === 'town' || placeKind === 'suburb' ? 1
+    : 0.6;
+
+  if (nearestPlace <= 800) {
+    return {
+      score: -3 * weight,
+      tokens: ['risk=in_settlement'],
+      note: 'Inside a settlement, where overnight parking is most likely to be noticed and posted against.'
+    };
+  }
+  if (nearestPlace <= 2500) {
+    return {
+      score: -1.5 * weight,
+      tokens: ['risk=near_settlement'],
+      note: 'On the edge of a settlement.'
+    };
+  }
+  if (nearestPlace <= 8000) {
+    return { score: -0.25 * weight, tokens: ['risk=settlement_nearby'], note: null };
+  }
+  return {
+    score: 1,
+    tokens: ['risk=remote'],
+    note: 'Well away from any mapped settlement.'
+  };
+};
+
+/**
+ * How wide a clearing may be before its centre stops meaning anything.
+ *
+ * 400 m across. Past that the middle of the polygon is a point in a field
+ * with no particular claim to be where you would stop — and the pin would be
+ * exactly the invented coordinate rule 1 exists to prevent. Under it, "the
+ * middle of that clearing" is a place a camper can find and recognise.
+ */
+const MAX_CLEARING_M = 400;
+
+/**
+ * A small open patch, turned into one candidate at its centre.
+ *
+ * Returns null for anything too big, anything with no geometry, and anything
+ * whose ring is degenerate. Measured by the diagonal of the bounding box
+ * rather than by area, because a long thin strip beside a road is 400 m of
+ * verge and not a clearing anybody camps in the middle of.
+ */
+const clearingCandidate = (
+  el: OverpassElement
+): { lat: number; lon: number; label: string; tokens: Token[]; score: number } | null => {
+  const ring = el.geometry ?? [];
+  if (ring.length < 3) return null;
+
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (const p of ring) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+  }
+  if (!Number.isFinite(minLat) || !Number.isFinite(minLon)) return null;
+
+  const across = metresBetween(minLat, minLon, maxLat, maxLon);
+  if (across > MAX_CLEARING_M || across < 15) return null;
+
+  const tags = el.tags ?? {};
+  const kind = tags.natural ?? tags.landuse ?? 'clearing';
+  return {
+    lat: (minLat + maxLat) / 2,
+    lon: (minLon + maxLon) / 2,
+    label: tags.name ?? (kind === 'recreation_ground' ? 'Recreation ground' : 'Clearing'),
+    tokens: ['feature=clearing', `clearing=${kind}`],
+    /*
+     * Below a rest area and above a bare parking lot. A clearing is genuinely
+     * what a lot of dispersed camping looks like, but nothing about it says
+     * anyone has ever driven in — the road-access check below is what decides
+     * whether this one is reachable, and it is the reason a clearing with no
+     * track near it loses a point.
+     */
+    score: 1.25
+  };
 };
 
 /** Nearest point on any mapped road, and that road's tags. */
@@ -545,24 +933,130 @@ const nearestRoad = (
  * road context; then signage; and the learned model is applied later, in the
  * database, on top of the rule score computed here.
  */
+/**
+ * Government public-land polygons, as `fetchPublicLand` returns them.
+ *
+ * Kept as a loose shape on purpose: this module is meant to be liftable, and
+ * a hard import of the boundary route would drag the whole Express surface in
+ * with it.
+ */
+export interface PublicLandCover {
+  ok: boolean;
+  features: {
+    geometry?: { type?: string; coordinates?: any };
+    properties?: Record<string, any>;
+  }[];
+}
+
+/** Every outer ring of a Polygon or MultiPolygon, as `{lat, lon}` points. */
+const ringsOf = (geometry: any): Ring[] => {
+  if (!geometry?.coordinates) return [];
+  const toRing = (coords: any): Ring =>
+    Array.isArray(coords)
+      ? coords
+          .filter((p: any) => Array.isArray(p) && p.length >= 2)
+          .map((p: any) => ({ lat: Number(p[1]), lon: Number(p[0]) }))
+      : [];
+
+  if (geometry.type === 'Polygon') return [toRing(geometry.coordinates[0])];
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates
+      .map((poly: any) => toRing(poly?.[0]))
+      .filter((r: Ring) => r.length >= 3);
+  }
+  return [];
+};
+
+/**
+ * Which named public parcel a point sits inside, from the authoritative data.
+ *
+ * This replaces reading `operator` strings off OpenStreetMap. The polygons
+ * here come from BLM, the Forest Service, PAD-US, Alberta and Ontario — the
+ * same ones the map itself draws — so a spot is on public land when the
+ * agency that manages it says so, not when a volunteer happened to tag it.
+ */
+const publicParcelAt = (
+  lat: number, lon: number, cover: PublicLandCover
+): { name: string; designation: string; source: string; tier: LandTier | null } | null => {
+  for (const feature of cover.features) {
+    for (const ring of ringsOf(feature.geometry)) {
+      if (ring.length >= 3 && pointInRing(lat, lon, ring)) {
+        const props = feature.properties ?? {};
+        const name = String(props._name ?? 'Public land');
+        const designation = String(props._designation ?? '');
+        const source = String(props._sourceName ?? props._source ?? 'a public land dataset');
+
+        /*
+         * WHICH KIND OF PUBLIC, from the words the agency itself used.
+         *
+         * PAD-US is the reason this matters. It returns everything from
+         * "National Forest" to "Local Park" to "State Park" under one flag
+         * that only means the public may ENTER, so without a second reading
+         * a city playing field would rank alongside a national forest. The
+         * same regexes serve the OpenStreetMap path, so the two sources
+         * cannot disagree about what a national park is.
+         */
+        const haystack = `${name} ${designation} ${source}`;
+        const tier: LandTier | null =
+          OVERNIGHT_PROHIBITED.test(haystack) ? null
+          : DISPERSED_LAND.test(haystack) ? 'dispersed'
+          : 'public';
+
+        return { name, designation, source, tier };
+      }
+    }
+  }
+  return null;
+};
+
 export const buildCandidates = (
   scan: OverpassScan,
   signs: SignScan,
-  origin: { lat: number; lon: number }
+  origin: { lat: number; lon: number },
+  /**
+   * Government public-land polygons for the scanned box.
+   *
+   * Optional so the module still works standalone, but when it is absent the
+   * only remaining public-land evidence is OpenStreetMap's own tagging, which
+   * is thin. The caller says which it had.
+   */
+  publicLand: PublicLandCover = { ok: false, features: [] }
 ): Candidate[] => {
   const candidates: Candidate[] = [];
 
+  /**
+   * Compact features and small clearings go through ONE pipeline.
+   *
+   * They differ only in how their coordinate and label are worked out — after
+   * that every check that matters (the vetoes, the land tier, road access,
+   * signage, view, risk) has to apply identically. Running clearings down a
+   * second path would be the obvious way to end up with a clearing that
+   * skipped the private-land test.
+   */
+  const targets: { el: OverpassElement; centre: { lat: number; lon: number };
+                   described: { label: string; tokens: Token[]; score: number } }[] = [];
+
   for (const el of scan.features) {
     const centre = centreOf(el);
-    if (!centre) continue;
+    const described = centre ? describeFeature(el.tags ?? {}) : null;
+    if (centre && described) targets.push({ el, centre, described });
+  }
 
+  for (const el of scan.clearings ?? []) {
+    const c = clearingCandidate(el);
+    if (!c) continue;
+    targets.push({
+      el,
+      centre: { lat: c.lat, lon: c.lon },
+      described: { label: c.label, tokens: c.tokens, score: c.score }
+    });
+  }
+
+  for (const { el, centre, described } of targets) {
     const tags = el.tags ?? {};
 
     // ---- Veto: the feature's own tags.
     if (isForbidden(tags)) continue;
-
-    const described = describeFeature(tags);
-    if (!described) continue;
 
     const tokens: Token[] = [...described.tokens];
     let score = described.score;
@@ -583,24 +1077,82 @@ export const buildCandidates = (
       if (!containing || size < containing.size) containing = { tags: area.tags ?? {}, size };
     }
 
-    if (containing) {
-      // ---- Veto: the land it sits on.
-      if (isForbidden(containing.tags)) continue;
+    /**
+     * ---- PUBLIC LAND IS A REQUIREMENT, NOT A BONUS.
+     *
+     * This is the single biggest change to what Beacon returns, and it is the
+     * reason scans used to come back as a list of car parks. Public land was
+     * worth +3 and everything else was worth nothing — so a free parking area
+     * on unmapped ground beside a track cleared the surfacing bar on road
+     * context alone, and a supermarket lot scored the same as a forest pullout.
+     *
+     * Now: if the map does not name an agency that manages this ground for
+     * public use, the candidate is dropped. Not marked down — dropped.
+     *
+     * WHAT THIS COSTS, SAID PLAINLY. Public-land polygons are patchy, and
+     * Crown land especially so outside Ontario and Alberta. A scan over ground
+     * that IS public but unmapped will now find nothing, and the panel says it
+     * found nothing. That is the correct trade: an empty answer is a camper
+     * driving on, and a wrong answer is a camper parked in a supermarket lot
+     * being told it was a lead.
+     */
+    // ---- Veto: the OSM land it sits on, when there is any. `access=private`
+    // over a parcel the government calls public is still a locked gate.
+    if (containing && isForbidden(containing.tags)) continue;
 
-      const land = landFromArea(containing.tags);
-      if (land) {
-        tokens.push(land.token);
-        basis = land.basis;
-        if (['land=blm', 'land=usfs', 'land=crown'].includes(land.token)) {
-          generator = 'public_land';
-          score += 3;
-        } else if (land.token === 'land=residential') {
-          score -= 0.5;
-        }
-      }
+    /**
+     * ---- PUBLIC LAND, FROM THE AGENCY THAT MANAGES IT.
+     *
+     * The government polygons are asked first and they are the answer. Only
+     * if the boundary layer had nothing to say here does OpenStreetMap's own
+     * tagging get a turn.
+     *
+     * Either way the ground must be PUBLIC. Which kind of public then decides
+     * where the lead ranks: Crown land, BLM and National Forest lead, other
+     * public land follows well behind, private and unknown are dropped.
+     */
+    const parcel = publicParcelAt(centre.lat, centre.lon, publicLand);
+
+    if (parcel) {
+      if (parcel.tier === null) continue;
+
+      tokens.push(
+        parcel.tier === 'dispersed' ? 'land=official_dispersed' : 'land=official_public',
+        `land_src=${parcel.source.toLowerCase().replace(/\s+/g, '_')}`
+      );
+      /*
+       * Name, then designation, then who says so — skipping any of the three
+       * that just repeats the one before it. Without this a Forest Service
+       * parcel read "Inside Gallatin National Forest — National Forest, from
+       * National Forest", which is the same words three times and reads like
+       * a template that got away.
+       */
+      const parts = [parcel.name];
+      if (parcel.designation && parcel.designation !== parcel.name) parts.push(parcel.designation);
+      const said = parts.join(' — ');
+      const from = said.toLowerCase().includes(parcel.source.toLowerCase())
+        ? "the managing agency's own boundary data"
+        : parcel.source;
+
+      basis = parcel.tier === 'dispersed'
+        ? `Inside ${said}, from ${from}. Camping away from developed sites is often the general rule on this kind of land.`
+        // The hedge is heavier here on purpose. Public ownership answers "may
+        // I be here in the daytime", which is a different question.
+        : `Inside ${said}, from ${from}. This is public land, which is not the same as somewhere you may stay the night — check for posted rules.`;
+
+      generator = 'public_land';
+      score += parcel.tier === 'dispersed' ? 3 : 1;
     } else {
-      tokens.push('land=unmapped');
-      basis = 'No land ownership is mapped here, so who controls this ground is unknown.';
+      const land = containing ? landFromArea(containing.tags) : null;
+      if (!land || land.tier === null) continue;
+
+      tokens.push(land.token, 'land_src=openstreetmap');
+      // Said out loud: this one rests on a volunteer's tag, not on an agency.
+      basis = `${land.basis} This is from OpenStreetMap's tagging rather than from the managing agency's own boundary.`;
+      generator = 'public_land';
+      // A point below the same tier from official data — the tier decides the
+      // ranking, the source decides the confidence, and both cost something.
+      score += land.tier === 'dispersed' ? 2 : 0.5;
     }
 
     // ---- Road context. Somewhere you cannot drive to is not a place to sleep.
@@ -652,18 +1204,35 @@ export const buildCandidates = (
       score += 0.5;
     }
 
+    // ---- Is it worth being there? Views and water, from the map.
+    const view = viewScore(centre.lat, centre.lon, scan.context);
+    score += view.score;
+    tokens.push(...view.tokens);
+
+    // ---- How likely is a knock? Distance from people, and nothing else.
+    const risk = riskScore(centre.lat, centre.lon, scan.context);
+    score += risk.score;
+    tokens.push(...risk.tokens);
+
     // ---- Distance from where the beacon was dropped. Closer is more useful,
     // and this is the only part of the score that is about convenience rather
     // than legality.
     const away = metresBetween(origin.lat, origin.lon, centre.lat, centre.lon);
     if (away <= 1000) score += 0.5;
 
+    /*
+     * The basis the camper reads is the land first, then why this one was
+     * ranked where it was. Ordered that way because "may I be here" is the
+     * question that matters and "is it nice" is the tie-breaker.
+     */
+    const reasons = [basis, view.note, risk.note].filter(Boolean) as string[];
+
     candidates.push({
       lat: centre.lat,
       lon: centre.lon,
       generator,
       label: described.label,
-      landBasis: basis,
+      landBasis: reasons.join(' '),
       tokens,
       ruleScore: Number(score.toFixed(3)),
       signEvidence
