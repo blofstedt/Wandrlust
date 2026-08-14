@@ -24,7 +24,8 @@ import type { Express, Request, Response } from 'express';
  */
 import {
   NWS_BASE, getJson, fetchNwsAlertsAtPoint, fetchEcccAlerts, looksUS,
-  fetchNwsAlertsForStates, resolveNwsZoneGeometry
+  fetchNwsAlertsForStates, resolveNwsZoneGeometry, describeFailure,
+  type FetchFailure
 } from './alertSources.js';
 import { fetchOpenMeteo } from './openMeteo.js';
 import { statesInBbox, stateDistanceRank } from './usStates.js';
@@ -402,9 +403,20 @@ export const registerWeatherRoutes = (app: Express): void => {
      * the Canadian half of the map was being fetched by a request the platform
      * had already killed. They do not depend on each other and never did.
      */
+    /**
+     * WHY a feed said no, kept alongside the fact that it did.
+     *
+     * Not for the camper — "HTTP 403" helps nobody deciding where to sleep, and
+     * the map still says only that warnings could not be checked. It is for
+     * whoever has to work out what is wrong, because the previous version threw
+     * the reason away and a feed that had been refusing this deployment since
+     * the day it launched was indistinguishable from a phone with no signal.
+     */
+    const failures: Partial<Record<'nws' | 'eccc', FetchFailure>> = {};
+
     const [nwsAlerts, ecccAlerts] = await Promise.all([
       states.length > 0
-        ? fetchNwsAlertsForStates(states).then((rows) => (
+        ? fetchNwsAlertsForStates(states, (f) => { failures.nws = f; }).then((rows) => (
             rows === null
               ? null
               // Zone-based products (heat, cold, smoke, wind, red flag) arrive
@@ -415,7 +427,9 @@ export const registerWeatherRoutes = (app: Express): void => {
           ))
         : Promise.resolve<any[] | null>([]),
       touchesCanada
-        ? fetchEcccAlerts(centreLat, centreLon, halfLat, halfLon)
+        ? fetchEcccAlerts(
+            centreLat, centreLon, halfLat, halfLon, (f) => { failures.eccc = f; }
+          )
         : Promise.resolve<any[] | null>(null)
     ]);
 
@@ -423,6 +437,15 @@ export const registerWeatherRoutes = (app: Express): void => {
       nws: states.length === 0 ? 'skipped' : nwsAlerts === null ? 'unreachable' : 'ok',
       eccc: !touchesCanada ? 'skipped' : ecccAlerts === null ? 'unreachable' : 'ok'
     };
+
+    // Logged as well as returned: the response is only seen by whoever thinks
+    // to look at it, and a feed refusing every request all day should be
+    // visible in the deployment's own logs without anybody hunting for it.
+    (['nws', 'eccc'] as const).forEach((id) => {
+      if (feeds[id] === 'unreachable') {
+        console.warn(`[alerts] ${id} unreachable: ${describeFailure(failures[id] ?? null)}`);
+      }
+    });
 
     const collected: any[] = [...(nwsAlerts ?? []), ...(ecccAlerts ?? [])];
 
@@ -491,6 +514,11 @@ export const registerWeatherRoutes = (app: Express): void => {
       alerts,
       fetchedAt: new Date().toISOString(),
       feeds,
+      /** Diagnostic only. Never rendered — see the note on `failures`. */
+      feedDetail: {
+        nws: describeFailure(failures.nws ?? null),
+        eccc: describeFailure(failures.eccc ?? null)
+      },
       partial,
       /** True when this answer covers less ground than the caller asked about. */
       clipped: box.clipped,
