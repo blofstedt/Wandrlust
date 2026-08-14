@@ -490,62 +490,148 @@ const isForbidden = (tags: Record<string, string>): string | null => {
 };
 
 /** Land-ownership token and the plain-English basis that goes with it. */
+/**
+ * ---------------------------------------------------------------------------
+ * THE THREE ANSWERS TO "WHOSE GROUND IS THIS", AND WHY THERE ARE THREE
+ * ---------------------------------------------------------------------------
+ *
+ * There was a boolean here, and a boolean was wrong in both directions.
+ *
+ * `dispersed` — Crown land, BLM, National Forest, national grassland, state
+ * forest and trust land. Land where sleeping in a vehicle away from a
+ * developed site is the GENERAL RULE rather than an exception. This is what
+ * Beacon is for and it ranks first, always.
+ *
+ * `public` — everything else the public owns and may enter: municipal and
+ * county land, provincial holdings, open-access parcels with no agency named,
+ * ordinary public space. Far more of both countries by area than the first
+ * category, and a real answer for a camper — a gravel pull-off on county land
+ * is a place people sleep. It ranks BELOW the first, and its wording never
+ * pretends overnight use is the rule there, because usually it is not.
+ *
+ * `null` — REJECTED. Private land, land whose owner nobody recorded, and the
+ * handful of public designations where overnight stays are prohibited outright
+ * rather than merely unmentioned. Unknown ownership is rejected on purpose:
+ * "nobody said it was private" is not "it is public", and the one thing this
+ * feature must never do is send somebody onto private ground.
+ */
+export type LandTier = 'dispersed' | 'public';
+
 interface LandReading {
   token: Token;
   basis: string;
-  /**
-   * Is this ground PUBLIC, by name, from the map's own tags?
-   *
-   * Not "probably public", not "nobody said it was private". A named agency
-   * that manages land the public may use. Everything else is false, and false
-   * now means the candidate is dropped rather than merely marked down.
-   */
-  isPublic: boolean;
+  /** Null means reject: private, unknown, or prohibited outright. */
+  tier: LandTier | null;
 }
 
-const landFromArea = (tags: Record<string, string>): LandReading | null => {
-  const operator = (tags.operator ?? '').toLowerCase();
-  const protectTitle = (tags.protect_title ?? '').toLowerCase();
-  const name = (tags.name ?? '').toLowerCase();
-  const haystack = `${operator} ${protectTitle} ${name}`;
+/**
+ * Public land where overnight stays are banned, not merely unaddressed.
+ *
+ * These are rejected despite being public, and that is not a contradiction of
+ * "public land can be used" — it is the difference between a rule that is
+ * silent and a rule that says no. A national park campground has a gate and a
+ * reservation system; a wildlife refuge closes at dusk. Sending a camper to
+ * either is sending them somewhere they will be moved on from.
+ *
+ * Mirrors EXCLUDED_DESIGNATIONS in scripts/landSources.ts, which encodes the
+ * same judgement for the seeder.
+ */
+const OVERNIGHT_PROHIBITED =
+  /national park|provincial park|state park|wildlife refuge|wildlife management|wilderness|national monument|historic site|battlefield|memorial|military|proving ground|test range|botanical|arboretum|cemetery|golf/i;
 
-  if (haystack.includes('bureau of land management') || haystack.includes('national monument')) {
-    return { token: 'land=blm', isPublic: true, basis: 'Inside land mapped as Bureau of Land Management, where dispersed camping is often the general rule.' };
+/**
+ * Land where dispersed camping is the general rule, by name.
+ *
+ * Deliberately a name test rather than a tag test: the same words appear in
+ * an OpenStreetMap `operator`, in a PAD-US `Des_Tp` and in an Alberta layer's
+ * designation, so one regex serves every source and they cannot drift apart.
+ */
+const DISPERSED_LAND =
+  /bureau of land management|\bblm\b|forest service|national forest|\busfs\b|national grassland|crown land|crown|state forest|state trust|department of natural resources|public land use zone|general use area/i;
+
+const landFromArea = (tags: Record<string, string>): LandReading | null => {
+  const operator = tags.operator ?? '';
+  const ownership = tags.ownership ?? '';
+  const protectTitle = tags.protect_title ?? '';
+  const name = tags.name ?? '';
+  const haystack = `${operator} ${ownership} ${protectTitle} ${name}`;
+
+  // Prohibited outright beats everything, including a dispersed-land keyword:
+  // "Yellowstone National Park" contains no dispersed word, but "Custer
+  // National Forest Wilderness" contains both and the ban is the answer.
+  if (OVERNIGHT_PROHIBITED.test(haystack)) {
+    return {
+      token: 'land=overnight_banned',
+      tier: null,
+      basis: 'Public, but this designation normally forbids overnight stays.'
+    };
   }
-  if (haystack.includes('forest service') || haystack.includes('national forest') || haystack.includes('usfs')) {
-    return { token: 'land=usfs', isPublic: true, basis: 'Inside land mapped as National Forest, where dispersed camping is often allowed away from developed sites.' };
+
+  if (DISPERSED_LAND.test(haystack)) {
+    if (/bureau of land management|\bblm\b/i.test(haystack)) {
+      return { token: 'land=blm', tier: 'dispersed', basis: 'Inside land mapped as Bureau of Land Management, where dispersed camping is often the general rule.' };
+    }
+    if (/forest service|national forest|\busfs\b/i.test(haystack)) {
+      return { token: 'land=usfs', tier: 'dispersed', basis: 'Inside land mapped as National Forest, where dispersed camping is often allowed away from developed sites.' };
+    }
+    if (/crown/i.test(haystack)) {
+      return { token: 'land=crown', tier: 'dispersed', basis: 'Inside land mapped as Crown land, where camping rules vary by province.' };
+    }
+    if (/national grassland/i.test(haystack)) {
+      return { token: 'land=grassland', tier: 'dispersed', basis: 'Inside a mapped National Grassland, where dispersed camping is often allowed.' };
+    }
+    return { token: 'land=state_forest', tier: 'dispersed', basis: 'Inside land mapped as a state forest or state trust land. Rules vary by state and some require a permit.' };
   }
-  if (haystack.includes('crown')) {
-    return { token: 'land=crown', isPublic: true, basis: 'Inside land mapped as Crown land, where camping rules vary by province.' };
-  }
-  if (haystack.includes('national grassland')) {
-    return { token: 'land=grassland', isPublic: true, basis: 'Inside a mapped National Grassland, where dispersed camping is often allowed.' };
-  }
-  if (haystack.includes('state forest') || haystack.includes('state trust') ||
-      haystack.includes('department of natural resources')) {
-    return { token: 'land=state_forest', isPublic: true, basis: 'Inside land mapped as a state forest or state trust land. Rules vary by state and some require a permit.' };
-  }
-  if (haystack.includes('wildlife management') || haystack.includes('national wildlife refuge')) {
-    // Public, but overnight use is very often prohibited outright.
-    return { token: 'land=wildlife', isPublic: false, basis: 'Inside a mapped wildlife area. These are public but overnight stays are usually forbidden.' };
-  }
+
   /*
-   * `boundary=protected_area` with no agency named. Public-ish and no more
-   * than that — a conservancy easement and a national forest carry the same
-   * tag. It no longer counts as public on its own, which is the change that
-   * stops "protected" being read as "yours to sleep on".
+   * ---- Public, but not dispersed-camping land. ----
+   *
+   * These used to be rejected outright, and that threw away most of the
+   * publicly-owned ground in both countries. A county gravel lot and a
+   * municipal common are places people do sleep, and a camper is better served
+   * by a ranked lead carrying a warning than by silence. What they are NOT is
+   * land where staying the night is the default, and none of the wording below
+   * suggests it is.
    */
-  if (tags.boundary === 'protected_area') {
-    return { token: 'land=protected', isPublic: false, basis: 'Inside a mapped protected area with no managing agency recorded. Protected does not mean open.' };
-  }
-  if (tags.landuse === 'forest') {
-    return { token: 'land=forest', isPublic: false, basis: 'Inside mapped forest with no owner recorded. Timber company land looks exactly like this.' };
-  }
+  const publicOperator =
+    /county|municipal|city of|town of|township|regional district|district of|province|provincial|state of|department|ministry|bureau|authority|conservation authority|parks board|public/i
+      .test(haystack);
+
   if (tags.leisure === 'park' || tags.leisure === 'nature_reserve') {
-    return { token: 'land=park_edge', isPublic: false, basis: 'Beside a mapped park. Municipal parks very often forbid overnight parking.' };
+    return {
+      token: 'land=park',
+      tier: 'public',
+      basis: 'Inside mapped public parkland. Parks very often close overnight or post against sleeping in a vehicle — read the signs before you settle.'
+    };
+  }
+  if (publicOperator) {
+    return {
+      token: 'land=public_other',
+      tier: 'public',
+      basis: `Public land, managed by ${operator || protectTitle || 'a public body'}. Public ownership is not permission to stay overnight.`
+    };
+  }
+  if (tags.boundary === 'protected_area') {
+    return {
+      token: 'land=protected',
+      tier: 'public',
+      basis: 'Inside a mapped protected area with no managing agency recorded. Public to enter; whether you may stay the night is a separate question nobody has answered here.'
+    };
+  }
+
+  /*
+   * ---- Rejected: nobody said whose this is. ----
+   *
+   * Unmapped forest and a bare residential polygon are the two commonest
+   * shapes here, and neither is public. "Nobody tagged an owner" is not
+   * ownership, and timber company land and a farmer's woodlot both look
+   * exactly like `landuse=forest`.
+   */
+  if (tags.landuse === 'forest') {
+    return { token: 'land=forest', tier: null, basis: 'Mapped forest with no owner recorded. Timber company land looks exactly like this.' };
   }
   if (tags.landuse === 'residential') {
-    return { token: 'land=residential', isPublic: false, basis: 'On a residential street.' };
+    return { token: 'land=residential', tier: null, basis: 'Residential ground. Private property.' };
   }
   return null;
 };
@@ -782,16 +868,32 @@ const ringsOf = (geometry: any): Ring[] => {
  */
 const publicParcelAt = (
   lat: number, lon: number, cover: PublicLandCover
-): { name: string; designation: string; source: string } | null => {
+): { name: string; designation: string; source: string; tier: LandTier | null } | null => {
   for (const feature of cover.features) {
     for (const ring of ringsOf(feature.geometry)) {
       if (ring.length >= 3 && pointInRing(lat, lon, ring)) {
         const props = feature.properties ?? {};
-        return {
-          name: String(props._name ?? 'Public land'),
-          designation: String(props._designation ?? ''),
-          source: String(props._sourceName ?? props._source ?? 'a public land dataset')
-        };
+        const name = String(props._name ?? 'Public land');
+        const designation = String(props._designation ?? '');
+        const source = String(props._sourceName ?? props._source ?? 'a public land dataset');
+
+        /*
+         * WHICH KIND OF PUBLIC, from the words the agency itself used.
+         *
+         * PAD-US is the reason this matters. It returns everything from
+         * "National Forest" to "Local Park" to "State Park" under one flag
+         * that only means the public may ENTER, so without a second reading
+         * a city playing field would rank alongside a national forest. The
+         * same regexes serve the OpenStreetMap path, so the two sources
+         * cannot disagree about what a national park is.
+         */
+        const haystack = `${name} ${designation} ${source}`;
+        const tier: LandTier | null =
+          OVERNIGHT_PROHIBITED.test(haystack) ? null
+          : DISPERSED_LAND.test(haystack) ? 'dispersed'
+          : 'public';
+
+        return { name, designation, source, tier };
       }
     }
   }
@@ -872,15 +974,21 @@ export const buildCandidates = (
      *
      * The government polygons are asked first and they are the answer. Only
      * if the boundary layer had nothing to say here does OpenStreetMap's own
-     * tagging get a turn — and OSM alone can only produce a lead when it
-     * names an agency, never from a bare `boundary=protected_area`.
+     * tagging get a turn.
      *
-     * Either way the requirement stands: no named public land, no candidate.
+     * Either way the ground must be PUBLIC. Which kind of public then decides
+     * where the lead ranks: Crown land, BLM and National Forest lead, other
+     * public land follows well behind, private and unknown are dropped.
      */
     const parcel = publicParcelAt(centre.lat, centre.lon, publicLand);
 
     if (parcel) {
-      tokens.push('land=official', `land_src=${parcel.source.toLowerCase().replace(/\s+/g, '_')}`);
+      if (parcel.tier === null) continue;
+
+      tokens.push(
+        parcel.tier === 'dispersed' ? 'land=official_dispersed' : 'land=official_public',
+        `land_src=${parcel.source.toLowerCase().replace(/\s+/g, '_')}`
+      );
       /*
        * Name, then designation, then who says so — skipping any of the three
        * that just repeats the one before it. Without this a Forest Service
@@ -891,20 +999,29 @@ export const buildCandidates = (
       const parts = [parcel.name];
       if (parcel.designation && parcel.designation !== parcel.name) parts.push(parcel.designation);
       const said = parts.join(' — ');
-      basis = said.toLowerCase().includes(parcel.source.toLowerCase())
-        ? `Inside ${said}, from the managing agency's own boundary data.`
-        : `Inside ${said}, from ${parcel.source}.`;
+      const from = said.toLowerCase().includes(parcel.source.toLowerCase())
+        ? "the managing agency's own boundary data"
+        : parcel.source;
+
+      basis = parcel.tier === 'dispersed'
+        ? `Inside ${said}, from ${from}. Camping away from developed sites is often the general rule on this kind of land.`
+        // The hedge is heavier here on purpose. Public ownership answers "may
+        // I be here in the daytime", which is a different question.
+        : `Inside ${said}, from ${from}. This is public land, which is not the same as somewhere you may stay the night — check for posted rules.`;
+
       generator = 'public_land';
-      score += 3;
+      score += parcel.tier === 'dispersed' ? 3 : 1;
     } else {
       const land = containing ? landFromArea(containing.tags) : null;
-      if (!land || !land.isPublic) continue;
+      if (!land || land.tier === null) continue;
 
       tokens.push(land.token, 'land_src=openstreetmap');
       // Said out loud: this one rests on a volunteer's tag, not on an agency.
       basis = `${land.basis} This is from OpenStreetMap's tagging rather than from the managing agency's own boundary.`;
       generator = 'public_land';
-      score += 2;
+      // A point below the same tier from official data — the tier decides the
+      // ranking, the source decides the confidence, and both cost something.
+      score += land.tier === 'dispersed' ? 2 : 0.5;
     }
 
     // ---- Road context. Somewhere you cannot drive to is not a place to sleep.
