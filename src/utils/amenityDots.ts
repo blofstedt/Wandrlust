@@ -6,7 +6,9 @@ import type { RouteResult } from '../services/routingService';
 import {
   ROAD_ACCESS_LABEL, SHADE_LABEL, TOILET_LABEL, WATER_LABEL, bestCellSignal
 } from './amenities';
-import { AlertBadge, BADGE_COLOR, WARNING_EMOJI, WARNING_LABEL } from './alertOverlay';
+import {
+  AlertBadge, PointWarning, BADGE_COLOR, WARNING_EMOJI
+} from './alertOverlay';
 import { FACILITY_COLOR, FACILITY_GLYPH, FACILITY_LABEL } from '../config/facilities';
 import { isUnderControl, type ActiveFire } from '../services/fireService';
 
@@ -50,6 +52,13 @@ export interface MarkerDot {
    * The words on the chip. SHORT — two or three, and the glyph carries the
    * subject. A chip is read at a glance over a map, so anything longer stops
    * being a label and starts being a paragraph lying across the terrain.
+   *
+   * THE ONE EXCEPTION IS A WARNING, which carries the agency's own product
+   * name — "Flash flood warning", "Special air quality statement". Those run
+   * three or four words and they are allowed to, because shortening one means
+   * choosing which half of "flash flood WARNING" to throw away and every
+   * candidate is load-bearing. The chip clamps its width and ellipsises rather
+   * than letting one lie across the map; the whole name is in `full`.
    */
   label: string;
   /**
@@ -170,15 +179,17 @@ const nearDistance = (km: number): string =>
  * A live hazard over this spot — smoke, a heat warning, a fire.
  *
  * These lead the row, because they change whether a camper should go at all.
- * They are the same colours and words as the hazard areas drawn on the map,
- * so the dot above a pin and the shape it is standing in are obviously the
- * same warning.
+ * The colour is the family's, so the chip and the cloud it is standing in are
+ * obviously the same warning, but the WORDS are the agency's own product name:
+ * "Flash flood warning", not "Flood". See `PointWarning` for why the family
+ * word on its own was not good enough — three different water products, three
+ * different nights, one chip that read the same for all of them.
  */
-export const hazardDots = (badges: AlertBadge[]): MarkerDot[] =>
-  badges.map((b) => ({
+export const hazardDots = (warnings: PointWarning[]): MarkerDot[] =>
+  warnings.map(({ badge: b, label, count }) => ({
     key: `hz-${b}`,
     color: BADGE_COLOR[b],
-    label: WARNING_LABEL[b],
+    label,
     /*
      * "Where?" is the next question after "what?", and the answer is a shape
      * an agency drew. Tapping goes and looks at it.
@@ -188,11 +199,20 @@ export const hazardDots = (badges: AlertBadge[]): MarkerDot[] =>
      * warning area and the worst possible place to say it was on top of the
      * area itself, for the two seconds a tour lasts. Here it is on the chip and
      * in the card, both of which can be read at leisure.
+     *
+     * A second product of the same family is COUNTED, not hidden. The chip
+     * names the most serious one; saying nothing about the rest would let a
+     * flood watch running behind a flash flood warning disappear entirely.
      */
     full:
-      `${WARNING_LABEL[b]} warning covers this point — tap to see the area it ` +
-      'covers. The shading is the forecast region the warning was issued for, ' +
-      'not the edge of the weather.',
+      `${label} covers this point.` +
+      (count > 1
+        ? ` ${count - 1} more ` +
+          `${count === 2 ? 'warning of the same kind covers' : 'warnings of the same kind cover'}` +
+          ' it too — open the spot to read them all.'
+        : '') +
+      ' Tap to see the area it covers. The shading is the forecast region the ' +
+      'warning was issued for, not the edge of the weather.',
     glyph: WARNING_EMOJI[b],
     tone: 'bad' as const,
     urgent: true,

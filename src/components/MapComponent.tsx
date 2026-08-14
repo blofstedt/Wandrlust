@@ -37,7 +37,7 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  AlertBadge, BADGE_COLOR, CLOUD_TINT, badgesForPoint, alertBadge,
+  AlertBadge, PointWarning, BADGE_COLOR, CLOUD_TINT, warningsForPoint, alertBadge,
   localizedPinHtml, cloudPieces,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
@@ -59,7 +59,7 @@ import {
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
-  fetchAreaAlerts, alertGapNote, HazardAlert, HAZARD_STYLE, sortAlerts,
+  fetchAreaAlerts, alertGapNote, HazardAlert, sortAlerts,
   WeatherSnapshot
 } from '../services/weatherService';
 import { prefersReducedMotion, haptic } from '../utils/animation';
@@ -1357,53 +1357,6 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
 };
 
 
-/**
- * The warning triangle drawn over an active alert area.
- *
- * Sized generously and given a dark outline so it stays readable over both
- * bright snow and dark forest in satellite imagery.
- */
-/**
- * An alert marker that says what KIND of alert it is at a glance.
- *
- * Every one of these used to be the same grey exclamation triangle, so a map
- * with a fire ban, a flood watch and a snowfall warning on it looked like
- * three copies of one anonymous hazard. The family's own colour and symbol now
- * carry the meaning: you should be able to tell fire from flood without
- * opening anything.
- *
- * Shape follows severity rather than adding a second colour language — a
- * severe or extreme alert gets the pointed triangle and a pulse, everything
- * milder gets a calmer rounded badge. That keeps the loud treatment for things
- * that have actually been called dangerous.
- */
-const buildHazardIcon = (alert: HazardAlert): L.DivIcon => {
-  const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
-  const urgent = alert.severity === 'extreme' || alert.severity === 'severe';
-  const size = urgent ? 34 : 28;
-
-  const shape = urgent
-    ? `<path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A"
-             stroke-width="1.6" stroke-linejoin="round"/>`
-    : `<rect x="2" y="4" width="20" height="16" rx="5" fill="${style.color}"
-             stroke="#0F172A" stroke-width="1.5"/>`;
-
-  return L.divIcon({
-    className: 'hazard-alert-marker',
-    html: `
-      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}"
-           style="width:${size}px;height:${size}px">
-        <svg viewBox="0 0 24 24" class="absolute inset-0 w-full h-full drop-shadow-lg"
-             aria-hidden="true">${shape}</svg>
-        <span class="relative" style="font-size:${
-          urgent ? size * 0.38 : size * 0.44
-        }px;line-height:1;${urgent ? 'padding-top:' + size * 0.16 + 'px' : ''}">${style.icon}</span>
-      </div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, urgent ? size * 0.78 : size / 2]
-  });
-};
-
 interface MapComponentProps {
   campsites: Campsite[];
   selectedCampsite: Campsite | null;
@@ -1564,7 +1517,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const boundaryLayerRef = useRef<L.LayerGroup | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   /** Alert badges affecting each pinned campsite, keyed by id. */
-  const badgesByIdRef = useRef<Map<string, AlertBadge[]>>(new Map());
+  const badgesByIdRef = useRef<Map<string, PointWarning[]>>(new Map());
   /**
    * The destination the camera has already closed in on.
    *
@@ -3232,7 +3185,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const destinationDots = useMemo(() => {
     if (!destination || destination.campsite) return [];
     return withNavChip([
-      ...hazardDots(badgesForPoint(destination.latitude, destination.longitude, hazards)),
+      ...hazardDots(warningsForPoint(destination.latitude, destination.longitude, hazards)),
       ...fireDots(nearbyFires),
       ...conditions,
       ...facilityDots(facilities)
@@ -4486,22 +4439,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * because the cluster badge never depended on the child icon.
    */
   useEffect(() => {
-    const next = new Map<string, AlertBadge[]>();
+    const next = new Map<string, PointWarning[]>();
     for (const site of pinnedCampsites) {
-      const badges = hazards.length
-        ? badgesForPoint(site.latitude, site.longitude, hazards)
+      const found = hazards.length
+        ? warningsForPoint(site.latitude, site.longitude, hazards)
         : [];
-      if (badges.length) next.set(site.id, badges);
+      if (found.length) next.set(site.id, found);
     }
     const prev = badgesByIdRef.current;
     badgesByIdRef.current = next;
     if (!isMapReady) return;
 
-    /** A marker has changed only if its badge set has changed. */
-    const sameBadges = (a: AlertBadge[] | undefined, b: AlertBadge[]): boolean => {
+    /**
+     * A marker has changed only if its warnings have.
+     *
+     * The LABEL is compared as well as the family, not just the family it used
+     * to be. The chip now carries the agency's product name, so a flood watch
+     * upgrading to a flash flood warning is the same badge with different
+     * words — and comparing families alone would leave the old wording sitting
+     * on the pin through the one change a camper most needs to see.
+     */
+    const sameBadges = (a: PointWarning[] | undefined, b: PointWarning[]): boolean => {
       if (!a) return b.length === 0;
       if (a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i].badge !== b[i].badge) return false;
+        if (a[i].label !== b[i].label) return false;
+        if (a[i].count !== b[i].count) return false;
+      }
       return true;
     };
 

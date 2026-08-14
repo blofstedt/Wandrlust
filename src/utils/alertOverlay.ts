@@ -25,6 +25,7 @@
  * Save to: src/utils/alertOverlay.ts
  */
 import type { HazardAlert } from '../services/weatherService';
+import { SEVERITY_RANK } from '../../shared/hazards';
 import { pointInGeometry } from './geo';
 
 export type AlertBadge =
@@ -172,6 +173,91 @@ export const badgesForPoint = (
     if (badge) found.add(badge);
   }
   return order(found);
+};
+
+/**
+ * ONE WARNING OVER THIS POINT, READY TO BE A CHIP.
+ *
+ * `badge` is the family, for colour and for finding the alert again when the
+ * chip is tapped. `label` is the thing a camper reads, and it is the AGENCY'S
+ * OWN NAME for the product — "Flash flood warning", "Red flag warning" — not
+ * the family word.
+ *
+ * WHY THAT MATTERS ENOUGH TO CARRY THE EXTRA FIELD. The chip used to say
+ * "Flood", which is every water product the NWS and ECCC issue collapsed into
+ * one word: a flash flood warning, a coastal flood advisory and a flood watch
+ * all read identically. Those are three different nights. A flash flood
+ * warning means water is coming to a place like this one, now; a watch means
+ * conditions could produce it later today. Turning them into the same chip
+ * threw away the whole decision and left the camper to go and find the real
+ * wording in the sheet — assuming they suspected there was any.
+ *
+ * The colour is still the family's, so the chip matches the cloud it stands
+ * in, and `count` says how many other products of the same family cover the
+ * point, because the chip names only the most serious of them.
+ */
+export interface PointWarning {
+  badge: AlertBadge;
+  /** The agency's own product name, in sentence case. */
+  label: string;
+  /** How many alerts of this family cover the point. At least 1. */
+  count: number;
+}
+
+/**
+ * The agency's event name, cased for a chip.
+ *
+ * The two feeds disagree about capitals — NWS sends "Flash Flood Warning",
+ * ECCC sends "rainfall warning" and "Special Weather Statement" — so a row of
+ * chips from both would be a row of two different typographic conventions.
+ * Sentence case for all of them, which is what the rest of the app's chips
+ * use.
+ *
+ * NOT SHORTENED, and specifically not by dropping the last word. "Warning",
+ * "watch", "advisory" and "statement" are four different levels of agency
+ * confidence and the difference is the whole point of reading the chip.
+ */
+export const eventLabel = (event: string | undefined): string | null => {
+  const clean = (event ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean) return null;
+  return clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
+};
+
+/**
+ * Every warning over a point, one entry per family, most serious product named.
+ *
+ * Families come back in `BADGE_ORDER`, so the fire chip leads. Within a family
+ * the named product is the most severe one — a flash flood warning outranks
+ * the flood watch underneath it, and naming the milder of the two on a chip
+ * that only has room for one would be the dangerous way round.
+ */
+export const warningsForPoint = (
+  lat: number, lon: number, alerts: HazardAlert[]
+): PointWarning[] => {
+  const byBadge = new Map<AlertBadge, HazardAlert[]>();
+  for (const alert of alerts) {
+    if (!alert.geometry) continue;
+    if (!pointInGeometry(lat, lon, alert.geometry)) continue;
+    const badge = alertBadge(alert);
+    if (!badge) continue;
+    const bucket = byBadge.get(badge);
+    if (bucket) bucket.push(alert);
+    else byBadge.set(badge, [alert]);
+  }
+
+  return BADGE_ORDER.filter((b) => byBadge.has(b)).map((badge) => {
+    const found = byBadge.get(badge) as HazardAlert[];
+    const worst = found.reduce((a, b) =>
+      SEVERITY_RANK[b.severity] > SEVERITY_RANK[a.severity] ? b : a
+    );
+    return {
+      badge,
+      // The family word is the fallback, for a feed that sent no event name at
+      // all. Vaguer than the product name, never wrong.
+      label: eventLabel(worst.event) ?? WARNING_LABEL[badge],
+      count: found.length
+    };
+  });
 };
 
 /* ------------------------------------------------------------------ */
