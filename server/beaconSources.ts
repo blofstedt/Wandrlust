@@ -198,7 +198,7 @@ const EMPTY_SCAN: OverpassScan = {
  * centres. Three round trips collapsed into one matters when the whole request
  * has a twelve-second budget.
  */
-const buildQuery = (lat: number, lon: number, radiusM: number): string => {
+const buildQuery = (lat: number, lon: number, radiusM: number, timeoutS: number): string => {
   const around = `(around:${Math.round(radiusM)},${lat.toFixed(5)},${lon.toFixed(5)})`;
 
   const areas = [
@@ -274,8 +274,19 @@ const buildQuery = (lat: number, lon: number, radiusM: number): string => {
     `node["place"~"^(city|town|village|hamlet|suburb)$"]${around};`
   ].join('');
 
+  /*
+   * `[timeout:N]` IS A PROMISE IN BOTH DIRECTIONS, AND IT WAS LYING.
+   *
+   * It was hardcoded to 25 seconds while the caller hung up at eleven. That is
+   * the worst of both: Overpass schedules the query against a generous budget
+   * and keeps working on it long after we have stopped listening, so we pay
+   * for the wait, get nothing, and leave a server that rations its capacity by
+   * declared cost running a query for a client that has gone. Telling it what
+   * we will actually wait for makes it likelier to be scheduled promptly and
+   * lets it give up when we would.
+   */
   return (
-    `[out:json][timeout:25];` +
+    `[out:json][timeout:${Math.max(5, Math.round(timeoutS))}];` +
     `(${areas});out geom 150;` +
     `(${roads});out geom 250;` +
     `(${features});out center 150;` +
@@ -338,9 +349,15 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
  * error page, the client could not parse it, and a scan that was merely slow
  * was reported to the camper as no connection.
  *
- * Now the deadline is set once and each mirror gets what is left of it. Three
- * dead mirrors cost the same wall-clock as one, and the caller's budget means
- * what it says.
+ * Now there is one deadline for the whole call, and each mirror gets a SLICE
+ * of what is left rather than all of it. That distinction is load-bearing and
+ * the first version of this fix got it wrong: handing mirror one the entire
+ * budget means a single slow mirror leaves nothing for the two behind it, so
+ * the fallbacks that exist precisely for this case can never be tried. A
+ * fallback you cannot afford to call is not a fallback.
+ *
+ * Overpass is also told the same number (see `[timeout:N]` in buildQuery), so
+ * it is not still working on a query nobody is waiting for.
  */
 export const fetchOverpassScan = async (
   lat: number,
@@ -348,7 +365,6 @@ export const fetchOverpassScan = async (
   radiusM: number,
   timeoutMs = 11_000
 ): Promise<OverpassScan> => {
-  const query = buildQuery(lat, lon, radiusM);
   const deadline = Date.now() + timeoutMs;
   /**
    * What each mirror said, for the log.
@@ -361,15 +377,25 @@ export const fetchOverpassScan = async (
    */
   const tried: string[] = [];
 
-  for (const mirror of OVERPASS_MIRRORS) {
+  for (let i = 0; i < OVERPASS_MIRRORS.length; i += 1) {
+    const mirror = OVERPASS_MIRRORS[i];
     const host = new URL(mirror).host;
     const left = deadline - Date.now();
-    // Under a second is not worth a round trip to a mirror that has to parse
-    // and run the query before it can answer.
-    if (left < 1_000) { tried.push(`${host}: no time left`); break; }
+    // Under four seconds is not worth a round trip: Overpass has to parse,
+    // schedule and run the query before a single byte comes back.
+    if (left < 4_000) { tried.push(`${host}: no time left`); break; }
+
+    /*
+     * An even share of what remains, so the mirrors behind this one are still
+     * affordable. The last mirror gets everything left over — there is nobody
+     * after it to save any for.
+     */
+    const mirrorsLeft = OVERPASS_MIRRORS.length - i;
+    const slice = mirrorsLeft === 1 ? left : Math.max(4_000, Math.floor(left / mirrorsLeft));
+    const attempt = Math.min(slice, left);
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), left);
+    const timer = setTimeout(() => controller.abort(), attempt);
     try {
       const res = await fetch(mirror, {
         method: 'POST',
@@ -377,7 +403,8 @@ export const fetchOverpassScan = async (
           'Content-Type': 'application/x-www-form-urlencoded',
           'User-Agent': UA
         },
-        body: `data=${encodeURIComponent(query)}`,
+        // Overpass is told the same limit we are holding it to.
+        body: `data=${encodeURIComponent(buildQuery(lat, lon, radiusM, attempt / 1000))}`,
         signal: controller.signal
       });
       if (!res.ok) {

@@ -473,7 +473,21 @@ const fetchZoneGeometries = async (ids: string[]): Promise<Map<string, unknown>>
 
   const seen = new Set<string>();
   for (const data of results) {
-    if (!Array.isArray(data?.features)) continue;
+    if (!Array.isArray(data?.features)) {
+      /*
+       * A 200 that is not a feature collection. Worth its own line: the
+       * `/alerts/active` bug spent months looking like an outage because a
+       * rejection was silently turned into an empty result, and this is the
+       * same shape of silence one endpoint further down.
+       */
+      if (data) {
+        console.warn(
+          '[alerts] zone lookup answered without features: ' +
+          `${JSON.stringify(data).slice(0, 300)}`
+        );
+      }
+      continue;
+    }
     for (const feature of data.features) {
       const id = feature?.properties?.id;
       if (typeof id !== 'string' || !feature?.geometry) continue;
@@ -540,6 +554,18 @@ export const resolveNwsZoneGeometry = async (
   }
 
   const outlines = await fetchZoneGeometries(wanted);
+  /*
+   * An alert with no geometry is never drawn — the map refuses to invent a
+   * position for it — so a zone lookup that comes back empty takes every US
+   * cloud off the map while leaving the warnings in the list. That is a very
+   * quiet way to be broken, and it is worth one line saying so.
+   */
+  if (outlines.size < wanted.length) {
+    console.warn(
+      `[alerts] resolved ${outlines.size}/${wanted.length} zone outlines` +
+      `${outlines.size === 0 ? ` — first few wanted: ${wanted.slice(0, 5).join(',')}` : ''}`
+    );
+  }
   if (outlines.size === 0) return alerts;
 
   return alerts.map((alert) => {

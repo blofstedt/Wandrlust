@@ -360,7 +360,9 @@ export const registerBeaconRoutes = (app: Express): void => {
        */
       const pad = (radiusM / 111_000) * 1.4;
       const [scan, signs, publicLand] = await Promise.all([
-        fetchOverpassScan(lat, lon, radiusM, Math.min(11_000, left)),
+        // The long pole, and the one whose failure means nothing was scanned
+        // at all — so it gets the largest share of whatever is left.
+        fetchOverpassScan(lat, lon, radiusM, Math.min(14_000, left)),
         fetchSignsNear(lat, lon, radiusM, Math.min(8_000, left)),
         within(
           fetchPublicLand({
