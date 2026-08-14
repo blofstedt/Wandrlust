@@ -25,6 +25,7 @@ import { CellCoverageCard } from './TripConditions';
 import { NearbyFiresCard } from './NearbyFiresCard';
 import { Admin1Line } from './Admin1Line';
 import { SubmissionChip } from './SubmissionChip';
+import { SpotByline } from './SpotByline';
 import { ReportContentSheet } from './ReportContentSheet';
 import { useAuth } from '../contexts/AuthContext';
 import { haptic } from '../utils/animation';
@@ -285,6 +286,9 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 latitude={campsite.latitude}
                 longitude={campsite.longitude}
               />
+              <div className="mt-0.5">
+                <SpotByline campsite={campsite} />
+              </div>
               {/* The full version with its explanation — this sheet has the
                   room the card doesn't. */}
               <div className="mt-1.5">

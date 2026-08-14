@@ -8,6 +8,7 @@ import {
 } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { ReportContentSheet } from './ReportContentSheet';
+import { SpotByline } from './SpotByline';
 import {
   X,
   MapPin,
@@ -269,6 +270,12 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                       <span className="text-slate-300">Elevation: {campsite.elevationFt.toLocaleString()} ft</span>
                     </>
                   )}
+                </div>
+                {/* The same byline the map sheet carries — a spot's author is
+                    part of what it is, not a property of which screen it is
+                    being read on. */}
+                <div className="mt-1.5">
+                  <SpotByline campsite={campsite} className="text-xs" />
                 </div>
               </div>
 

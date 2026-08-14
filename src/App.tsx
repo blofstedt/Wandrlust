@@ -213,7 +213,29 @@ export default function App() {
       if (custom.length > 0) {
         setCampsites((prev) => {
           const ids = new Set(prev.map((s) => s.id));
-          return [...prev, ...custom.filter((c) => !ids.has(c.id))];
+          return [
+            ...prev,
+            ...custom
+              .filter((c) => !ids.has(c.id))
+              /**
+               * A SPOT IN THIS LIST WAS ADDED FROM THIS DEVICE. THAT IS WHAT
+               * THE LIST IS.
+               *
+               * Every spot here got here by somebody tapping "add" in this app,
+               * so `submittedByMe` is a fact about it, not a guess. It is
+               * restated on load because the spots stored before the fix above
+               * were written without it and would otherwise stay undeletable
+               * forever — the flag is what draws the whole removal section.
+               *
+               * It does not decide anything on its own. Whether the spot can
+               * actually come down is still the server's answer
+               * (`campsite_removal_state`), so a spot somebody else has since
+               * used, or one added here while signed into another account,
+               * gets the sentence explaining why rather than a button that
+               * would be refused.
+               */
+              .map((c) => (c.submittedByMe ? c : { ...c, submittedByMe: true }))
+          ];
         });
       }
     })();
@@ -749,14 +771,28 @@ export default function App() {
      */
     silent = false
   ) => {
-    await addCustomCampsite(site);
-
     const shared = await submitCampsite(site);
     const stored: Campsite = {
       ...site,
       submissionState: shared.ok ? 'pending_review' : 'local_only',
       submittedByMe: true
     };
+
+    /**
+     * THE STORED COPY IS THE ENRICHED ONE, AND THAT IS THE FIX.
+     *
+     * This used to write the bare `site` to the device and keep the `stored`
+     * version — the one that knows it is mine and what became of it — in React
+     * state only. So for the length of one session the spot was yours and the
+     * Remove control was there, and the moment the app was reloaded it came
+     * back off the device with `submittedByMe` undefined, which is what the
+     * whole removal section is gated on. The button did not break. It was never
+     * drawn again.
+     *
+     * The local write still happens whatever the server said, which is the
+     * house rule it always was. It just no longer forgets whose spot it is.
+     */
+    await addCustomCampsite(stored);
 
     if (!silent) {
       if (shared.ok) {
