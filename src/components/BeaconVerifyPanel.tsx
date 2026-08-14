@@ -121,6 +121,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
       // server said and stop offering something it will not do.
       setConfirmingRemove(false);
       setRemoval({
+        asked: true,
         exists: true, mine: true, removable: false, others: 0,
         message: result.message
       });

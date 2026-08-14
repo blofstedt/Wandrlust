@@ -73,10 +73,43 @@ const SURFACE_SCORE = 2;
 const REMEMBER_SCORE = 1;
 
 /**
- * The whole request budget. Vercel's ceiling is 30 s; leaving a third of it
- * spare covers a slow Supabase round trip on a cold connection.
+ * ---------------------------------------------------------------------------
+ * THE TIME BUDGET, AND WHY THE OLD ONE DID NOT WORK
+ * ---------------------------------------------------------------------------
+ *
+ * Vercel kills this function at thirty seconds and returns its own gateway
+ * error page. That page is not JSON, so the browser's `res.json()` throws, and
+ * the client reports the only thing it can tell from a thrown parse — "could
+ * not reach the server". Beacon was not unreachable. It was still working.
+ *
+ * The old budget was one check at the TOP of each rung of the radius ladder,
+ * which meant a rung was allowed to start at 19.9 s and then run for its full
+ * length: Overpass at 11 s, Mapillary at 8 s and the government land layer all
+ * in parallel, so ~12 s, landing at 32 s. Past the ceiling, every time, on
+ * exactly the wide scans a camper in open country needs most.
+ *
+ * So there are two numbers now, and every upstream call is given a timeout cut
+ * from what is actually left rather than its own comfortable default.
+ *
+ *   DEADLINE_MS   nothing upstream may still be running after this
+ *   RESERVE_MS    kept back for the persist and the ranked read-back, which
+ *                 are what turn a scan into an answer. Overrunning here would
+ *                 throw away work already paid for with the camper's token.
+ *
+ * A rung that cannot finish inside what is left is not started. Answering with
+ * two rungs' worth of leads beats being killed holding three.
  */
-const BUDGET_MS = 20_000;
+const DEADLINE_MS = 24_000;
+const RESERVE_MS = 6_000;
+
+/**
+ * The least time a rung needs to be worth starting.
+ *
+ * Below this the Overpass query has no chance — its own server-side timeout is
+ * 25 s and a cold mirror routinely takes five — so starting one would burn the
+ * remaining budget and return nothing.
+ */
+const MIN_RUNG_MS = 7_000;
 
 /* ------------------------------------------------------------------ */
 /* Supabase clients                                                    */
@@ -274,16 +307,45 @@ export const registerBeaconRoutes = (app: Express): void => {
     const sources: Record<string, string> = {};
     let found: Candidate[] = [];
     let scannedRadius = RADIUS_LADDER[0];
+    /** How many rungs of the ladder actually ran. Zero means nothing was asked. */
+    let rungsRun = 0;
+
+    /** Milliseconds left before anything upstream has to be finished. */
+    const remaining = () => DEADLINE_MS - RESERVE_MS - (Date.now() - startedAt);
+
+    /**
+     * Give up on a slow lookup rather than let it take the whole request down.
+     *
+     * `fetchPublicLand` has no timeout of its own — it fans out to several
+     * government ArcGIS services — so it is capped from the outside here. A
+     * lookup that loses the race resolves to "unavailable", which is a value
+     * `buildCandidates` already knows how to be honest about: no candidate is
+     * confirmed to be on public land, and the answer says so.
+     */
+    const within = <T>(work: Promise<T>, ms: number, fallback: T): Promise<T> =>
+      Promise.race([
+        work,
+        new Promise<T>((resolve) => setTimeout(() => resolve(fallback), Math.max(0, ms)))
+      ]);
 
     for (const radiusM of RADIUS_LADDER) {
-      scannedRadius = radiusM;
+      const left = remaining();
 
-      // Out of budget. Stop where we are and answer with what we have rather
-      // than letting the platform kill the request mid-flight.
-      if (Date.now() - startedAt > BUDGET_MS) {
-        sources.budget = 'Stopped early to stay inside the request time limit.';
+      /*
+       * Not enough time left to run this rung properly. Stop here and answer
+       * with what the earlier rungs found, rather than starting work the
+       * platform is going to kill halfway through — which is what turned a
+       * working scan into "could not reach the server".
+       */
+      if (left < MIN_RUNG_MS) {
+        sources.budget = rungsRun === 0
+          ? 'There was not enough time left to scan at all, so nothing here was ruled out.'
+          : `Stopped after ${scannedRadius / 1000} km to answer inside the time limit.`;
         break;
       }
+
+      scannedRadius = radiusM;
+      rungsRun += 1;
 
       /*
        * The government boundary layer is asked alongside the other two, and
@@ -291,15 +353,23 @@ export const registerBeaconRoutes = (app: Express): void => {
        * all. Same sources and same cache the map draws from — see
        * `fetchPublicLand`. A degree of padding either side of the scan radius
        * so a parcel edge just outside the circle still contains a spot on it.
+       *
+       * Every timeout is cut from what is left, never from a fixed default:
+       * three calls each waiting their own comfortable maximum is precisely
+       * how the request used to overrun.
        */
       const pad = (radiusM / 111_000) * 1.4;
       const [scan, signs, publicLand] = await Promise.all([
-        fetchOverpassScan(lat, lon, radiusM),
-        fetchSignsNear(lat, lon, radiusM),
-        fetchPublicLand({
-          minLat: lat - pad, minLon: lon - pad,
-          maxLat: lat + pad, maxLon: lon + pad
-        })
+        fetchOverpassScan(lat, lon, radiusM, Math.min(11_000, left)),
+        fetchSignsNear(lat, lon, radiusM, Math.min(8_000, left)),
+        within(
+          fetchPublicLand({
+            minLat: lat - pad, minLon: lon - pad,
+            maxLat: lat + pad, maxLon: lon + pad
+          }),
+          Math.min(10_000, left),
+          { ok: false, features: [] }
+        )
       ]);
 
       sources.openstreetmap = scan.ok ? 'ok' : (scan.note ?? 'unavailable');
@@ -338,11 +408,12 @@ export const registerBeaconRoutes = (app: Express): void => {
     const spots = await readSpots(scannedRadius);
 
     /**
-     * A thin answer has to say WHY it is thin. "Nothing here" and "we could not
-     * ask" are different facts and a camper deciding where to sleep needs to
-     * know which one they are looking at.
+     * A thin answer has to say WHY it is thin. "Nothing here", "we ran out of
+     * time" and "we could not ask" are three different facts, and a camper
+     * deciding where to sleep needs to know which one they are looking at.
      */
-    const couldNotAsk = sources.openstreetmap !== 'ok';
+    const ranOutOfTime = rungsRun === 0;
+    const couldNotAsk = !ranOutOfTime && sources.openstreetmap !== 'ok';
 
     return res.json({
       ok: spots.length > 0,
@@ -355,6 +426,8 @@ export const registerBeaconRoutes = (app: Express): void => {
       disclaimer: DISCLAIMER,
       note: spots.length > 0
         ? undefined
+        : ranOutOfTime
+        ? 'The map services were too slow to answer, so no ground here was actually scanned. Nothing below has been ruled out — try again in a moment.'
         : couldNotAsk
         ? 'Could not reach OpenStreetMap just now, so nothing was scanned. This did not use up a beacon you can spend later.'
         : NOTHING_FOUND,

@@ -678,14 +678,38 @@ export const fetchNwsActiveAlerts = async (): Promise<NormalisedAlert[] | null> 
  * for 500; the viewport query has no reason to ask for less.
  */
 export const fetchEcccAlerts = async (
-  lat: number, lon: number, spanDeg = 1.0
+  lat: number, lon: number,
+  spanLatDeg = 1.0,
+  /**
+   * Half-width, when the area of interest is not square.
+   *
+   * A viewport is almost never square, and passing the LARGER half-dimension
+   * for both — which is what a single `spanDeg` forced the caller to do — asked
+   * GeoMet about a great deal of ground the camper cannot see. On a wide
+   * landscape view that meant hundreds of extra kilometres of latitude, five
+   * hundred rows of forecast-region geometry to serialise, and a query slow
+   * enough to lose its own timeout. Defaults to the height, so the old
+   * square-box callers are unchanged.
+   */
+  spanLonDeg = spanLatDeg
 ): Promise<NormalisedAlert[] | null> => {
   const bbox = [
-    (lon - spanDeg).toFixed(3), (lat - spanDeg).toFixed(3),
-    (lon + spanDeg).toFixed(3), (lat + spanDeg).toFixed(3)
+    (lon - spanLonDeg).toFixed(3), (lat - spanLatDeg).toFixed(3),
+    (lon + spanLonDeg).toFixed(3), (lat + spanLatDeg).toFixed(3)
   ].join(',');
 
-  const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=500&f=json`);
+  /*
+   * FIFTEEN SECONDS, NOT NINE.
+   *
+   * GeoMet is the slower of the two feeds by a long way — it is answering a
+   * spatial query over every alert in the country, and five hundred rows of
+   * forecast-region geometry is a big response. The nine-second default was
+   * losing the race often enough that Canada was simply missing from the map
+   * on any view wider than a valley, and the caller could not tell a slow feed
+   * from a quiet sky. Both feeds now run in parallel (see weatherRoutes), so
+   * the extra six seconds cost the request nothing.
+   */
+  const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=500&f=json`, 15_000);
   // Null, not [], when GeoMet could not be reached — see the note on
   // fetchNwsAlertsForStates. A cached empty sky is the worst outcome here.
   if (!data) return null;

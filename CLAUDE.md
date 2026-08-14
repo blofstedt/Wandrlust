@@ -146,6 +146,16 @@ npm run vapid    # generate push notification keys
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** `supabase_schema.sql` then 02 through 17.
   `supabase_schema.sql` is destructive — it drops and recreates.
+- **A merged pull request is not a shipped feature.** Vercel deploys the code
+  the moment `main` moves; nothing deploys the SQL. Migration 14 sat unapplied
+  for a release and migration 17 for another, and both times the symptom was a
+  feature that looked broken rather than absent — an RPC that is not there
+  comes back as an error, every service turns an error into its safe empty
+  value, and the button, the ladder or the panel simply never appears. **If a
+  change adds or edits a `supabase_migration_*.sql`, apply it to the live
+  database in the same session and say so.** Check first, do not assume:
+  `select proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'`.
 - **A spot is only yours to delete while it is only yours.** The camper who
   added a spot can remove it — from the pin's info sheet, and from the Beacon
   sheet — right up until somebody else reviews it, checks in, saves it or

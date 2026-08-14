@@ -543,11 +543,29 @@ export interface BeaconSpot {
  */
 export interface SpotRemovalState {
   /**
+   * Whether the server actually answered the question.
+   *
+   * FALSE MEANS EVERY OTHER FIELD HERE IS A DEFAULT, NOT A FACT. The lookup
+   * failed — no connection, or a database that has not had the migration run
+   * against it — and nothing below was learned.
+   *
+   * This exists because without it a failure was indistinguishable from
+   * `exists: false`, which the campsite sheet reads as "there is no server row,
+   * so this is a device-only copy and yours to delete freely". A camper on a
+   * flaky connection was therefore offered a Remove button on somebody else's
+   * published spot, and only found out it was refused after they had already
+   * decided the spot was gone — the exact thing asking first was meant to
+   * prevent.
+   */
+  asked: boolean;
+  /**
    * Whether the server has a row for this spot at all.
    *
    * `false` is the normal state of a spot added with no account or no signal.
    * That copy lives on the phone and only the phone, so removing it is between
    * the camper and their own device and needs nobody's permission.
+   *
+   * Only meaningful when `asked` is true.
    */
   exists: boolean;
   /** The signed-in camper is the one who added it. */
