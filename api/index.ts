@@ -93,7 +93,18 @@ app.get('/api/health', (_req, res) => {
       supabaseUrl: Boolean(process.env.VITE_SUPABASE_URL),
       serviceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
       vapidPublic: Boolean(process.env.VITE_VAPID_PUBLIC_KEY),
-      vapidPrivate: Boolean(process.env.VAPID_PRIVATE_KEY)
+      vapidPrivate: Boolean(process.env.VAPID_PRIVATE_KEY),
+      mapillaryToken: Boolean(process.env.MAPILLARY_TOKEN),
+      /**
+       * The agent string, printed rather than reduced to a boolean.
+       *
+       * The National Weather Service and OpenStreetMap both refuse callers
+       * they cannot identify, and this deployment spent its whole life sending
+       * a placeholder that read "set NWS_USER_AGENT in .env" — a to-do note in
+       * the field where a contact belongs. Nothing about it is secret and
+       * seeing the exact string is the difference between knowing and guessing.
+       */
+      nwsUserAgent: process.env.NWS_USER_AGENT?.trim() || '(built-in default)'
     }
   });
 });

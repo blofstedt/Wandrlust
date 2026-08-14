@@ -21,8 +21,63 @@ import { stateDistanceRank } from './usStates.js';
 export const NWS_BASE = 'https://api.weather.gov';
 export const ECCC_ALERTS = 'https://api.weather.gc.ca/collections/weather-alerts/items';
 
-const UA = process.env.NWS_USER_AGENT ?? 'wandrlust-app (contact: set NWS_USER_AGENT in .env)';
+/**
+ * ---------------------------------------------------------------------------
+ * THE USER-AGENT IS PART OF THE API CONTRACT, NOT A NICETY
+ * ---------------------------------------------------------------------------
+ *
+ * The National Weather Service requires a User-Agent identifying the
+ * application and giving a way to contact whoever runs it, and refuses
+ * requests that do not supply one it likes. The default here used to be the
+ * literal string
+ *
+ *     'wandrlust-app (contact: set NWS_USER_AGENT in .env)'
+ *
+ * which is a to-do note, not a contact. On a deployment where NWS_USER_AGENT
+ * was never set — which is every deployment of this app so far — that is what
+ * went out on the wire, and it is a very good way to be shown the door.
+ *
+ * The default is now a real, valid agent string with a real contact: the
+ * project's own public repository, which is where anybody at NWS with a
+ * complaint would actually be able to reach somebody. NWS_USER_AGENT still
+ * overrides it, so setting a personal email is still worth doing — but the
+ * app is no longer BROKEN until somebody does.
+ */
+export const USER_AGENT =
+  process.env.NWS_USER_AGENT?.trim() ||
+  'Wandrlust/1.0 (free dispersed camping map; +https://github.com/blofstedt/Wandrlust)';
+
+const UA = USER_AGENT;
 const jsonHeaders = { 'User-Agent': UA, Accept: 'application/geo+json' };
+
+/**
+ * WHY A LOOKUP FAILED, WHICH USED TO BE THROWN AWAY.
+ *
+ * `getJson` collapsed a 403, a timeout and a DNS failure into the same `null`.
+ * Every caller then folded that into "we could not check", which is the right
+ * thing to tell a camper and useless for working out what is actually wrong —
+ * so a feed that had been refusing this deployment for its entire life looked
+ * identical to a phone with no signal, and could only be diagnosed by guessing.
+ */
+export interface FetchFailure {
+  /** 'status' — it answered and said no. 'timeout' / 'network' — it did not answer. */
+  kind: 'status' | 'timeout' | 'network';
+  /** HTTP status, when there was one. */
+  status?: number;
+  /** The first line of the body or the error, trimmed. Never shown to a camper. */
+  detail?: string;
+}
+
+export const describeFailure = (failure: FetchFailure | null): string | undefined => {
+  if (!failure) return undefined;
+  if (failure.kind === 'status') {
+    return `HTTP ${failure.status}${failure.detail ? ` — ${failure.detail}` : ''}`;
+  }
+  return failure.kind === 'timeout' ? 'timed out' : `no answer${failure.detail ? ` — ${failure.detail}` : ''}`;
+};
+
+/** Statuses worth one immediate second attempt: throttling and transient 5xx. */
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 
 export interface NormalisedAlert {
   id: string;
@@ -68,18 +123,61 @@ export interface NormalisedAlert {
   zoneCount?: number;
 }
 
-export const getJson = async (url: string, timeoutMs = 9000): Promise<any | null> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { headers: jsonHeaders, signal: controller.signal });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+/**
+ * One GET, JSON out, null on any failure — and the failure handed to
+ * `onFailure` rather than dropped on the floor. See FetchFailure.
+ *
+ * A throttled or transiently-broken feed gets ONE more go. Both agencies rate
+ * limit by IP, and a serverless deployment shares its address with whoever
+ * else is on that machine, so a first-attempt 429 is routine and permanent
+ * failure is not what it means. One retry, not a loop: this runs inside a
+ * request with a hard ceiling, and a feed that says no twice in a row is
+ * saying no.
+ */
+export const getJson = async (
+  url: string,
+  timeoutMs = 9000,
+  onFailure?: (failure: FetchFailure) => void
+): Promise<any | null> => {
+  const deadline = Date.now() + timeoutMs;
+  let last: FetchFailure = { kind: 'network', detail: 'not attempted' };
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const left = deadline - Date.now();
+    if (left < 500) break;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), left);
+    try {
+      const res = await fetch(url, { headers: jsonHeaders, signal: controller.signal });
+
+      if (!res.ok) {
+        // The body of a refusal is where the agency says WHY — NWS in
+        // particular explains a rejected User-Agent in plain English.
+        const body = await res.text().catch(() => '');
+        last = {
+          kind: 'status',
+          status: res.status,
+          detail: body.slice(0, 200).replace(/\s+/g, ' ').trim() || undefined
+        };
+        if (!RETRYABLE.has(res.status) || attempt === 1) break;
+        continue;
+      }
+
+      return await res.json();
+    } catch (err: any) {
+      last = controller.signal.aborted
+        ? { kind: 'timeout' }
+        : { kind: 'network', detail: String(err?.message ?? err).slice(0, 200) };
+      // A timeout has already spent the budget; trying again cannot help.
+      if (last.kind === 'timeout' || attempt === 1) break;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  onFailure?.(last);
+  return null;
 };
 
 /** Every outer ring in a Polygon or MultiPolygon, as [lon, lat] pairs. */
@@ -634,13 +732,15 @@ export const fetchNwsAlertsAtPoint = async (lat: number, lon: number): Promise<N
  * every camper in the region as a clear sky.
  */
 export const fetchNwsAlertsForStates = async (
-  states: string[]
+  states: string[],
+  onFailure?: (failure: FetchFailure) => void
 ): Promise<NormalisedAlert[] | null> => {
   if (states.length === 0) return [];
   const data = await getJson(
     `${NWS_BASE}/alerts/active?status=actual&message_type=alert` +
     `&area=${states.join(',')}&limit=500`,
-    15000
+    15000,
+    onFailure
   );
   if (!data) return null;
   return Array.isArray(data.features) ? data.features.map(nwsAlertToHazard) : [];
@@ -691,7 +791,8 @@ export const fetchEcccAlerts = async (
    * enough to lose its own timeout. Defaults to the height, so the old
    * square-box callers are unchanged.
    */
-  spanLonDeg = spanLatDeg
+  spanLonDeg = spanLatDeg,
+  onFailure?: (failure: FetchFailure) => void
 ): Promise<NormalisedAlert[] | null> => {
   const bbox = [
     (lon - spanLonDeg).toFixed(3), (lat - spanLatDeg).toFixed(3),
@@ -709,7 +810,9 @@ export const fetchEcccAlerts = async (
    * from a quiet sky. Both feeds now run in parallel (see weatherRoutes), so
    * the extra six seconds cost the request nothing.
    */
-  const data = await getJson(`${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=500&f=json`, 15_000);
+  const data = await getJson(
+    `${ECCC_ALERTS}?bbox=${bbox}&lang=en&limit=500&f=json`, 15_000, onFailure
+  );
   // Null, not [], when GeoMet could not be reached — see the note on
   // fetchNwsAlertsForStates. A cached empty sky is the worst outcome here.
   if (!data) return null;
