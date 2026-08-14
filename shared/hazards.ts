@@ -51,10 +51,10 @@ export const classifyHazard = (eventName: string): HazardFamily => {
 
   // Rainfall products live in the flood family because the RESPONSE is the
   // same one: water is the problem. The MAP splits them apart again for
-  // drawing only (`alertBadge` in src/utils/alertOverlay.ts) — a flood gets a
-  // pin on a point, regional rainfall gets an area — because a pin on a
-  // rainfall warning claims someone looked at that point. Nothing downstream
-  // of this function sees that split.
+  // drawing only (`alertBadge` in src/utils/alertOverlay.ts), so a flood gets
+  // the teal wash and regional rainfall the blue one — "the river is up" and
+  // "it is raining hard" are different decisions. Both draw as areas; nothing
+  // downstream of this function sees that split.
   if (/flood|hydrologic|dam break|seiche|storm surge|rainfall|heavy rain|tsunami/.test(e)) {
     return 'flood';
   }
