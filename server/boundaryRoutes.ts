@@ -378,6 +378,37 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     timeoutMs: 12000
   },
   {
+    /**
+     * Manitoba's fifteen provincial forests — Crown land under The Forest Act.
+     *
+     * Small (about 22,000 km², a few percent of Manitoba Crown land) and on
+     * ArcGIS Online, the same platform as the BLM and PAD-US sources above,
+     * so none of the Saskatchewan concerns about a slow single continental
+     * polygon on a provincial server apply here.
+     *
+     * The service name and layer id come from the service's own published
+     * REST directory, not from a pattern — but they have still not been
+     * exercised against the live endpoint from this machine, so treat the
+     * first production response as the verification. Manitoba draws nothing
+     * today, so the worst case is that it continues to draw nothing.
+     */
+    id: 'manitoba_provincial_forest',
+    label: 'Manitoba Crown Land (Provincial Forest)',
+    attribution: 'Government of Manitoba, Open Government Licence – Manitoba',
+    url: 'https://services.arcgis.com/mMUesHYPkXjaFGfS/arcgis/rest/services/Manitoba_Provincial_Forests___Version_6/FeatureServer/1/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    // 21 days free on unoccupied Crown land unless posted is provincial
+    // policy, not something this layer states. Parks, wildlife management
+    // areas and posted closures are not subtracted from these forests.
+    campingBasisKind: 'agency_policy_inference',
+    name: (p) => pick(p, 'NAME', 'FOREST_NAME', 'PF_NAME', 'PROVINCIAL_FOREST') ?? 'Provincial Forest',
+    designation: () => 'Manitoba provincial forest',
+    extent: { minLat: 48.9, minLon: -102.1, maxLat: 60.1, maxLon: -88.9 }
+  },
+  {
     // Verified: returns General Use Areas for northern Ontario.
     id: 'ontario_clupa_general_use',
     label: 'Ontario Crown Land — General Use Area',

@@ -326,6 +326,65 @@ export const LAND_SOURCES: LandSourceSpec[] = [
       'display and explicitly NOT as the official version — the legal boundary lives in the ' +
       'regulations. Covers the forested centre and north of the province only; Crown ' +
       'resource land outside the forest boundary is real and is not in here.'
+  },
+  {
+    /**
+     * Manitoba's provincial forests — fifteen of them, and a THIN SLICE.
+     *
+     * Admissible for the same reason Saskatchewan's is: a provincial forest is
+     * Crown land, designated under The Forest Act, and Manitoba's own rule is
+     * that a resident of Canada may camp free on unoccupied Crown land for up
+     * to 21 days at one site unless the site is posted otherwise. It is land,
+     * not an encumbrance on land.
+     *
+     * WHAT MANITOBA PUBLISHES THAT THIS DELIBERATELY DOES NOT USE. The other
+     * Crown-land layers on the provincial geoportal are Treaty Land
+     * Entitlement selections, TLE acquisitions and Northern Affairs community
+     * settlement parcels. Those are allocations — several of them First Nations
+     * land selections — and drawing any of them as somewhere to camp would be
+     * both wrong and offensive. They are recorded in CANDIDATE_SOURCES as
+     * permanently rejected rather than merely unexamined.
+     *
+     * HOW SMALL THIS IS, SAID PLAINLY. Fifteen forests, about 22,000 km².
+     * Manitoba is roughly 650,000 km² and something like three quarters of it
+     * is Crown land, most of that in the north where there is no provincial
+     * forest designation at all. So this source covers a few percent of the
+     * province's campable Crown land and CA-MB stays in COVERAGE_GAPS saying
+     * exactly that. A blank Manitoba means we have nothing to show.
+     */
+    id: 'manitoba_provincial_forest',
+    label: 'Manitoba Crown Land (Provincial Forest)',
+    attribution: 'Government of Manitoba',
+    licence: 'Open Government Licence – Manitoba',
+    jurisdiction: 'CA-MB',
+    url: 'https://services.arcgis.com/mMUesHYPkXjaFGfS/arcgis/rest/services/Manitoba_Provincial_Forests___Version_6/FeatureServer/1/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 2000,
+    bbox: [-102.1, 48.9, -88.9, 60.1],
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? p.FID ?? 'provincial-forest'),
+    name: (p) =>
+      String(
+        p.NAME ?? p.Name ?? p.FOREST_NAME ?? p.PF_NAME ?? p.PROVINCIAL_FOREST ?? 'Provincial Forest'
+      ),
+    designation: () => 'Manitoba provincial forest',
+    campingBasis: () =>
+      'Crown land designated as a provincial forest under The Forest Act. Manitoba generally ' +
+      'allows a resident of Canada to camp free, without a permit, for up to 21 days at one ' +
+      'site on unoccupied Crown land unless it is posted otherwise; non-residents may be ' +
+      'treated differently. That is inferred from provincial policy, not from anything in ' +
+      'this layer — provincial parks, wildlife management areas, posted closures and leases ' +
+      'sit inside and alongside these forests and are not subtracted here.',
+    stayLimitDays: () => 21,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Fifteen provincial forests, about 22,000 km² — a few percent of Manitoba Crown land, ' +
+      'concentrated in the south and centre. Hosted on ArcGIS Online, the same platform as ' +
+      'the BLM and PAD-US sources. Absence of a polygon anywhere in Manitoba is "no data", ' +
+      'and across most of the province that is emphatically not "no public land".'
   }
 ];
 
@@ -392,7 +451,16 @@ export const CANDIDATE_SOURCES: {
     appearsToBe:
       'Wildlife Management Areas and Special Conservation Areas — designated polygons on Crown land.',
     mustConfirm:
-      'These are restricted designations, the opposite of general use. Manitoba policy does allow free camping on Crown land for up to 21 days unless posted, so a plain Crown land ownership layer would qualify — locate one before using anything here.'
+      'Still rejected: restricted designations, the opposite of general use. The question this entry used to ask — "find a plain Crown land layer" — is now partly answered, by Manitoba_Provincial_Forests in LAND_SOURCES. That covers about 22,000 km²; the rest of Manitoba Crown land still has no admissible layer.'
+  },
+  {
+    jurisdiction: 'CA-MB',
+    region: 'Manitoba — Treaty Land Entitlement and settlement parcels',
+    url: 'https://geoportal.gov.mb.ca/datasets/manitoba::treaty-land-entitlement-sites-in-manitoba/explore',
+    appearsToBe:
+      'Crown land parcels under Treaty Land Entitlement agreements, TLE acquisitions, and Northern Affairs community flood settlement agreements, all pursuant to The Crown Lands Act.',
+    mustConfirm:
+      'NEVER USE. Recorded so nobody researches it twice and mistakes "Crown land" in the title for open land. These are allocations, several of them First Nations land selections. Drawing them as places to camp would be wrong on the facts and worse than wrong in what it implies.'
   },
   {
     jurisdiction: 'CA-QC',
@@ -423,8 +491,9 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
   },
   {
     jurisdiction: 'CA-MB',
-    region: 'Manitoba',
-    reason: 'Manitoba operates a geoportal, but no confirmed open REST layer delineating campable Crown land.'
+    region: 'Manitoba (outside the provincial forests)',
+    reason:
+      'MOSTLY UNMAPPED. The fifteen provincial forests are now drawn — about 22,000 km², concentrated in the south and centre. Manitoba is roughly 650,000 km² and something like three quarters of it is Crown land, most of that in the north with no provincial forest designation and no admissible open layer. The other Crown land Manitoba publishes is Treaty Land Entitlement and settlement parcels, which are allocations and must never be drawn as campable. So across most of this province an empty map means we have nothing to show, not that there is nowhere to camp — and here that gap is the rule rather than the exception.'
   },
   {
     jurisdiction: 'CA-SK',
