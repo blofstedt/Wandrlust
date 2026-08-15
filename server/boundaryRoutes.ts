@@ -228,6 +228,15 @@ interface BoundarySource {
   designation: (p: Record<string, any>) => string;
   /** Limits the source to its real geographic extent. */
   extent: { minLat: number; minLon: number; maxLat: number; maxLon: number };
+  /**
+   * How long to wait on this service, in ms. Defaults to 6000.
+   *
+   * Per-source because the sources are not alike: most return many small
+   * parcels, but a province-wide Crown land layer can be a single enormous
+   * multipolygon that the server has to generalise before it can answer, and
+   * holding every other source to that pace would make the whole map slow.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -350,7 +359,23 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     campingBasisKind: 'agency_policy_inference',
     name: () => 'Crown Land (Provincial Forest)',
     designation: () => 'Saskatchewan provincial forest',
-    extent: { minLat: 49.0, minLon: -110.1, maxLat: 60.0, maxLon: -101.3 }
+    extent: { minLat: 49.0, minLon: -110.1, maxLat: 60.0, maxLon: -101.3 },
+    /**
+     * A HYPOTHESIS, NOT A DIAGNOSIS — offered as such.
+     *
+     * The live API reports this source `available: false` with no logged
+     * error, which under the old code narrowed it to three silent paths: a
+     * non-200, a response that was not GeoJSON, or a timeout. Of those, a
+     * timeout is the most likely here and the only one worth pre-empting:
+     * the provincial forest is close to a single continent-sized multipolygon
+     * threaded with lakes and rivers, and the server has to load and
+     * generalise the whole thing before it can answer, where every other
+     * source in this list returns many small parcels.
+     *
+     * If the real cause turns out to be a refusal or a format mismatch, this
+     * changes nothing and the log line added alongside it will say so.
+     */
+    timeoutMs: 12000
   },
   {
     // Verified: returns General Use Areas for northern Ontario.
@@ -547,7 +572,12 @@ const queryBoundarySource = async (
   const controller = new AbortController();
   // One unresponsive service used to hold the whole response for nine seconds.
   // It is reported as unavailable rather than waited on.
-  const timer = setTimeout(() => controller.abort(), 6000);
+  const timeoutMs = source.timeoutMs ?? 6000;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     const response = await fetch(`${source.url}?${params.toString()}`, {
@@ -555,7 +585,15 @@ const queryBoundarySource = async (
       signal: controller.signal
     });
 
-    if (!response.ok) return { features: [], ok: false, truncated: false };
+    // Every failure below used to return silently, so a source that had
+    // stopped answering was indistinguishable in the logs from one that
+    // simply had no land in view. `available: false` in the response told
+    // you THAT it failed and never WHY, which is the same silent-empty trap
+    // this file's header warns about — one level further down.
+    if (!response.ok) {
+      console.warn(`[boundaries] ${source.id}: HTTP ${response.status} ${response.statusText}`);
+      return { features: [], ok: false, truncated: false };
+    }
 
     const data: any = await response.json();
 
@@ -565,8 +603,18 @@ const queryBoundarySource = async (
       console.warn(`[boundaries] ${source.id}:`, data.error?.message ?? 'query error');
       return { features: [], ok: false, truncated: false };
     }
-    if (!Array.isArray(data?.features)) return { features: [], ok: false, truncated: false };
+    if (!Array.isArray(data?.features)) {
+      // Most often a service that ignored `f=geojson` and answered in Esri
+      // JSON, which has `features[].geometry.rings` and no `type`.
+      console.warn(
+        `[boundaries] ${source.id}: response had no GeoJSON feature array (keys: ${Object.keys(
+          data ?? {}
+        ).join(',') || 'none'})`
+      );
+      return { features: [], ok: false, truncated: false };
+    }
 
+    const returned = data.features.length;
     const features = data.features
       // Polygons only. Several government services publish a boundary as a
       // LINE layer sitting next to the area layer, and a line drawn in the
@@ -598,8 +646,23 @@ const queryBoundarySource = async (
       data?.properties?.exceededTransferLimit === true ||
       features.length >= recordLimit;
 
+    // The service answered with shapes and the geometry guard threw all of
+    // them away — almost certainly a line layer being read as an area layer.
+    // Silently drawing nothing here would look exactly like "no public land".
+    if (returned > 0 && features.length === 0) {
+      console.warn(
+        `[boundaries] ${source.id}: ${returned} features returned, none were polygons ` +
+          `(first geometry type: ${String(data.features[0]?.geometry?.type ?? 'none')})`
+      );
+    }
+
     return { features, ok: true, truncated };
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[boundaries] ${source.id}: ${
+        timedOut ? `no response within ${timeoutMs}ms` : (err as Error).message
+      }`
+    );
     return { features: [], ok: false, truncated: false };
   } finally {
     clearTimeout(timer);
