@@ -300,7 +300,11 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
  */
 const MAPPED_CA_PROVINCES = new Map<string, string | null>([
   ['CA-AB', null],
-  ['CA-ON', null],
+  // Ontario is the best-covered province here and still not a clean null.
+  // CLUPA stops before the Far North, which is planned under the Far North
+  // Act and is not in the layer we query — so the northern two fifths of the
+  // province draws blank while being overwhelmingly Crown land.
+  ['CA-ON', 'the Far North is not mapped'],
   ['CA-SK', 'only the provincial forest is mapped'],
   // Manitoba's caveat is the strongest of the three and has to be, because
   // its coverage is the weakest: fifteen provincial forests, about 22,000 km²
