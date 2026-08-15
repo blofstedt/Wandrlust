@@ -359,7 +359,23 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     campingBasisKind: 'agency_policy_inference',
     name: () => 'Crown Land (Provincial Forest)',
     designation: () => 'Saskatchewan provincial forest',
-    extent: { minLat: 49.0, minLon: -110.1, maxLat: 60.0, maxLon: -101.3 }
+    extent: { minLat: 49.0, minLon: -110.1, maxLat: 60.0, maxLon: -101.3 },
+    /**
+     * A HYPOTHESIS, NOT A DIAGNOSIS — offered as such.
+     *
+     * The live API reports this source `available: false` with no logged
+     * error, which under the old code narrowed it to three silent paths: a
+     * non-200, a response that was not GeoJSON, or a timeout. Of those, a
+     * timeout is the most likely here and the only one worth pre-empting:
+     * the provincial forest is close to a single continent-sized multipolygon
+     * threaded with lakes and rivers, and the server has to load and
+     * generalise the whole thing before it can answer, where every other
+     * source in this list returns many small parcels.
+     *
+     * If the real cause turns out to be a refusal or a format mismatch, this
+     * changes nothing and the log line added alongside it will say so.
+     */
+    timeoutMs: 12000
   },
   {
     // Verified: returns General Use Areas for northern Ontario.
