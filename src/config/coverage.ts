@@ -274,20 +274,33 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The provinces whose Crown land this app can actually draw.
+ * The provinces whose Crown land this app can actually draw, and how much of
+ * each one it draws.
  *
- * Two, at the time of writing: Alberta (the Green Area, plus Public Land Use
- * Zones) and Ontario (CLUPA General Use Areas). Those are the only Canadian
- * jurisdictions publishing a queryable open layer that delineates land a
- * camper may actually use — see COVERAGE_GAPS in `scripts/landSources.ts` for
- * what each of the others publishes instead and why it doesn't qualify.
+ * Three, at the time of writing: Alberta (the Green Area, plus Public Land Use
+ * Zones), Ontario (CLUPA General Use Areas) and Saskatchewan (the provincial
+ * forest). Those are the only Canadian jurisdictions publishing a queryable
+ * open layer that delineates land a camper may actually use — see
+ * COVERAGE_GAPS in `scripts/landSources.ts` for what each of the others
+ * publishes instead and why it doesn't qualify.
+ *
+ * WHY THE VALUE IS NOT JUST `true`. Saskatchewan is mapped for the forested
+ * centre and north and nothing else, because the only Crown land the province
+ * publishes further south is leases and cottage lots. Filing it alongside
+ * Alberta as simply "covered" would make a blank southern Saskatchewan read as
+ * "we looked and there is nothing", which is the exact confusion this whole
+ * function exists to prevent — so it carries its own caveat instead of a null.
  *
  * The United States is not listed because its coverage is federal and
  * national: BLM and the US Forest Service publish one layer each covering
  * every state, so there is no state-by-state gap to declare. State trust and
  * state forest land is a separate gap, recorded in COVERAGE_GAPS.
  */
-const MAPPED_CA_PROVINCES = new Set<string>(['CA-AB', 'CA-ON']);
+const MAPPED_CA_PROVINCES = new Map<string, string | null>([
+  ['CA-AB', null],
+  ['CA-ON', null],
+  ['CA-SK', 'only the provincial forest is mapped']
+]);
 
 /**
  * Why a province is blank, in a camper's words — or null when the blankness
@@ -307,6 +320,8 @@ const MAPPED_CA_PROVINCES = new Set<string>(['CA-AB', 'CA-ON']);
 export const landDataGap = (isoCode: string | null | undefined): string | null => {
   if (!isoCode) return null;
   if (!isoCode.startsWith('CA-')) return null;
-  if (MAPPED_CA_PROVINCES.has(isoCode)) return null;
+  // A mapped province may still carry a caveat — partial coverage is its own
+  // answer, and it is not the same as full coverage OR as no data at all.
+  if (MAPPED_CA_PROVINCES.has(isoCode)) return MAPPED_CA_PROVINCES.get(isoCode) ?? null;
   return 'no Crown land data yet';
 };

@@ -317,6 +317,42 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     extent: { minLat: 48.9, minLon: -120.1, maxLat: 60.1, maxLon: -109.9 }
   },
   {
+    /**
+     * Saskatchewan's provincial forest — Crown resource land, the province's
+     * closest equivalent to Alberta's Green Area.
+     *
+     * Whole-layer source, so there is no `where` filter to get wrong and no
+     * field name to typo: the layer IS the provincial forest, and the name and
+     * designation below are constants rather than reads off a property.
+     *
+     * NOT YET CONFIRMED AGAINST THE LIVE SERVICE — the one source here that
+     * carries that caveat. It was added from Saskatchewan's published service
+     * documentation while its host was unreachable, so run
+     * `npm run probe -- --source=saskatchewan_provincial_forest` before seeding
+     * it. Until then it fails in the safe direction: a wrong URL reports the
+     * source unavailable rather than drawing an empty province, and the
+     * geometry guard in `queryBoundarySource` drops anything that is not a
+     * polygon.
+     */
+    id: 'saskatchewan_provincial_forest',
+    label: 'Saskatchewan Crown Land (Provincial Forest)',
+    attribution: 'Government of Saskatchewan, Ministry of Environment',
+    url: 'https://gis.saskatchewan.ca/arcgis/rest/services/Forestry/MapServer/0/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    // Published as the Fire Management branch's display definition of the
+    // forest, explicitly not the official boundary.
+    edgeAccuracy: 'generalised',
+    // 21 days free camping is provincial policy for Crown resource land, not
+    // anything stated by this layer — and the forest contains protected areas,
+    // recreation sites and leases that are not subtracted from it.
+    campingBasisKind: 'agency_policy_inference',
+    name: () => 'Crown Land (Provincial Forest)',
+    designation: () => 'Saskatchewan provincial forest',
+    extent: { minLat: 49.0, minLon: -110.1, maxLat: 60.0, maxLon: -101.3 }
+  },
+  {
     // Verified: returns General Use Areas for northern Ontario.
     id: 'ontario_clupa_general_use',
     label: 'Ontario Crown Land — General Use Area',
@@ -532,7 +568,11 @@ const queryBoundarySource = async (
     if (!Array.isArray(data?.features)) return { features: [], ok: false, truncated: false };
 
     const features = data.features
-      .filter((f: any) => f?.geometry)
+      // Polygons only. Several government services publish a boundary as a
+      // LINE layer sitting next to the area layer, and a line drawn in the
+      // public-land style would read as a sliver of campable land that isn't
+      // there. Anything that is not an area is dropped rather than drawn.
+      .filter((f: any) => f?.geometry && /^(Multi)?Polygon$/.test(String(f.geometry.type ?? '')))
       .map((f: any) => {
         const props = f.properties ?? {};
         return {
