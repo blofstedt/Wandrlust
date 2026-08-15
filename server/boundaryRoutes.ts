@@ -253,6 +253,35 @@ const pick = (props: Record<string, any>, ...keys: string[]): string | undefined
   return undefined;
 };
 
+/**
+ * The label for a source whose field names we do not control.
+ *
+ * `pick` needs the field name in advance, which is fine for a source whose
+ * schema was read off its own REST page and wrong for one taken whole with
+ * `outFields: '*'`. Manitoba's forests came back labelled "Provincial Forest"
+ * — the fallback — fifteen times over, because the real field is not any of
+ * NAME / FOREST_NAME / PF_NAME. Rather than keep guessing, ask the properties
+ * what they have: the first string field whose NAME looks like a name.
+ *
+ * Ordered so an exact match wins before a fuzzy one, and length-capped so a
+ * description field can never be mistaken for a label.
+ */
+const nameLike = (props: Record<string, any>, ...preferred: string[]): string | undefined => {
+  const exact = pick(props, ...preferred);
+  if (exact) return exact;
+
+  const usable = (v: unknown): v is string =>
+    typeof v === 'string' && v.trim() !== '' && v.trim().length <= 80;
+
+  const keys = Object.keys(props ?? {});
+  // A field actually called "name" of some sort, then anything name-ish.
+  for (const pattern of [/(^|_)name($|_)/i, /name/i, /forest|unit|area|label|title/i]) {
+    const hit = keys.find((k) => pattern.test(k) && usable(props[k]));
+    if (hit) return String(props[hit]).trim();
+  }
+  return undefined;
+};
+
 const CONUS = { minLat: 24.0, minLon: -125.5, maxLat: 49.5, maxLon: -66.5 };
 
 const BOUNDARY_SOURCES: BoundarySource[] = [
@@ -361,21 +390,28 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     designation: () => 'Saskatchewan provincial forest',
     extent: { minLat: 49.0, minLon: -110.1, maxLat: 60.0, maxLon: -101.3 },
     /**
-     * A HYPOTHESIS, NOT A DIAGNOSIS — offered as such.
+     * DIAGNOSED, AND NOT YET FIXED. Production logs:
      *
-     * The live API reports this source `available: false` with no logged
-     * error, which under the old code narrowed it to three silent paths: a
-     * non-200, a response that was not GeoJSON, or a timeout. Of those, a
-     * timeout is the most likely here and the only one worth pre-empting:
-     * the provincial forest is close to a single continent-sized multipolygon
-     * threaded with lakes and rivers, and the server has to load and
-     * generalise the whole thing before it can answer, where every other
-     * source in this list returns many small parcels.
+     *     [boundaries] saskatchewan_provincial_forest: no response within 12000ms
      *
-     * If the real cause turns out to be a refusal or a format mismatch, this
-     * changes nothing and the log line added alongside it will say so.
+     * So it is a timeout, as suspected — but raising the limit is not the
+     * answer. At 6s it failed, at 12s it still failed, and all 12s bought was
+     * a longer stall before the same empty result, on every Saskatchewan
+     * viewport, because the whole response waits for the slowest source. It
+     * is back to the default: if this source cannot answer, it should fail
+     * fast and let the rest of the map draw.
+     *
+     * THE ACTUAL FIX is to stop asking this server. Saskatchewan publishes
+     * the same forest through its GeoHub as an ArcGIS Online hosted layer —
+     * "Provincial Forest Boundary Polygon", item 3ee7b7d7d3244be789040017f0969e78
+     * under org zcv98lgAl8xQ04cW on services3.arcgis.com — which is CDN-backed
+     * and would answer in milliseconds, exactly as Manitoba's does. What is
+     * missing is that service's exact name, and searching returns its LINE
+     * sibling instead; the authoritative answer is one call to
+     * arcgis.com/sharing/rest/content/items/<id>?f=json, which this machine
+     * cannot reach. Guessing the name is what put a broken source here in the
+     * first place, so it stays unguessed until someone can read that.
      */
-    timeoutMs: 12000
   },
   {
     /**
@@ -404,7 +440,10 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     // policy, not something this layer states. Parks, wildlife management
     // areas and posted closures are not subtracted from these forests.
     campingBasisKind: 'agency_policy_inference',
-    name: (p) => pick(p, 'NAME', 'FOREST_NAME', 'PF_NAME', 'PROVINCIAL_FOREST') ?? 'Provincial Forest',
+    // Confirmed against production: none of the guessed field names matched
+    // and all fifteen forests came back as the bare fallback, so this reads
+    // whatever name-shaped field the layer actually carries.
+    name: (p) => nameLike(p, 'NAME', 'FOREST_NAME', 'PF_NAME', 'PROVINCIAL_FOREST') ?? 'Provincial Forest',
     designation: () => 'Manitoba provincial forest',
     extent: { minLat: 48.9, minLon: -102.1, maxLat: 60.1, maxLon: -88.9 }
   },
@@ -525,11 +564,52 @@ const approxAreaSqKm = (geometry: any): number => {
  * filtering itself (migration 07 not run) or the data came from the live ArcGIS
  * services, which have no consistent area field to filter on.
  */
+/**
+ * How many parcels a source keeps in the overview even when all of them are
+ * below the area threshold. Small enough not to clutter a continental view,
+ * big enough that a province reads as "there is land here".
+ */
+const OVERVIEW_MIN_PER_SOURCE = 3;
+
 const largestParcels = (features: any[], minAreaSqKm: number, limit: number): any[] => {
   if (minAreaSqKm <= 0) return features.slice(0, limit);
-  return features
-    .map((f) => ({ f, area: approxAreaSqKm(f?.geometry) }))
-    .filter((x) => x.area >= minAreaSqKm)
+
+  const sized = features
+    .map((f) => ({ f, area: approxAreaSqKm(f?.geometry), source: String(f?.properties?._source ?? '') }))
+    .sort((a, b) => b.area - a.area);
+
+  const kept = sized.filter((x) => x.area >= minAreaSqKm);
+
+  /**
+   * A SOURCE MUST NEVER VANISH FROM THE OVERVIEW JUST FOR BEING SMALL-GRAINED.
+   *
+   * The threshold is an absolute number of km², and it was tuned against land
+   * that comes in continental slabs: Alberta's Green Area is 339,000 km² and
+   * Ontario's General Use Areas are enormous, so both survive any zoom. Land
+   * that comes in small pieces does not. Manitoba's fifteen provincial forests
+   * average about 1,500 km² and the largest is a couple of thousand, so at the
+   * zooms where someone is looking at the whole country every one of them was
+   * filtered out — while both neighbours stayed painted.
+   *
+   * The result on screen was a Manitoba-shaped hole between two provinces full
+   * of colour, which is this app's one forbidden sentence: it reads as "no
+   * public land here" when the truth is "these parcels are smaller than the
+   * ones next door". So every source that returned anything keeps its largest
+   * few, threshold or not. They may be a pixel or two at the widest zoom —
+   * that is a far better failure than a confident blank.
+   */
+  const keptIds = new Set(kept.map((x) => x.f));
+  const perSource = new Map<string, number>();
+  for (const x of sized) {
+    if (keptIds.has(x.f)) continue;
+    const n = perSource.get(x.source) ?? 0;
+    const alreadyKept = kept.some((k) => k.source === x.source);
+    if (alreadyKept || n >= OVERVIEW_MIN_PER_SOURCE) continue;
+    perSource.set(x.source, n + 1);
+    kept.push(x);
+  }
+
+  return kept
     .sort((a, b) => b.area - a.area)
     .slice(0, limit)
     .map((x) => x.f);
