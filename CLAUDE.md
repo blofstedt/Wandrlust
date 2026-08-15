@@ -118,6 +118,40 @@ public/
 7. **Add types to `src/types.ts`**, not inline in a component.
 8. **Run `npm run lint`** (a TypeScript typecheck) before saying you're done.
 
+## Shipping — do this every time, without being asked
+
+**Work that stays on a branch does not exist.** Vercel builds a branch push as a
+private preview with its own URL, behind a login Brian does not use. It is not
+the app on his phone. Several changes sat finished-and-invisible this way, and
+were reported as "still broken" because from where he was standing they were.
+
+So finishing a change means:
+
+1. Commit on the working branch.
+2. **Merge it into `main` and push.** Vercel deploys `main` to production
+   automatically — that is the only thing that reaches Brian.
+3. **Delete the branch**, local and remote, once merged.
+4. Say that it is live, not that it is ready.
+
+Do not wait to be asked to merge, and do not leave a branch open "in case".
+If a change is worth committing it is worth shipping.
+
+**Then check it actually works in production.** The deployed API reports itself:
+
+```
+/api/boundaries?minLat=..&minLon=..&maxLat=..&maxLon=..&detail=overview&minAreaSqKm=99999999
+```
+
+returns `meta.sources[]` with `available` and `featureCount` per source and no
+geometry to wade through. `available:false` means that source is failing right
+now. Vercel's runtime logs say why — but retention is one hour on this plan, so
+look immediately, not tomorrow.
+
+**Test wide as well as narrow.** A source can answer a one-degree box perfectly
+and time out on a viewport of the whole Great Lakes. That is exactly how Ontario
+and Saskatchewan came to draw as empty provinces while every small-box test
+passed. Always check a continent-sized box too.
+
 ## Commands
 
 ```bash

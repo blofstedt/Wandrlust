@@ -516,6 +516,42 @@ const recordLimitForSpan = (span: number): number => {
   return 250;
 };
 
+/**
+ * How many parcels to ask each source for in the OVERVIEW, by how wide the
+ * viewport is.
+ *
+ * ---------------------------------------------------------------------------
+ * THIS IS WHY ONTARIO AND SASKATCHEWAN WENT BLANK WHEN YOU ZOOMED OUT
+ * ---------------------------------------------------------------------------
+ *
+ * The overview used to ask every source for a flat 500 records however wide the
+ * view was. Production logs, on a Great Lakes viewport:
+ *
+ *     [boundaries] ontario_clupa_general_use: no response within 6000ms
+ *
+ * — while the same source answers a one-degree box with 48 parcels instantly.
+ * Nothing was wrong with the data. We were asking a provincial ArcGIS server to
+ * fetch and generalise five hundred complex polygons spanning half a province,
+ * which it cannot do inside the timeout, so the whole source dropped out and
+ * Ontario drew as empty ground next to a well-covered Michigan.
+ *
+ * The ask was never worth its cost. At continental zoom the area filter throws
+ * nearly all of those parcels away before anything is drawn — a hundred-square-
+ * kilometre shape is a fraction of a pixel — so the server was being made to do
+ * six times the work to produce a handful of visible shapes.
+ *
+ * Fewer records the wider you go. This is the opposite of the intuition that a
+ * bigger area needs more data, and it is right for the same reason the area
+ * filter exists: a wider view has room for fewer distinguishable shapes, not
+ * more.
+ */
+const overviewRecordLimit = (span: number): number => {
+  if (span > 15) return 80;
+  if (span > 8) return 150;
+  if (span > 4) return 250;
+  return 400;
+};
+
 /* -------------------------------------------------------------------------- */
 /* The zoomed-out overview                                                     */
 /* -------------------------------------------------------------------------- */
@@ -599,18 +635,27 @@ const largestParcels = (features: any[], minAreaSqKm: number, limit: number): an
    * that is a far better failure than a confident blank.
    */
   const keptIds = new Set(kept.map((x) => x.f));
+  const sourcesWithKept = new Set(kept.map((x) => x.source));
   const perSource = new Map<string, number>();
+  const guaranteed: typeof sized = [];
   for (const x of sized) {
-    if (keptIds.has(x.f)) continue;
+    if (keptIds.has(x.f) || sourcesWithKept.has(x.source)) continue;
     const n = perSource.get(x.source) ?? 0;
-    const alreadyKept = kept.some((k) => k.source === x.source);
-    if (alreadyKept || n >= OVERVIEW_MIN_PER_SOURCE) continue;
+    if (n >= OVERVIEW_MIN_PER_SOURCE) continue;
     perSource.set(x.source, n + 1);
-    kept.push(x);
+    guaranteed.push(x);
   }
 
-  return kept
-    .sort((a, b) => b.area - a.area)
+  /**
+   * The guaranteed few go in FIRST, before the limit is applied.
+   *
+   * Appending them and then slicing by area — which is what this did at first —
+   * quietly undoes the guarantee exactly when it matters. One wide viewport had
+   * BLM alone return 500 parcels; sorted by area, every rescued Ontario or
+   * Manitoba shape fell past the cut and the provinces went blank again, for a
+   * different reason than before but with the identical result on screen.
+   */
+  return [...guaranteed, ...kept.sort((a, b) => b.area - a.area)]
     .slice(0, limit)
     .map((x) => x.f);
 };
@@ -991,7 +1036,7 @@ export const registerBoundaryRoutes = (app: Express): void => {
     const simplifyDegrees = isOverview
       ? Math.max(0.002, span / 400)
       : Math.max(0.0001, span / 800);
-    const recordLimit = isOverview ? 500 : recordLimitForSpan(span);
+    const recordLimit = isOverview ? overviewRecordLimit(span) : recordLimitForSpan(span);
     const responseTtl = isOverview ? OVERVIEW_TTL_MS : CACHE_TTL_MS;
 
     // Four decimals, not two: the client snaps its requests to a grid, so an

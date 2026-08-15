@@ -201,7 +201,8 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     stayLimitDays: () => 21,
     permit: () => ({ required: false, name: 'Non-residents require a Crown Land Camping Permit' }),
     notes:
-      'The ONLY source in this registry with a literal general-use designation. Ontario states CLUPA is "not to be used as a source of protected areas, crown land or private land boundaries."'
+      'The ONLY source in this registry with a literal general-use designation. Ontario states CLUPA is "not to be used as a source of protected areas, crown land or private land boundaries." ' +
+      'CLUPA covers southern, central and mid-northern Ontario. It stops before the Far North, which is planned under the Far North Act instead — see COVERAGE_GAPS for CA-ON-FARNORTH.'
   },
   {
     /**
@@ -463,6 +464,15 @@ export const CANDIDATE_SOURCES: {
       'NEVER USE. Recorded so nobody researches it twice and mistakes "Crown land" in the title for open land. These are allocations, several of them First Nations land selections. Drawing them as places to camp would be wrong on the facts and worse than wrong in what it implies.'
   },
   {
+    jurisdiction: 'CA-ON',
+    region: 'Ontario — Enhanced Management Areas',
+    url: 'https://ws.lioservices.lrc.gov.on.ca/arcgis2/rest/services/LIO_OPEN_DATA/LIO_Open06/MapServer/5/query',
+    appearsToBe:
+      'The other large CLUPA designation, in the same layer this app already queries — so adding it is a one-word change to the `where` clause and looks like free coverage.',
+    mustConfirm:
+      "Do not make that change. It is exactly the trap this array exists for. An Enhanced Management Area is Crown land, but Ontario's blanket permission to camp does NOT follow the designation the way it does in a General Use Area: each EMA has a reason for the extra management — remote access, tourism, natural heritage, intensive forestry — and its own policy report decides whether recreational use is permitted. That report is prose, not geometry, and it is not in this layer. Mapping EMAs as campable would put an explicit-designation label on land whose designation says the opposite of settled.",
+  },
+  {
     jurisdiction: 'CA-QC',
     region: 'Quebec',
     url: 'https://www.quebec.ca/en/agriculture-environment-and-natural-resources/occupation-of-public-land/management-of-public-land',
@@ -500,6 +510,12 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     region: 'Saskatchewan (outside the provincial forest)',
     reason:
       'PARTIAL COVERAGE. The provincial forest is now mapped, which is the forested centre and north of the province and where Saskatchewan describes its 21-day free camping allowance as applying. Everything south of the forest boundary is not: the Crown land published for that part of the province is agricultural dispositions and cottage subdivisions — leases and allocations, not land anyone may camp on. Saskatchewan administers roughly 37 million hectares of Crown resource land in total, so an empty map south of the forest boundary means we have nothing to show, never that there is nothing there.'
+  },
+  {
+    jurisdiction: 'CA-ON-FARNORTH',
+    region: "Ontario's Far North",
+    reason:
+      'CLUPA — the source of every Ontario polygon this app draws — covers southern, central and mid-northern Ontario and stops there. The Far North is planned separately under the Far North Act, through community-based land use plans led by First Nations, and those are not in the layer we query. Confirmed against the live service: a box from 52.0°N to 55.5°N returns exactly one General Use Area, all of it below 52.5°N. So roughly the northern two fifths of the province draws blank while being overwhelmingly Crown land. That blankness is missing data, not missing land.'
   },
   {
     jurisdiction: 'CA-QC',
