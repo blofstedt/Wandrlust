@@ -326,13 +326,32 @@ export const badgesForParcel = (
  * dissolve is cosmetic either way: taps still hit the true underlying parcel,
  * because the map resolves clicks against the real geometry, not this outline.
  */
+/**
+ * What counts as "the same land" for the purpose of drawing one outline.
+ *
+ * TWO THINGS ONLY: whether you can camp, and how fuzzy the edges are.
+ *
+ * It used to key on the source, the confidence tier and every recorded rule,
+ * which meant a National Forest touching BLM land touching a provincial forest
+ * drew three outlines with seams between them — a mesh of internal lines
+ * across ground that is, to a camper, one continuous place to sleep. Grouping
+ * them is the point: the outline answers "where does campable land start and
+ * stop", and that question does not care which agency's name is on the deed.
+ *
+ * Edge accuracy stays in the key because the fuzzy-edge band is drawn to the
+ * dataset's real positional uncertainty. Merging a generalised boundary with
+ * an administrative one would draw one of them at the other's confidence,
+ * which is the one kind of overstatement this rendering exists to avoid.
+ *
+ * The per-parcel rules that used to be here — stay limit, permit, fire ban —
+ * are deliberately gone. They differ across a merged shape and are shown per
+ * parcel when one is tapped; an outline was never the thing communicating
+ * them, and splitting the drawing on them only ever produced seams.
+ */
 export const dissolveKey = (properties: Record<string, any> | undefined): string => {
   const p = properties ?? {};
-  return [
-    p._source, p._confidence, p._edgeAccuracy, p._campingBasisKind,
-    p._stayLimitDays ?? '', p._permitRequired ?? '', p._permitName ?? '',
-    p._fireBanActive ?? ''
-  ].join('|');
+  const group = p._campingBasisKind === 'open_access_flag' ? 'access_only' : 'campable';
+  return [group, p._edgeAccuracy ?? 'administrative'].join('|');
 };
 
 const walkRings = (geometry: Geometry, onRing: (ring: [number, number][]) => void): void => {

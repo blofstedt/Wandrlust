@@ -119,21 +119,68 @@ export const EMPTY_BOUNDARIES: BoundaryCollection = {
 };
 
 /** Colours keyed by what the data actually asserts. */
-export const BOUNDARY_STYLES: Record<
-  BoundaryConfidence,
-  { color: string; fillColor: string; fillOpacity: number; label: string }
+/**
+ * What the map paints, and the only distinction it paints.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS REPLACED THREE COLOURS KEYED ON `confidence`
+ * ---------------------------------------------------------------------------
+ *
+ * The map used to draw a different colour per confidence tier: green for
+ * Ontario's General Use Areas, amber for `managing_agency`, cyan for Alberta's
+ * PLUZ. That is a statement about HOW WE KNOW, and it was being used to answer
+ * a question the camper is actually asking, which is WHETHER I CAN SLEEP HERE.
+ *
+ * It also aged badly. `managing_agency` was written when the only members were
+ * BLM and the Forest Service, so its label read "Federal land (BLM / USFS)" —
+ * and every Canadian Crown land source added since (Alberta's Green Area,
+ * Saskatchewan's and Manitoba's provincial forests) landed in that same tier
+ * and was therefore being labelled as American federal land.
+ *
+ * So there is one group for land you may camp on, whoever administers it and
+ * however we came to know, and a separate, deliberately quieter treatment for
+ * the one kind of land that does NOT say that.
+ *
+ * THE LINE THAT MUST NOT MOVE. PAD-US `open_access_flag` means the public may
+ * ENTER — a state park is usually open access and usually forbids sleeping.
+ * Folding that in with BLM under one "camp here" colour would be the app
+ * claiming something no dataset says, so it keeps its own group and its own
+ * words. Everything else here has camping permitted either by explicit
+ * designation or by the managing agency's own general policy, which is the
+ * same standard the seeder applies in `scripts/landSources.ts`.
+ */
+export type BoundaryGroup = 'campable' | 'access_only';
+
+/**
+ * Which group a parcel belongs to.
+ *
+ * A missing `_campingBasisKind` reads as campable, because every source wired
+ * into this app asserts camping except PAD-US, which always sets the flag. The
+ * fallback is therefore the common case, not a guess about unknown land.
+ */
+export const boundaryGroupOf = (
+  properties: { _campingBasisKind?: CampingBasisKind } | undefined | null
+): BoundaryGroup =>
+  properties?._campingBasisKind === 'open_access_flag' ? 'access_only' : 'campable';
+
+export const BOUNDARY_GROUP_STYLES: Record<
+  BoundaryGroup,
+  { color: string; fillColor: string; fillOpacity: number; label: string; detail: string }
 > = {
-  designated_general_use: {
-    color: '#34D399', fillColor: '#10B981', fillOpacity: 0.4,
-    label: 'Designated General Use'
+  campable: {
+    color: '#34D399', fillColor: '#10B981', fillOpacity: 0.36,
+    label: 'Public land — camping allowed',
+    detail:
+      'BLM, National Forest and Canadian Crown land and provincial forests, drawn as one. ' +
+      'Camping is permitted here by designation or by the managing agency’s policy. ' +
+      'Local closures, fire bans and permit rules still apply and are not all in this data.'
   },
-  managing_agency: {
-    color: '#FBBF24', fillColor: '#F59E0B', fillOpacity: 0.32,
-    label: 'Federal land (BLM / USFS)'
-  },
-  managed_zone: {
-    color: '#22D3EE', fillColor: '#06B6D4', fillOpacity: 0.32,
-    label: 'Managed zone (PLUZ)'
+  access_only: {
+    color: '#60A5FA', fillColor: '#3B82F6', fillOpacity: 0.2,
+    label: 'Open to the public — camping not confirmed',
+    detail:
+      'The source says the public may enter. It does not say anyone may stay overnight, ' +
+      'and many areas flagged this way forbid it. Check before planning to sleep here.'
   }
 };
 

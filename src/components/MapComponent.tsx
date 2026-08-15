@@ -24,8 +24,9 @@ import {
   fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
 } from '../services/dataService';
 import {
-  fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains, BOUNDARY_STYLES,
-  EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
+  fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains,
+  BOUNDARY_GROUP_STYLES, boundaryGroupOf,
+  EMPTY_BOUNDARIES, BoundaryCollection, BoundaryFeature,
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import {
@@ -1345,7 +1346,9 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
   if (!p) return undefined;
   return {
     name: p._name ?? 'Public land',
-    designation: p._designation ?? p._confidence ?? 'Public land',
+    // Falls back to the group's words, never to a raw enum — `_confidence`
+    // used to surface here as the literal string "managing_agency".
+    designation: p._designation ?? BOUNDARY_GROUP_STYLES[boundaryGroupOf(p)].label,
     attribution: p._attribution ?? undefined,
     stayLimitDays: p._stayLimitDays ?? undefined,
     permitRequired: p._permitRequired ?? undefined,
@@ -2282,9 +2285,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const SLIVER_PX = 2.5;
 
     const parcelStyle = (feature: any, centreLat: number, currentZoom: number, overview: boolean) => {
-      const confidence: BoundaryConfidence =
-        feature?.properties?._confidence ?? 'managing_agency';
-      const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
+      // Grouped by whether you can camp, not by which agency holds the title
+      // or how confident the dataset is. See BOUNDARY_GROUP_STYLES.
+      const style = BOUNDARY_GROUP_STYLES[boundaryGroupOf(feature?.properties)];
 
       if (overview) {
         // Hairline. At this zoom the band would be sub-pixel anyway, and a
@@ -2343,8 +2346,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // the source data don't draw. Real parcels are wide on both axes.
         if (minDim(feature.geometry) < SLIVER_PX) return;
         const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
-        const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
-        const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
+        const style = BOUNDARY_GROUP_STYLES[boundaryGroupOf(feature?.properties)];
         const key = dissolveKey(feature?.properties);
         const existing = bands.get(key);
         if (existing) existing.features.push(feature);

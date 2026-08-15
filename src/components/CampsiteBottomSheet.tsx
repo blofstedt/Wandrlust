@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   X, MapPin, Star, Navigation, Bookmark, Signal, Droplet,
-  Flame, Dog, Clock, ShieldCheck, Loader2, CheckCircle2,
+  Flame, Dog, Clock, TentTree, Loader2, CheckCircle2,
   ChevronUp, Camera, ThermometerSun, Copy, Check, Flag, Trash2
 } from 'lucide-react';
 import type { Campsite, SpotRemovalState } from '../types';
@@ -442,7 +442,12 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 {rules.slice(0, 2).map((r, i) => (
                   <div key={i} className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-3 mb-2">
                     <div className="flex items-center gap-1.5 mb-1.5">
-                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      {/* A tent, not a shield. This line names the land you are
+                          standing on — BLM, Crown land, a provincial forest —
+                          and a shield reads as "protected area", which is the
+                          opposite of the point. The point is that this is land
+                          you are allowed to sleep on. */}
+                      <TentTree className="w-3.5 h-3.5 text-emerald-400" />
                       <span className="text-xs font-bold text-slate-200">{r.land_name}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px]">
