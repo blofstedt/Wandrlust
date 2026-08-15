@@ -277,19 +277,21 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
  * The provinces whose Crown land this app can actually draw, and how much of
  * each one it draws.
  *
- * Three, at the time of writing: Alberta (the Green Area, plus Public Land Use
- * Zones), Ontario (CLUPA General Use Areas) and Saskatchewan (the provincial
- * forest). Those are the only Canadian jurisdictions publishing a queryable
- * open layer that delineates land a camper may actually use — see
- * COVERAGE_GAPS in `scripts/landSources.ts` for what each of the others
- * publishes instead and why it doesn't qualify.
+ * Four, at the time of writing: Alberta (the Green Area, plus Public Land Use
+ * Zones), Ontario (CLUPA General Use Areas), Saskatchewan (the provincial
+ * forest) and Manitoba (the fifteen provincial forests). Those are the only
+ * Canadian jurisdictions publishing a queryable open layer that delineates
+ * land a camper may actually use — see COVERAGE_GAPS in
+ * `scripts/landSources.ts` for what each of the others publishes instead and
+ * why it doesn't qualify.
  *
  * WHY THE VALUE IS NOT JUST `true`. Saskatchewan is mapped for the forested
  * centre and north and nothing else, because the only Crown land the province
- * publishes further south is leases and cottage lots. Filing it alongside
- * Alberta as simply "covered" would make a blank southern Saskatchewan read as
- * "we looked and there is nothing", which is the exact confusion this whole
- * function exists to prevent — so it carries its own caveat instead of a null.
+ * publishes further south is leases and cottage lots. Manitoba is thinner
+ * still. Filing either alongside Alberta as simply "covered" would make a
+ * blank map read as "we looked and there is nothing", which is the exact
+ * confusion this whole function exists to prevent — so they carry their own
+ * caveats instead of a null.
  *
  * The United States is not listed because its coverage is federal and
  * national: BLM and the US Forest Service publish one layer each covering
@@ -299,7 +301,12 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
 const MAPPED_CA_PROVINCES = new Map<string, string | null>([
   ['CA-AB', null],
   ['CA-ON', null],
-  ['CA-SK', 'only the provincial forest is mapped']
+  ['CA-SK', 'only the provincial forest is mapped'],
+  // Manitoba's caveat is the strongest of the three and has to be, because
+  // its coverage is the weakest: fifteen provincial forests, about 22,000 km²
+  // of a province that is roughly three quarters Crown land. Being listed
+  // here at all would otherwise imply the province is done.
+  ['CA-MB', 'only the 15 provincial forests are mapped — most Manitoba Crown land is not']
 ]);
 
 /**
