@@ -84,6 +84,32 @@
  * If the worker in charge is a different build than the page was loaded from,
  * the page reloads itself. That covers all four paths above with one rule,
  * including ones we haven't thought of.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE INSTALLED APP THEN STOPPED UPDATING ENTIRELY
+ * ---------------------------------------------------------------------------
+ *
+ * The two safety valves added with that fix were both one-way. Neither could
+ * ever reopen, so each one eventually latched shut and took the whole update
+ * mechanism with it — silently, which is what made it hard to see: no prompt,
+ * no reload, no error, just an app sitting on an old build forever while a
+ * browser tab on the same machine updated normally.
+ *
+ *   1. THE RELOAD BUDGET NEVER RESET. Three staleness reloads per session,
+ *      counted globally and never cleared — and a successful update spends one.
+ *      A browser tab gets a fresh session per visit so it never noticed; an
+ *      installed PWA is a single session that can live for weeks, so it hit the
+ *      cap after three deploys and stopped moving. The budget is now per target
+ *      build, so a new release always has room to land.
+ *
+ *   2. THE APPLY LATCH WAS CLEARED BY A TIMER ON A HIDDEN PAGE. The background
+ *      apply runs precisely when the app is being backgrounded, and mobile
+ *      browsers freeze timers in hidden pages, so the `setTimeout` meant to
+ *      release the latch could simply never run. It is a timestamp now, checked
+ *      when asked rather than cleared on a schedule.
+ *
+ * The rule both fixes follow: anything that can block an update must be able to
+ * unblock itself without depending on the page staying awake.
  */
 
 /** How often to ask the server whether a newer worker exists. */
@@ -101,13 +127,48 @@ const BUILD_ID_TIMEOUT_MS = 2000;
  */
 const APPLY_TIMEOUT_MS = 10 * 1000;
 
-/** Guards against a reload loop if the server itself is serving mixed builds. */
+/**
+ * Guards against a reload loop if the server itself is serving mixed builds.
+ *
+ * THE BUDGET IS PER TARGET BUILD, AND THAT IS THE WHOLE POINT. It used to be a
+ * single counter that only ever went up and was never cleared, which quietly
+ * killed updating altogether on exactly the copy of the app that needs it most:
+ *
+ *   - `sessionStorage` survives for as long as the page does, and an installed
+ *     PWA is one long-lived page. Backgrounding it, locking the phone and
+ *     reopening it days later is all the same session.
+ *   - Every SUCCESSFUL update spent one of the three attempts, because landing
+ *     on a new build is itself a staleness reload.
+ *   - So after three deploys the counter was exhausted, `mayReloadForStaleness`
+ *     returned false forever, and the app silently stopped moving off its build
+ *     — no toast, no reload, no error. A browser tab kept working because each
+ *     visit is a fresh session with a fresh counter.
+ *
+ * A loop is reloading again and again TOWARD THE SAME BUILD and still coming up
+ * stale. A different build id is not a loop, it is the next release, and it
+ * gets a full budget of its own.
+ */
 const RELOAD_GUARD_KEY = 'wandrlust:build-reload';
 const RELOAD_GUARD_MS = 60 * 1000;
 const RELOAD_MAX_ATTEMPTS = 3;
 
 let lastCheck = 0;
-let applying = false;
+
+/**
+ * When the current handover started, or 0 if none is in flight.
+ *
+ * A timestamp rather than a boolean latch plus a `setTimeout`, because the
+ * timeout was scheduled on a page that is by definition about to be
+ * backgrounded — and mobile browsers freeze timers in hidden pages. A frozen
+ * timeout left the latch stuck on, and a stuck latch made `applyUpdate` return
+ * "yes, applying" while doing nothing at all, for the rest of the page's life.
+ * That killed both the silent background apply and the user's own "Update now"
+ * button. Comparing timestamps needs no timer to fire and cannot get stuck.
+ */
+let applyingSince = 0;
+
+const applyInFlight = (): boolean =>
+  applyingSince !== 0 && Date.now() - applyingSince < APPLY_TIMEOUT_MS;
 
 /**
  * The build id of the worker that was in charge when this page loaded. Set
@@ -179,17 +240,29 @@ const answeringWorker = (
  * and any storage failure fails open, because being stuck on a stale build is
  * the worse outcome.
  */
-const mayReloadForStaleness = (): boolean => {
+const mayReloadForStaleness = (targetBuildId: string): boolean => {
   try {
     const raw = sessionStorage.getItem(RELOAD_GUARD_KEY);
-    const state = raw ? (JSON.parse(raw) as { at?: number; n?: number }) : null;
+    const state = raw
+      ? (JSON.parse(raw) as { at?: number; n?: number; target?: unknown })
+      : null;
     const at = typeof state?.at === 'number' ? state.at : 0;
-    const n = typeof state?.n === 'number' ? state.n : 0;
+    // Attempts only count against the build we are trying to reach. A new
+    // build id means a new release, so the count starts again from zero.
+    const n =
+      state?.target === targetBuildId && typeof state?.n === 'number' ? state.n : 0;
 
     if (n >= RELOAD_MAX_ATTEMPTS) return false;
-    if (Date.now() - at < RELOAD_GUARD_MS) return false;
+    // Rate-limit repeat attempts at the SAME build only. On the first attempt
+    // at a new one there is nothing to be looping on, and refusing it because
+    // some earlier build reloaded half a minute ago is how a release gets
+    // skipped entirely.
+    if (n > 0 && Date.now() - at < RELOAD_GUARD_MS) return false;
 
-    sessionStorage.setItem(RELOAD_GUARD_KEY, JSON.stringify({ at: Date.now(), n: n + 1 }));
+    sessionStorage.setItem(
+      RELOAD_GUARD_KEY,
+      JSON.stringify({ at: Date.now(), n: n + 1, target: targetBuildId })
+    );
     return true;
   } catch {
     return true;
@@ -229,7 +302,7 @@ const reloadIfStale = async (
     return;
   }
 
-  if (!mayReloadForStaleness()) return;
+  if (!mayReloadForStaleness(current)) return;
   window.location.reload();
 };
 
@@ -279,7 +352,7 @@ export const checkForUpdate = async (): Promise<ServiceWorkerRegistration | null
  * released so the user's next attempt isn't silently swallowed.
  */
 export const applyUpdate = (registration: ServiceWorkerRegistration): boolean => {
-  if (applying) return true;
+  if (applyInFlight()) return true;
 
   const waiting = registration.waiting;
   if (!waiting) {
@@ -289,7 +362,7 @@ export const applyUpdate = (registration: ServiceWorkerRegistration): boolean =>
     return false;
   }
 
-  applying = true;
+  applyingSince = Date.now();
 
   navigator.serviceWorker.addEventListener(
     'controllerchange',
@@ -307,12 +380,10 @@ export const applyUpdate = (registration: ServiceWorkerRegistration): boolean =>
 
   waiting.postMessage('SKIP_WAITING');
 
-  // The handover should take milliseconds. If it hasn't happened by now it
-  // isn't going to, and the mechanism must not stay wedged for the session.
-  setTimeout(() => {
-    applying = false;
-  }, APPLY_TIMEOUT_MS);
-
+  // The handover should take milliseconds. If it hasn't happened within
+  // APPLY_TIMEOUT_MS it isn't going to, and `applyInFlight` will say so the
+  // next time anyone asks — no timer has to survive a backgrounded page for
+  // the mechanism to un-wedge itself.
   return true;
 };
 
