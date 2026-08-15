@@ -265,6 +265,67 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     permit: () => ({ required: true, name: 'Alberta Public Land Camping Pass (Eastern Slopes zones)' }),
     notes:
       'Covers DESIGNATED MANAGEMENT ZONES only — not all Alberta Crown land. Large areas of campable Alberta Crown land fall outside any PLUZ and are absent here.'
+  },
+  {
+    /**
+     * Saskatchewan's provincial forest — the province's Green Area equivalent.
+     *
+     * This is admitted on exactly the footing the note above CANDIDATE_SOURCES
+     * lays out. It is a layer of LAND, not of what has been done to the land:
+     * the polygons are Crown resource land designated as provincial forest
+     * under The Forest Resources Management Regulations (F-19.1 Reg 1). The two
+     * Saskatchewan leads that stayed rejected — agricultural dispositions and
+     * cottage-lot subdivisions — are encumbrances, and mapping either would put
+     * someone on a grazing lease.
+     *
+     * It also lines up with where the province's own camping rule actually
+     * applies. Saskatchewan's 21-day free camping allowance is described
+     * against Crown resource land north of the provincial forest boundary,
+     * which is the boundary this layer draws.
+     *
+     * WHAT IT DELIBERATELY UNDERSTATES. Crown resource land is roughly 37
+     * million hectares and reaches beyond the forest boundary, so a blank
+     * southern Saskatchewan is still "no data", never "no public land" — which
+     * is why CA-SK stays in COVERAGE_GAPS with a narrowed reason rather than
+     * being struck off it.
+     */
+    id: 'saskatchewan_provincial_forest',
+    label: 'Saskatchewan Crown Land (Provincial Forest)',
+    attribution: 'Government of Saskatchewan, Ministry of Environment',
+    licence: 'Open Government Licence – Saskatchewan',
+    jurisdiction: 'CA-SK',
+    url: 'https://gis.saskatchewan.ca/arcgis/rest/services/Forestry/MapServer/0/query',
+    // The whole layer is the provincial forest, so there is nothing to filter
+    // on — and `outFields: '*'` means a field name cannot silently kill this
+    // source the way a guessed one would.
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    // The published layer is the Fire Management branch's display definition,
+    // not the surveyed one. Weaker than Alberta's, and labelled as such.
+    edgeAccuracy: 'generalised',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 1000,
+    bbox: [-110.1, 49.0, -101.3, 60.0],
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? 'provincial-forest'),
+    name: () => 'Crown Land (Provincial Forest)',
+    designation: () => 'Saskatchewan provincial forest',
+    campingBasis: () =>
+      'Crown resource land designated as provincial forest under The Forest Resources ' +
+      'Management Regulations. Saskatchewan generally allows recreational camping on ' +
+      'unoccupied provincial Crown land free, without a permit or registration, for up to ' +
+      '21 consecutive days at one site. That is inferred from provincial policy and not ' +
+      'from anything in this layer — the provincial forest also contains protected areas, ' +
+      'recreation sites, cottage subdivisions, outfitter allocations and leases where ' +
+      'camping is restricted or prohibited, and none of them are subtracted here.',
+    stayLimitDays: () => 21,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Layer 0 of the Forestry MapServer. Saskatchewan publishes it as the Fire Management ' +
+      'and Forest Protection Branch\'s spatial definition of the provincial forest, for ' +
+      'display and explicitly NOT as the official version — the legal boundary lives in the ' +
+      'regulations. Covers the forested centre and north of the province only; Crown ' +
+      'resource land outside the forest boundary is real and is not in here.'
   }
 ];
 
@@ -367,9 +428,9 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
   },
   {
     jurisdiction: 'CA-SK',
-    region: 'Saskatchewan',
+    region: 'Saskatchewan (outside the provincial forest)',
     reason:
-      'Crown land is administered through the Saskatchewan Land Information Services portal and the Crown land listings are sale/lease dispositions, not a layer of land open to camping. No confirmed open REST endpoint. Recorded here because it was previously absent from this list entirely — an unlisted gap is indistinguishable from covered ground, which is the failure this table exists to prevent.'
+      'PARTIAL COVERAGE. The provincial forest is now mapped, which is the forested centre and north of the province and where Saskatchewan describes its 21-day free camping allowance as applying. Everything south of the forest boundary is not: the Crown land published for that part of the province is agricultural dispositions and cottage subdivisions — leases and allocations, not land anyone may camp on. Saskatchewan administers roughly 37 million hectares of Crown resource land in total, so an empty map south of the forest boundary means we have nothing to show, never that there is nothing there.'
   },
   {
     jurisdiction: 'CA-QC',
