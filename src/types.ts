@@ -260,6 +260,15 @@ export interface CellCoverage {
 export interface DestinationLand {
   name: string;
   designation: string;
+  /**
+   * Which boundary source this parcel came from — `blm_lands`,
+   * `ontario_clupa_general_use` and so on.
+   *
+   * Carried so the app can fall back to the rule that agency publishes for
+   * this whole class of land when the parcel's own record is silent, which is
+   * almost always. See `src/config/landRules.ts`.
+   */
+  sourceId?: string;
   attribution?: string;
   stayLimitDays?: number;
   /**

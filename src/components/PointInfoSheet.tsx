@@ -3,6 +3,7 @@ import { X, ChevronUp, MapPin, Copy, Check, ArrowRight } from 'lucide-react';
 import type { DestinationLand } from '../types';
 import type { MarkerDot } from '../utils/amenityDots';
 import { Admin1Line } from './Admin1Line';
+import { landRules } from '../config/landRules';
 import { haptic } from '../utils/animation';
 
 /**
@@ -133,6 +134,44 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-2 scroll-soft">
+          {/*
+            THE RULES, WHERE THERE IS ROOM TO READ THEM.
+
+            The same bullets the land chip's tour puts in a bubble for ten
+            seconds — the stay limit, the permit, the fire ban — except here
+            they stay put. The card is the long-form version of the chips, and
+            a card that showed less about the land than the bubble did would
+            send a camper back to the map to re-tap a pill.
+
+            The basis line is not decoration and is not optional: where these
+            are the agency's general rules rather than a record for this exact
+            parcel, that is the condition on showing them at all.
+          */}
+          {land && (() => {
+            const card = landRules(land);
+            return (
+              <section className="rounded-xl border border-violet-900/50 bg-violet-950/25 px-3 py-2.5">
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-violet-300 mb-1.5">
+                  Camping rules on this land
+                </h3>
+                <ul className="space-y-1">
+                  {card.rules.map((rule) => (
+                    <li key={rule} className="flex gap-1.5 text-[11px] text-slate-200 leading-snug">
+                      <span aria-hidden="true" className="text-violet-400 shrink-0">•</span>
+                      <span>{rule}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[9px] text-slate-400 leading-snug mt-2 pt-2 border-t border-violet-900/50">
+                  {card.basis ? `${card.basis}. ` : ''}
+                  The boundary this came from is approximate — its edge can be
+                  hundreds of metres out.
+                  {land.attribution ? ` ${land.attribution}.` : ''}
+                </p>
+              </section>
+            );
+          })()}
+
           {dots.length === 0 ? (
             <p className="text-[11px] text-slate-400 leading-snug">
               Nothing has come back about this point yet. That is not the same

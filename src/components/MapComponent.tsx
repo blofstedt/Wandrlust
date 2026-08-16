@@ -19,6 +19,7 @@ import { pointInGeometry } from '../utils/geo';
 import { hazardReportStyle, reportStanding } from '../config/hazardReports';
 import { beaconTierStyle } from '../config/beacon';
 import { facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
+import { landRules } from '../config/landRules';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
 import {
   fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
@@ -1361,6 +1362,8 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
     // Falls back to the group's words, never to a raw enum — `_confidence`
     // used to surface here as the literal string "managing_agency".
     designation: p._designation ?? BOUNDARY_GROUP_STYLES[boundaryGroupOf(p)].label,
+    // Which agency's rulebook applies when the parcel's own record is silent.
+    sourceId: p._source ?? undefined,
     attribution: p._attribution ?? undefined,
     stayLimitDays: p._stayLimitDays ?? undefined,
     moveDistanceKm: p._moveDistanceKm ?? undefined,
@@ -1373,60 +1376,13 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
 };
 
 /**
- * The rules for a piece of public land, as lines a camper can act on.
- *
- * "Humboldt–Toiyabe National Forest" on its own is trivia. What a camper wants
- * off the back of the name is how long they can stay, whether they need to buy
- * something first, and whether they can light a fire — so those are what the
- * label says.
- *
- * A MISSING RULE IS SAID OUT LOUD, NEVER TREATED AS PERMISSION. No stay limit
- * recorded does not mean stay as long as you like, and no permit recorded does
- * not mean free camping: both come back as "not recorded — check with the
- * agency", which is the true statement.
+ * The name usually carries the designation already ("… National Forest"), and
+ * repeating it under the title is a wasted line on a bubble this small.
  */
-const landRuleLines = (land: DestinationLand): string[] => {
-  const out: string[] = [];
-
-  // The name usually carries the designation already ("… National Forest"),
-  // and repeating it is a wasted line on a bubble this small.
-  if (land.designation && !land.name.toLowerCase().includes(land.designation.toLowerCase())) {
-    out.push(land.designation);
-  }
-
-  if (land.stayLimitDays != null) {
-    out.push(
-      `Stay up to ${land.stayLimitDays} days, then move` +
-      // Moving 200 m down the same track does not restart the clock, where
-      // the manager has said how far. Where they haven't, we don't invent it.
-      (land.moveDistanceKm != null ? ` at least ${land.moveDistanceKm} km` : ' on')
-    );
-  }
-
-  if (land.permitRequired === true) {
-    out.push(`${land.permitName ?? 'A permit'} required before you camp`);
-  } else if (land.permitRequired === false) {
-    out.push('No permit recorded for dispersed camping');
-  }
-
-  /*
-   * An active ban is the one rule that can change between now and tonight, so
-   * it goes in even though it crowds the bubble. The longer campfire policy
-   * text stays in the card behind the "i", where there is room to read it.
-   */
-  if (land.fireBanActive) out.push('Fire ban in effect — no open flame');
-
-  const missing = [
-    land.stayLimitDays == null ? 'stay limit' : null,
-    land.permitRequired == null ? 'permit rules' : null
-  ].filter(Boolean).join(' and ');
-  if (missing) {
-    const said = `${missing} not recorded — ask the agency`;
-    out.push(said.charAt(0).toUpperCase() + said.slice(1));
-  }
-
-  return out;
-};
+const landSubtitle = (land: DestinationLand): string | undefined =>
+  land.designation && !land.name.toLowerCase().includes(land.designation.toLowerCase())
+    ? land.designation
+    : undefined;
 
 
 interface MapComponentProps {
@@ -4698,10 +4654,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       /** A named marker pinned on the map, in a colour. */
       label: (at: L.LatLngExpression, opts: {
         title: string;
+        /** A quieter line straight under the title — what kind of thing it is. */
+        sub?: string;
         /**
-         * The facts, one per line. Kept apart from `detail` so a rule you can
-         * act on ("14-day stay limit") never reads at the same weight as the
-         * hedge underneath it.
+         * The facts, one bullet each. Kept apart from `detail` so a rule you
+         * can act on ("14 nights in any 28-day period") never reads at the
+         * same weight as the hedge underneath it.
          */
         lines?: string[];
         /** The caveat, in the smaller, quieter type under everything else. */
@@ -4920,7 +4878,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           requestAnimationFrame(step);
         }),
         label: (at, {
-          title, lines = [], detail, glyph, color, atPin = false, closable = false
+          title, sub, lines = [], detail, glyph, color, atPin = false, closable = false
         }) => {
           const facts = lines.filter(Boolean);
           L.marker(at, {
@@ -4936,6 +4894,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 `${facts.length ? ' wl-tour-stop-label-card' : ''}` +
                 `${closable ? ' wl-tour-stop-label-closable' : ''}">` +
                 `<b>${escapeHtml(title)}</b>` +
+                (sub ? `<small>${escapeHtml(sub)}</small>` : '') +
                 facts.map((l) => `<i>${escapeHtml(l)}</i>`).join('') +
                 `${detail ? `<em>${escapeHtml(detail)}</em>` : ''}` +
                 (closable
@@ -5169,12 +5128,40 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     await t.wait(700);
     if (!t.alive()) return;
 
+    /*
+     * MAKE ROOM ABOVE THE PIN FOR A CARD THIS TALL.
+     *
+     * The camera was framed on the PARCEL, which says nothing about where in
+     * the viewport the pin ends up — on a tall thin forest it lands near the
+     * top, and a bubble carrying four rules and a hedge then opens off the top
+     * of the screen. So if the pin is sitting too high to hang the card above
+     * it, the view slides up and the pin comes down into the lower half first.
+     */
+    const HEADROOM_PX = 250;
+    try {
+      const seat = t.map.latLngToContainerPoint([point.lat, point.lon]);
+      if (seat.y < HEADROOM_PX) {
+        t.map.panBy([0, seat.y - HEADROOM_PX], { animate: !t.reduced, duration: 0.4 });
+        await t.wait(500);
+        if (!t.alive()) return;
+      }
+    } catch { /* map torn down mid-tour */ }
+
     const land = landFromFeature(best.feature.properties as any);
+    const card = land ? landRules(land) : null;
 
     t.label([point.lat, point.lon], {
       title: land?.name ?? 'Public land',
-      lines: land ? landRuleLines(land) : [],
-      detail: 'Approximate boundary — the edge can be hundreds of metres out',
+      sub: land ? landSubtitle(land) : undefined,
+      lines: card?.rules ?? [],
+      /*
+       * Two hedges, and both have to be here. Where the rules are the agency's
+       * general ones rather than this parcel's record, saying so is the whole
+       * condition on showing them at all — see `src/config/landRules.ts`. The
+       * boundary caveat is the house rule and never comes off.
+       */
+      detail: (card?.basis ? `${card.basis}. ` : '') +
+        'Boundary approximate — the edge can be hundreds of metres out',
       glyph: LAND_GLYPH,
       color: '#A78BFA',
       // The dropped pin is standing on this exact point: climb over it, and

@@ -734,7 +734,16 @@
 /* The name leads. It was the same size and weight as the rules under it, which
    made the card read as five equal lines instead of a heading and its list. */
 .wl-tour-stop-label b { font-weight: 800; font-size: 11px; }
-.wl-tour-stop-label-card b { margin-bottom: 2px; }
+/* What kind of thing it is — "US Forest Service" — under the name it belongs
+   to rather than mixed into the rules, which it is not one of. */
+.wl-tour-stop-label-card b { margin-bottom: 3px; }
+.wl-tour-stop-label small {
+  font-size: 9px;
+  font-weight: 700;
+  opacity: 0.8;
+  margin-top: -2px;
+  margin-bottom: 3px;
+}
 /* The rules — one per line, and a step down from the name without dropping to
    the size of the caveat underneath them. These are the part to act on. */
 .wl-tour-stop-label i {
@@ -742,6 +751,21 @@
   font-weight: 600;
   font-size: 9.5px;
   opacity: 0.97;
+}
+/* BULLETED, BECAUSE THEY ARE A LIST OF RULES.
+   Run together as plain lines, "14 nights in any 28-day period" and "then move
+   at least 25 miles" read as one wrapped sentence. The hanging indent is the
+   point of the padding/text-indent pair: a rule that wraps lines up under its
+   own first word, not under the bullet. */
+.wl-tour-stop-label-card i {
+  display: block;
+  align-self: stretch;
+  padding-left: 9px;
+  text-indent: -9px;
+}
+.wl-tour-stop-label-card i::before {
+  content: '•\00a0\00a0';
+  opacity: 0.7;
 }
 .wl-tour-stop-label em {
   font-style: normal;
@@ -766,6 +790,10 @@
   padding-top: 3px;
   border-top: 1px solid rgba(248, 250, 252, 0.25);
   align-self: stretch;
+  /* Quieter than the bullets. It is the hedge on them, not one of them —
+     and next to a four-line list at full strength it was competing. */
+  font-weight: 500;
+  opacity: 0.85;
 }
 
 /* THE WAY OUT OF A LABEL THAT STAYS UP LONG ENOUGH TO READ.
