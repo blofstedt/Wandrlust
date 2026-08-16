@@ -259,13 +259,28 @@ export const BOUNDARY_OVERVIEW_MIN_ZOOM = 2;
  * at BOUNDARY_MIN_ZOOM.
  */
 export const overviewMinAreaSqKm = (zoom: number): number => {
+  /*
+   * HALVED, BECAUSE THE THRESHOLD WAS THROWING AWAY REAL PROVINCES.
+   *
+   * These were set against land that arrives in continental slabs. A great
+   * deal of Crown land does not: an Ontario General Use Area of 300 km² is a
+   * substantial place to camp and was being discarded at zoom 5 for being
+   * under 500. Enough of them were discarded that the province drew as a
+   * scattering of patches and then filled in the moment the detailed tier
+   * took over — sparse-and-wrong reading exactly like empty-and-wrong.
+   *
+   * A parcel at these thresholds is now roughly two pixels rather than four.
+   * Two pixels of truth beats four pixels of nothing, and the cost of drawing
+   * it is a fraction of what it was now that sub-pixel parts are pruned
+   * server-side.
+   */
   // Zoomed fully out, only the continent-scale blocks are worth a draw call —
   // but there ARE some, so the map is never blank at minimum zoom.
-  if (zoom <= 2) return 8000;
-  if (zoom <= 3) return 4000;
-  if (zoom <= 4) return 1500;
-  if (zoom <= 5) return 500;
-  return 150;
+  if (zoom <= 2) return 4000;
+  if (zoom <= 3) return 1500;
+  if (zoom <= 4) return 600;
+  if (zoom <= 5) return 200;
+  return 60;
 };
 
 
