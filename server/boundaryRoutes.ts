@@ -544,13 +544,44 @@ const recordLimitForSpan = (span: number): number => {
  * bigger area needs more data, and it is right for the same reason the area
  * filter exists: a wider view has room for fewer distinguishable shapes, not
  * more.
+ *
+ * ---------------------------------------------------------------------------
+ * AND THEN IT WAS TOO FEW, AND ONTARIO LOOKED EMPTY INSTEAD OF BLANK
+ * ---------------------------------------------------------------------------
+ *
+ * 80 per source was the number that stopped the timeouts, and it also meant a
+ * camper looking at Ontario at zoom 5 saw about eleven parcels on a province
+ * carpeted in General Use Areas — then crossed into the detailed tier and
+ * watched it fill in. Sparse-and-wrong reads exactly like empty-and-wrong.
+ *
+ * What made 500 unaffordable was not the count. It was 500 polygons at
+ * `geometryPrecision: 5` — one-metre coordinates — which the upstream server
+ * had to fetch, generalise and serialise inside six seconds. The precision now
+ * tracks the generalisation tolerance (about 100 m at these zooms) and
+ * sub-pixel parts are dropped before the response is built, so the same count
+ * is a fraction of the work it was.
+ *
+ * The ceiling is raised on the back of that, and `queryBoundarySource` carries
+ * the insurance: a source that times out on the ambitious ask is retried once,
+ * immediately, at the old conservative count. So the worst case is what this
+ * function used to do on its own, and the normal case is a province that looks
+ * like the province.
  */
 const overviewRecordLimit = (span: number): number => {
-  if (span > 15) return 80;
-  if (span > 8) return 150;
-  if (span > 4) return 250;
-  return 400;
+  if (span > 60) return 200;
+  if (span > 25) return 300;
+  if (span > 12) return 400;
+  return 500;
 };
+
+/**
+ * What a source gets asked for after the ambitious ask timed out.
+ *
+ * Deliberately the number that was in force before the ceiling went up: it is
+ * known to be answerable by every source in this file, including the slow
+ * provincial ones, because it is what they were being asked for.
+ */
+const OVERVIEW_RETRY_RECORDS = 80;
 
 /* -------------------------------------------------------------------------- */
 /* The zoomed-out overview                                                     */
@@ -804,6 +835,13 @@ interface SourceResult {
   ok: boolean;
   /** True when the server had more polygons than it was willing to return. */
   truncated: boolean;
+  /**
+   * Ran out of time, as opposed to refusing, erroring or answering oddly.
+   *
+   * The only failure worth retrying with a smaller ask: it says the service is
+   * up and the question was too big, which is a question we can make smaller.
+   */
+  timedOut?: boolean;
 }
 
 /**
@@ -815,11 +853,12 @@ interface SourceResult {
 const precisionFor = (simplifyDegrees: number): number =>
   Math.min(5, Math.max(3, Math.ceil(-Math.log10(Math.max(simplifyDegrees, 1e-6))) + 1));
 
-const queryBoundarySource = async (
+const queryBoundarySourceOnce = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
-  recordLimit: number
+  recordLimit: number,
+  timeoutOverrideMs?: number
 ): Promise<SourceResult> => {
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
 
@@ -852,7 +891,7 @@ const queryBoundarySource = async (
   const controller = new AbortController();
   // One unresponsive service used to hold the whole response for nine seconds.
   // It is reported as unavailable rather than waited on.
-  const timeoutMs = source.timeoutMs ?? 6000;
+  const timeoutMs = timeoutOverrideMs ?? source.timeoutMs ?? 6000;
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -943,10 +982,46 @@ const queryBoundarySource = async (
         timedOut ? `no response within ${timeoutMs}ms` : (err as Error).message
       }`
     );
-    return { features: [], ok: false, truncated: false };
+    return { features: [], ok: false, truncated: false, timedOut };
   } finally {
     clearTimeout(timer);
   }
+};
+
+/**
+ * ASK AMBITIOUSLY, THEN ASK THE WAY THAT ALWAYS WORKED.
+ *
+ * The overview record ceiling was raised so a province stops drawing as a
+ * handful of scattered parcels. The reason it was ever low is a real one — a
+ * provincial ArcGIS server given too much to generalise stops answering at
+ * all, and a source that drops out draws as empty ground, which is the worst
+ * thing this map can do.
+ *
+ * So the two are separated. The ambitious ask goes first; if and only if it
+ * TIMES OUT — the service is up, the question was too big — the same question
+ * is asked again immediately at the count that was in force before, which
+ * every source here is known to answer. An HTTP error, an ArcGIS error or a
+ * malformed body are not retried: those are not about size, and asking again
+ * would just spend the budget twice on the same failure.
+ *
+ * The retry is given a shorter clock than the first attempt so a genuinely
+ * dead service cannot hold the whole response for two full timeouts.
+ */
+const queryBoundarySource = async (
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  recordLimit: number
+): Promise<SourceResult> => {
+  const first = await queryBoundarySourceOnce(source, bbox, simplifyDegrees, recordLimit);
+  if (first.ok || !first.timedOut || recordLimit <= OVERVIEW_RETRY_RECORDS) return first;
+
+  console.info(
+    `[boundaries] ${source.id}: retrying at ${OVERVIEW_RETRY_RECORDS} records after timeout`
+  );
+  return queryBoundarySourceOnce(
+    source, bbox, simplifyDegrees, OVERVIEW_RETRY_RECORDS, 5000
+  );
 };
 
 /** Runs the query once per key, sharing one in-flight promise among callers. */

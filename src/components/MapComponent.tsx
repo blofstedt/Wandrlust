@@ -6243,6 +6243,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       )}
 
       {/*
+        A ZOOMED-OUT MAP IS A SAMPLE, AND IT HAS TO SAY SO.
+
+        At these zooms the map shows the biggest parcels a source will hand
+        over, not all of them — and a camper reading a sparsely-painted Ontario
+        concludes there is little Crown land in Ontario, then zooms in and
+        watches it fill. That is the same forbidden sentence the app refuses to
+        say in words, said instead by a rendering budget. It is only ever true
+        that MORE exists than is drawn, never less, so the map says which way
+        it is wrong.
+
+        Only when a source actually withheld something: a view whose parcels
+        all fit is a complete answer and does not need apologising for. Said at
+        any zoom, not just the overview — the detailed tier has a cap of its
+        own, and a sample is a sample wherever it happens.
+      */}
+      {showBoundaries && boundaries.meta?.truncated && (
+        <div className="absolute bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
+            <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
+            <span className="text-[10px] font-semibold text-violet-200">
+              Largest areas only — zoom in for the rest
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/*
         Everything known about a dropped pin, as a card rather than as a stack
         of pills unfurling over the map. Rendered here rather than in App
         because the map already holds the answers this card lists — they are

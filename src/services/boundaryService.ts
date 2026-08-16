@@ -109,6 +109,16 @@ export interface BoundaryCollection {
     sources: BoundarySourceStatus[];
     disclaimer?: string;
     skipped?: string;
+    /** Which tier this came from — see `BoundaryDetail`. */
+    detail?: BoundaryDetail;
+    /**
+     * A source withheld polygons, so what is drawn is a sample.
+     *
+     * Always in the direction of "there is more than this", never less, and
+     * the map says so on screen rather than letting a thinly-painted province
+     * read as an empty one.
+     */
+    truncated?: boolean;
     /**
      * How hard the server generalised this geometry, in degrees.
      *
@@ -257,24 +267,64 @@ export type BoundaryDetail = 'full' | 'overview';
 /**
  * The box an overview request asks for.
  *
- * Snapped to a grid measured in map-widths, not in the small cells
- * `requestBoxFor` uses. At these zooms most of a continent is on screen, so a
- * grid that only just exceeds the viewport means two drags walk straight off
- * the loaded data and every gesture becomes a fresh request — which is exactly
- * the flicker this tier exists to remove.
+ * ---------------------------------------------------------------------------
+ * WHY ONTARIO LOOKED ALMOST EMPTY UNTIL YOU ZOOMED IN
+ * ---------------------------------------------------------------------------
  *
- * The cells are therefore several screens wide: 8° at zoom 6 up to 64° at zoom
- * 3, where a single request covers the entire supported area. Panning around
- * North America at zoom 3-4 makes one request for the whole session; at zoom 5-6
- * it makes a handful, and each is reused for a long time afterwards.
+ * This used to snap to a grid measured in whole map-widths — 8° at zoom 6, up
+ * to 64° at zoom 3 — so that panning at these zooms never left the loaded box.
+ * It succeeded at that and paid for it somewhere nobody was looking.
+ *
+ * A phone at zoom 5 shows about 17° of longitude. The old grid turned that
+ * into a request for a 48°×32° box: SEVEN AND A HALF SCREENS of ground. The
+ * per-source record cap is spent across the whole of it, so 80 parcels became
+ * about eleven on the screen the camper was actually looking at — and since
+ * the upstream services return whatever comes first rather than the biggest,
+ * those eleven were an arbitrary eleven. Ontario is covered in General Use
+ * Areas. It drew as a nearly empty province, and then filled in the moment you
+ * crossed into the detailed tier, which is this app's one forbidden sentence
+ * told by a rendering budget.
+ *
+ * So the box now follows the viewport: padded by 40% and snapped out to a grid
+ * of about half a screen. Roughly twice the viewport's area instead of seven
+ * times it, which is the same budget spent where somebody is looking.
+ *
+ * PANNING IS STILL CHEAP. That was the real reason for the huge cells and it
+ * is handled by caching rather than by over-fetching: overview responses live
+ * 12 hours in memory and 7 days on disk, the box is snapped so a small drag
+ * resolves to the identical URL, and the map only refetches when the view
+ * leaves the loaded box entirely.
  */
 export const overviewBoxFor = (view: BoundingBox, zoom: number): BoundingBox => {
-  const cell = Math.pow(2, 9 - Math.min(Math.max(Math.round(zoom), 3), 6));
+  const spanLat = Math.max(view.maxLat - view.minLat, 0.5);
+  const spanLon = Math.max(view.maxLon - view.minLon, 0.5);
+
+  /*
+   * A quarter of a screen per axis, rounded to a power of two.
+   *
+   * Per axis, because a phone's map is far taller than it is wide and one
+   * shared cell size sized to the tall side threw the box back out to six
+   * screens — the very thing this is here to stop.
+   *
+   * A power of two matters more than the exact size: it makes the grid line up
+   * with itself as the camper zooms, so successive views keep resolving to the
+   * same URL and the cache keeps hitting. Derived from the viewport rather
+   * than the zoom because a phone and a laptop show very different amounts of
+   * ground at the same zoom level.
+   */
+  const cellOf = (span: number) => Math.pow(2, Math.round(Math.log2(span / 4)));
+  const cellLat = cellOf(spanLat);
+  const cellLon = cellOf(spanLon);
+  // A quarter-screen of headroom each way: enough that a nudge does not
+  // refetch, small enough that the record budget is not spent off-screen.
+  const padLat = spanLat * 0.25;
+  const padLon = spanLon * 0.25;
+
   return {
-    minLat: Math.floor(view.minLat / cell) * cell,
-    minLon: Math.floor(view.minLon / cell) * cell,
-    maxLat: Math.ceil(view.maxLat / cell) * cell,
-    maxLon: Math.ceil(view.maxLon / cell) * cell
+    minLat: Math.floor((view.minLat - padLat) / cellLat) * cellLat,
+    minLon: Math.floor((view.minLon - padLon) / cellLon) * cellLon,
+    maxLat: Math.ceil((view.maxLat + padLat) / cellLat) * cellLat,
+    maxLon: Math.ceil((view.maxLon + padLon) / cellLon) * cellLon
   };
 };
 
