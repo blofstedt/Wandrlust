@@ -262,6 +262,12 @@ export interface DestinationLand {
   designation: string;
   attribution?: string;
   stayLimitDays?: number;
+  /**
+   * How far you have to move once the stay limit is up, where the manager has
+   * said. "14 days" on its own is only half the rule — the other half is that
+   * moving 200 m down the same track does not restart it.
+   */
+  moveDistanceKm?: number;
   permitRequired?: boolean;
   permitName?: string;
   permitUrl?: string;

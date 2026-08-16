@@ -44,7 +44,7 @@ import {
 } from '../utils/alertOverlay';
 import {
   MarkerDot, amenityDots, conditionDots, facilityDots, fireDots, hazardDots,
-  FACILITY_COLOR
+  FACILITY_COLOR, LAND_GLYPH
 } from '../utils/amenityDots';
 import {
   fetchNearbyFacilities, fetchNearestDriveableRoad, findNearestDriveableRoad,
@@ -1154,6 +1154,17 @@ const buildFacilityIcon = (facility: MapFacility): L.DivIcon => {
  * warnings over it, a fire burning near it, a toilet up the road — is stacked
  * above the pin in words, the same as it is above a spot somebody submitted.
  */
+/**
+ * How far a tour label has to climb to clear the dropped pin.
+ *
+ * The teardrop is 40px tall and stands ON the point, and a tour label hangs
+ * 19px above whatever point it is given — so a label placed at the pin came
+ * out underneath it, which is how "Approximate boundary — the edge can be
+ * hundreds of…" ended up as a sentence with the middle covered by a pin. This
+ * is the difference, plus a gap you can see through.
+ */
+const PIN_LIFT_PX = 34;
+
 const buildDestinationIcon = (
   dots: MarkerDot[] = [],
   addLabel?: string,
@@ -1351,12 +1362,69 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
     designation: p._designation ?? BOUNDARY_GROUP_STYLES[boundaryGroupOf(p)].label,
     attribution: p._attribution ?? undefined,
     stayLimitDays: p._stayLimitDays ?? undefined,
+    moveDistanceKm: p._moveDistanceKm ?? undefined,
     permitRequired: p._permitRequired ?? undefined,
     permitName: p._permitName ?? undefined,
     permitUrl: p._permitUrl ?? undefined,
     fireBanActive: p._fireBanActive ?? undefined,
     campfirePolicy: p._campfirePolicy ?? undefined
   };
+};
+
+/**
+ * The rules for a piece of public land, as lines a camper can act on.
+ *
+ * "Humboldt–Toiyabe National Forest" on its own is trivia. What a camper wants
+ * off the back of the name is how long they can stay, whether they need to buy
+ * something first, and whether they can light a fire — so those are what the
+ * label says.
+ *
+ * A MISSING RULE IS SAID OUT LOUD, NEVER TREATED AS PERMISSION. No stay limit
+ * recorded does not mean stay as long as you like, and no permit recorded does
+ * not mean free camping: both come back as "not recorded — check with the
+ * agency", which is the true statement.
+ */
+const landRuleLines = (land: DestinationLand): string[] => {
+  const out: string[] = [];
+
+  // The name usually carries the designation already ("… National Forest"),
+  // and repeating it is a wasted line on a bubble this small.
+  if (land.designation && !land.name.toLowerCase().includes(land.designation.toLowerCase())) {
+    out.push(land.designation);
+  }
+
+  if (land.stayLimitDays != null) {
+    out.push(
+      `Stay up to ${land.stayLimitDays} days, then move` +
+      // Moving 200 m down the same track does not restart the clock, where
+      // the manager has said how far. Where they haven't, we don't invent it.
+      (land.moveDistanceKm != null ? ` at least ${land.moveDistanceKm} km` : ' on')
+    );
+  }
+
+  if (land.permitRequired === true) {
+    out.push(`${land.permitName ?? 'A permit'} required before you camp`);
+  } else if (land.permitRequired === false) {
+    out.push('No permit recorded for dispersed camping');
+  }
+
+  /*
+   * An active ban is the one rule that can change between now and tonight, so
+   * it goes in even though it crowds the bubble. The longer campfire policy
+   * text stays in the card behind the "i", where there is room to read it.
+   */
+  if (land.fireBanActive) out.push('Fire ban in effect — no open flame');
+
+  const missing = [
+    land.stayLimitDays == null ? 'stay limit' : null,
+    land.permitRequired == null ? 'permit rules' : null
+  ].filter(Boolean).join(' and ');
+  if (missing) {
+    const said = `${missing} not recorded — ask the agency`;
+    out.push(said.charAt(0).toUpperCase() + said.slice(1));
+  }
+
+  return out;
 };
 
 
@@ -4614,7 +4682,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       ) => void;
       /** A named marker pinned on the map, in a colour. */
       label: (at: L.LatLngExpression, opts: {
-        title: string; detail?: string; glyph: string; color: string;
+        title: string;
+        /**
+         * The facts, one per line. Kept apart from `detail` so a rule you can
+         * act on ("14-day stay limit") never reads at the same weight as the
+         * hedge underneath it.
+         */
+        lines?: string[];
+        /** The caveat, in the smaller, quieter type under everything else. */
+        detail?: string;
+        glyph: string;
+        color: string;
+        /**
+         * Pixels to raise the bubble by, for a label landing where the dropped
+         * pin is already standing. Without it the teardrop covers the bottom
+         * two lines of the thing it is meant to be explaining.
+         */
+        lift?: number;
       }) => void;
       /**
        * Run a glowing tracker once along this path. Resolves at the end of it.
@@ -4779,13 +4863,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           };
           requestAnimationFrame(step);
         }),
-        label: (at, { title, detail, glyph, color }) => {
+        label: (at, { title, lines = [], detail, glyph, color, lift = 0 }) => {
+          const facts = lines.filter(Boolean);
           L.marker(at, {
             icon: L.divIcon({
               className: 'wl-tour-stop',
               html:
-                `<div class="wl-tour-stop-wrap" style="--wl-tour-color:${color}">` +
-                `<span class="wl-tour-stop-label">${escapeHtml(title)}` +
+                `<div class="wl-tour-stop-wrap" ` +
+                `style="--wl-tour-color:${color};--wl-tour-lift:${lift}px">` +
+                // A stack of facts reads as a little card, left-aligned;
+                // a single line stays centred over its glyph as before.
+                `<span class="wl-tour-stop-label` +
+                `${facts.length ? ' wl-tour-stop-label-card' : ''}">` +
+                `<b>${escapeHtml(title)}</b>` +
+                facts.map((l) => `<i>${escapeHtml(l)}</i>`).join('') +
                 `${detail ? `<em>${escapeHtml(detail)}</em>` : ''}</span>` +
                 `<span class="wl-tour-stop-glyph" aria-hidden="true">${glyph}</span>` +
                 `</div>`,
@@ -4963,13 +5054,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }), [runTour]);
 
   /**
-   * Tapping the land chip: which shape said that?
+   * Tapping the land chip: which shape said that, and what are the rules on it?
    *
-   * The chip names a forest or a district and quotes its stay limit; this
-   * draws the parcel the name came from. Those edges are approximate to within
-   * hundreds of metres — which is why the fills are off by default — so the
-   * label says so while the shape is on screen, where the caveat is attached
-   * to the thing it is about.
+   * The chip names a forest or a district; this draws the parcel the name came
+   * from AND spells out what the name means for tonight — how many days, what
+   * you have to buy first, whether there is a fire ban. A camper tapping the
+   * name of a national forest is not asking to be told the name back.
+   *
+   * Those edges are approximate to within hundreds of metres — which is why the
+   * fills are off by default — so the caveat rides underneath the rules, on
+   * screen, attached to the thing it is about.
    */
   const runLandTour = useCallback(() => runTour(async (t) => {
     const point = readPointRef.current;
@@ -4996,14 +5090,27 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     await t.wait(700);
     if (!t.alive()) return;
 
+    const land = landFromFeature(best.feature.properties as any);
+
     t.label([point.lat, point.lon], {
-      title: landFromFeature(best.feature.properties as any)?.name ?? 'Public land',
+      title: land?.name ?? 'Public land',
+      lines: land ? landRuleLines(land) : [],
       detail: 'Approximate boundary — the edge can be hundreds of metres out',
-      glyph: '\u{1F6E1}️',
-      color: '#A78BFA'
+      glyph: LAND_GLYPH,
+      color: '#A78BFA',
+      // Clears the dropped pin standing on this exact point.
+      lift: PIN_LIFT_PX
     });
 
-    await t.wait(2200);
+    /*
+     * FIVE SECONDS, NOT TWO.
+     *
+     * Two was enough to read a name off a bubble. It is nowhere near enough to
+     * read a stay limit, a permit and a hedge — the label was gone while you
+     * were still on the second line, so the rules may as well not have been
+     * there. Five is long enough to read all of it once and start again.
+     */
+    await t.wait(5000);
   }), [runTour]);
 
   /**
@@ -5033,7 +5140,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let checked = true;
     if (!road?.line?.length) {
       t.label([point.lat, point.lon], {
-        title: 'Looking for the track…', glyph: '\u{1F6E3}️', color: '#FDE047'
+        title: 'Looking for the track…', glyph: '\u{1F6E3}️', color: '#FDE047',
+        lift: PIN_LIFT_PX
       });
       const found = await findNearestDriveableRoad(point.lat, point.lon, ROAD_RADIUS_KM);
       if (!t.alive()) return;
@@ -5048,13 +5156,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             title: 'No mapped track within 2 km',
             detail: 'OpenStreetMap has nothing here, which is not the same as nothing being here',
             glyph: '\u{1F6E3}️',
-            color: '#FDE047'
+            color: '#FDE047',
+            lift: PIN_LIFT_PX
           }
         : {
             title: 'Could not check for a track',
             detail: 'OpenStreetMap did not answer. That is not a report that there is no road',
             glyph: '\u{1F6E3}️',
-            color: '#FDE047'
+            color: '#FDE047',
+            lift: PIN_LIFT_PX
           });
       await t.wait(2600);
       return;
