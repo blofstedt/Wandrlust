@@ -138,6 +138,21 @@ await safeRegister(
   'registerBoundaryRoutes'
 );
 
+/**
+ * The full-detail offline land pack, served out of Supabase cell by cell.
+ *
+ * Registered right after boundaries because it is the same subject matter and
+ * has the same failure mode: without it the app cannot download detailed maps,
+ * and an app that offers a download button which 404s is worse than one that
+ * says the pack is unavailable. The route answers `available: false` on its
+ * own when Supabase is absent, so registering it is always safe.
+ */
+await safeRegister(
+  'land-pack',
+  () => import('../server/landPackRoutes.js'),
+  'registerLandPackRoutes'
+);
+
 // Weather: NWS + Environment Canada. No API keys needed.
 await safeRegister(
   'weather',
