@@ -72,7 +72,8 @@ question shouldn't rewrite components.
 server.ts                  Express API + Vite middleware, one process
 shared/hazards.ts          Alert classification shared by client and server
 server/
-  boundaryRoutes.ts        /api/boundaries — 3 government ArcGIS services, cached
+  boundaryRoutes.ts        /api/boundaries — 8 government ArcGIS services, cached
+  landGeometry.ts          Merges parcels into one shape, cuts lakes out of them
   weatherRoutes.ts         /api/weather + /api/weather/alerts (NWS + Env. Canada)
   openMeteo.ts             Hourly forecast for Canada and NWS gaps
   routeRoutes.ts           /api/route — ORS, then Valhalla, then OSRM
@@ -96,8 +97,9 @@ public/
                            `npm run map:assets`, never fetched at runtime.
     admin1-us-ca.json      State / province outlines
     land-mask.bin          Land-vs-water bitmask for the pin check
-    lakes-us-ca.json       Big lakes, cut out of the boundary fill so it
-                           never paints "campable" over open water
+    lakes-us-ca.json       Big lakes. Bundled into the SERVER (not fetched
+                           by the browser) and subtracted from every parcel
+                           so the map never paints "campable" over water.
 ```
 
 ## House rules
@@ -235,4 +237,4 @@ npm run vapid    # generate push notification keys
 - **No smooth easing.** The motion is Pebble's frame-based "moook" curve on
   purpose — mechanical, with an overshoot that settles. That's the personality.
 - **No purchase prompts outside Settings.** The support link buys nothing in the
-  app. Points are earned, never sold.
+  app. Points are earned, never sold.

@@ -61,6 +61,7 @@ import type { Express, Request, Response } from 'express';
 import { gzip } from 'zlib';
 import { promisify } from 'util';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { subtractLakes, unionParcels, lakeCount } from './landGeometry';
 
 const gzipAsync = promisify(gzip);
 
@@ -731,6 +732,77 @@ const prunedFeatures = (
     const geometry = pruneTinyParts(f?.geometry, minPartDeg2, maxParts);
     return geometry === f?.geometry ? f : { ...f, geometry };
   });
+};
+
+/**
+ * TAKE THE WATER OUT, AT EVERY ZOOM.
+ *
+ * A Crown land or BLM polygon includes the lakes inside it, correctly — the
+ * province owns the lakebed. Painted as this app's "you can sleep here" wash
+ * it tells campers to pitch on open water, so it is cut out of the geometry
+ * before the response is built. Server-side rather than in the browser
+ * because a real geometric difference costs a couple of hundred milliseconds
+ * and this answer is about to sit in a cache row for months.
+ */
+const withoutWater = (features: any[]): any[] =>
+  features.map((f) => {
+    const geometry = subtractLakes(f?.geometry);
+    return geometry === f?.geometry ? f : { ...f, geometry };
+  });
+
+/**
+ * ONE SHAPE PER SOURCE, FOR THE ZOOMED-OUT MAP.
+ *
+ * This is the difference between Ontario and Alberta, and it was never about
+ * the provinces. Alberta's Green Area arrives as a single polygon; Ontario's
+ * Crown land arrives as hundreds of General Use Areas, and hundreds of
+ * separate shapes at province scale is both the flicker the camper sees and
+ * most of the bytes on the wire.
+ *
+ * At overview zoom nobody is reading parcel edges — the question is "is there
+ * public land over there" — so each source's parcels are merged into one
+ * shape. It is a real boolean union, so it does not depend on neighbouring
+ * parcels having matching vertices the way the browser's edge-cancelling
+ * merge did, and the same input always produces the same output.
+ *
+ * THE MERGED SHAPE IS RENAMED, BECAUSE IT IS NO LONGER ONE PARCEL. Borrowing
+ * the name of whichever General Use Area happened to be first would put a
+ * specific, wrong name on a tap anywhere in the province. It takes the
+ * SOURCE's name instead — "Ontario Crown Land — General Use Area" — which is
+ * true of every square metre of the merged shape, and it keeps `_source`, so
+ * the published stay rules still resolve exactly as before.
+ */
+const mergedBySource = (features: any[]): any[] => {
+  const groups = new Map<string, any[]>();
+  for (const f of features) {
+    const id = String(f?.properties?._source ?? '');
+    const g = groups.get(id);
+    if (g) g.push(f);
+    else groups.set(id, [f]);
+  }
+
+  const out: any[] = [];
+  groups.forEach((group) => {
+    const merged = group.length > 1 ? unionParcels(group.map((f) => f.geometry)) : null;
+    if (!merged) {
+      // One parcel, or a union we could not trust. Either way the parcels
+      // themselves are still the honest answer.
+      out.push(...group);
+      return;
+    }
+    const first = group[0]?.properties ?? {};
+    out.push({
+      type: 'Feature',
+      geometry: merged.geometry,
+      properties: {
+        ...first,
+        _name: first._sourceName ?? first._name,
+        _designation: first._designation,
+        _mergedFrom: merged.merged
+      }
+    });
+  });
+  return out;
 };
 
 /**
@@ -1448,13 +1520,18 @@ export const registerBoundaryRoutes = (app: Express): void => {
     const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, minAreaSqKm);
     if (seeded) {
       // If the database did the area filtering, this is a no-op slice.
-      const kept = prunedFeatures(
+      const pruned = prunedFeatures(
         isOverview
           ? largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit)
           : seeded.features.slice(0, recordLimit),
         simplifyDegrees,
         isOverview
       );
+      // Water out first, then merge — merging afterwards would just union the
+      // holes back shut along every shared shoreline.
+      const kept = isOverview
+        ? mergedBySource(withoutWater(pruned))
+        : withoutWater(pruned);
       const truncated = seeded.features.length > recordLimit;
 
       await remember({
@@ -1486,13 +1563,18 @@ export const registerBoundaryRoutes = (app: Express): void => {
     );
 
     const anyTruncated = results.some((r) => r.truncated);
-    const liveFeatures = prunedFeatures(
+    const prunedLive = prunedFeatures(
       isOverview
         ? largestParcels(results.flatMap((r) => r.features), minAreaSqKm, recordLimit)
         : results.flatMap((r) => r.features),
       simplifyDegrees,
       isOverview
     );
+    // Water out first, then merge — merging afterwards would union the holes
+    // back shut wherever two parcels meet along the same shoreline.
+    const liveFeatures = isOverview
+      ? mergedBySource(withoutWater(prunedLive))
+      : withoutWater(prunedLive);
 
     const body = {
       type: 'FeatureCollection',
@@ -1518,6 +1600,9 @@ export const registerBoundaryRoutes = (app: Express): void => {
           ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
           : undefined,
         simplifyDegrees,
+        // Lakes the server was able to cut out of these shapes. Zero means
+        // the asset is missing from the bundle and water is being painted.
+        lakesKnown: lakeCount(),
         disclaimer: DISCLAIMER
       }
     };

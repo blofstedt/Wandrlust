@@ -20,7 +20,6 @@ import { hazardReportStyle, reportStanding } from '../config/hazardReports';
 import { beaconTierStyle } from '../config/beacon';
 import { facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
 import { landRules } from '../config/landRules';
-import { loadLakes, lakesInBox, type LakeRing } from '../services/lakeService';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
 import {
   fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
@@ -42,7 +41,7 @@ import {
 import {
   AlertBadge, PointWarning, BADGE_COLOR, CLOUD_TINT, warningsForPoint, alertBadge,
   localizedPinHtml, cloudPieces,
-  dissolveKey, dissolveSegments, dissolvedFill, punchLakes
+  dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
   MarkerDot, amenityDots, conditionDots, facilityDots, fireDots, hazardDots,
@@ -1586,16 +1585,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /** Which tier is on screen, and at what settings — see `render`. */
   const loadedDetailRef = useRef<BoundaryDetail | null>(null);
   const overviewTierRef = useRef<number>(0);
-  /**
-   * The lakes to subtract from the boundary fill, once they have arrived.
-   *
-   * Empty until the file lands, and the render signature counts them — so the
-   * first draw paints the water green exactly as before and the frame after
-   * the load cuts it out, rather than the boundaries waiting on a download
-   * before they appear at all.
-   */
-  const lakesRef = useRef<LakeRing[]>([]);
-  const [lakeCount, setLakeCount] = useState(0);
   const renderSignatureRef = useRef<string>('');
   const renderedCollectionRef = useRef<BoundaryCollection | null>(null);
   /**
@@ -2488,9 +2477,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // overview redraws nothing at all.
       const zoomKey = overview ? 'ov' : String(Math.round(currentZoom));
       const fingerprint = parcelFingerprint(collection);
-      // The lake count is in here so the fill is rebuilt once, when the lakes
-      // finish loading. Same parcels, different holes.
-      const signature = `${detail}|${zoomKey}|${lakesRef.current.length}|${fingerprint}`;
+      const signature = `${detail}|${zoomKey}|${fingerprint}`;
 
       /**
        * Is this the same PARCEL SET that is already drawn?
@@ -2619,33 +2606,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * painting over the smaller one.
        */
       /*
-       * …AND THEN THE WATER COMES BACK OUT OF IT.
+       * THE WATER IS ALREADY GONE BY THE TIME IT GETS HERE.
        *
-       * The parcels genuinely include their lakes — the province owns the
-       * lakebed — so the dissolve faithfully paints "you may sleep here" over
-       * open water. Every lake wholly inside a dissolved shape is subtracted
-       * from it as a hole, so the fill stops at the shoreline and the imagery
-       * underneath shows through as water. Big lakes only; see `lakeService`.
+       * This used to drop each lake in as an extra ring and let the even-odd
+       * fill rule turn it into a hole, which only works for a lake sitting
+       * entirely inside one polygon — so in Ontario, where the parcels are
+       * fragmented and the lakes are enormous, almost every lake straddled a
+       * boundary, was skipped, and stayed painted green.
+       *
+       * The server now does a real geometric difference before it answers, and
+       * the result is cached, so a correct cut costs nothing here. See
+       * `subtractLakes` in server/landGeometry.ts.
        */
-      const dissolved = punchLakes(
-        dissolvedFill(
-          collection.features as { properties?: Record<string, any>; geometry: unknown }[],
-          dissolveKey,
-          mergeSnap
-        ),
-        /*
-         * Only the lakes over the ground these parcels came from.
-         *
-         * Keyed on the LOADED box rather than the viewport: panning inside
-         * loaded data deliberately does not rebuild the fill, so a lake
-         * chosen for the current view would be missing from the shape the
-         * moment you slid the map sideways.
-         */
-        lakesRef.current.length
-          ? lakesInBox(loadedBoxRef.current ?? {
-              minLat: -90, minLon: -180, maxLat: 90, maxLon: 180
-            })
-          : lakesRef.current
+      const dissolved = dissolvedFill(
+        collection.features as { properties?: Record<string, any>; geometry: unknown }[],
+        dissolveKey,
+        mergeSnap
       );
       const dissolvedSorted = [...dissolved].sort((a, b) => {
         const ea = a.geometry as { type: string; coordinates: any };
@@ -2806,28 +2782,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         boundaryRendererRef.current = null;
       }
     };
-  }, [isMapReady, showBoundaries, isOfflineMode, lakeCount]);
+  }, [isMapReady, showBoundaries, isOfflineMode]);
 
-  /**
-   * Fetch the lakes the first time boundaries are actually going to be drawn.
-   *
-   * Not on startup: a camper who stays in the list view never needs them, and
-   * this is a couple of hundred kilobytes over what may be one bar of signal.
-   * Not blocking either — the boundaries draw the moment they arrive, and the
-   * water is cut out of them a beat later when this lands.
-   */
-  useEffect(() => {
-    if (!isMapReady || !showBoundaries) return;
-    if (lakesRef.current.length) return;
-    let alive = true;
-    void loadLakes().then((lakes) => {
-      if (!alive || !lakes.length) return;
-      lakesRef.current = lakes;
-      // Re-runs the boundary effect above, whose signature now differs.
-      setLakeCount(lakes.length);
-    });
-    return () => { alive = false; };
-  }, [isMapReady, showBoundaries]);
 
   /* ------------------------------------------------------------------ */
   /* Tap anywhere to pick a destination                                  */
