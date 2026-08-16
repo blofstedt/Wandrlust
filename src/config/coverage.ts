@@ -243,61 +243,65 @@ export const BOUNDARY_MIN_ZOOM = 7;
  *
  * Zooming out used to blank every boundary, so the answer to "where is there
  * public land near here?" was an empty continent until you had already guessed
- * where to look. The overview shows only the big parcels, as hairlines, and —
- * because it is fetched on a coarse grid and cached for the session — it is
- * drawn once and then simply panned around, rather than refetched on every
- * gesture.
+ * where to look.
  */
 export const BOUNDARY_OVERVIEW_MIN_ZOOM = 2;
 
 /**
- * Smallest parcel, in km², worth drawing in the overview at a given zoom.
+ * -----------------------------------------------------------------------------
+ * THE ZOOMED-OUT MAP ASKS FOR THE WHOLE COVERAGE AREA, ONCE, AND THEN NEVER
+ * ASKS AGAIN.
+ * -----------------------------------------------------------------------------
  *
- * At zoom 3 a 200 km² parcel is under a pixel across: drawing it costs a
- * network round trip and a draw call to produce a dot nobody can see or tap.
- * The threshold relaxes as you zoom in and hands over to the full-detail layer
- * at BOUNDARY_MIN_ZOOM.
+ * WHY PUBLIC LAND USED TO POP IN AND OUT WHILE YOU MOVED THE MAP.
+ *
+ * The overview used to follow the viewport: a padded box, snapped to a grid
+ * derived from the screen, refetched whenever a pan left it. That sounds
+ * reasonable and it is the whole bug, because of what sits on the other end.
+ * Each source has a hard record cap — a couple of hundred parcels per request —
+ * and the government services return whatever comes first, not the biggest. So
+ * two overlapping boxes come back holding DIFFERENT arbitrary subsets of the
+ * same ground.
+ *
+ * Pan far enough to cross the box, and the map replaced everything it was
+ * drawing with that different subset. Areas that were on screen a moment ago
+ * were simply not in the new answer, so they vanished; others appeared for the
+ * first time. Nothing was wrong with the data and nothing had failed. The map
+ * was being handed a fresh sample of the same continent every few gestures and
+ * faithfully drawing each one.
+ *
+ * No box that moves can fix that. So the box stops moving: at every zoom below
+ * BOUNDARY_MIN_ZOOM the map asks for exactly this rectangle — the entire
+ * coverage area — and the answer serves every wide view there is. Panning costs
+ * nothing. Zooming from 6 out to 2 costs nothing. There is no second sample to
+ * disagree with the first, so there is nothing to pop.
+ *
+ * It is one request per week per device (the response caches for seven days on
+ * disk), where it used to be one per pan.
+ *
+ * The trade is honest and it is the right way round: this single answer is
+ * generalised harder than a tight box would have been, so the shapes are
+ * blockier than they were at zoom 6. That is what BOUNDARY_MIN_ZOOM is for —
+ * cross it and real geometry for the viewport loads on top. Coarse and stable
+ * beats sharp and flickering for a view whose only question is "is there public
+ * land over there".
  */
-export const overviewMinAreaSqKm = (zoom: number): number => {
-  /*
-   * HALVED, BECAUSE THE THRESHOLD WAS THROWING AWAY REAL PROVINCES.
-   *
-   * These were set against land that arrives in continental slabs. A great
-   * deal of Crown land does not: an Ontario General Use Area of 300 km² is a
-   * substantial place to camp and was being discarded at zoom 5 for being
-   * under 500. Enough of them were discarded that the province drew as a
-   * scattering of patches and then filled in the moment the detailed tier
-   * took over — sparse-and-wrong reading exactly like empty-and-wrong.
-   *
-   * A parcel at these thresholds is now roughly two pixels rather than four.
-   * Two pixels of truth beats four pixels of nothing, and the cost of drawing
-   * it is a fraction of what it was now that sub-pixel parts are pruned
-   * server-side.
-   */
-  /*
-   * THREE BANDS, NOT FIVE, AND THIS IS NOT A COSMETIC CHANGE.
-   *
-   * The threshold is part of the request URL, so a different number at every
-   * zoom level meant every single zoom step below 7 minted a brand-new
-   * continental request — eight government ArcGIS services, from scratch,
-   * four times over on the way from zoom 6 to zoom 3. Every one of those is a
-   * fresh chance for a slow provincial server to answer with nothing, and it
-   * is why zooming out felt like the boundaries were being deliberately
-   * thrown away.
-   *
-   * Banding means neighbouring zooms resolve to the same URL and reuse the
-   * same cached answer. It costs nothing upstream: the threshold is applied
-   * to parcels the server has ALREADY fetched, so a lower one only keeps more
-   * of what it is holding — which is also why the middle band drops to 600
-   * rather than 1500. Parcels are kept largest-first up to the record limit,
-   * so the big blocks are never crowded out by the smaller ones let through.
-   */
-  // Zoomed fully out, only the continent-scale blocks are worth a draw call —
-  // but there ARE some, so the map is never blank at minimum zoom.
-  if (zoom <= 2) return 4000;
-  if (zoom <= 4) return 600;
-  return 60;
-};
+export const OVERVIEW_BOX: BoundingBox = { ...COVERAGE_BBOX };
+
+/**
+ * Smallest parcel, in km², the overview bothers to keep.
+ *
+ * ONE NUMBER, NOT A CURVE, and that is deliberate: it is part of the request
+ * URL, so a value that changed with zoom would mint a different request at
+ * every zoom level and undo everything above. The same answer has to serve
+ * zoom 2 and zoom 6 alike.
+ *
+ * It is set low because at continental span it barely binds — the server keeps
+ * parcels largest-first up to its own record cap, which runs out long before
+ * this does. Where it matters is a source that returned only a handful, and
+ * there we would rather draw them.
+ */
+export const OVERVIEW_MIN_AREA_SQ_KM = 120;
 
 
 /* -------------------------------------------------------------------------- */

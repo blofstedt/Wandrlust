@@ -1,6 +1,6 @@
 import localforage from 'localforage';
 import {
-  BoundingBox, bboxIntersectsCoverage, clampToCoverage, overviewMinAreaSqKm
+  BoundingBox, bboxIntersectsCoverage, clampToCoverage, OVERVIEW_MIN_AREA_SQ_KM
 } from '../config/coverage';
 
 /**
@@ -300,68 +300,20 @@ export const boxContains = (outer: BoundingBox, inner: BoundingBox): boolean =>
 export type BoundaryDetail = 'full' | 'overview';
 
 /**
- * The box an overview request asks for.
+ * THE OVERVIEW NO LONGER HAS A BOX FUNCTION, AND THAT IS THE POINT.
  *
- * ---------------------------------------------------------------------------
- * WHY ONTARIO LOOKED ALMOST EMPTY UNTIL YOU ZOOMED IN
- * ---------------------------------------------------------------------------
+ * There used to be one here — `overviewBoxFor` — that derived a padded,
+ * grid-snapped request box from the viewport, and it went through several
+ * careful revisions trying to make panning cheap without spending the record
+ * budget off-screen. Every version of it shared the flaw that no version could
+ * fix: a box that moves produces a different sample of the same continent each
+ * time it moves, and the map drew each new sample over the last one, so public
+ * land appeared and disappeared as you scrolled.
  *
- * This used to snap to a grid measured in whole map-widths — 8° at zoom 6, up
- * to 64° at zoom 3 — so that panning at these zooms never left the loaded box.
- * It succeeded at that and paid for it somewhere nobody was looking.
- *
- * A phone at zoom 5 shows about 17° of longitude. The old grid turned that
- * into a request for a 48°×32° box: SEVEN AND A HALF SCREENS of ground. The
- * per-source record cap is spent across the whole of it, so 80 parcels became
- * about eleven on the screen the camper was actually looking at — and since
- * the upstream services return whatever comes first rather than the biggest,
- * those eleven were an arbitrary eleven. Ontario is covered in General Use
- * Areas. It drew as a nearly empty province, and then filled in the moment you
- * crossed into the detailed tier, which is this app's one forbidden sentence
- * told by a rendering budget.
- *
- * So the box now follows the viewport: padded by 40% and snapped out to a grid
- * of about half a screen. Roughly twice the viewport's area instead of seven
- * times it, which is the same budget spent where somebody is looking.
- *
- * PANNING IS STILL CHEAP. That was the real reason for the huge cells and it
- * is handled by caching rather than by over-fetching: overview responses live
- * 12 hours in memory and 7 days on disk, the box is snapped so a small drag
- * resolves to the identical URL, and the map only refetches when the view
- * leaves the loaded box entirely.
+ * The overview now asks for `OVERVIEW_BOX` — the whole coverage area, the same
+ * rectangle every time — and the map holds that one answer for as long as it is
+ * open. See the comment on OVERVIEW_BOX in config/coverage.ts.
  */
-export const overviewBoxFor = (view: BoundingBox, zoom: number): BoundingBox => {
-  const spanLat = Math.max(view.maxLat - view.minLat, 0.5);
-  const spanLon = Math.max(view.maxLon - view.minLon, 0.5);
-
-  /*
-   * A quarter of a screen per axis, rounded to a power of two.
-   *
-   * Per axis, because a phone's map is far taller than it is wide and one
-   * shared cell size sized to the tall side threw the box back out to six
-   * screens — the very thing this is here to stop.
-   *
-   * A power of two matters more than the exact size: it makes the grid line up
-   * with itself as the camper zooms, so successive views keep resolving to the
-   * same URL and the cache keeps hitting. Derived from the viewport rather
-   * than the zoom because a phone and a laptop show very different amounts of
-   * ground at the same zoom level.
-   */
-  const cellOf = (span: number) => Math.pow(2, Math.round(Math.log2(span / 4)));
-  const cellLat = cellOf(spanLat);
-  const cellLon = cellOf(spanLon);
-  // A quarter-screen of headroom each way: enough that a nudge does not
-  // refetch, small enough that the record budget is not spent off-screen.
-  const padLat = spanLat * 0.25;
-  const padLon = spanLon * 0.25;
-
-  return {
-    minLat: Math.floor((view.minLat - padLat) / cellLat) * cellLat,
-    minLon: Math.floor((view.minLon - padLon) / cellLon) * cellLon,
-    maxLat: Math.ceil((view.maxLat + padLat) / cellLat) * cellLat,
-    maxLon: Math.ceil((view.maxLon + padLon) / cellLon) * cellLon
-  };
-};
 
 /* -------------------------------------------------------------------------- */
 /* Fetching                                                                    */
@@ -448,7 +400,14 @@ export const fetchBoundaries = async (
   });
   if (detail === 'overview') {
     params.set('detail', 'overview');
-    params.set('minAreaSqKm', String(overviewMinAreaSqKm(zoom)));
+    /*
+     * Not derived from the zoom, on purpose. The overview is one answer for
+     * the whole coverage area serving every wide zoom there is, so its URL has
+     * to be identical at zoom 2 and at zoom 6 — otherwise each zoom step is a
+     * different request holding a different sample, which is exactly the
+     * popping this tier was rebuilt to stop. See OVERVIEW_BOX.
+     */
+    params.set('minAreaSqKm', String(OVERVIEW_MIN_AREA_SQ_KM));
   }
   const query = params.toString();
 

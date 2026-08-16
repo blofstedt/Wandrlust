@@ -25,7 +25,7 @@ import {
   fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
 } from '../services/dataService';
 import {
-  fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains,
+  fetchBoundaries, requestBoxFor, boxContains,
   BOUNDARY_GROUP_STYLES, boundaryGroupOf,
   EMPTY_BOUNDARIES, BoundaryCollection, BoundaryFeature,
   BoundaryDetail, EdgeAccuracy
@@ -60,7 +60,7 @@ import { calculateRoute, RouteResult } from '../services/routingService';
 import { directionsAppName, openDirections } from '../utils/handoff';
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
-  BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, overviewMinAreaSqKm,
+  BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, OVERVIEW_BOX,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
@@ -1594,9 +1594,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * the file finished parsing.
    */
   const landOverlayRef = useRef<LandOverlay | null>(null);
+  /**
+   * THE ZOOMED-OUT MAP, HELD FOR THE WHOLE SESSION.
+   *
+   * One answer covering the entire coverage area, fetched once and then reused
+   * at every zoom below BOUNDARY_MIN_ZOOM and at every pan. Holding it here is
+   * what stops public land popping in and out while the map is moved — see the
+   * long note in the boundary effect, and `OVERVIEW_BOX`.
+   *
+   * A ref, not state: it must not be a dependency of the boundary effect, or
+   * arriving would tear down and rebuild the entire Leaflet layer stack.
+   */
+  const overviewCollectionRef = useRef<BoundaryCollection | null>(null);
+  /**
+   * The in-flight overview request, shared by every caller.
+   *
+   * Zooming out fires a move and a zoom event, the prefetch may already be
+   * running, and all of them want the same continent. Without this they would
+   * each start their own copy of a request the others are already waiting on.
+   */
+  const overviewInFlightRef = useRef<Promise<BoundaryCollection | null> | null>(null);
   /** Which tier is on screen, and at what settings — see `render`. */
   const loadedDetailRef = useRef<BoundaryDetail | null>(null);
-  const overviewTierRef = useRef<number>(0);
   const renderSignatureRef = useRef<string>('');
   const renderedCollectionRef = useRef<BoundaryCollection | null>(null);
   /**
@@ -2275,8 +2294,50 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const forget = () => {
       loadedBoxRef.current = null;
       loadedDetailRef.current = null;
-      overviewTierRef.current = 0;
       collectionRef.current = EMPTY_BOUNDARIES;
+    };
+
+    /**
+     * Fetch the one wide-zoom answer, at most once.
+     *
+     * Every caller shares the same promise, and once it resolves with something
+     * worth keeping it is held for the session — so this does real work exactly
+     * once, and every later zoom-out is a ref read.
+     *
+     * A failed attempt is NOT held. It clears the slot so the next gesture
+     * tries again, because the alternative is one bad moment on a car park
+     * connection deciding there is no public land for the rest of the session.
+     *
+     * Deliberately given no abort signal. Every other request here is tied to a
+     * viewport and is rightly cancelled when the viewport moves; this one is
+     * tied to the continent, and cancelling it because somebody panned would
+     * mean it never finishes on a map that is being used.
+     */
+    const loadOverview = (): Promise<BoundaryCollection | null> => {
+      if (overviewCollectionRef.current) {
+        return Promise.resolve(overviewCollectionRef.current);
+      }
+      if (overviewInFlightRef.current) return overviewInFlightRef.current;
+
+      const attempt = fetchBoundaries(OVERVIEW_BOX, undefined, 'overview')
+        .then((collection) => {
+          overviewInFlightRef.current = null;
+
+          // Superseded, failed, or an empty we cannot stand behind: keep
+          // nothing, so the next gesture asks again.
+          if (!collection) return null;
+          if (collection.features.length === 0) return null;
+
+          overviewCollectionRef.current = collection;
+          return collection;
+        })
+        .catch(() => {
+          overviewInFlightRef.current = null;
+          return null;
+        });
+
+      overviewInFlightRef.current = attempt;
+      return attempt;
     };
 
     // Offline is the only reason to stop LOADING. `showBoundaries` decides
@@ -2609,7 +2670,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         minDimCache.set(g, v);
         return v;
       };
-      const sliverCutoff = overview ? 3 : SLIVER_PX;
+      /**
+       * NO PIXEL-BASED CULLING IN THE OVERVIEW.
+       *
+       * This used to drop overview shapes narrower than three pixels, which is
+       * a zoom-dependent test applied to a layer that is deliberately drawn
+       * once and reused at every wide zoom. Whatever the zoom happened to be
+       * the first time the overview was drawn would decide, permanently, which
+       * areas existed — draw it at zoom 3 and the smaller ones were culled and
+       * never came back when you zoomed to 6.
+       *
+       * The server already filters this tier by real area, in km², which is a
+       * property of the land rather than of the current zoom. That is the right
+       * test and it has already been applied by the time these features arrive.
+       */
+      const sliverCutoff = overview ? 0 : SLIVER_PX;
 
       /* -- Zoom-only change: rebuild the halo, keep the parcels ---------- */
       if (sameData && fillLayerRef.current && boundaryLayerRef.current && !overview) {
@@ -2756,11 +2831,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       /**
        * Which tier to draw.
        *
-       * Zooming out used to erase every boundary, so the answer to "roughly
-       * where is the public land?" was a blank continent. The overview draws
-       * the big parcels as hairlines instead — and because it is asked for on
-       * a very coarse grid and cached for the session, it is fetched once and
-       * then simply panned around.
+       * Below BOUNDARY_MIN_ZOOM: one answer for the whole coverage area, held
+       * for as long as the app is open. Above it: real geometry for the
+       * viewport, refetched as you move, drawn over the top.
        */
       const detail: BoundaryDetail = currentZoom < BOUNDARY_MIN_ZOOM ? 'overview' : 'full';
       setZoomTooFar(false);
@@ -2771,18 +2844,75 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         maxLat: b.getNorth(), maxLon: b.getEast()
       };
 
-      const tier = detail === 'overview' ? overviewMinAreaSqKm(currentZoom) : 0;
+      /* -------------------------------------------------------------------
+       * THE ZOOMED-OUT TIER: ASKED ONCE, THEN NEVER AGAIN.
+       * -------------------------------------------------------------------
+       *
+       * This is the fix for public land popping in and out while you scroll.
+       *
+       * The overview used to be fetched for a box that followed the viewport,
+       * so panning far enough crossed the box and fetched again. Each request
+       * spends a per-source record cap that the government services fill with
+       * whatever comes first rather than with the biggest parcels — so two
+       * overlapping boxes come back holding DIFFERENT arbitrary subsets of the
+       * same continent, and the map replaced everything it was drawing with the
+       * new one. Areas on screen a second earlier were simply absent from the
+       * next answer and vanished. Nothing had failed; the map was being handed
+       * a fresh sample every few gestures and drawing each one faithfully.
+       *
+       * There is only one sample now. `OVERVIEW_BOX` is the entire coverage
+       * area, the request is identical at every wide zoom, and the answer is
+       * kept in `overviewCollectionRef` for the session. Panning does no work
+       * at all — not a request, not even a redraw, because `render` sees the
+       * same object and returns. Zooming 6 → 2 does no work either.
+       *
+       * Nothing can pop, because there is no second answer to disagree with
+       * the first.
+       */
+      if (detail === 'overview') {
+        const held = overviewCollectionRef.current;
+        if (held) {
+          setWideViewFailed(false);
+          loadedDetailRef.current = 'overview';
+          collectionRef.current = held;
+          setBoundaries(held);
+          render(held, 'overview');
+          return;
+        }
+
+        // Nothing held yet. Paint whatever shipped with the app while the one
+        // request is in flight, so the first zoom-out is never a blank
+        // continent.
+        const bundled = overviewCollection(landOverlayRef.current, OVERVIEW_BOX);
+        if (bundled) render(bundled, 'overview');
+
+        const fetched = await loadOverview();
+        if (cancelled) return;
+
+        if (!fetched) {
+          // Superseded, or an answer we could not stand behind. Either way
+          // keep what is drawn — see the note on `meta.unavailable`.
+          if (!bundled) setWideViewFailed(true);
+          return;
+        }
+
+        setWideViewFailed(false);
+        loadedDetailRef.current = 'overview';
+        collectionRef.current = fetched;
+        setBoundaries(fetched);
+        render(fetched, 'overview');
+        return;
+      }
+
       const loaded = loadedBoxRef.current;
-      const sameTier =
-        loadedDetailRef.current === detail &&
-        (detail === 'full' || overviewTierRef.current === tier);
+      const sameTier = loadedDetailRef.current === detail;
 
       // Everything in view is already loaded at this detail level.
       if (loaded && sameTier && boxContains(loaded, view)) {
         // Panning inside loaded data needs nothing. A zoom change inside it
         // needs the uncertainty band rewidened, which `render` does without
-        // rebuilding the parcels — and in the overview, not even that.
-        if (detail === 'full' && currentZoom > loadedZoomRef.current) {
+        // rebuilding the parcels.
+        if (currentZoom > loadedZoomRef.current) {
           // Zoomed past the detail we fetched for: go and get finer geometry.
         } else {
           setWideViewFailed(false);
@@ -2791,9 +2921,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         }
       }
 
-      const box = detail === 'overview'
-        ? overviewBoxFor(view, currentZoom)
-        : requestBoxFor(view, currentZoom);
+      const box = requestBoxFor(view, currentZoom);
       const myId = ++requestId;
       controller?.abort();
       controller = new AbortController();
@@ -2835,13 +2963,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         loadedBoxRef.current = box;
         loadedZoomRef.current = currentZoom;
         loadedDetailRef.current = detail;
-        overviewTierRef.current = tier;
         collectionRef.current = localPack;
         setBoundaries(localPack);
         return;
       }
 
-      const collection = await fetchBoundaries(box, controller.signal, detail, currentZoom);
+      const collection = await fetchBoundaries(box, controller.signal, detail);
       if (cancelled || myId !== requestId) return;
 
       // `null` means the request was superseded. Keep what is on screen rather
@@ -2853,20 +2980,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * NOTHING CAME BACK. THAT IS NOT THE SAME AS NOTHING BEING THERE.
        * ---------------------------------------------------------------------
        *
-       * THIS IS THE FIX FOR "THE BOUNDARIES DISAPPEAR WHEN I ZOOM OUT".
-       *
-       * Crossing below zoom 7 switches to the overview tier, which is a fresh
-       * request for a box the size of several provinces, answered by eight
-       * government ArcGIS services inside one serverless function. When one of
-       * them is having a slow afternoon the response is a well-formed, utterly
-       * empty Alberta — and the map used to draw it, wiping boundaries that
-       * had loaded perfectly a second earlier at the zoom above.
+       * Eight government ArcGIS services answer this inside one serverless
+       * function. When one of them is having a slow afternoon the response is a
+       * well-formed, utterly empty province — and the map used to draw it,
+       * wiping boundaries that had loaded perfectly a second earlier.
        *
        * `fetchBoundaries` now marks an answer it could not stand behind. Where
        * it is marked, we keep exactly what is on screen, leave the loaded box
-       * alone so the next gesture retries, and say on screen that the wide
-       * view did not load. A stale outline the camper can see is honest and
-       * useful; a blank continent is neither.
+       * alone so the next gesture retries, and say on screen that the view did
+       * not load. A stale outline the camper can see is honest and useful; a
+       * blank continent is neither.
        *
        * A trustworthy empty — every source answered, there is nothing here —
        * still clears the map, because that is a real answer.
@@ -2885,7 +3008,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       loadedBoxRef.current = box;
       loadedZoomRef.current = currentZoom;
       loadedDetailRef.current = detail;
-      overviewTierRef.current = tier;
       collectionRef.current = collection;
       setBoundaries(collection);
       render(collection, detail);
@@ -2899,9 +3021,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     load();
     map.on('moveend zoomend', load);
 
+    /**
+     * Warm the wide view before anyone asks for it.
+     *
+     * The zoomed-out answer covers the whole coverage area, so it is the same
+     * request no matter where the camper happens to be standing — which means
+     * it can be fetched before they zoom out rather than at the moment they
+     * do. Zooming out then draws instantly from memory instead of watching a
+     * continent load.
+     *
+     * Held back a few seconds so it never competes with the boundaries and
+     * campsites for the view actually on screen, and skipped entirely when the
+     * device already carries the full-detail pack, which is better than this in
+     * every way. Usually free regardless: the response caches on disk for seven
+     * days, so most launches resolve it without touching the network.
+     */
+    const prefetch = setTimeout(() => {
+      if (cancelled || overviewCollectionRef.current) return;
+      void loadOverview();
+    }, 4000);
+
     return () => {
       cancelled = true;
       controller?.abort();
+      clearTimeout(prefetch);
       if (debounce) clearTimeout(debounce);
       map.off('moveend zoomend', load);
       clearLayer();
