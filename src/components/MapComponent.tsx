@@ -1161,7 +1161,8 @@ const buildFacilityIcon = (facility: MapFacility): L.DivIcon => {
  * 19px above whatever point it is given — so a label placed at the pin came
  * out underneath it, which is how "Approximate boundary — the edge can be
  * hundreds of…" ended up as a sentence with the middle covered by a pin. This
- * is the difference, plus a gap you can see through.
+ * is the difference, plus a gap you can see through. See `atPin` on the tour
+ * label, which applies it and drops the glyph at the same time.
  */
 const PIN_LIFT_PX = 34;
 
@@ -4648,6 +4649,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const tourRunningRef = useRef(false);
   const tourLayerRef = useRef<L.LayerGroup | null>(null);
+  /**
+   * Stop the tour that is on screen, right now.
+   *
+   * A tour used to be something you started and then sat through. That was
+   * fine at two seconds and is not fine at ten: the land label is meant to be
+   * read, so it stays up long enough to read, which means there has to be a
+   * way to say "done". Two things call this — the little × on the label
+   * itself, and the × under the pin, which a camper reasonably expects to put
+   * away everything the pin has put on the map, not just the pin.
+   *
+   * Null when nothing is running.
+   */
+  const endTourRef = useRef<(() => void) | null>(null);
+  const endTour = useCallback(() => { endTourRef.current?.(); }, []);
 
   /**
    * THE SHAPE OF EVERY "GO AND LOOK" ON THIS MAP.
@@ -4694,11 +4709,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         glyph: string;
         color: string;
         /**
-         * Pixels to raise the bubble by, for a label landing where the dropped
-         * pin is already standing. Without it the teardrop covers the bottom
-         * two lines of the thing it is meant to be explaining.
+         * This label lands on the dropped pin rather than somewhere else.
+         *
+         * Two things follow, and they are the same thought twice. The bubble
+         * climbs clear of the teardrop, which is 40px tall and otherwise
+         * covers the bottom two lines of the thing the label is explaining.
+         * And the glyph is dropped: the pin IS the mark for this point, so a
+         * second one drawn on top of it marks nothing and hides the first.
          */
-        lift?: number;
+        atPin?: boolean;
+        /** Give the camper an × to stop the tour early. Long labels only. */
+        closable?: boolean;
       }) => void;
       /**
        * Run a glowing tracker once along this path. Resolves at the end of it.
@@ -4713,12 +4734,45 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     tourRunningRef.current = true;
     const reduced = prefersReducedMotion();
-    const wait = (ms: number) =>
-      new Promise<void>((r) => setTimeout(r, reduced ? ms / 3 : ms));
     const home = { center: map.getCenter(), zoom: map.getZoom() };
 
     const layer = L.layerGroup().addTo(map);
     tourLayerRef.current = layer;
+
+    /*
+     * EVERY WAIT IS INTERRUPTIBLE.
+     *
+     * A tour is a chain of sleeps, so "stop" has to mean the sleep the tour is
+     * currently in ends now — otherwise the camper taps the × and the shape,
+     * the label and the borrowed camera all sit there until the timer that was
+     * already running happens to expire. Each pending wait keeps its resolver
+     * here; `cancel` fires all of them, and `alive()` has already gone false by
+     * then, so the step function bails at its next check instead of drawing the
+     * next thing onto a torn-down layer.
+     */
+    let cancelled = false;
+    const pending = new Set<() => void>();
+    const wait = (ms: number) => new Promise<void>((resolve) => {
+      if (cancelled) { resolve(); return; }
+      const done = () => {
+        pending.delete(done);
+        window.clearTimeout(timer);
+        resolve();
+      };
+      const timer = window.setTimeout(done, reduced ? ms / 3 : ms);
+      pending.add(done);
+    });
+
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      // alive() reads this, so it must go first.
+      if (tourLayerRef.current === layer) tourLayerRef.current = null;
+      // Off the screen in this frame rather than whenever the chain unwinds.
+      try { layer.clearLayers(); } catch { /* already gone */ }
+      Array.from(pending).forEach((done) => done());
+    };
+    endTourRef.current = cancel;
     /**
      * The pin's own row of chips steps aside while the tour is on screen.
      *
@@ -4847,7 +4901,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             resolve();
           };
 
-          if (reduced) { setTimeout(done, ms / 3); return; }
+          // Through `wait` rather than a bare timer, so a cancelled tour is
+          // not held open by a lap nobody is watching any more.
+          if (reduced) { void wait(ms).then(done); return; }
 
           const t0 = performance.now();
           const step = (now: number) => {
@@ -4863,26 +4919,46 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           };
           requestAnimationFrame(step);
         }),
-        label: (at, { title, lines = [], detail, glyph, color, lift = 0 }) => {
+        label: (at, {
+          title, lines = [], detail, glyph, color, atPin = false, closable = false
+        }) => {
           const facts = lines.filter(Boolean);
           L.marker(at, {
             icon: L.divIcon({
               className: 'wl-tour-stop',
               html:
                 `<div class="wl-tour-stop-wrap" ` +
-                `style="--wl-tour-color:${color};--wl-tour-lift:${lift}px">` +
+                `style="--wl-tour-color:${color};` +
+                `--wl-tour-lift:${atPin ? PIN_LIFT_PX : 0}px">` +
                 // A stack of facts reads as a little card, left-aligned;
                 // a single line stays centred over its glyph as before.
                 `<span class="wl-tour-stop-label` +
-                `${facts.length ? ' wl-tour-stop-label-card' : ''}">` +
+                `${facts.length ? ' wl-tour-stop-label-card' : ''}` +
+                `${closable ? ' wl-tour-stop-label-closable' : ''}">` +
                 `<b>${escapeHtml(title)}</b>` +
                 facts.map((l) => `<i>${escapeHtml(l)}</i>`).join('') +
-                `${detail ? `<em>${escapeHtml(detail)}</em>` : ''}</span>` +
-                `<span class="wl-tour-stop-glyph" aria-hidden="true">${glyph}</span>` +
+                `${detail ? `<em>${escapeHtml(detail)}</em>` : ''}` +
+                (closable
+                  ? `<span class="wl-tour-stop-close" data-action="tour-close" ` +
+                    `role="button" tabindex="0" aria-label="Close" title="Close">` +
+                    `${CLOSE_SVG}</span>`
+                  : '') +
+                `</span>` +
+                // Nothing under the bubble when it is standing on the pin —
+                // see `atPin`.
+                (atPin
+                  ? ''
+                  : `<span class="wl-tour-stop-glyph" aria-hidden="true">${glyph}</span>`) +
                 `</div>`,
               iconSize: [30, 30],
               iconAnchor: [15, 15]
             }),
+            /*
+             * The MARKER stays non-interactive — nothing in a tour is a target
+             * — and the × opts itself back in with `pointer-events: auto`, the
+             * same way a chip does. It is caught by the map container's
+             * delegated handler on `data-action`.
+             */
             interactive: false,
             zIndexOffset: 800
           }).addTo(layer);
@@ -4891,8 +4967,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     } finally {
       layer.remove();
       tourLayerRef.current = null;
+      if (endTourRef.current === cancel) endTourRef.current = null;
       container.classList.remove('wl-touring');
       try {
+        // The camera is given back whether the tour finished or was stopped:
+        // it was always borrowed.
         if (reduced) map.setView(home.center, home.zoom, { animate: false });
         else map.flyTo(home.center, home.zoom, { duration: 0.8 });
       } catch { /* map torn down */ }
@@ -5098,19 +5177,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       detail: 'Approximate boundary — the edge can be hundreds of metres out',
       glyph: LAND_GLYPH,
       color: '#A78BFA',
-      // Clears the dropped pin standing on this exact point.
-      lift: PIN_LIFT_PX
+      // The dropped pin is standing on this exact point: climb over it, and
+      // don't draw a second mark on top of it.
+      atPin: true,
+      closable: true
     });
 
     /*
-     * FIVE SECONDS, NOT TWO.
+     * TEN SECONDS, AND AN × FOR THE IMPATIENT.
      *
-     * Two was enough to read a name off a bubble. It is nowhere near enough to
-     * read a stay limit, a permit and a hedge — the label was gone while you
-     * were still on the second line, so the rules may as well not have been
-     * there. Five is long enough to read all of it once and start again.
+     * This is the one tour label that is a piece of reading rather than a
+     * caption: a name, a stay limit, a permit, a hedge. Two seconds was enough
+     * for the name alone and the rest may as well not have been there. Ten is
+     * a proper read with time to go back over a line — and because ten seconds
+     * is a long time to be made to wait, the label carries its own way out.
      */
-    await t.wait(5000);
+    await t.wait(10000);
   }), [runTour]);
 
   /**
@@ -5141,7 +5223,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!road?.line?.length) {
       t.label([point.lat, point.lon], {
         title: 'Looking for the track…', glyph: '\u{1F6E3}️', color: '#FDE047',
-        lift: PIN_LIFT_PX
+        atPin: true
       });
       const found = await findNearestDriveableRoad(point.lat, point.lon, ROAD_RADIUS_KM);
       if (!t.alive()) return;
@@ -5157,14 +5239,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             detail: 'OpenStreetMap has nothing here, which is not the same as nothing being here',
             glyph: '\u{1F6E3}️',
             color: '#FDE047',
-            lift: PIN_LIFT_PX
+            atPin: true
           }
         : {
             title: 'Could not check for a track',
             detail: 'OpenStreetMap did not answer. That is not a report that there is no road',
             glyph: '\u{1F6E3}️',
             color: '#FDE047',
-            lift: PIN_LIFT_PX
+            atPin: true
           });
       await t.wait(2600);
       return;
@@ -5423,7 +5505,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         case 'gap': void runGapTour(); return;
         case 'road': void runRoadTour(facility ?? null); return;
         case 'directions': directionsRef.current(); return;
-        case 'close': clearDestinationRef.current(); return;
+        // The × on a tour label. Stops the tour and nothing else — the pin it
+        // was launched from stays open, because you asked about one chip.
+        case 'tour-close': endTour(); return;
+        /*
+         * The × under the pin means "put all of this away".
+         *
+         * It used to mean "put the pin away", which left whatever the pin had
+         * drawn on the map — a parcel outlined in violet, a label spelling out
+         * its rules, a camera parked somewhere the camper never chose to be —
+         * sitting there with nothing left to explain it and no way to dismiss
+         * it. The tour goes first so the camera lands back home before the pin
+         * it belonged to disappears.
+         */
+        case 'close':
+          endTour();
+          clearDestinationRef.current();
+          return;
         case 'details':
           if (destinationRef.current?.campsite) detailRef.current(destinationRef.current.campsite);
           return;
@@ -5454,8 +5552,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     container.addEventListener('click', onTap, true);
     return () => container.removeEventListener('click', onTap, true);
   }, [
-    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour, unfurlChip
+    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour,
+    unfurlChip, endTour
   ]);
+
+  /**
+   * The pin going away takes its tour with it, however it went.
+   *
+   * The × under the pin is not the only way to close one — a new pin, a search
+   * result, the Escape key and the bottom sheet all clear the destination too,
+   * and a tour outliving the pin it was launched from is the same orphaned
+   * overlay every time. One place to say it, rather than five.
+   */
+  useEffect(() => {
+    if (!destination) endTour();
+  }, [destination, endTour]);
 
   /**
    * "Show me on the map", from a line in the point card.
