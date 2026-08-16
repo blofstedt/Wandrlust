@@ -61,7 +61,17 @@ import type { Express, Request, Response } from 'express';
 import { gzip } from 'zlib';
 import { promisify } from 'util';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { subtractLakes, unionParcels, lakeCount } from './landGeometry';
+/*
+ * THE `.js` IS LOAD-BEARING. The project is `"type": "module"`, so the Vercel
+ * function uses strict ESM resolution and a relative import without a file
+ * extension throws ERR_MODULE_NOT_FOUND at import time. `safeRegister` in
+ * api/index.ts catches it exactly as designed, and the whole boundaries
+ * service then answers 503 — which is what took every public-land boundary
+ * off the deployed map the day this import was added. We write `.js` even
+ * though the source is `.ts`: that is the ESM convention, referring to the
+ * compiled output. `npm run check:imports` now fails the build over it.
+ */
+import { subtractLakes, unionParcels, lakeCount } from './landGeometry.js';
 
 const gzipAsync = promisify(gzip);
 
