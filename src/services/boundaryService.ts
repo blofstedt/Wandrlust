@@ -109,6 +109,19 @@ export interface BoundaryCollection {
     sources: BoundarySourceStatus[];
     disclaimer?: string;
     skipped?: string;
+    /**
+     * How hard the server generalised this geometry, in degrees.
+     *
+     * THE MAP NEEDS THIS TO MERGE PARCELS AT ALL. Two abutting parcels are
+     * merged into one shape by cancelling the edge they share, which works
+     * only if both sides of that edge still have the same vertices. The
+     * server simplifies each parcel independently, so at a wide viewport the
+     * two sides of a shared boundary drift apart by up to this much — and a
+     * merge tolerance of a fixed hundred metres stops recognising them as the
+     * same edge, which is when a province full of Crown land goes back to
+     * drawing as a mesh of thousands of separate outlines.
+     */
+    simplifyDegrees?: number;
   };
 }
 

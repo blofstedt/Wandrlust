@@ -702,6 +702,117 @@ export const dissolvedFill = (
   return out;
 };
 
+/* ------------------------------------------------------------------ */
+/* Taking the water back out of the fill                               */
+/* ------------------------------------------------------------------ */
+
+const ringBox = (ring: number[][]): [number, number, number, number] => {
+  let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+  for (const point of ring) {
+    const lon = point[0];
+    const lat = point[1];
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  return [minLon, minLat, maxLon, maxLat];
+};
+
+/** Ray casting, the standard even-crossings test. */
+const inRing = (lon: number, lat: number, ring: number[][]): boolean => {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) &&
+        lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+};
+
+/**
+ * SUBTRACT THE LAKES FROM THE FILL.
+ *
+ * A boundary polygon includes the water inside it, correctly — the province
+ * owns the lakebed. Painted as this app's "you can sleep here" wash, that told
+ * campers they could pitch on Lake Nipigon. So every lake that sits inside a
+ * dissolved shape becomes a HOLE in it, and the green stops at the shoreline.
+ *
+ * A hole, not an overlay: Leaflet paths use `fill-rule: evenodd`, so a ring
+ * added inside another ring simply is not painted, and the satellite imagery
+ * underneath shows through as itself. Nothing is drawn over the water — the
+ * fill just stops.
+ *
+ * ONLY LAKES THAT ARE WHOLLY INSIDE. Under even-odd, a ring hanging out past
+ * the outer edge would paint the part that sticks out, so a lake straddling
+ * the boundary is skipped and left covered as before. That is the safe
+ * direction of the two: a lake still painted green is the bug we already had,
+ * and a stripe of green painted across open water where no parcel reaches is a
+ * new and worse one.
+ *
+ * `sample` decides how thoroughly containment is checked — every Nth vertex of
+ * the lake, capped, all of which must be inside. The bbox pre-test throws out
+ * nearly every pair before it gets that far, which is what makes this cheap
+ * enough to run on each redraw.
+ */
+export const punchLakes = (
+  features: GeoJSON.Feature[],
+  lakes: { bbox: [number, number, number, number]; ring: [number, number][] }[]
+): GeoJSON.Feature[] => {
+  if (!lakes.length || !features.length) return features;
+
+  /** At most this many points per lake are tested for containment. */
+  const MAX_SAMPLES = 24;
+
+  const contained = (lake: { ring: [number, number][] }, outer: number[][]): boolean => {
+    const step = Math.max(1, Math.ceil(lake.ring.length / MAX_SAMPLES));
+    for (let i = 0; i < lake.ring.length; i += step) {
+      if (!inRing(lake.ring[i][0], lake.ring[i][1], outer)) return false;
+    }
+    return true;
+  };
+
+  return features.map((feature) => {
+    const geometry = feature.geometry as { type?: string; coordinates?: any };
+    const isMulti = geometry?.type === 'MultiPolygon';
+    if (geometry?.type !== 'Polygon' && !isMulti) return feature;
+
+    const polygons: number[][][][] = isMulti
+      ? (geometry.coordinates as number[][][][])
+      : [geometry.coordinates as number[][][]];
+
+    let changed = false;
+    const punched = polygons.map((polygon) => {
+      const outer = polygon?.[0];
+      if (!Array.isArray(outer) || outer.length < 4) return polygon;
+      const [oMinLon, oMinLat, oMaxLon, oMaxLat] = ringBox(outer);
+
+      const holes: number[][][] = [];
+      for (const lake of lakes) {
+        const [lMinLon, lMinLat, lMaxLon, lMaxLat] = lake.bbox;
+        if (lMinLon < oMinLon || lMaxLon > oMaxLon) continue;
+        if (lMinLat < oMinLat || lMaxLat > oMaxLat) continue;
+        if (!contained(lake, outer)) continue;
+        holes.push(lake.ring as unknown as number[][]);
+      }
+      if (!holes.length) return polygon;
+      changed = true;
+      return [...polygon, ...holes] as number[][][];
+    });
+
+    if (!changed) return feature;
+    return {
+      ...feature,
+      geometry: isMulti
+        ? { type: 'MultiPolygon', coordinates: punched }
+        : { type: 'Polygon', coordinates: punched[0] }
+    } as GeoJSON.Feature;
+  });
+};
+
 /* ================================================================== */
 /* EVERY OFFICIAL WARNING IS AN AREA                                   */
 /* ================================================================== */
