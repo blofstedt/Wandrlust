@@ -9,8 +9,8 @@
   },
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "build:client": "vite build",
+    "build": "npm run check:imports && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build:client": "npm run check:imports && vite build",
     "start": "NODE_ENV=production node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
@@ -24,7 +24,8 @@
     "seed:lands": "tsx scripts/seedSupabase.ts --lands",
     "map:assets": "tsx scripts/buildMapAssets.ts",
     "map:land": "tsx scripts/buildLandOverlay.ts",
-    "vapid": "tsx scripts/generateVapidKeys.ts"
+    "vapid": "tsx scripts/generateVapidKeys.ts",
+    "check:imports": "node scripts/checkServerImports.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.0",
