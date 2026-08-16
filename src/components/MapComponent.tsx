@@ -1714,6 +1714,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showAdmin1, setShowAdmin1] = useState(true);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [zoomTooFar, setZoomTooFar] = useState(false);
+  /**
+   * The wide view asked for boundaries and did not get an answer it could
+   * trust — so the map is showing whatever it had, which may be from the zoom
+   * above or from a moment ago. Silence here is what made this feel like a
+   * bug: the boundaries went, nothing said why, and the honest reading of an
+   * empty map is "there is no public land here".
+   */
+  const [wideViewFailed, setWideViewFailed] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
   /** The same alerts, for the chip tours, which run outside React's render. */
   const hazardsRef = useRef<HazardAlert[]>([]);
@@ -2279,6 +2287,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       forget();
       setBoundaries(EMPTY_BOUNDARIES);
       setZoomTooFar(false);
+      setWideViewFailed(false);
       return;
     }
 
@@ -2735,6 +2744,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // is nothing legible to draw at any level of generalisation.
       if (currentZoom < BOUNDARY_OVERVIEW_MIN_ZOOM) {
         setZoomTooFar(true);
+        setWideViewFailed(false);
         setBoundaries(EMPTY_BOUNDARIES);
         forget();
         clearLayer();
@@ -2775,6 +2785,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (detail === 'full' && currentZoom > loadedZoomRef.current) {
           // Zoomed past the detail we fetched for: go and get finer geometry.
         } else {
+          setWideViewFailed(false);
           render(collectionRef.current, detail);
           return;
         }
@@ -2820,6 +2831,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * behaves identically with no signal.
        */
       if (localPack) {
+        setWideViewFailed(false);
         loadedBoxRef.current = box;
         loadedZoomRef.current = currentZoom;
         loadedDetailRef.current = detail;
@@ -2837,21 +2849,39 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (!collection) return;
 
       /*
-       * The network came back with nothing where the device has something.
+       * ---------------------------------------------------------------------
+       * NOTHING CAME BACK. THAT IS NOT THE SAME AS NOTHING BEING THERE.
+       * ---------------------------------------------------------------------
        *
-       * `fetchBoundaries` returns an empty collection for a failure, for a
-       * viewport outside coverage, and for genuinely empty ground alike — it
-       * cannot tell them apart, and neither can this. What we do know is that
-       * local data says there IS public land here, and replacing a drawn
-       * continent with a blank one on the strength of an ambiguous empty
-       * response is the wrong way to be wrong.
+       * THIS IS THE FIX FOR "THE BOUNDARIES DISAPPEAR WHEN I ZOOM OUT".
        *
-       * Note this cannot suppress a true empty: where the ground really is
-       * empty the local layer had nothing either, so `local` is null and this
-       * never fires.
+       * Crossing below zoom 7 switches to the overview tier, which is a fresh
+       * request for a box the size of several provinces, answered by eight
+       * government ArcGIS services inside one serverless function. When one of
+       * them is having a slow afternoon the response is a well-formed, utterly
+       * empty Alberta — and the map used to draw it, wiping boundaries that
+       * had loaded perfectly a second earlier at the zoom above.
+       *
+       * `fetchBoundaries` now marks an answer it could not stand behind. Where
+       * it is marked, we keep exactly what is on screen, leave the loaded box
+       * alone so the next gesture retries, and say on screen that the wide
+       * view did not load. A stale outline the camper can see is honest and
+       * useful; a blank continent is neither.
+       *
+       * A trustworthy empty — every source answered, there is nothing here —
+       * still clears the map, because that is a real answer.
        */
+      if (collection.features.length === 0 && collection.meta?.unavailable) {
+        setWideViewFailed(true);
+        return;
+      }
+
+      // Local data says there IS public land here and the network disagrees
+      // without having failed. Keep the local answer: it is drawn from a
+      // dataset that shipped with the app, not from a service having a moment.
       if (local && collection.features.length === 0) return;
 
+      setWideViewFailed(false);
       loadedBoxRef.current = box;
       loadedZoomRef.current = currentZoom;
       loadedDetailRef.current = detail;
@@ -6312,12 +6342,41 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         any zoom, not just the overview — the detailed tier has a cap of its
         own, and a sample is a sample wherever it happens.
       */}
-      {showBoundaries && boundaries.meta?.truncated && (
+      {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && (
         <div className="absolute bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
             <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
             <span className="text-[10px] font-semibold text-violet-200">
               Largest areas only — zoom in for the rest
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/*
+        THE MAP SAYS WHEN IT DOESN'T KNOW, RATHER THAN GOING QUIET.
+
+        Two different silences used to look identical, and both looked like
+        "there is no public land out here":
+
+          - zoomed past the point where any boundary is legible at all, and
+          - the wide view asked and got an answer it could not stand behind,
+            which happens when one of eight government servers is slow.
+
+        The second is the one that stings, because the boundaries were there a
+        second ago at the zoom above. So the map keeps drawing what it had and
+        this says why, in words a camper can act on. Amber rather than violet:
+        the truncation chip above is a caveat about a good answer, this is a
+        missing answer, and they must not read the same.
+      */}
+      {showBoundaries && (wideViewFailed || zoomTooFar) && (
+        <div className="absolute bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
+          <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
+            <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
+            <span className="text-[10px] font-semibold text-amber-200 leading-snug">
+              {zoomTooFar
+                ? 'Too far out to draw public land — zoom in to see it'
+                : 'Couldn’t load public land for this wide view. What’s drawn may be incomplete — zoom in for the real picture.'}
             </span>
           </div>
         </div>

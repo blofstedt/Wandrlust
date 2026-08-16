@@ -132,6 +132,31 @@ export interface BoundaryCollection {
      * drawing as a mesh of thousands of separate outlines.
      */
     simplifyDegrees?: number;
+    /**
+     * THIS EMPTY ANSWER IS A FAILURE, NOT A FACT.
+     *
+     * -----------------------------------------------------------------------
+     * WHY THE MAP HAD TO BE TAUGHT THE DIFFERENCE
+     * -----------------------------------------------------------------------
+     *
+     * `features: []` used to mean four completely different things — the
+     * request failed, the server refused the viewport, every upstream service
+     * timed out, or there genuinely is no public land here — and the map could
+     * not tell them apart, so it drew all four the same way: a blank
+     * continent. Zooming out over Alberta hit the third case, the boundaries
+     * vanished, and the app said "there is nowhere to camp in Alberta" as
+     * confidently as if it knew.
+     *
+     * When this is true, NOTHING has been learned about the ground. The caller
+     * must keep whatever it is already showing and say the view failed to
+     * load, and the answer must never be cached — an unavailable response that
+     * lands in the seven-day disk cache takes a whole zoom level out for a
+     * week.
+     *
+     * Absent or false means the empty IS the answer: everything was asked, and
+     * there is nothing here.
+     */
+    unavailable?: boolean;
   };
 }
 
@@ -140,6 +165,16 @@ export const EMPTY_BOUNDARIES: BoundaryCollection = {
   features: [],
   meta: { sources: [] }
 };
+
+/**
+ * Nothing was learned. Distinct from `EMPTY_BOUNDARIES`, which is a real
+ * "we asked everything and there is no public land here".
+ */
+const unavailableBoundaries = (): BoundaryCollection => ({
+  type: 'FeatureCollection',
+  features: [],
+  meta: { sources: [], unavailable: true }
+});
 
 /** Colours keyed by what the data actually asserts. */
 /**
@@ -439,16 +474,42 @@ export const fetchBoundaries = async (
 
   try {
     const response = await fetch(`/api/boundaries?${query}`, { signal });
-    if (!response.ok) return EMPTY_BOUNDARIES;
+    if (!response.ok) return unavailableBoundaries();
 
     const data = await response.json();
-    if (data?.type !== 'FeatureCollection') return EMPTY_BOUNDARIES;
+    if (data?.type !== 'FeatureCollection') return unavailableBoundaries();
 
     const collection: BoundaryCollection = {
       type: 'FeatureCollection',
       features: Array.isArray(data.features) ? data.features : [],
       meta: data.meta ?? { sources: [] }
     };
+
+    /**
+     * An empty answer only counts as an answer if everything was actually
+     * asked.
+     *
+     * The zoomed-out view queries eight government ArcGIS services at once,
+     * across a box the size of a continent, from a serverless function with a
+     * thirty-second ceiling. A provincial server having a slow afternoon comes
+     * back as `available: false` and no parcels — which, combined with the
+     * others, produces a perfectly well-formed response describing an empty
+     * Alberta. That is the response that was wiping the map.
+     *
+     * So: no features AND anything went wrong — the server skipped the
+     * viewport, or any single source is down — means we learned nothing.
+     * Every source up and still nothing is a real, and rare, empty.
+     */
+    const sources = collection.meta?.sources ?? [];
+    const nothingLearned =
+      collection.features.length === 0 &&
+      (Boolean(collection.meta?.skipped) ||
+        sources.length === 0 ||
+        sources.some((s) => s.available === false));
+
+    if (nothingLearned) {
+      return { ...collection, meta: { ...collection.meta, unavailable: true } };
+    }
 
     if (responseCache.size >= CACHE_MAX_ENTRIES) {
       // Evict the oldest DETAILED viewport. Overview tiles are exempt: there
@@ -466,6 +527,7 @@ export const fetchBoundaries = async (
     return collection;
   } catch (error) {
     if (signal?.aborted || (error as Error)?.name === 'AbortError') return null;
-    return EMPTY_BOUNDARIES;
+    // A dropped connection says nothing about the ground under the map.
+    return unavailableBoundaries();
   }
 };

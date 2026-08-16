@@ -274,12 +274,28 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
    * it is a fraction of what it was now that sub-pixel parts are pruned
    * server-side.
    */
+  /*
+   * THREE BANDS, NOT FIVE, AND THIS IS NOT A COSMETIC CHANGE.
+   *
+   * The threshold is part of the request URL, so a different number at every
+   * zoom level meant every single zoom step below 7 minted a brand-new
+   * continental request — eight government ArcGIS services, from scratch,
+   * four times over on the way from zoom 6 to zoom 3. Every one of those is a
+   * fresh chance for a slow provincial server to answer with nothing, and it
+   * is why zooming out felt like the boundaries were being deliberately
+   * thrown away.
+   *
+   * Banding means neighbouring zooms resolve to the same URL and reuse the
+   * same cached answer. It costs nothing upstream: the threshold is applied
+   * to parcels the server has ALREADY fetched, so a lower one only keeps more
+   * of what it is holding — which is also why the middle band drops to 600
+   * rather than 1500. Parcels are kept largest-first up to the record limit,
+   * so the big blocks are never crowded out by the smaller ones let through.
+   */
   // Zoomed fully out, only the continent-scale blocks are worth a draw call —
   // but there ARE some, so the map is never blank at minimum zoom.
   if (zoom <= 2) return 4000;
-  if (zoom <= 3) return 1500;
   if (zoom <= 4) return 600;
-  if (zoom <= 5) return 200;
   return 60;
 };
 
