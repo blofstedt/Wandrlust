@@ -152,7 +152,14 @@ as $$
   from hits h;
 $$;
 
-comment on function public.boundaries_in_bbox is
+-- The argument list is required. supabase_schema.sql already ships a
+-- boundaries_in_bbox, so by this point the name has two overloads and an
+-- unqualified COMMENT is ambiguous — which aborts this migration's
+-- transaction and takes the rest of the file with it on a fresh install.
+comment on function public.boundaries_in_bbox(
+  double precision, double precision, double precision, double precision,
+  double precision, integer
+) is
   'Seeded public land intersecting a bbox, as a GeoJSON FeatureCollection in the shape /api/boundaries returns. Empty when nothing has been seeded, which the API treats as "fall back to the live services".';
 
 -- Anon may read boundaries (see the RLS policy in supabase_schema.sql), so the

@@ -1,10 +1,22 @@
 import React, { useState } from 'react';
 import { AlertTriangle, Loader2, Check, MapPin } from 'lucide-react';
-import { reportHazard, submitPoi, reportBurnedSite } from '../services/dataService';
+import { reportHazard, reportBurnedSite } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { HAZARD_REPORT_KINDS, hazardReportStyle } from '../config/hazardReports';
 
-type Mode = 'hazard' | 'poi' | 'burn';
+/**
+ * "Add a POI" used to be a third tab here and it has moved out.
+ *
+ * It dropped the thing at whatever the map happened to be centred on — with
+ * no crosshair drawn, so there was nothing to aim at — demanded a name for a
+ * vault toilet that has not got one, and then no layer anywhere ever drew the
+ * result. Facilities now have their own sheet, reached from the pin you
+ * actually tapped. See `AddFacilitySheet`.
+ *
+ * What is left here is what genuinely is a report: something WRONG, about the
+ * road or about a site.
+ */
+type Mode = 'hazard' | 'burn';
 
 /**
  * Built from the same table the map draws, so the icon you see beside a kind
@@ -14,14 +26,6 @@ const HAZARD_KINDS = HAZARD_REPORT_KINDS.map((id) => ({
   id,
   label: `${hazardReportStyle(id).emoji} ${hazardReportStyle(id).label}`
 }));
-
-const POI_KINDS = [
-  { id: 'potable_water', label: 'Potable water' }, { id: 'dump_station', label: 'Dump station' },
-  { id: 'propane', label: 'Propane' }, { id: 'fuel', label: 'Fuel' },
-  { id: 'shower', label: 'Shower' }, { id: 'laundry', label: 'Laundry' },
-  { id: 'trash', label: 'Trash' }, { id: 'air_compressor', label: 'Air' },
-  { id: 'other', label: 'Other' }
-];
 
 /**
  * Neutral reason codes. These describe the SITE's condition, not people —
@@ -53,7 +57,6 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
   const { user } = useAuth();
   const [mode, setMode] = useState<Mode>('hazard');
   const [kind, setKind] = useState('washout');
-  const [name, setName] = useState('');
   const [detail, setDetail] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -66,9 +69,6 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
     let result;
     if (mode === 'hazard') {
       result = await reportHazard(kind, center[0], center[1], detail);
-    } else if (mode === 'poi') {
-      if (!name.trim()) { setBusy(false); setNotice('Give it a name'); return; }
-      result = await submitPoi({ kind, name: name.trim(), lat: center[0], lon: center[1], detail });
     } else {
       if (!campsiteId) { setBusy(false); setNotice('Open a campsite first to report it'); return; }
       result = await reportBurnedSite(campsiteId, kind, detail);
@@ -76,11 +76,11 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
 
     setNotice(result.message);
     setBusy(false);
-    if (result.ok) { setDetail(''); setName(''); }
+    if (result.ok) { setDetail(''); }
   };
 
   if (!isOpen) return null;
-  const kinds = mode === 'hazard' ? HAZARD_KINDS : mode === 'poi' ? POI_KINDS : BURN_REASONS;
+  const kinds = mode === 'hazard' ? HAZARD_KINDS : BURN_REASONS;
 
   return (
     <div className="fixed inset-0 z-[1800] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 anim-backdrop">
@@ -94,12 +94,12 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
         </div>
 
         <div className="flex border-b border-slate-800 shrink-0">
-          {([['hazard', 'Road hazard'], ['poi', 'Add a POI'], ['burn', 'Site problem']] as [Mode, string][]).map(([m, label]) => (
+          {([['hazard', 'Road hazard'], ['burn', 'Site problem']] as [Mode, string][]).map(([m, label]) => (
             <button
               key={m}
               onClick={() => {
                 setMode(m);
-                setKind(m === 'hazard' ? 'washout' : m === 'poi' ? 'potable_water' : 'physical_barrier');
+                setKind(m === 'hazard' ? 'washout' : 'physical_barrier');
                 setNotice(null);
               }}
               className={`flex-1 px-2 py-2 text-[11px] font-bold ${
@@ -132,23 +132,14 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
             ))}
           </div>
 
-          {mode === 'poi' && (
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Name — e.g. 'Ranger station spigot'"
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
-            />
-          )}
-
           <textarea
             value={detail}
             onChange={(e) => setDetail(e.target.value)}
             rows={3}
             placeholder={
-              mode === 'hazard' ? 'What should other drivers know? How bad, and can a 2WD get through?'
-              : mode === 'poi' ? 'Hours, cost, access notes'
-              : 'What changed about this site?'
+              mode === 'hazard'
+                ? 'What should other drivers know? How bad, and can a 2WD get through?'
+                : 'What changed about this site?'
             }
             className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
           />
@@ -167,12 +158,10 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
           <p className="text-[10px] text-slate-500 leading-snug">
             {mode === 'hazard'
               ? 'Reports earn points. If three other campers confirm yours, you get an early-reporter bonus.'
-              : mode === 'poi'
-              ? 'New POIs stay pending until five net upvotes promote them. Three consecutive downvotes prune them.'
               : 'Site reports are aggregated by area. Several independent reports in one region raise a zone alert for everyone heading there.'}
           </p>
         </div>
       </div>
     </div>
   );
-};
+};

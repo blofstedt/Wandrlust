@@ -473,20 +473,59 @@
   animation: wl-chip-pop var(--dur-base) var(--ease-moook) backwards;
 }
 
-/* A chip's own arrival: up from nothing, past its size, and back — the
-   moook overshoot, scaled rather than travelled, because a chip in a
-   centred column has nowhere to travel from without leaning. */
+/* A chip's own arrival: up from nothing, past its size, and back — the moook
+   overshoot. The small rise is what makes a stack read AS a stack: each chip
+   comes up from where the one below it already sits, rather than materialising
+   in place. Kept to 5px, because a taller travel makes a five-chip stack look
+   like it is being dealt rather than assembled. */
 @keyframes wl-chip-pop {
-  0%   { opacity: 0; transform: scale(0.6); }
-  55%  { opacity: 1; transform: scale(1.1); }
+  0%   { opacity: 0; transform: translateY(5px) scale(0.6); }
+  55%  { opacity: 1; transform: translateY(0) scale(1.1); }
   78%  { transform: scale(0.97); }
   100% { transform: scale(1); }
 }
 
+/* Going away again, for the press-and-hold peek. The reverse of the arrival
+   in every sense: it starts at the TOP of the stack and works down, so the
+   pile dismantles from the loose end rather than collapsing from under
+   itself. The delay is set per chip by the peek code. */
+.wl-chip-out {
+  animation: wl-chip-unpop var(--dur-tap) var(--ease-exit) forwards;
+}
+
+@keyframes wl-chip-unpop {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(4px) scale(0.72); }
+}
+
+/* The peek row itself.
+   Never interactive: a peek is a look, not a menu, and the finger that opened
+   it is already held down somewhere. Letting these take pointer events would
+   mean sliding a thumb off a pin could land on a chip and navigate. */
+.wl-chips-peek,
+.wl-chips-peek .wl-chip {
+  pointer-events: none !important;
+  cursor: default;
+}
+/* AND IT SITS HIGHER THAN THE TAPPED ROW, because a thumb is holding the pin
+   down. At the normal 5px the bottom two or three chips came up underneath
+   the finger that asked for them — the answer was on screen and covered by
+   the hand. 42px clears a thumb's contact patch and the knuckle behind it,
+   which is the whole reason this gesture exists: to read without moving. */
+.wl-chips-peek { margin-bottom: 42px; }
+
 /* While the camera is away at the fires, the pin's own labels get out of the
    way of the thing they sent you to look at. */
 .wl-touring .wl-chips { opacity: 0; }
+/* EVERY CHIP IS A BUTTON.
+   The row itself still lets taps through to the map (it is a column of gaps as
+   much as it is a column of chips), but each chip takes its own. What it does
+   is in the arrow: › goes somewhere, … has more to say. */
 .wl-chip {
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform var(--dur-tap) var(--ease-moook),
+              background var(--dur-tap) var(--ease-standard);
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -524,17 +563,74 @@
 }
 .wl-chip-glyph { font-size: 9px; line-height: 1; }
 
-/* A facility up the road, not a fact about this spot: tappable, and it says
-   so by lifting off the others and keeping its arrow. The chip row is
-   pointer-events:none so taps fall through to the map; these opt back in. */
+/* A CEILING ON HOW WIDE ONE CHIP MAY GET.
+   Most chips are two or three words and never come near this. A warning chip
+   carries the agency's own product name — "Special air quality statement" —
+   and an unlucky one could otherwise run wider than the phone, centred on a
+   pin, with half of it off both edges of the screen. Clamped and ellipsised
+   instead; the whole name is in the title, the aria-label, and the sheet.
+   `.wl-chip-open` overrides this when a chip unfurls, so nothing is
+   permanently hidden behind the clamp. */
+.wl-chip-text {
+  display: inline-block;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+.wl-chip-open .wl-chip-text {
+  max-width: none;
+  overflow: visible;
+}
+
+/* Pressed. The one piece of feedback that makes a thing feel like a button
+   before you have found out what it does. */
+.wl-chip:active { transform: scale(0.94); }
+
+/* Unfurled: the whole hedged sentence, in place, for a few seconds.
+   Wraps rather than running off the side of the phone, and capped at a width
+   that still leaves the map either side of it readable. */
+.wl-chip-open {
+  white-space: normal;
+  /* `max-content` FIRST, for the same reason the tour label needs it: the chip
+     row is absolutely positioned inside a 32px marker icon, so an open chip
+     sizes itself to THAT and the full sentence comes out one word per line, a
+     tall thin column running off the top of the screen. `max-content` lets it
+     take the width of its text; `max-width` then brings it back to something
+     readable and wraps it properly. */
+  width: max-content;
+  max-width: 15rem;
+  text-align: left;
+  background: rgba(15, 23, 42, 0.98);
+  border-color: color-mix(in srgb, var(--wl-chip-color) 85%, transparent);
+  box-shadow: 0 6px 18px rgba(2, 6, 23, 0.65);
+}
+.wl-chip-open .wl-chip-text { line-height: 1.4; }
+.wl-chip-open .wl-chip-arrow { display: none; }
+
+/* Somewhere to go — a warning area, a parcel, a track, the fires, the phone's
+   own maps app. Brighter than a plain fact chip, and it keeps its arrow. */
 .wl-chip-go {
-  pointer-events: auto;
-  cursor: pointer;
   background: color-mix(in srgb, var(--wl-chip-color) 20%, rgba(15, 23, 42, 0.96));
   border-color: var(--wl-chip-color);
   padding-right: 5px;
 }
 .wl-chip-go:hover { background: color-mix(in srgb, var(--wl-chip-color) 34%, rgba(15, 23, 42, 0.96)); }
+/* The car chip is the one that leaves the app, so it wears the colour the
+   old "Go" button under the pin used to. */
+.wl-chip-nav {
+  color: #052e16;
+  font-weight: 800;
+  background: #34d399;
+  border-color: #10b981;
+}
+.wl-chip-nav:hover { background: #6ee7b7; }
+.wl-chip-nav .wl-chip-dot { display: none; }
+.wl-chip .wl-chip-arrow {
+  font-size: 9px;
+  opacity: 0.6;
+  margin-left: 1px;
+}
 .wl-chip-go .wl-chip-arrow {
   font-size: 9px;
   opacity: 0.85;
@@ -546,8 +642,11 @@
 
    The chip row above the pin is what this place IS; this row is what you can
    do about it. Kept small and dark so it reads as controls rather than as two
-   more facts, and pointer-events are on because unlike the chips these exist
-   to be tapped.
+   more facts.
+
+   There used to be a green "Go" here as well. Navigation moved up into the car
+   chip, which was already telling you how long the drive is — so what is left
+   is the info button and the way out.
    ------------------------------------------------------------------------- */
 .wl-pin-actions {
   position: absolute;
@@ -579,22 +678,19 @@
   box-shadow: 0 2px 10px rgba(2, 6, 23, 0.6);
 }
 .wl-pin-action:hover { background: rgba(30, 41, 59, 0.98); }
-.wl-pin-action-go {
-  color: #052e16;
-  background: #34d399;
-  border-color: #10b981;
-}
-.wl-pin-action-go:hover { background: #6ee7b7; }
 .wl-pin-action-close { padding: 4px 6px; color: #cbd5e1; }
 
 /* ---------------------------------------------------------------------------
-   The fire tour: tap the fire chip and the camera goes out to look.
+   Tours: tap a chip and the camera goes out to look at what it stands for.
 
-   Each flame lands with its own label, one after the other, and the label
-   quotes the agency's wording — "reported under control" is a report, not an
-   all-clear, and the red one is only for a fire nobody has said that about.
+   One set of styles for all of them — the fires, the warning area, the parcel,
+   the track in, the end of the road — because they are one gesture wearing
+   different colours. Each stop lands with its own label, and the label quotes
+   the source's own wording: "reported under control" is a report, not an
+   all-clear, and an approximate boundary says it is approximate while it is on
+   screen rather than in a footnote nobody opens.
    ------------------------------------------------------------------------- */
-.wl-fire-stop-wrap {
+.wl-tour-stop-wrap {
   position: relative;
   display: flex;
   align-items: center;
@@ -602,42 +698,164 @@
   width: 30px;
   height: 30px;
 }
-.wl-fire-stop-glyph {
+.wl-tour-stop-glyph {
   font-size: 20px;
   line-height: 1;
   filter: drop-shadow(0 2px 6px rgba(2, 6, 23, 0.7));
   animation: moook-pop var(--dur-base) var(--ease-moook) backwards;
 }
-.wl-fire-stop-label {
+.wl-tour-stop-label {
   position: absolute;
   bottom: 100%;
   left: 50%;
   transform: translateX(-50%);
-  margin-bottom: 4px;
+  /* `--wl-tour-lift` climbs the bubble over a marker already standing on this
+     point — see PIN_LIFT_PX in MapComponent. Zero everywhere else. */
+  margin-bottom: calc(4px + var(--wl-tour-lift, 0px));
   display: flex;
   flex-direction: column;
   align-items: center;
-  white-space: nowrap;
+  /* `max-content` first: an absolutely positioned box otherwise sizes itself
+     to its 30px containing block and every label comes out one word wide. */
+  width: max-content;
+  max-width: 13rem;
+  text-align: center;
   padding: 3px 8px;
-  border-radius: 9999px;
+  border-radius: 12px;
   font-size: 10px;
   font-weight: 800;
   line-height: 1.3;
   color: #f8fafc;
-  background: rgba(249, 115, 22, 0.9);
-  border: 1px solid #fb923c;
+  background: color-mix(in srgb, var(--wl-tour-color) 88%, rgba(2, 6, 23, 0.9));
+  border: 1px solid var(--wl-tour-color);
   box-shadow: 0 2px 10px rgba(2, 6, 23, 0.6);
   animation: moook-in-up-centred var(--dur-base) var(--ease-moook) backwards;
 }
-.wl-fire-stop-label-hot {
-  background: rgba(239, 68, 68, 0.92);
-  border-color: #ef4444;
+/* The name leads. It was the same size and weight as the rules under it, which
+   made the card read as five equal lines instead of a heading and its list. */
+.wl-tour-stop-label b { font-weight: 800; font-size: 11px; }
+/* What kind of thing it is — "US Forest Service" — under the name it belongs
+   to rather than mixed into the rules, which it is not one of. */
+.wl-tour-stop-label-card b { margin-bottom: 3px; }
+.wl-tour-stop-label small {
+  font-size: 9px;
+  font-weight: 700;
+  opacity: 0.8;
+  margin-top: -2px;
+  margin-bottom: 3px;
 }
-.wl-fire-stop-label em {
+/* The rules — one per line, and a step down from the name without dropping to
+   the size of the caveat underneath them. These are the part to act on. */
+.wl-tour-stop-label i {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 9.5px;
+  opacity: 0.97;
+}
+/* BULLETED, BECAUSE THEY ARE A LIST OF RULES.
+   Run together as plain lines, "14 nights in any 28-day period" and "then move
+   at least 25 miles" read as one wrapped sentence. The hanging indent is the
+   point of the padding/text-indent pair: a rule that wraps lines up under its
+   own first word, not under the bullet. */
+.wl-tour-stop-label-card i {
+  display: block;
+  align-self: stretch;
+  padding-left: 9px;
+  text-indent: -9px;
+}
+.wl-tour-stop-label-card i::before {
+  content: '•\00a0\00a0';
+  opacity: 0.7;
+}
+.wl-tour-stop-label em {
   font-style: normal;
   font-weight: 600;
   font-size: 9px;
-  opacity: 0.9;
+  opacity: 0.92;
+}
+
+/* A LABEL CARRYING A LIST IS A LITTLE CARD, NOT A CAPTION.
+   Three centred lines of different lengths come out ragged and slow to read,
+   so as soon as there are rules to list the whole thing goes left-aligned and
+   a touch wider, and the caveat gets a hairline to sit under. */
+.wl-tour-stop-label-card {
+  align-items: flex-start;
+  text-align: left;
+  max-width: 15rem;
+  padding: 5px 9px;
+  gap: 1px;
+}
+.wl-tour-stop-label-card em {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(248, 250, 252, 0.25);
+  align-self: stretch;
+  /* Quieter than the bullets. It is the hedge on them, not one of them —
+     and next to a four-line list at full strength it was competing. */
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+/* THE WAY OUT OF A LABEL THAT STAYS UP LONG ENOUGH TO READ.
+   The land label holds for ten seconds on purpose — it is a stay limit and a
+   permit, not a caption — and ten seconds is far too long to be stuck with
+   something you have finished reading. The marker itself is not interactive,
+   so this opts back in the way a chip does. The inset ::after gives a thumb a
+   target about twice the size of the circle it can see. */
+.wl-tour-stop-close {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  color: #f8fafc;
+  background: rgba(2, 6, 23, 0.45);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background var(--dur-tap) var(--ease-standard),
+              transform var(--dur-tap) var(--ease-moook);
+}
+.wl-tour-stop-close::after {
+  content: '';
+  position: absolute;
+  inset: -9px;
+}
+.wl-tour-stop-close:active { transform: scale(0.88); }
+@media (hover: hover) {
+  .wl-tour-stop-close:hover { background: rgba(2, 6, 23, 0.75); }
+}
+/* Room for it, so a long forest name never runs under the button. */
+.wl-tour-stop-label-closable { padding-right: 26px; }
+
+/* The tracker that runs one lap around a warned area — see `orbit` in
+   MapComponent. A cloud has no edge to flash, so "this one" is said with a
+   moving light instead of an outline. Neon because it has to read over a
+   pale wash of its own colour: a solid dot in the family hue would vanish
+   into the cloud it is pointing at. The dot is the light source, the ring
+   around it is the bloom, and the whole thing is gone in two seconds. */
+.wl-tour-tracker-dot {
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 3px;
+  border-radius: 9999px;
+  background: #fff;
+  /* Two shadows: a tight core in the family colour, and a wide soft bloom.
+     Together they read as a light rather than a sticker. */
+  box-shadow:
+    0 0 4px 1px var(--wl-tracker-color),
+    0 0 12px 4px color-mix(in srgb, var(--wl-tracker-color) 70%, transparent),
+    0 0 26px 10px color-mix(in srgb, var(--wl-tracker-color) 35%, transparent);
+  animation: tracker-breathe 0.9s var(--ease-standard) infinite;
+}
+
+@keyframes tracker-breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.35); opacity: 0.82; }
 }
 
 /* The far end of a facility hop: the toilet, tap or pump itself, in the
@@ -723,9 +941,17 @@
 
   .skeleton { animation: none; background: rgb(30 41 59); }
   .anim-pulse, .anim-pulse-danger, .wl-dot-urgent { animation: none; }
+  /* The tracker still appears and still glows — it just stops breathing.
+     `orbit` separately skips the lap, so it holds still at the top of the
+     ring instead of travelling. */
+  .wl-tour-tracker-dot { animation: none; }
   /* The chips' stagger is a delay, not a duration, so shortening the
      animation above would still leave a chip blank for half a second. */
-  .wl-chip-in { animation-delay: 0ms !important; }
+  .wl-chip-in, .wl-chip-out { animation-delay: 0ms !important; }
+  /* The peek still has to disappear, so this one keeps its end state rather
+     than being switched off — a retract that does not run leaves the stack
+     stuck open over the map. */
+  .wl-chip-out { animation-duration: 1ms; }
 }
 
 /* High-contrast preference: strengthen borders. */

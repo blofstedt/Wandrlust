@@ -1,23 +1,30 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type {
   Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
-  DestinationLand, MapDestination, CellCoverage
+  DestinationLand, MapDestination, CellCoverage, BeaconSpot, FacilityKind, MapFacility
 } from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
 import { fetchOverpassCampsites } from './services/overpass';
 import {
   getSavedCampsites,
   toggleSaveCampsite,
+  mergeSavedCampsites,
   getCustomCampsites,
-  addCustomCampsite
+  addCustomCampsite,
+  deleteCustomCampsite,
+  getOfflineCampsites
 } from './services/offlineStorage';
 import { Navbar } from './components/Navbar';
 import { MapComponent } from './components/MapComponent';
 import { CampsiteCard } from './components/CampsiteCard';
 import { CampsiteDetailModal } from './components/CampsiteDetailModal';
 import { OfflineManagerModal } from './components/OfflineManagerModal';
-import { AddCampsiteModal } from './components/AddCampsiteModal';
+import { MapDataChoiceScreen } from './components/MapDataChoiceScreen';
+import { shouldAskMapDataChoice } from './services/landOverlayService';
 import { AddHereConfirm } from './components/AddHereConfirm';
+import { AddFacilitySheet } from './components/AddFacilitySheet';
+import { FacilityCard } from './components/FacilityCard';
+import type { FacilityLookupState } from './components/FacilityChips';
 import { CampingGuideModal } from './components/CampingGuideModal';
 import { FilterDrawer } from './components/FilterDrawer';
 import { AuthModal } from './components/AuthModal';
@@ -26,29 +33,36 @@ import { PresencePanel } from './components/PresencePanel';
 import { ScoutModePanel } from './components/ScoutModePanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ReportPanel } from './components/ReportPanel';
+import { BeaconPanel } from './components/BeaconPanel';
+import { BeaconVerifyPanel } from './components/BeaconVerifyPanel';
+import { SpotReportSheet, type SpotReportSubmission } from './components/SpotReportSheet';
+import { createSpot } from './services/dataService';
+import { flushPendingSpots } from './services/spotSync';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
-import { AlertCard } from './components/AlertCard';
 import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
 import {
   createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
   ROAD_ACCESS_RANK, countActiveFilters
 } from './config/filters';
+import { ROAD_ACCESS_BY_SCALE, RIG_FEET_BY_SCALE } from './config/spotReport';
+import { newUserCampsiteId } from './utils/campsiteId';
 import { distanceMiles } from './utils/geo';
 import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
   fetchCampsitesNear, fetchMyRigs, submitCampsite, fetchMySubmissionStates,
+  saveCampsiteRemote, unsaveCampsiteRemote, fetchSavedCampsitesRemote,
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
 import { mergeCampsites } from './utils/mergeCampsites';
 import { calculateRoute, type RouteResult } from './services/routingService';
-import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot, type HazardAlert } from './services/weatherService';
+import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
 import { useAuth } from './contexts/AuthContext';
-import { Search, Bookmark, MapPinOff, SlidersHorizontal, Waves } from 'lucide-react';
+import { Search, Bookmark, MapPinOff, SlidersHorizontal, Waves, Radar } from 'lucide-react';
 
 /** Calgary, AB — the app's home coordinates. */
 const HOME_CENTER: [number, number] = [51.0447, -114.0719];
@@ -64,6 +78,25 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>('map');
   const [isOfflineMode, setIsOfflineMode] = useState(false);
 
+  /**
+   * Whether to ask which map data this device should carry.
+   *
+   * Starts false rather than true: the chooser is a blocking screen, and
+   * flashing it up for the moment it takes storage to answer would show a
+   * returning camper a decision they made weeks ago. It appears only once
+   * `shouldAskMapDataChoice` has confirmed both that nobody has chosen AND
+   * that there is something to choose between.
+   */
+  const [askMapData, setAskMapData] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    shouldAskMapDataChoice().then((ask) => {
+      if (!cancelled) setAskMapData(ask);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   // Map & location
   const [center, setCenter] = useState<[number, number]>(HOME_CENTER);
   const [zoom, setZoom] = useState(10);
@@ -74,9 +107,25 @@ export default function App() {
   // Data
   const [campsites, setCampsites] = useState<Campsite[]>(CURATED_CAMPSITES);
   const [savedSites, setSavedSites] = useState<Campsite[]>([]);
+  /**
+   * How much of the saved list the account actually has.
+   *
+   * Shown to the camper rather than assumed, because "saved" meaning two
+   * different things — on this phone, versus on your account — is precisely
+   * the confusion that made the missing sync worth fixing.
+   */
+  const [savedSync, setSavedSync] =
+    useState<'signed_out' | 'syncing' | 'synced' | 'unreachable'>('signed_out');
   const [selectedCampsite, setSelectedCampsite] = useState<Campsite | null>(null);
   const [detailModalSite, setDetailModalSite] = useState<Campsite | null>(null);
   const [sheetSite, setSheetSite] = useState<Campsite | null>(null);
+  /**
+   * How much of the screen the spot drawer is covering, in pixels.
+   *
+   * Passed down to the map so it can lift the open pin into the strip of map
+   * left above the drawer, and put the view back when the drawer closes.
+   */
+  const [sheetPx, setSheetPx] = useState(0);
   const [isSearchingSites, setIsSearchingSites] = useState(false);
   const [outOfCoverageNotice, setOutOfCoverageNotice] = useState<string | null>(null);
   const [pinRefusal, setPinRefusal] = useState<'water' | 'outside_coverage' | null>(null);
@@ -87,8 +136,6 @@ export default function App() {
   const [destination, setDestination] = useState<MapDestination | null>(null);
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [selectedReport, setSelectedReport] = useState<HazardRecord | null>(null);
-  /** An official warning (fire/flood/storm) tapped on the map. */
-  const [selectedAlert, setSelectedAlert] = useState<HazardAlert | null>(null);
 
   /**
    * The rig, which exists only to make the route warnings specific to it.
@@ -125,7 +172,47 @@ export default function App() {
   /** The "add the ground under your feet?" question, raised by the + button. */
   const [isAddHereOpen, setIsAddHereOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+
+  /**
+   * Beacon.
+   *
+   * `beaconAt` is where the beacon was dropped; `beaconSpot` is the one a
+   * camper tapped on the map to check in at. They are separate because the two
+   * are different questions — "what is around here?" and "how did this one go?"
+   * — and a camper can have the second open having never asked the first.
+   *
+   * `beaconRefreshKey` is bumped by ANYTHING that changes what the map should
+   * be drawing — a finished scan, a new spot, a report, a takedown. The layer
+   * otherwise only reloads after a 10 km pan, which is how sending a beacon
+   * used to leave the map looking empty while the leads sat in the database.
+   *
+   */
+  const [isBeaconOpen, setIsBeaconOpen] = useState(false);
+  const [beaconAt, setBeaconAt] = useState<[number, number] | null>(null);
+  const [beaconSpot, setBeaconSpot] = useState<BeaconSpot | null>(null);
+  const [beaconRefreshKey, setBeaconRefreshKey] = useState(0);
   const [legalDoc, setLegalDoc] = useState<LegalDocKind | null>(null);
+
+  /**
+   * Facilities — the chips under the search, and adding one.
+   *
+   * `facilityKinds` is a DISPLAY layer and deliberately not part of
+   * `filterState`. "Find me a toilet" and "only show campsites that have a
+   * toilet" are different questions with different answers, and the one time
+   * they lived in the same drawer people reliably reached for the wrong one.
+   * Nothing here touches `filteredCampsites`.
+   *
+   * `facilityRefreshKey` exists for the same reason `beaconRefreshKey` does:
+   * without it a camper adds a dump station, the sheet says "added", and the
+   * map shows nothing until they pan far enough to trip a reload.
+   */
+  const [facilityKinds, setFacilityKinds] = useState<FacilityKind[]>([]);
+  const [facilityState, setFacilityState] = useState<FacilityLookupState>({ status: 'idle' });
+  const [facilityRefreshKey, setFacilityRefreshKey] = useState(0);
+  const [isAddFacilityOpen, setIsAddFacilityOpen] = useState(false);
+  const [addFacilityAt, setAddFacilityAt] = useState<[number, number] | null>(null);
+  const [addFacilityFromGps, setAddFacilityFromGps] = useState(false);
+  const [selectedFacility, setSelectedFacility] = useState<MapFacility | null>(null);
 
   const [filterState, setFilterState] = useState<FilterState>(() =>
     createDefaultFilters(HOME_LABEL)
@@ -136,23 +223,120 @@ export default function App() {
     let cancelled = false;
 
     (async () => {
-      const [saved, custom] = await Promise.all([
+      const [saved, custom, packed] = await Promise.all([
         getSavedCampsites(),
-        getCustomCampsites()
+        getCustomCampsites(),
+        getOfflineCampsites()
       ]);
       if (cancelled) return;
 
       setSavedSites(saved);
+
+      /**
+       * Spots that came down with a map pack go on the MAP, not in Saved.
+       *
+       * They are the one category of spot this device holds that the camper
+       * neither submitted nor bookmarked, and they are here because a pack was
+       * downloaded for the area. They are added at the back so that anything
+       * the server has to say about the same spot wins — a cached record is a
+       * photograph of how things were on the day the pack came down.
+       */
+      if (packed.length > 0) {
+        setCampsites((prev) => {
+          const ids = new Set(prev.map((s) => s.id));
+          return [...prev, ...packed.filter((p) => !ids.has(p.id))];
+        });
+      }
+
       if (custom.length > 0) {
         setCampsites((prev) => {
           const ids = new Set(prev.map((s) => s.id));
-          return [...prev, ...custom.filter((c) => !ids.has(c.id))];
+          return [
+            ...prev,
+            ...custom
+              .filter((c) => !ids.has(c.id))
+              /**
+               * EVERY SPOT IN THIS LIST IS ONE OF THIS DEVICE'S OWN, WAITING
+               * TO GO UP. THAT IS WHAT THE LIST IS NOW — see `spotSync`.
+               *
+               * Nothing gets in here except by somebody tapping "add" in this
+               * app, and nothing stays once the server has accepted it. So
+               * `submittedByMe` is a fact about these records rather than a
+               * guess, and `local_only` is the state they are actually in.
+               * Both are restated on load because the spots written before this
+               * was fixed carry neither, which left them undeletable — the flag
+               * is what draws the whole removal section.
+               *
+               * Neither decides anything on its own. Whether a spot can come
+               * down is still the server's answer (`campsite_removal_state`),
+               * so one that other campers have since used, or one added here
+               * while signed into another account, gets the sentence explaining
+               * why rather than a button that would be refused.
+               */
+              .map((c) => ({
+                ...c,
+                submittedByMe: true,
+                submissionState: c.submissionState ?? 'local_only'
+              }))
+          ];
         });
       }
     })();
 
     return () => { cancelled = true; };
   }, []);
+
+  /**
+   * EMPTY THE OUTBOX WHENEVER THERE IS A CHANCE OF IT WORKING.
+   *
+   * A spot only sits on the device because it could not be shared — no signal,
+   * no account, a server having a bad minute. All three of those end without
+   * the camper doing anything in particular, and none of them fires an event
+   * that says "your spot can go up now". So this listens for the three moments
+   * that are worth another try:
+   *
+   *   the app opening      — the failure may have been hours ago
+   *   the radio returning  — the `online` event, which is what it is for
+   *   signing in           — the commonest reason a share is refused
+   *
+   * `flushPendingSpots` deletes the device copy only after the server has taken
+   * it, so a run that half-succeeds leaves the rest queued for the next one.
+   * Silent by design: an upload the camper did not ask for, of a spot they
+   * already believe is saved, does not need a toast. What it does need is for
+   * the chip on the pin to stop saying "on this device", which is what
+   * restating the uploaded records does.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const flush = async () => {
+      const { uploaded } = await flushPendingSpots();
+      if (cancelled || uploaded.length === 0) return;
+
+      const byId = new Map(uploaded.map((site) => [site.id, site]));
+      setCampsites((prev) => {
+        /**
+         * Both this and the restore-from-device effect run on mount, in no
+         * fixed order. If the upload wins the race it has already deleted the
+         * device copy the other one was about to read, so an uploaded spot can
+         * be missing from the list entirely rather than merely stale — and it
+         * would then not reappear until the camper happened to search near it.
+         * Anything not already here is added rather than assumed present.
+         */
+        const known = new Set(prev.map((site) => site.id));
+        const updated = prev.map((site) => byId.get(site.id) ?? site);
+        const missing = uploaded.filter((site) => !known.has(site.id));
+        return missing.length > 0 ? [...missing, ...updated] : updated;
+      });
+    };
+
+    void flush();
+    window.addEventListener('online', flush);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', flush);
+    };
+  }, [user]);
 
   /**
    * Catch up on what happened to this user's own submissions.
@@ -226,7 +410,25 @@ export default function App() {
           fetchOverpassCampsites(loc.lat, loc.lon, filterState.maxDistanceMiles)
         ]);
 
-        setCampsites((prev) => mergeCampsites(prev, shared, liveSites));
+        /**
+         * THE SERVER'S COPY WINS. `shared` GOES FIRST AND THAT IS WHY.
+         *
+         * `mergeCampsites` breaks a tie in favour of whichever group it saw
+         * first, and this used to pass `prev` — so a spot the app was already
+         * holding beat the same spot coming back from the server. That is
+         * backwards. The device's copy is a snapshot from whenever it was
+         * written; the server's carries the current review state, the position
+         * as it stands now, and whether other campers have since touched it.
+         * A stale local record quietly overriding all of that is how a spot
+         * ends up looking unshared long after it went up.
+         *
+         * Nothing is lost by the flip. The merge never overwrites a recorded
+         * value with an empty one — the amenities a camper filled in here, which
+         * the server deliberately does not return, are still donated to the
+         * winning record. And a spot that is only on this phone is not in
+         * `shared` at all, so it survives untouched from `prev`.
+         */
+        setCampsites((prev) => mergeCampsites(shared, prev, liveSites));
       } catch (err) {
         console.warn('Campsite lookup failed:', err);
       } finally {
@@ -277,7 +479,6 @@ export default function App() {
   const handleSelectMapCampsite = useCallback((site: Campsite) => {
     setSelectedCampsite(site);
     setSelectedReport(null);
-    setSelectedAlert(null);
     // A tapped pin becomes the destination, exactly like a dropped one. The
     // map draws no extra marker for it — the pin it already has lights up.
     setDestination({ latitude: site.latitude, longitude: site.longitude, campsite: site });
@@ -307,7 +508,6 @@ export default function App() {
     (lat: number, lon: number, land?: DestinationLand) => {
       setSelectedCampsite(null);
       setSelectedReport(null);
-      setSelectedAlert(null);
       setPinRefusal(null);
       setDestination({ latitude: lat, longitude: lon, land });
     },
@@ -351,6 +551,79 @@ export default function App() {
     setDestination(null);
     setSelectedCampsite(null);
     setRoute(null);
+  }, []);
+
+  /* ------------------------------------------------------------ FACILITIES */
+
+  /** Switch one facility layer on or off. */
+  const handleToggleFacilityKind = useCallback((kind: FacilityKind) => {
+    setFacilityKinds((prev) =>
+      prev.includes(kind) ? prev.filter((k) => k !== kind) : [...prev, kind]
+    );
+  }, []);
+
+  const handleClearFacilityKinds = useCallback(() => setFacilityKinds([]), []);
+
+  /** Open the facility form on a specific coordinate. */
+  const handleAddFacilityAt = useCallback((latitude: number, longitude: number) => {
+    setAddFacilityAt([latitude, longitude]);
+    setAddFacilityFromGps(false);
+    setIsAddFacilityOpen(true);
+  }, []);
+
+  /**
+   * A facility landed. Redraw the layer, and switch its kind on if it is off.
+   *
+   * Without the second half a camper adds a toilet with no chips selected and
+   * the map stays exactly as blank as it was — the pin is there, the layer
+   * that would draw it is not running, and the app looks like it lost the
+   * submission.
+   */
+  const handleFacilitySaved = useCallback((kind: FacilityKind) => {
+    setFacilityKinds((prev) => (prev.includes(kind) ? prev : [...prev, kind]));
+    setFacilityRefreshKey((key) => key + 1);
+  }, []);
+
+  /* ---------------------------------------------------------------- BEACON */
+
+  /** Send a beacon from the pin the camper just dropped. */
+  const handleSendBeacon = useCallback(() => {
+    if (!destination) return;
+    setBeaconAt([destination.latitude, destination.longitude]);
+    setIsBeaconOpen(true);
+  }, [destination]);
+
+  /**
+   * Sending the camper to a Beacon spot reuses the existing destination flow
+   * rather than inventing a second one — same pin, same routing, same
+   * conditions panel. A Beacon result is just a place on the map once you have
+   * decided to drive to it.
+   */
+  const handleNavigateToBeaconSpot = useCallback(
+    (latitude: number, longitude: number) => {
+      setIsBeaconOpen(false);
+      setSelectedCampsite(null);
+      setSelectedReport(null);
+      setDestination({ latitude, longitude });
+      setCenter([latitude, longitude]);
+      setZoom((current) => Math.max(current, 14));
+    },
+    []
+  );
+
+  /**
+   * A spot changed — it was flagged red, or it genuinely left the map. Bump the
+   * layer key so the change shows now, and close the sheet that was talking
+   * about it.
+   */
+  const handleBeaconSpotWithdrawn = useCallback((_spotId: string) => {
+    setBeaconSpot(null);
+    setBeaconRefreshKey((n) => n + 1);
+  }, []);
+
+  /** A scan finished. The leads it persisted are on the map; go and get them. */
+  const handleBeaconScanComplete = useCallback(() => {
+    setBeaconRefreshKey((n) => n + 1);
   }, []);
 
   /**
@@ -463,11 +736,126 @@ export default function App() {
     return () => { cancelled = true; };
   }, [user]);
 
+  /**
+   * Bookmark a spot — on this device, and on the account behind it.
+   *
+   * THE DEVICE WRITE COMES FIRST AND IS NEVER UNDONE, the same rule the add
+   * form follows. A camper tapping the bookmark at a pullout with one bar is
+   * keeping something they may need when the signal goes; losing it because an
+   * insert failed would be the worst outcome this button has. The account write
+   * is an enhancement layered on top and is allowed to fail.
+   *
+   * Silent on success — a toast on every bookmark tap is noise. It speaks up
+   * only when the two copies have actually diverged, because a bookmark that
+   * quietly never left the phone is the bug this replaced.
+   */
   const handleToggleSave = useCallback(async (site: Campsite, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    await toggleSaveCampsite(site);
+
+    const nowSaved = await toggleSaveCampsite(site);
     setSavedSites(await getSavedCampsites());
-  }, []);
+
+    // Signed out is not a failure, and the saved view already says the list
+    // lives on this device only. Nothing to report.
+    if (!user) return;
+
+    if (nowSaved) {
+      const result = await saveCampsiteRemote(site);
+      if (!result.ok) toast.info('Saved on this device', result.message);
+      return;
+    }
+
+    const result = await unsaveCampsiteRemote(site.id);
+    if (!result.ok) {
+      // Worth saying out loud: the merge on next sign-in only ever adds, so a
+      // failed removal means this spot comes back rather than staying gone.
+      toast.info('Removed from this device', `Still on your account — ${result.message}`);
+    }
+  }, [user, toast]);
+
+  /**
+   * A camper took their own spot back down.
+   *
+   * The sheet has already asked the server and the server has already agreed —
+   * this is the tidy-up, and it has to be thorough. The same spot can be in
+   * five places at once: the map's list, the device's user-submitted list, the
+   * saved list, whatever is selected, and the destination panel. Clearing four
+   * of them leaves a ghost pin that reappears the moment the view changes.
+   *
+   * The device copy goes unconditionally. It is the one the app falls back to
+   * with no server at all, so leaving it behind would put the spot straight
+   * back on the map on the next reload.
+   */
+  const handleSpotRemoved = useCallback(async (site: Campsite) => {
+    await deleteCustomCampsite(site.id);
+
+    // A bookmark to a spot that no longer exists is a dead end in the Saved
+    // tab, so it goes with it — through the same toggle the bookmark button
+    // uses, never by writing the list here.
+    const saved = await getSavedCampsites();
+    if (saved.some((s) => s.id === site.id)) {
+      await toggleSaveCampsite(site);
+      setSavedSites(await getSavedCampsites());
+    }
+
+    setCampsites((prev) => prev.filter((s) => s.id !== site.id));
+    setSheetSite(null);
+    setSelectedCampsite((prev) => (prev?.id === site.id ? null : prev));
+    setDetailModalSite((prev) => (prev?.id === site.id ? null : prev));
+    setDestination((prev) => (prev?.campsite?.id === site.id ? null : prev));
+
+    toast.success('Spot removed', 'It is off the map.');
+  }, [toast]);
+
+  /**
+   * Reconcile the saved list with the account, once per sign-in.
+   *
+   * Runs in three steps, in this order for a reason:
+   *
+   *   1. read what the account has,
+   *   2. fold it into the device list — only ever adding, never removing,
+   *   3. push up whatever the account had not seen.
+   *
+   * Step 3 is what carries across every spot bookmarked before this fix
+   * shipped, or bookmarked while signed out. Those exist on one phone and
+   * nowhere else, and the first sign-in after this change is the moment they
+   * stop being one bad reinstall away from gone.
+   *
+   * A server that cannot be reached leaves the device list exactly as it was
+   * and says so in the saved view. It never reads silence as "you saved
+   * nothing" — see `fetchSavedCampsitesRemote` on why it returns null rather
+   * than an empty array.
+   */
+  useEffect(() => {
+    if (!user) { setSavedSync('signed_out'); return; }
+
+    let cancelled = false;
+    setSavedSync('syncing');
+
+    (async () => {
+      const remote = await fetchSavedCampsitesRemote();
+      if (cancelled) return;
+
+      if (remote === null) { setSavedSync('unreachable'); return; }
+
+      const merged = await mergeSavedCampsites(remote);
+      if (cancelled) return;
+
+      setSavedSites(merged);
+      setSavedSync('synced');
+
+      const knownRemotely = new Set(remote.map((site) => site.id));
+      // One at a time: the list is small, and a burst of parallel upserts on a
+      // weak connection is how you turn a slow sync into a failed one.
+      for (const site of merged) {
+        if (cancelled) return;
+        if (knownRemotely.has(site.id)) continue;
+        await saveCampsiteRemote(site);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [user]);
 
   /**
    * Save the spot, then try to share it. In that order, always.
@@ -482,23 +870,55 @@ export default function App() {
    * What the share adds is other people seeing it — the row lands unpublished
    * and waits for review, which is what the chip on the card explains.
    */
-  const handleAddCustomSite = useCallback(async (site: Campsite) => {
-    await addCustomCampsite(site);
+  const handleAddCustomSite = useCallback(async (
+    site: Campsite,
+    /**
+     * Skip the toast.
+     *
+     * Set when this is being called as one half of a bigger submission that
+     * reports its own outcome — two toasts about the same tap, one of them a
+     * partial truth, is worse than one accurate one.
+     */
+    silent = false
+  ) => {
+    /**
+     * DEVICE FIRST, SERVER SECOND, DEVICE COPY DROPPED LAST.
+     *
+     * The device write still happens before anything is attempted, because a
+     * camper standing at a pullout with one bar has just typed coordinates they
+     * may not be able to recover. There is no moment in this sequence where the
+     * spot exists nowhere.
+     *
+     * But it no longer STAYS there once the server has it. A spot in browser
+     * storage is invisible to every other camper and one cleared cache from
+     * gone; the server copy is the real one, and the device list is now an
+     * outbox for the spots that could not get there yet. See `spotSync`.
+     */
+    await addCustomCampsite({
+      ...site, submissionState: 'local_only', submittedByMe: true
+    });
 
     const shared = await submitCampsite(site);
+    if (shared.ok) await deleteCustomCampsite(site.id);
+
     const stored: Campsite = {
       ...site,
       submissionState: shared.ok ? 'pending_review' : 'local_only',
       submittedByMe: true
     };
 
-    if (shared.ok) {
-      toast.success(
-        'Spot saved and sent for review',
-        'Only you can see it until it is approved.'
-      );
-    } else {
-      toast.info('Saved on this device', shared.message);
+    if (!silent) {
+      if (shared.ok) {
+        toast.success(
+          'Spot saved and sent for review',
+          'Only you can see it until it is approved.'
+        );
+      } else {
+        // "Waiting", not "saved": it is held on this phone and it is going up
+        // by itself the moment it can. A camper told only that it was saved
+        // has no idea anything is still outstanding.
+        toast.info('Held on this device', `${shared.message} It will upload by itself once it can.`);
+      }
     }
 
     setCampsites((prev) => [stored, ...prev]);
@@ -515,6 +935,101 @@ export default function App() {
     // typed coordinates and has no idea yet where they landed.
     setCenter([stored.latitude, stored.longitude]);
   }, [toast]);
+
+  /* ------------------------------------------------------- ADDING A SPOT */
+
+  /**
+   * Put a spot on the map, from the report sheet.
+   *
+   * Two writes, and the order matters.
+   *
+   * The LOCAL write happens whatever else does. A camper adding a spot from a
+   * canyon with no signal, or without an account, still gets their pin — it
+   * lands in the on-device list exactly as it always did. That is the house
+   * rule about the app working with no Supabase and no internet, and the
+   * shiny new ladder does not get to break it.
+   *
+   * The SERVER write is what puts the spot on the evidence ladder for other
+   * campers. It needs an account and a connection, and when it cannot happen
+   * the camper is told which of the two they got rather than being left to
+   * assume.
+   */
+  const handleSubmitNewSpot = useCallback(
+    async (submission: SpotReportSubmission) => {
+      // The camper's own fix wins over the pin they dropped. They are standing
+      // at the place; the pin is wherever their thumb landed.
+      const latitude = submission.position.coords.latitude;
+      const longitude = submission.position.coords.longitude;
+
+      const localSite: Campsite = {
+        id: newUserCampsiteId(),
+        name: submission.name,
+        landType: 'dispersed',
+        landManager: '',
+        latitude,
+        longitude,
+        address: { nearestCity: '', stateProvince: '', country: '' },
+        description: submission.report.comment?.trim() || 'Spot added from the map.',
+        /**
+         * Only what the camper actually answered.
+         *
+         * `maxRig` is a five-stop scale, not a length, so it is translated
+         * rather than dropped through — and an unanswered scale stays absent
+         * instead of arriving as "tent only".
+         */
+        amenities: {
+          water: 'none',
+          toilet: submission.report.hasRestroom === true ? 'vault' : 'none',
+          roadAccess: ROAD_ACCESS_BY_SCALE[submission.report.roadAccess ?? -1] ?? 'gravel',
+          maxRvLengthFeet: RIG_FEET_BY_SCALE[submission.report.maxRig ?? -1]
+        },
+        images: [],
+        reviews: [],
+        rating: 0,
+        reviewCount: 0,
+        source: 'user_submitted'
+      };
+
+      // The existing local path, silenced so this handler owns the message.
+      // It saves to the device, sends to the campsite review queue, drops the
+      // pin into state and flies the map to it — all of which a newly added
+      // spot still wants.
+      await handleAddCustomSite(localSite, true);
+
+      const result = await createSpot(
+        latitude,
+        longitude,
+        submission.name,
+        submission.nameBasis,
+        submission.position.coords.accuracy,
+        submission.report,
+        submission.clientFlags
+      );
+
+      setAddSpotAt(null);
+      setIsAddModalOpen(false);
+
+      if (result.ok) {
+        setBeaconRefreshKey((n) => n + 1);
+        return {
+          ok: true,
+          // A merge is not a failure, but it is not what they asked for either,
+          // so it gets said rather than quietly happening.
+          message: result.data?.merged
+            ? 'Somebody had already pinned this pullout, so your report went onto their spot rather than adding a second pin next to it.'
+            : result.message
+        };
+      }
+
+      // The local pin exists. Say exactly that, rather than "failed".
+      return {
+        ok: true,
+        message: `Saved on this device. ${result.message} Other campers will not see it until it goes through.`
+      };
+    },
+    [handleAddCustomSite]
+  );
+
 
   /**
    * Take the site's new rating from the server, rather than working it out.
@@ -698,6 +1213,15 @@ export default function App() {
                  pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]
                  pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
     >
+      {/*
+        The first-run map data choice, over everything.
+
+        The map underneath keeps mounting and loading while this is up, so
+        picking "Quick map" lands on a map that is already drawn rather than on
+        a spinner.
+      */}
+      {askMapData && <MapDataChoiceScreen onChosen={() => setAskMapData(false)} />}
+
       <div className="w-full h-full flex flex-col flex-1 min-h-0">
         <Navbar
           activeView={activeView}
@@ -721,6 +1245,10 @@ export default function App() {
           nearbyCount={nearbyCampers.length}
           activeFilterCount={activeFilterCount}
           savedCount={savedSites.length}
+          facilityKinds={facilityKinds}
+          onToggleFacilityKind={handleToggleFacilityKind}
+          onClearFacilityKinds={handleClearFacilityKinds}
+          facilityState={facilityState}
         />
 
         <main id="main" className="flex-1 relative flex flex-col overflow-hidden min-h-0">
@@ -745,14 +1273,21 @@ export default function App() {
                     destination={destination}
                     onDropDestination={handleDropDestination}
                     onPinRefused={handlePinRefused}
-                    onSelectHazardReport={(r) => { setSelectedReport(r); setSelectedAlert(null); }}
-                    onSelectAlert={(a) => { setSelectedAlert(a); setSelectedReport(null); }}
+                    onSelectHazardReport={setSelectedReport}
+                    onSelectBeaconSpot={setBeaconSpot}
+                    beaconRefreshKey={beaconRefreshKey}
                     weather={destWeather}
                     coverage={destCoverage}
                     route={route}
                     onOpenDirections={handleOpenDirections}
                     onClearDestination={handleClearDestination}
                     onAddSpotHere={handleAddSpotAt}
+                    onAddFacilityHere={handleAddFacilityAt}
+                    facilityKinds={facilityKinds}
+                    onFacilityStateChange={setFacilityState}
+                    onSelectFacility={setSelectedFacility}
+                    facilityRefreshKey={facilityRefreshKey}
+                    bottomSheetPx={sheetSite ? sheetPx : 0}
                   />
                 </ErrorBoundary>
 
@@ -761,6 +1296,24 @@ export default function App() {
                     <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
                     <span>Exploring public lands…</span>
                   </div>
+                )}
+
+                {/*
+                  Beacon, offered only on a BARE dropped pin.
+
+                  Not on a campsite: asking "what might be around here?" while
+                  standing on a known campsite is answering a question the
+                  camper did not ask. The pin has to be a piece of ground they
+                  chose, which is exactly what a destination with no campsite is.
+                */}
+                {destination && !destination.campsite && !isBeaconOpen && (
+                  <button
+                    onClick={handleSendBeacon}
+                    className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-sky-500/50 text-sky-300 hover:text-sky-200 hover:border-sky-400 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2 anim-in-down"
+                  >
+                    <Radar className="w-4 h-4" />
+                    <span>Send a beacon from here</span>
+                  </button>
                 )}
 
                 {outOfCoverageNotice && (
@@ -848,7 +1401,13 @@ export default function App() {
                     Saved offline ({savedSites.length})
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Stored on this device, so they work with no cell service
+                    {savedSync === 'synced'
+                      ? 'On this device and on your account, so they work with no cell service'
+                      : savedSync === 'syncing'
+                        ? 'Stored on this device — checking your account…'
+                        : savedSync === 'unreachable'
+                          ? "Stored on this device. Couldn't reach your account just now."
+                          : 'Stored on this device only. Sign in to keep them on your account.'}
                   </p>
                 </div>
                 <button
@@ -898,11 +1457,49 @@ export default function App() {
         setIsOfflineMode={setIsOfflineMode}
       />
 
-      <AddCampsiteModal
+      {/*
+        The submission form, which used to be a fourteen-field modal.
+
+        What replaced it: the name is built from OpenStreetMap instead of
+        typed, the coordinates come from the camper's own fix instead of two
+        number inputs, the facility questions are only asked when the map
+        cannot answer them, and everything that remains is optional. See
+        SpotReportSheet for why it is one scroll and not a wizard.
+      */}
+      <SpotReportSheet
         isOpen={isAddModalOpen}
         onClose={() => { setIsAddModalOpen(false); setAddSpotAt(null); }}
-        onAdd={handleAddCustomSite}
-        defaultCenter={addSpotAt ?? center}
+        mode="create"
+        at={addSpotAt ?? center}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onSubmit={handleSubmitNewSpot}
+      />
+
+      {/*
+        Adding a facility, and the card one opens when tapped.
+
+        A separate sheet from SpotReportSheet on purpose: a campsite needs a
+        photo, a GPS fix taken where you are standing, and eight scales; a
+        toilet needs a kind and a coordinate. Folding the second into the
+        first would make marking a tap as heavy as publishing a campsite, and
+        nobody would do it twice.
+      */}
+      <AddFacilitySheet
+        isOpen={isAddFacilityOpen}
+        onClose={() => { setIsAddFacilityOpen(false); setAddFacilityAt(null); }}
+        at={addFacilityAt}
+        fromGps={addFacilityFromGps}
+        isSignedIn={Boolean(user)}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onSaved={handleFacilitySaved}
+      />
+
+      <FacilityCard
+        facility={selectedFacility}
+        onClose={() => setSelectedFacility(null)}
+        isSignedIn={Boolean(user)}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onVoted={() => setFacilityRefreshKey((key) => key + 1)}
       />
 
       <AddHereConfirm
@@ -912,6 +1509,14 @@ export default function App() {
         isLocating={isLocating}
         onLocateUser={handleLocateUser}
         onConfirm={handleAddSpotAt}
+        onAddFacility={(latitude, longitude) => {
+          setIsAddHereOpen(false);
+          setAddFacilityAt([latitude, longitude]);
+          // The one path where the coordinate IS the phone's own fix, so the
+          // sheet hedges it as such rather than as "where you tapped".
+          setAddFacilityFromGps(true);
+          setIsAddFacilityOpen(true);
+        }}
       />
 
       <CampingGuideModal isOpen={isGuideModalOpen} onClose={() => setIsGuideModalOpen(false)} />
@@ -933,6 +1538,8 @@ export default function App() {
         onClose={() => setSheetSite(null)}
         onToggleSave={handleToggleSave}
         onRequireAuth={() => setIsAuthOpen(true)}
+        onRemoved={handleSpotRemoved}
+        onHeightChange={setSheetPx}
       />
 
       <HazardReportCard
@@ -940,7 +1547,6 @@ export default function App() {
         onClose={() => setSelectedReport(null)}
         onRequireAuth={() => setIsAuthOpen(true)}
       />
-      <AlertCard alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
 
       <PresencePanel
         isOpen={isPresenceOpen}
@@ -970,6 +1576,23 @@ export default function App() {
         center={center}
         campsiteId={sheetSite?.id ?? selectedCampsite?.id ?? null}
         onRequireAuth={() => setIsAuthOpen(true)}
+      />
+
+      <BeaconPanel
+        isOpen={isBeaconOpen}
+        onClose={() => setIsBeaconOpen(false)}
+        at={beaconAt}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onNavigate={handleNavigateToBeaconSpot}
+        onScanComplete={handleBeaconScanComplete}
+      />
+
+      <BeaconVerifyPanel
+        isOpen={beaconSpot !== null}
+        onClose={() => setBeaconSpot(null)}
+        spot={beaconSpot}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onSpotWithdrawn={handleBeaconSpotWithdrawn}
       />
 
       <LegalGate onOpenFullText={setLegalDoc} />

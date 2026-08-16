@@ -23,6 +23,7 @@
     "seed:sites": "tsx scripts/seedSupabase.ts --sites",
     "seed:lands": "tsx scripts/seedSupabase.ts --lands",
     "map:assets": "tsx scripts/buildMapAssets.ts",
+    "map:land": "tsx scripts/buildLandOverlay.ts",
     "vapid": "tsx scripts/generateVapidKeys.ts"
   },
   "dependencies": {
@@ -33,6 +34,7 @@
     "leaflet.vectorgrid": "^1.3.0",
     "localforage": "^1.10.0",
     "lucide-react": "^0.546.0",
+    "polygon-clipping": "^0.15.7",
     "react": "^19.0.1",
     "react-dom": "^19.0.1"
   },

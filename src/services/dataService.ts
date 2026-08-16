@@ -10,7 +10,12 @@
  *    DEFINER functions, never direct table writes.
  */
 import { supabase } from '../lib/supabase';
-import type { Campsite, CamperReview } from '../types';
+import { campsiteIdKind } from '../utils/campsiteId';
+import type {
+  Campsite, CamperReview,
+  BeaconSpot, BeaconDwellState, BeaconOutcome, BeaconVerificationAnswers,
+  BeaconModelSummary, BeaconTier, SpotVisitReport, SpotRemovalState
+} from '../types';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -50,16 +55,26 @@ export interface Rig {
 
 export interface PoiRecord {
   id: string;
+  /** A `poi_kind` enum value. Mapped to a `FacilityKind` by config/facilities. */
   kind: string;
-  name: string;
+  /**
+   * Null on most of them, and that is correct rather than missing data — a
+   * vault toilet on a forest road has no name. The form stopped demanding one.
+   */
+  name: string | null;
   detail: string | null;
   latitude: number;
   longitude: number;
   is_free: boolean | null;
   price_cents: number | null;
+  /**
+   * `pending` until five net upvotes. Pending rows ARE returned and ARE drawn
+   * — hollow, and labelled as unconfirmed. See `fetchPoisNear`.
+   */
   status: 'pending' | 'promoted' | 'pruned';
   upvotes: number;
   downvotes: number;
+  created_at: string;
 }
 
 export interface HazardRecord {
@@ -251,6 +266,97 @@ export const canReferenceCampsite = (site: Campsite): boolean =>
  * Never throws. Returns [] with no Supabase configured, which is what keeps
  * the app working with no keys at all.
  */
+/**
+ * One database row in the app's shape.
+ *
+ * Shared by `campsites_visible` and `campsites_saved`, which return the same
+ * columns under the same stealth rules — so the two reads have to agree about
+ * what a row means. Returns [] for a row with no usable position, so callers
+ * can flatMap it away.
+ */
+const mapCampsiteRow = (row: any, uid: string | null): Campsite[] => {
+  if (typeof row?.latitude !== 'number' || typeof row?.longitude !== 'number') return [];
+
+  return [{
+    id: String(row.id),
+    name: row.name ?? 'Unnamed site',
+    landType: row.land_type,
+    landManager: row.land_manager ?? '',
+    latitude: row.latitude,
+    longitude: row.longitude,
+    address: {
+      nearestCity: row.nearest_city ?? '',
+      stateProvince: row.state_province ?? '',
+      country: row.country ?? ''
+    },
+    description: row.description ?? '',
+    amenities: {},
+    images: Array.isArray(row.images) ? row.images : [],
+    reviews: [],
+    rating: Number(row.rating ?? 0),
+    reviewCount: Number(row.review_count ?? 0),
+    source: row.source ?? 'user_submitted',
+    capacityStatus: row.capacity_status ?? undefined,
+    isStealth: Boolean(row.is_stealth),
+    // The server fuzzed this position to ~2 km because the caller has not
+    // earned the exact one. The sheet says so rather than drawing it as
+    // though it were surveyed.
+    isApproximate: Boolean(row.is_approximate),
+    submissionState: row.is_published ? 'published' : 'pending_review',
+    submittedByMe: Boolean(uid) && row.submitted_by === uid,
+    submittedBy: typeof row.submitted_by === 'string' ? row.submitted_by : undefined
+  }];
+};
+
+/* ------------------------------------------------------------------ */
+/* Who put a spot on the map                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The camper behind a submission, for the byline on a spot's detail sheet.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT RETURN. No email, no account id, nothing
+ * that identifies a person off this app. `profiles` is world-readable by
+ * design — it is the handle people chose to be known by — and the handle is
+ * the most this is allowed to show. A camper who has set no display name is
+ * credited by handle, and one the lookup cannot find is credited as "a camper",
+ * which is true and is better than a blank where an author should be.
+ *
+ * Cached for the session: a sheet reopened ten times is one lookup, and the
+ * name behind an id does not change while somebody is reading a map.
+ *
+ * Returns null only when there is nothing to say — no Supabase, no id, or the
+ * lookup failed. The caller draws no byline at all rather than inventing one.
+ */
+const authorCache = new Map<string, string | null>();
+
+export const fetchSpotAuthor = async (userId: string): Promise<string | null> => {
+  if (!supabase || !userId) return null;
+
+  const hit = authorCache.get(userId);
+  if (hit !== undefined) return hit;
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('handle, display_name')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error || !data) {
+    // NOT cached. A failed lookup is a moment on the network, and remembering
+    // it would leave the spot unattributed for the rest of the session.
+    return null;
+  }
+
+  const name =
+    (typeof data.display_name === 'string' && data.display_name.trim()) ||
+    (typeof data.handle === 'string' && data.handle.trim()) ||
+    null;
+
+  authorCache.set(userId, name);
+  return name;
+};
+
 export const fetchCampsitesNear = async (
   lat: number,
   lon: number,
@@ -262,38 +368,7 @@ export const fetchCampsitesNear = async (
   // Resolved once for the whole batch rather than per row.
   const uid = await currentUserId();
 
-  return rows.flatMap((row: any): Campsite[] => {
-    if (typeof row?.latitude !== 'number' || typeof row?.longitude !== 'number') return [];
-
-    return [{
-      id: String(row.id),
-      name: row.name ?? 'Unnamed site',
-      landType: row.land_type,
-      landManager: row.land_manager ?? '',
-      latitude: row.latitude,
-      longitude: row.longitude,
-      address: {
-        nearestCity: row.nearest_city ?? '',
-        stateProvince: row.state_province ?? '',
-        country: row.country ?? ''
-      },
-      description: row.description ?? '',
-      amenities: {},
-      images: Array.isArray(row.images) ? row.images : [],
-      reviews: [],
-      rating: Number(row.rating ?? 0),
-      reviewCount: Number(row.review_count ?? 0),
-      source: row.source ?? 'user_submitted',
-      capacityStatus: row.capacity_status ?? undefined,
-      isStealth: Boolean(row.is_stealth),
-      // The server fuzzed this position to ~2 km because the caller has not
-      // earned the exact one. The sheet says so rather than drawing it as
-      // though it were surveyed.
-      isApproximate: Boolean(row.is_approximate),
-      submissionState: row.is_published ? 'published' : 'pending_review',
-      submittedByMe: Boolean(uid) && row.submitted_by === uid
-    }];
-  });
+  return rows.flatMap((row: any) => mapCampsiteRow(row, uid));
 };
 
 /**
@@ -331,17 +406,46 @@ export const submitCampsite = async (
   const uid = await currentUserId();
   if (!uid) return failure('Saved on this device. Sign in to share it with other campers.');
 
+  /**
+   * ---------------------------------------------------------------------------
+   * EMPTY STRING, NEVER NULL. THIS IS WHY NO SPOT EVER REACHED THE SERVER.
+   * ---------------------------------------------------------------------------
+   *
+   * `land_manager`, `nearest_city`, `state_province`, `country` and
+   * `description` are all NOT NULL with a default of `''`. These five were
+   * being sent as `|| null`, and an explicit NULL does not fall back to a
+   * column default — it is a not-null violation. So every submission from a
+   * spot without a land manager, which is every spot added from the map, came
+   * back
+   *
+   *     23502 null value in column "land_manager" violates not-null constraint
+   *
+   * and the app did exactly what it is built to do with a failed share: kept
+   * the pin on the device and said "Saved on this device". Quietly, every time,
+   * since the day submissions were wired up. The live database holds twenty-one
+   * seeded campsites and not one user row.
+   *
+   * The knock-on is the reason this was reported as something else entirely. A
+   * spot that never reaches the server has no `submitted_by`, so the server
+   * cannot say the spot is yours, so the Remove control is never drawn — and
+   * "I can't delete my own spots" is the symptom of a submission that failed
+   * hours earlier.
+   *
+   * The amenity columns are still OMITTED rather than sent — that is the
+   * separate, deliberate decision documented above, and it works because an
+   * omitted column DOES take its default. Only explicit NULLs are the problem.
+   */
   const { error } = await supabase.from('campsites').insert({
     id: site.id,
     name: site.name,
     land_type: site.landType,
-    land_manager: site.landManager || null,
+    land_manager: site.landManager ?? '',
     latitude: site.latitude,
     longitude: site.longitude,
-    nearest_city: site.address?.nearestCity || null,
-    state_province: site.address?.stateProvince || null,
-    country: site.address?.country || null,
-    description: site.description || null,
+    nearest_city: site.address?.nearestCity ?? '',
+    state_province: site.address?.stateProvince ?? '',
+    country: site.address?.country ?? '',
+    description: site.description ?? '',
     images: Array.isArray(site.images) ? site.images : [],
     source: 'user_submitted',
     is_published: false,
@@ -380,6 +484,135 @@ export const fetchMySubmissionStates = async (): Promise<Map<string, boolean>> =
   if (error || !Array.isArray(data)) return out;
   for (const row of data) out.set(String(row.id), Boolean(row.is_published));
   return out;
+};
+
+/* ------------------------------------------------------------------ */
+/* Taking a spot back down                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The lookup did not happen. Nothing below is a finding — see `asked`.
+ *
+ * Carries the reason as the message, so a sheet that cannot offer the button
+ * can still tell the camper why rather than leaving a blank where a control
+ * used to be.
+ */
+export const NO_REMOVAL: SpotRemovalState = {
+  asked: false,
+  exists: false, mine: false, removable: false, others: 0,
+  message:
+    'Could not check with the server whether this one is still yours to take ' +
+    'down. Nothing has been changed.'
+};
+
+/** The RPC's jsonb, in the app's shape. Anything unexpected reads as "no". */
+const asRemovalState = (row: unknown): SpotRemovalState => {
+  const r = (row ?? {}) as Record<string, unknown>;
+  return {
+    asked: true,
+    exists: r.exists === true,
+    mine: r.mine === true,
+    removable: r.removable === true,
+    others: Number(r.others ?? 0),
+    message: (r.message as string) ?? ''
+  };
+};
+
+/**
+ * May the signed-in camper take this campsite back down?
+ *
+ * Asked before the button is drawn rather than after it is pressed — see
+ * `SpotRemovalState`. `exists: false` means the server has never heard of this
+ * id, which is what a spot added offline or signed-out looks like; the caller
+ * treats that as "yours, on this device, remove it there".
+ */
+export const fetchCampsiteRemovalState = async (
+  campsiteId: string
+): Promise<SpotRemovalState> => {
+  if (!supabase) return NO_REMOVAL;
+
+  const { data, error } = await supabase.rpc('campsite_removal_state', {
+    in_id: campsiteId
+  });
+  if (error) return NO_REMOVAL;
+
+  return asRemovalState(data);
+};
+
+/**
+ * Delete a campsite the caller submitted.
+ *
+ * The server re-checks ownership and that nobody else has touched it, so a
+ * refusal here is a real answer and its message is written to be shown as-is.
+ * Returning ok with `removed: false` means there was no server row to delete —
+ * the device copy was the only copy, and the caller has already dealt with it.
+ */
+export const removeMyCampsite = async (
+  campsiteId: string
+): Promise<Result<{ removed: boolean }>> => {
+  if (!supabase) return success({ removed: false });
+
+  const { data, error } = await supabase.rpc('withdraw_my_campsite', {
+    in_id: campsiteId
+  });
+
+  if (error) return failure('Could not reach the server just now. Nothing was removed.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success({ removed: row.removed === true }, message)
+    : failure(message || 'That spot could not be taken down.');
+};
+
+/**
+ * The same question about a Beacon spot.
+ *
+ * Only ever true for a spot the caller themselves put on the map. A lead the
+ * scan found belongs to nobody, and one camper deciding a lead is no good is
+ * what the report scales are for — not grounds to delete it for everyone.
+ */
+export const fetchBeaconRemovalState = async (
+  spotId: string
+): Promise<SpotRemovalState> => {
+  if (!supabase) return NO_REMOVAL;
+
+  const { data, error } = await supabase.rpc('beacon_spot_removal_state', {
+    in_spot: spotId
+  });
+  if (error) return NO_REMOVAL;
+
+  return asRemovalState(data);
+};
+
+/**
+ * Take down a Beacon spot the caller added.
+ *
+ * Deliberately NOT `reportBeaconSpot`. That one is the knock path: it records
+ * enforcement and turns the pin red for everyone. This is a camper tidying up
+ * their own pin, which is a different fact, and recording it as the other one
+ * would put a police warning on a place where nothing happened.
+ */
+export const removeMyBeaconSpot = async (
+  spotId: string,
+  reason?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_withdraw_my_spot', {
+    in_spot: spotId,
+    in_reason: reason ?? null
+  });
+
+  if (error) return failure('Could not reach the server just now. Nothing was removed.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success(true, message)
+    : failure(message || 'That spot could not be taken down.');
 };
 
 /* ------------------------------------------------------------------ */
@@ -580,21 +813,128 @@ export const unlockStealthSite = async (campsiteId: string): Promise<Result<any>
   return success(data?.[0] ?? data, 'Location unlocked');
 };
 
-export const saveCampsiteRemote = async (campsiteId: string, notes?: string) => {
-  if (!supabase) return failure('Not connected');
+/* ------------------------------------------------------------------ */
+/* Saved campsites                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Put a bookmark on the account instead of only in this browser.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS FIXES
+ * ---------------------------------------------------------------------------
+ *
+ * These two functions existed and nothing called them, so the bookmark button
+ * wrote to localforage and stopped. A camper's saved list died with the
+ * browser profile — reinstall, clear site data, or pick up a second device and
+ * every spot they had kept was gone. The table and its owner-only policy had
+ * been sitting there since migration 04.
+ *
+ * They were also both wrong, which is presumably why they were never wired up:
+ * `user_id` is `not null` with no default and the upsert never sent one, so the
+ * insert could only ever have failed. Migration 12 defaults the column to
+ * `auth.uid()` — the same expression the RLS policy checks it against — so the
+ * client no longer names it at all.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS ALLOWED TO FAIL
+ * ---------------------------------------------------------------------------
+ *
+ * `saved_campsites.campsite_id` is a foreign key into `campsites`, so a site
+ * that has never reached the server cannot be bookmarked on the server. Two
+ * kinds of site are like that: one somebody added on this device and never
+ * shared, and an OSM result nobody has interacted with yet. The second is
+ * fixable — `ensureCampsiteExists` materialises it — and the first is not.
+ *
+ * So the foreign-key violation is caught and reported as a plain sentence
+ * rather than a Postgres error. The local bookmark has already been written by
+ * the caller and is never rolled back on this result: on a phone at a trailhead
+ * the device copy is the one that matters.
+ */
+export const saveCampsiteRemote = async (
+  site: Campsite,
+  notes?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Saved on this device only — no server configured.');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Saved on this device. Sign in to keep it on your account.');
+
+  // An OSM site has to become a real row before anything can point at it.
+  if (campsiteIdKind(site.id) === 'osm') {
+    const materialised = await ensureCampsiteExists(site);
+    if (!materialised.ok) return failure(materialised.message);
+  }
+
   const { error } = await supabase
     .from('saved_campsites')
-    .upsert({ campsite_id: campsiteId, notes: notes ?? null });
-  return error ? failure(error.message) : success(true, 'Saved');
+    .upsert(
+      { user_id: uid, campsite_id: site.id, notes: notes ?? null },
+      { onConflict: 'user_id,campsite_id' }
+    );
+
+  // 23503 = foreign key violation: this spot only exists on this device.
+  if (error?.code === '23503') {
+    return failure('Saved on this device. Share this spot to keep it on your account.');
+  }
+  if (error) return failure(error.message);
+
+  return success(true, 'Saved');
 };
 
-export const unsaveCampsiteRemote = async (campsiteId: string) => {
+/**
+ * Drop the bookmark from the account.
+ *
+ * Scoped to the caller explicitly as well as by RLS. The policy already
+ * confines the delete to your own rows, but a delete whose WHERE clause relies
+ * entirely on a policy is one policy edit away from being a very bad day.
+ */
+export const unsaveCampsiteRemote = async (campsiteId: string): Promise<Result<boolean>> => {
   if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Not signed in');
+
   const { error } = await supabase
     .from('saved_campsites')
     .delete()
+    .eq('user_id', uid)
     .eq('campsite_id', campsiteId);
+
   return error ? failure(error.message) : success(true, 'Removed');
+};
+
+/**
+ * The saved list as the account knows it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A `null` RETURN AND NOT AN EMPTY ARRAY
+ * ---------------------------------------------------------------------------
+ *
+ * The caller merges this with the device's own saved list, and the difference
+ * between "the server says you have saved nothing" and "the server could not
+ * be reached" decides whether a bookmark gets pushed up or thrown away. Every
+ * other read here returns [] on failure because the worst case is a thin map;
+ * here the worst case is deleting somebody's saved spots on a bad connection.
+ *
+ * So: an array means the server answered, `null` means it did not, and the
+ * caller must never treat `null` as empty.
+ *
+ * Note that even a successful read can be shorter than the row count — a site
+ * that has since been hidden, or one that sits above the caller's trust tier,
+ * drops out server-side while its row stays. That is why the merge only ever
+ * adds and never removes.
+ */
+export const fetchSavedCampsitesRemote = async (): Promise<Campsite[] | null> => {
+  if (!supabase) return null;
+
+  const uid = await currentUserId();
+  if (!uid) return null;
+
+  const { data, error } = await supabase.rpc('campsites_saved');
+  if (error || !Array.isArray(data)) return null;
+
+  return data.flatMap((row: any) => mapCampsiteRow(row, uid));
 };
 
 /* ------------------------------------------------------------------ */
@@ -884,52 +1224,112 @@ export const reportBurnedSite = async (
   return error ? failure(error.message) : success(true, 'Report filed');
 };
 
+/**
+ * Add a facility other campers can use.
+ *
+ * THROUGH THE RPC, NOT THE TABLE, and that change is the whole reason a
+ * camper has never been paid for one. `points_rules` has carried
+ * ('poi_submit', 25, cap 2) since migration 02, but this function used to
+ * `insert` straight into `pois` — and points are server-side only (house
+ * rule 6), so a direct insert cannot grant them. `submit_poi` does the insert
+ * and the capped grant in one place, which is also the only place that can.
+ *
+ * `duplicate` comes back true when the same kind is already logged at the
+ * same coordinate. That is not a failure — it is somebody tapping twice, or
+ * two campers logging one toilet — so it returns `ok` with its own sentence.
+ */
 export const submitPoi = async (poi: {
   kind: string;
-  name: string;
+  name?: string;
   lat: number;
   lon: number;
   detail?: string;
   isFree?: boolean;
-  priceCents?: number;
-}): Promise<Result<boolean>> => {
+}): Promise<Result<{ id: string | null; duplicate: boolean }>> => {
   if (!supabase) return failure('Not connected');
   const uid = await currentUserId();
-  if (!uid) return failure('Sign in to submit');
+  if (!uid) return failure('Sign in to add a facility');
 
-  const { error } = await supabase.from('pois').insert({
-    kind: poi.kind,
-    name: poi.name,
-    geom: `SRID=4326;POINT(${poi.lon} ${poi.lat})`,
-    detail: poi.detail ?? null,
-    is_free: poi.isFree ?? null,
-    price_cents: poi.priceCents ?? null,
-    submitted_by: uid,
-    status: 'pending'
+  const { data, error } = await supabase.rpc('submit_poi', {
+    in_kind: poi.kind,
+    in_lat: poi.lat,
+    in_lon: poi.lon,
+    in_name: poi.name?.trim() || null,
+    in_detail: poi.detail?.trim() || null,
+    in_free: poi.isFree ?? null
   });
-  return error ? failure(error.message) : success(true, 'POI submitted for review');
+
+  if (error) {
+    return failure('Could not send that just now. Nothing was lost — try again in a moment.');
+  }
+
+  const row = data as { ok?: boolean; id?: string; duplicate?: boolean; message?: string } | null;
+  return row?.ok === true
+    ? success(
+        { id: row.id ?? null, duplicate: row.duplicate === true },
+        row.message ?? 'Added.'
+      )
+    : failure(row?.message || 'That did not go through.');
 };
 
+/**
+ * Confirm a facility is there, or say it is gone.
+ *
+ * This is what finally fires `poi_lifecycle()` — the promote-at-five,
+ * prune-after-three trigger has been armed and unreachable since migration
+ * 02, because nothing ever wrote a vote.
+ */
 export const votePoi = async (poiId: string, isUpvote: boolean): Promise<Result<boolean>> => {
   if (!supabase) return failure('Not connected');
   const uid = await currentUserId();
-  if (!uid) return failure('Sign in to vote');
+  if (!uid) return failure('Sign in to confirm a facility');
 
-  const { error } = await supabase
-    .from('poi_votes')
-    .insert({ poi_id: poiId, user_id: uid, is_upvote: isUpvote });
-  return error ? failure(error.message) : success(true, 'Vote recorded');
+  const { data, error } = await supabase.rpc('vote_poi', {
+    in_poi_id: poiId,
+    in_upvote: isUpvote
+  });
+
+  if (error) {
+    return failure('Could not send that just now. Nothing was lost — try again in a moment.');
+  }
+
+  const row = data as { ok?: boolean; message?: string } | null;
+  return row?.ok === true
+    ? success(true, row.message ?? 'Thanks — confirmed.')
+    : failure(row?.message || 'That did not go through.');
 };
 
-export const fetchPois = async (): Promise<PoiRecord[]> => {
+/**
+ * Camper-added facilities near a point.
+ *
+ * THE BUG THIS FIXES. The previous read was `select('*')` on a table whose
+ * position is a PostGIS `geom`, and PostgREST serves that column as EWKB hex
+ * — so `latitude` and `longitude` were never numbers, they were absent, and
+ * every row was unplottable. Nothing rendered them, so nothing broke; the
+ * moment a map layer consumed them it would have. Migration 09 fixed exactly
+ * this for hazard reports and spelled out that `pois` was the same case; this
+ * is that fix, arriving with the layer that needed it.
+ *
+ * Pending rows come back on purpose. A facility hidden until five people
+ * upvote it is a facility nobody can ever upvote — the map draws these hollow
+ * and says in words that one camper added it and nobody else has agreed.
+ *
+ * An empty list means nobody has recorded one nearby. It NEVER means there is
+ * nothing there.
+ */
+export const fetchPoisNear = async (
+  latitude: number,
+  longitude: number,
+  radiusKm = 25
+): Promise<PoiRecord[]> => {
   if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('pois')
-    .select('*')
-    .neq('status', 'pruned')
-    .limit(300);
-  if (error) return [];
-  return ok(data, []);
+  const { data, error } = await supabase.rpc('pois_near', {
+    in_lat: latitude,
+    in_lon: longitude,
+    in_radius_km: radiusKm
+  });
+  if (error || !Array.isArray(data)) return [];
+  return ok(data as PoiRecord[], []);
 };
 
 /* ------------------------------------------------------------------ */
@@ -1036,4 +1436,378 @@ export const saveSettings = async (
 
   const { error } = await supabase.from('user_settings').upsert({ ...patch, user_id: uid });
   return error ? failure(error.message) : success(true, 'Settings saved');
-};
+};
+
+/* ------------------------------------------------------------------ */
+/* Beacon                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Beacon spots near a point.
+ *
+ * Positions come back projected to numbers by the RPC — never select `geom`
+ * directly, PostgREST serves it as EWKB hex. Spots that are genuinely gone are
+ * filtered out in SQL; spots somebody got a knock at deliberately are NOT, and
+ * arrive with `tier: 'flagged'` so the map can draw them red.
+ */
+export const fetchBeaconSpotsNear = async (
+  lat: number,
+  lon: number,
+  radiusKm = 25
+): Promise<BeaconSpot[]> => {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase.rpc('beacon_spots_near', {
+    in_lat: lat,
+    in_lon: lon,
+    in_radius_km: radiusKm
+  });
+  if (error || !Array.isArray(data)) return [];
+
+  return (data as Record<string, unknown>[]).map((row) => ({
+    id: String(row.id),
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    tier: row.tier as BeaconSpot['tier'],
+    generator: row.generator as BeaconSpot['generator'],
+    label: (row.label as string) ?? 'Possible spot',
+    landBasis: (row.land_basis as string) ?? undefined,
+    signEvidence: row.sign_evidence as BeaconSpot['signEvidence'],
+    verifyCount: Number(row.verify_count ?? 0),
+    score: Number(row.rule_score ?? 0) + Number(row.model_score ?? 0),
+    region: (row.region as string) ?? '*',
+    knock: Number(row.knock_count ?? 0) > 0
+      ? {
+          reportedAt: (row.last_knock_at as string) ?? '',
+          comment: (row.last_knock_note as string) ?? undefined,
+          count: Number(row.knock_count ?? 0)
+        }
+      : undefined,
+    conditions: {
+      // `numberOrUndefined` and not `Number(x ?? 0)`. A null average means
+      // nobody answered that question, and turning it into a zero would put
+      // "pitch black, no view, sloped" on every spot nobody has rated.
+      crowding: numberOrUndefined(row.avg_crowding),
+      rating: numberOrUndefined(row.avg_rating),
+      view: numberOrUndefined(row.avg_view),
+      maxRig: numberOrUndefined(row.avg_max_rig),
+      roadAccess: numberOrUndefined(row.avg_road_access),
+      levelGround: numberOrUndefined(row.avg_level_ground),
+      shade: numberOrUndefined(row.avg_shade),
+      nightLight: numberOrUndefined(row.avg_night_light),
+      cellBars: numberOrUndefined(row.avg_cell_bars),
+      sampleSize: Number(row.visit_count ?? 0)
+    }
+  }));
+};
+
+/** null, undefined and NaN all mean "nobody answered". Zero does not. */
+const numberOrUndefined = (value: unknown): number | undefined => {
+  if (value == null) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/**
+ * Report on a spot the camper is standing at.
+ *
+ * The quick path: no four-hour dwell, just a photo and a position inside
+ * 150 m. Every check that decides anything runs in `beacon_submit_visit` —
+ * the distance, the one-report-per-camper rule, the impossible-trip check and
+ * the tier promotion. This passes the answers over and returns the sentence
+ * the database wrote.
+ */
+export const submitSpotVisit = async (
+  spotId: string,
+  lat: number,
+  lon: number,
+  accuracyM: number | undefined,
+  report: SpotVisitReport,
+  clientFlags: Record<string, unknown> = {}
+): Promise<Result<{ tier: BeaconTier; verifiers: number }>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_submit_visit', {
+    in_spot: spotId,
+    in_lat: lat,
+    in_lon: lon,
+    in_accuracy: accuracyM ?? null,
+    in_report: report,
+    in_flags: clientFlags
+  });
+
+  if (error) return failure('Could not send that just now. Nothing was lost — try again in a moment.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success(
+        {
+          tier: (row.tier as BeaconTier) ?? 'reported',
+          verifiers: Number(row.verifiers ?? 0)
+        },
+        message
+      )
+    : failure(message || 'That did not go through.');
+};
+
+/**
+ * Put a brand-new spot on the map.
+ *
+ * If somebody else's pin is already within 40 m, the database treats this as a
+ * report on THAT spot rather than stacking a second pin on the same pullout,
+ * and says so via `merged`. The caller shows a different sentence in that case
+ * — silently merging without saying so makes it look like the submission was
+ * lost.
+ */
+export const createSpot = async (
+  lat: number,
+  lon: number,
+  label: string,
+  basis: string | undefined,
+  accuracyM: number | undefined,
+  report: SpotVisitReport,
+  clientFlags: Record<string, unknown> = {}
+): Promise<Result<{ spotId: string; merged: boolean; tier: BeaconTier }>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_create_spot', {
+    in_lat: lat,
+    in_lon: lon,
+    in_label: label,
+    in_basis: basis ?? null,
+    in_accuracy: accuracyM ?? null,
+    in_report: report,
+    in_flags: clientFlags
+  });
+
+  if (error) return failure('Could not add that spot just now.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+
+  return row.ok === true
+    ? success(
+        {
+          spotId: String(row.spot_id ?? ''),
+          merged: row.merged === true,
+          tier: (row.tier as BeaconTier) ?? 'reported'
+        },
+        message
+      )
+    : failure(message || 'That did not go through.');
+};
+
+/**
+ * Upload a photo that other campers will see.
+ *
+ * A DIFFERENT bucket from `uploadBeaconProof`. That one is private evidence
+ * nobody browses; this one is public content, which is the whole reason
+ * somebody attaches it. The report sheet says which is which before they
+ * submit — discovering afterwards that your photo is public is not a surprise
+ * anybody should get.
+ */
+export const uploadSpotPhoto = async (
+  file: File
+): Promise<Result<string>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data: auth } = await supabase.auth.getUser();
+  const userId = auth?.user?.id;
+  if (!userId) return failure('Sign in to add a photo.');
+
+  // The bucket policy requires the first path segment to be the caller's own
+  // id, so this is not decoration — a different prefix is rejected outright.
+  const extension = (file.name.split('.').pop() ?? 'jpg').toLowerCase().slice(0, 4);
+  const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+
+  const { error } = await supabase.storage
+    .from('spot-photos')
+    .upload(path, file, { cacheControl: '3600', upsert: false });
+
+  if (error) return failure('That photo did not upload. Check your connection.');
+  return success(path, 'Photo added');
+};
+
+/** The public URL for a stored spot photo. Empty string when not configured. */
+export const spotPhotoUrl = (path: string): string => {
+  if (!supabase || !path) return '';
+  return supabase.storage.from('spot-photos').getPublicUrl(path).data.publicUrl ?? '';
+};
+
+/**
+ * Log where the camper is right now, at a spot they intend to vouch for.
+ *
+ * The server does every check that matters — inside the 50 m fence, plausible
+ * accuracy, no impossible travel since the last ping — because a browser has
+ * no mock-location flag to read and anything checked here could be edited by
+ * whoever is faking the position in the first place.
+ */
+export const recordBeaconPing = async (
+  spotId: string,
+  lat: number,
+  lon: number,
+  accuracyM?: number
+): Promise<BeaconDwellState> => {
+  if (!supabase) {
+    return { ok: false, dwellMinutes: 0, ready: false, message: 'Not connected' };
+  }
+
+  const { data, error } = await supabase.rpc('beacon_record_ping', {
+    in_spot: spotId,
+    in_lat: lat,
+    in_lon: lon,
+    in_accuracy: accuracyM ?? null,
+    in_flags: {}
+  });
+
+  if (error || !data) {
+    return {
+      ok: false, dwellMinutes: 0, ready: false,
+      message: 'Could not reach the server to log your check-in.'
+    };
+  }
+
+  const row = data as Record<string, unknown>;
+  return {
+    ok: row.ok === true,
+    distanceM: typeof row.distance_m === 'number' ? row.distance_m : undefined,
+    arrivedAt: (row.arrived_at as string) ?? undefined,
+    dwellMinutes: Number(row.dwell_minutes ?? 0),
+    ready: row.ready === true,
+    message: (row.message as string) ?? undefined
+  };
+};
+
+/**
+ * Vouch for a spot after a four-hour stay.
+ *
+ * Everything is decided in SQL: the dwell span, the geofence, the one-per-camper
+ * rule, and the tier promotion. This function's only job is to hand over what
+ * the camper typed and pass back the sentence the database wrote.
+ */
+export const submitBeaconVerification = async (
+  spotId: string,
+  lat: number,
+  lon: number,
+  accuracyM: number | undefined,
+  photoPath: string,
+  answers: BeaconVerificationAnswers,
+  /** The same rich report a quick visit carries, marked as an overnight stay. */
+  report: SpotVisitReport = {}
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_submit_verification', {
+    in_spot: spotId,
+    in_lat: lat,
+    in_lon: lon,
+    in_accuracy: accuracyM ?? null,
+    in_photo_path: photoPath,
+    in_answers: answers,
+    in_report: { ...report, stayedOvernight: true }
+  });
+
+  if (error) return failure('Could not save that just now. Your stay is still logged.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+  return row.ok === true ? success(true, message) : failure(message || 'That did not go through.');
+};
+
+/**
+ * Take a spot off the map.
+ *
+ * One report is enough and there is no confirmation step, by design: the cost
+ * of being wrong is a camper losing one possible place to sleep, and the cost
+ * of being slow is another camper getting the ticket this one just got.
+ */
+export const reportBeaconSpot = async (
+  spotId: string,
+  outcome: BeaconOutcome,
+  detail?: string
+): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+
+  const { data, error } = await supabase.rpc('beacon_report_spot', {
+    in_spot: spotId,
+    in_outcome: outcome,
+    in_detail: detail ?? null
+  });
+
+  if (error) return failure('Could not send that report just now.');
+
+  const row = (data ?? {}) as Record<string, unknown>;
+  const message = (row.message as string) ?? '';
+  return row.ok === true ? success(true, message) : failure(message || 'That did not go through.');
+};
+
+/**
+ * What the ranking model has learned, for the region a camper is looking at.
+ *
+ * Shown in the Beacon panel. A ranking nobody can inspect is a ranking nobody
+ * should trust, and "learned from 14 stays around here" is also the honest way
+ * to say "so do not lean on this yet".
+ */
+export const fetchBeaconModelSummary = async (
+  region?: string
+): Promise<BeaconModelSummary | null> => {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase.rpc('beacon_model_summary', {
+    in_region: region ?? '*'
+  });
+  if (error || !data) return null;
+
+  const row = data as Record<string, unknown>;
+  return {
+    region: (row.region as string) ?? '*',
+    stays_recorded: Number(row.stays_recorded ?? 0),
+    reports_recorded: Number(row.reports_recorded ?? 0),
+    observations_here: Number(row.observations_here ?? 0),
+    trusts_most: Array.isArray(row.trusts_most) ? (row.trusts_most as string[]) : [],
+    trusts_least: Array.isArray(row.trusts_least) ? (row.trusts_least as string[]) : []
+  };
+};
+
+/**
+ * Store the proof photo and hand back its path.
+ *
+ * The bucket is private and foldered by user id, which is what the storage
+ * policy in migration 13 keys on — change the path shape here and the upload
+ * starts failing with a permissions error rather than a useful one.
+ */
+export const uploadBeaconProof = async (
+  spotId: string,
+  file: Blob
+): Promise<Result<string>> => {
+  if (!supabase) return failure('Not connected');
+
+  const uid = await currentUserId();
+  if (!uid) return failure('Not signed in');
+
+  const path = `${uid}/${spotId}-${Date.now()}.jpg`;
+  const { error } = await supabase.storage
+    .from('beacon-proof')
+    .upload(path, file, { contentType: 'image/jpeg', upsert: false });
+
+  if (error) return failure('Could not upload that photo. Try again with a smaller one.');
+  return success(path, '');
+};
+
+/**
+ * The caller's access token, for the one API route that has to check a quota
+ * against a real identity.
+ *
+ * `/api/beacon/query` claims a rate-limit token with the CALLER's credentials
+ * rather than trusting the browser to say who it is — otherwise three beacons
+ * per twelve hours would be a polite suggestion. This is the only place that
+ * hands a token out, so beaconService never needs to import the Supabase
+ * client itself.
+ */
+export const currentAccessToken = async (): Promise<string | null> => {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.access_token ?? null;
+};

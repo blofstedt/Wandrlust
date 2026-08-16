@@ -4,12 +4,15 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 
 import { registerBoundaryRoutes } from './server/boundaryRoutes';
+import { registerLandPackRoutes } from './server/landPackRoutes';
 import { registerWeatherRoutes } from './server/weatherRoutes';
 import { registerPushRoutes } from './server/pushRoutes';
 import { registerCellRoutes } from './server/cellRoutes';
 import { registerRouteRoutes } from './server/routeRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
+import { registerBeaconRoutes } from './server/beaconRoutes';
+import { registerSpotRoutes } from './server/spotRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -39,6 +42,11 @@ const startServer = async (): Promise<void> => {
   // Public land boundaries — three authoritative government ArcGIS services.
   registerBoundaryRoutes(app);
 
+  // The full-detail offline land pack, served cell by cell out of Supabase.
+  // Reports itself unavailable — rather than empty — until `public_lands` is
+  // seeded, so the app never offers a download that cannot work.
+  registerLandPackRoutes(app);
+
   // Weather plus fire / flood / storm alerts (NWS + Environment Canada).
   registerWeatherRoutes(app);
 
@@ -50,6 +58,16 @@ const startServer = async (): Promise<void> => {
 
   // Routing. Tries engines that can drive a forest road before ones that can't.
   registerRouteRoutes(app);
+
+  // Beacon: scans public map data for places you might legally sleep, and
+  // ranks them with a model trained on what campers report back. Works with
+  // no keys at all; MAPILLARY_TOKEN adds the street-sign check.
+  registerBeaconRoutes(app);
+
+  // Names a coordinate from OpenStreetMap and reports which facilities are
+  // already within 5 km, so the report form can skip the name field and any
+  // question the map can answer on its own.
+  registerSpotRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.

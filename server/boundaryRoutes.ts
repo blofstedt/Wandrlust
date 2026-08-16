@@ -61,6 +61,7 @@ import type { Express, Request, Response } from 'express';
 import { gzip } from 'zlib';
 import { promisify } from 'util';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { subtractLakes, unionParcels, lakeCount } from './landGeometry';
 
 const gzipAsync = promisify(gzip);
 
@@ -77,6 +78,11 @@ const gzipAsync = promisify(gzip);
  */
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON = process.env.VITE_SUPABASE_ANON_KEY;
+/**
+ * The tile cache is written as well as read, and RLS locks it to the server.
+ * Same key the alert ingester, push dispatcher and Beacon routes already use.
+ */
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 let seededClient: SupabaseClient | null | undefined;
 
@@ -228,6 +234,15 @@ interface BoundarySource {
   designation: (p: Record<string, any>) => string;
   /** Limits the source to its real geographic extent. */
   extent: { minLat: number; minLon: number; maxLat: number; maxLon: number };
+  /**
+   * How long to wait on this service, in ms. Defaults to 6000.
+   *
+   * Per-source because the sources are not alike: most return many small
+   * parcels, but a province-wide Crown land layer can be a single enormous
+   * multipolygon that the server has to generalise before it can answer, and
+   * holding every other source to that pace would make the whole map slow.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -240,6 +255,35 @@ const pick = (props: Record<string, any>, ...keys: string[]): string | undefined
     if (props[key] != null && props[key] !== '') return String(props[key]);
     const found = Object.keys(props).find((k) => k.toLowerCase() === key.toLowerCase());
     if (found && props[found] != null && props[found] !== '') return String(props[found]);
+  }
+  return undefined;
+};
+
+/**
+ * The label for a source whose field names we do not control.
+ *
+ * `pick` needs the field name in advance, which is fine for a source whose
+ * schema was read off its own REST page and wrong for one taken whole with
+ * `outFields: '*'`. Manitoba's forests came back labelled "Provincial Forest"
+ * — the fallback — fifteen times over, because the real field is not any of
+ * NAME / FOREST_NAME / PF_NAME. Rather than keep guessing, ask the properties
+ * what they have: the first string field whose NAME looks like a name.
+ *
+ * Ordered so an exact match wins before a fuzzy one, and length-capped so a
+ * description field can never be mistaken for a label.
+ */
+const nameLike = (props: Record<string, any>, ...preferred: string[]): string | undefined => {
+  const exact = pick(props, ...preferred);
+  if (exact) return exact;
+
+  const usable = (v: unknown): v is string =>
+    typeof v === 'string' && v.trim() !== '' && v.trim().length <= 80;
+
+  const keys = Object.keys(props ?? {});
+  // A field actually called "name" of some sort, then anything name-ish.
+  for (const pattern of [/(^|_)name($|_)/i, /name/i, /forest|unit|area|label|title/i]) {
+    const hit = keys.find((k) => pattern.test(k) && usable(props[k]));
+    if (hit) return String(props[hit]).trim();
   }
   return undefined;
 };
@@ -317,6 +361,99 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     extent: { minLat: 48.9, minLon: -120.1, maxLat: 60.1, maxLon: -109.9 }
   },
   {
+    /**
+     * Saskatchewan's provincial forest — Crown resource land, the province's
+     * closest equivalent to Alberta's Green Area.
+     *
+     * Whole-layer source, so there is no `where` filter to get wrong and no
+     * field name to typo: the layer IS the provincial forest, and the name and
+     * designation below are constants rather than reads off a property.
+     *
+     * NOT YET CONFIRMED AGAINST THE LIVE SERVICE — the one source here that
+     * carries that caveat. It was added from Saskatchewan's published service
+     * documentation while its host was unreachable, so run
+     * `npm run probe -- --source=saskatchewan_provincial_forest` before seeding
+     * it. Until then it fails in the safe direction: a wrong URL reports the
+     * source unavailable rather than drawing an empty province, and the
+     * geometry guard in `queryBoundarySource` drops anything that is not a
+     * polygon.
+     */
+    id: 'saskatchewan_provincial_forest',
+    label: 'Saskatchewan Crown Land (Provincial Forest)',
+    attribution: 'Government of Saskatchewan, Ministry of Environment',
+    url: 'https://gis.saskatchewan.ca/arcgis/rest/services/Forestry/MapServer/0/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    // Published as the Fire Management branch's display definition of the
+    // forest, explicitly not the official boundary.
+    edgeAccuracy: 'generalised',
+    // 21 days free camping is provincial policy for Crown resource land, not
+    // anything stated by this layer — and the forest contains protected areas,
+    // recreation sites and leases that are not subtracted from it.
+    campingBasisKind: 'agency_policy_inference',
+    name: () => 'Crown Land (Provincial Forest)',
+    designation: () => 'Saskatchewan provincial forest',
+    extent: { minLat: 49.0, minLon: -110.1, maxLat: 60.0, maxLon: -101.3 },
+    /**
+     * DIAGNOSED, AND NOT YET FIXED. Production logs:
+     *
+     *     [boundaries] saskatchewan_provincial_forest: no response within 12000ms
+     *
+     * So it is a timeout, as suspected — but raising the limit is not the
+     * answer. At 6s it failed, at 12s it still failed, and all 12s bought was
+     * a longer stall before the same empty result, on every Saskatchewan
+     * viewport, because the whole response waits for the slowest source. It
+     * is back to the default: if this source cannot answer, it should fail
+     * fast and let the rest of the map draw.
+     *
+     * THE ACTUAL FIX is to stop asking this server. Saskatchewan publishes
+     * the same forest through its GeoHub as an ArcGIS Online hosted layer —
+     * "Provincial Forest Boundary Polygon", item 3ee7b7d7d3244be789040017f0969e78
+     * under org zcv98lgAl8xQ04cW on services3.arcgis.com — which is CDN-backed
+     * and would answer in milliseconds, exactly as Manitoba's does. What is
+     * missing is that service's exact name, and searching returns its LINE
+     * sibling instead; the authoritative answer is one call to
+     * arcgis.com/sharing/rest/content/items/<id>?f=json, which this machine
+     * cannot reach. Guessing the name is what put a broken source here in the
+     * first place, so it stays unguessed until someone can read that.
+     */
+  },
+  {
+    /**
+     * Manitoba's fifteen provincial forests — Crown land under The Forest Act.
+     *
+     * Small (about 22,000 km², a few percent of Manitoba Crown land) and on
+     * ArcGIS Online, the same platform as the BLM and PAD-US sources above,
+     * so none of the Saskatchewan concerns about a slow single continental
+     * polygon on a provincial server apply here.
+     *
+     * The service name and layer id come from the service's own published
+     * REST directory, not from a pattern — but they have still not been
+     * exercised against the live endpoint from this machine, so treat the
+     * first production response as the verification. Manitoba draws nothing
+     * today, so the worst case is that it continues to draw nothing.
+     */
+    id: 'manitoba_provincial_forest',
+    label: 'Manitoba Crown Land (Provincial Forest)',
+    attribution: 'Government of Manitoba, Open Government Licence – Manitoba',
+    url: 'https://services.arcgis.com/mMUesHYPkXjaFGfS/arcgis/rest/services/Manitoba_Provincial_Forests___Version_6/FeatureServer/1/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    // 21 days free on unoccupied Crown land unless posted is provincial
+    // policy, not something this layer states. Parks, wildlife management
+    // areas and posted closures are not subtracted from these forests.
+    campingBasisKind: 'agency_policy_inference',
+    // Confirmed against production: none of the guessed field names matched
+    // and all fifteen forests came back as the bare fallback, so this reads
+    // whatever name-shaped field the layer actually carries.
+    name: (p) => nameLike(p, 'NAME', 'FOREST_NAME', 'PF_NAME', 'PROVINCIAL_FOREST') ?? 'Provincial Forest',
+    designation: () => 'Manitoba provincial forest',
+    extent: { minLat: 48.9, minLon: -102.1, maxLat: 60.1, maxLon: -88.9 }
+  },
+  {
     // Verified: returns General Use Areas for northern Ontario.
     id: 'ontario_clupa_general_use',
     label: 'Ontario Crown Land — General Use Area',
@@ -330,6 +467,44 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     name: (p) => pick(p, 'NAME_ENG') ?? 'General Use Area',
     designation: (p) => pick(p, 'DESIGNATION_ENG') ?? 'General Use Area',
     extent: { minLat: 41.6, minLon: -95.2, maxLat: 56.9, maxLon: -74.3 }
+  },
+  {
+    /**
+     * PAD-US — THE NATIONAL INVENTORY, AND THE ONLY SOURCE HERE THAT KNOWS
+     * ABOUT STATE LAND.
+     *
+     * BLM and the Forest Service between them cover federal land and nothing
+     * else, so every state forest, state trust parcel, national grassland and
+     * county holding in the country was invisible to this app — which is
+     * exactly the gap `COVERAGE_GAPS` records as "US state trust and state
+     * forest lands". PAD-US is USGS's national roll-up of all of it.
+     *
+     * `Pub_Access = 'OA'` is the filter that makes it usable: PAD-US grades
+     * every polygon Open / Restricted / Closed, and only OA means the public
+     * may walk in. Restricted and Closed are excluded rather than shown with a
+     * caveat, because a polygon a camper cannot enter is not a lead.
+     *
+     * WHAT OA STILL DOES NOT MEAN. Open access is a statement about entry, not
+     * about sleeping — a state park is usually OA and usually forbids
+     * overnight parking. So this source's `campingBasisKind` is the weakest of
+     * the three, and Beacon leans on the agency-specific sources above it
+     * before this one.
+     *
+     * Definition lifted from `scripts/landSources.ts`, where the field names
+     * were already worked out for the seeder.
+     */
+    id: 'padus_open_access',
+    label: 'Public land (PAD-US open access)',
+    attribution: 'USGS Gap Analysis Project, Protected Areas Database of the US',
+    url: 'https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/PADUS_Public_Access/FeatureServer/0/query',
+    where: "Pub_Access = 'OA'",
+    outFields: 'BndryName,Unit_Nm,Des_Tp,Mang_Name,Pub_Access',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'open_access_flag',
+    name: (p) => pick(p, 'BndryName', 'Unit_Nm') ?? 'Public land',
+    designation: (p) => pick(p, 'Des_Tp', 'Mang_Name') ?? 'Open access public land',
+    extent: CONUS
   }
 ];
 
@@ -346,6 +521,73 @@ const recordLimitForSpan = (span: number): number => {
   if (span > 2) return 200;
   return 250;
 };
+
+/**
+ * How many parcels to ask each source for in the OVERVIEW, by how wide the
+ * viewport is.
+ *
+ * ---------------------------------------------------------------------------
+ * THIS IS WHY ONTARIO AND SASKATCHEWAN WENT BLANK WHEN YOU ZOOMED OUT
+ * ---------------------------------------------------------------------------
+ *
+ * The overview used to ask every source for a flat 500 records however wide the
+ * view was. Production logs, on a Great Lakes viewport:
+ *
+ *     [boundaries] ontario_clupa_general_use: no response within 6000ms
+ *
+ * — while the same source answers a one-degree box with 48 parcels instantly.
+ * Nothing was wrong with the data. We were asking a provincial ArcGIS server to
+ * fetch and generalise five hundred complex polygons spanning half a province,
+ * which it cannot do inside the timeout, so the whole source dropped out and
+ * Ontario drew as empty ground next to a well-covered Michigan.
+ *
+ * The ask was never worth its cost. At continental zoom the area filter throws
+ * nearly all of those parcels away before anything is drawn — a hundred-square-
+ * kilometre shape is a fraction of a pixel — so the server was being made to do
+ * six times the work to produce a handful of visible shapes.
+ *
+ * Fewer records the wider you go. This is the opposite of the intuition that a
+ * bigger area needs more data, and it is right for the same reason the area
+ * filter exists: a wider view has room for fewer distinguishable shapes, not
+ * more.
+ *
+ * ---------------------------------------------------------------------------
+ * AND THEN IT WAS TOO FEW, AND ONTARIO LOOKED EMPTY INSTEAD OF BLANK
+ * ---------------------------------------------------------------------------
+ *
+ * 80 per source was the number that stopped the timeouts, and it also meant a
+ * camper looking at Ontario at zoom 5 saw about eleven parcels on a province
+ * carpeted in General Use Areas — then crossed into the detailed tier and
+ * watched it fill in. Sparse-and-wrong reads exactly like empty-and-wrong.
+ *
+ * What made 500 unaffordable was not the count. It was 500 polygons at
+ * `geometryPrecision: 5` — one-metre coordinates — which the upstream server
+ * had to fetch, generalise and serialise inside six seconds. The precision now
+ * tracks the generalisation tolerance (about 100 m at these zooms) and
+ * sub-pixel parts are dropped before the response is built, so the same count
+ * is a fraction of the work it was.
+ *
+ * The ceiling is raised on the back of that, and `queryBoundarySource` carries
+ * the insurance: a source that times out on the ambitious ask is retried once,
+ * immediately, at the old conservative count. So the worst case is what this
+ * function used to do on its own, and the normal case is a province that looks
+ * like the province.
+ */
+const overviewRecordLimit = (span: number): number => {
+  if (span > 60) return 200;
+  if (span > 25) return 300;
+  if (span > 12) return 400;
+  return 500;
+};
+
+/**
+ * What a source gets asked for after the ambitious ask timed out.
+ *
+ * Deliberately the number that was in force before the ceiling went up: it is
+ * known to be answerable by every source in this file, including the slow
+ * provincial ones, because it is what they were being asked for.
+ */
+const OVERVIEW_RETRY_RECORDS = 80;
 
 /* -------------------------------------------------------------------------- */
 /* The zoomed-out overview                                                     */
@@ -388,6 +630,181 @@ const approxAreaSqKm = (geometry: any): number => {
   return 0;
 };
 
+/* -------------------------------------------------------------------------- */
+/* Parts of a parcel that are too small to see                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * THE THOUSANDS OF TINY SHAPES WERE NEVER THOUSANDS OF PARCELS.
+ *
+ * The area filter above works on FEATURES, and a feature is not a shape. One
+ * Ontario General Use Area is a single MultiPolygon whose coordinates hold
+ * every scrap of Crown land in that planning unit — the big blocks, and then
+ * several hundred slivers between a lake and a road, each one a fraction of a
+ * pixel wide at the zoom anyone looks at a province from.
+ *
+ * `approxAreaSqKm` sums all of them, so the feature sails through the filter
+ * and brings its whole confetti of parts along. That is what a camper sees as
+ * "thousands of individual parcels instead of grouping like Alberta does", and
+ * it is the same confetti the browser is paying for: every part is vertices to
+ * transfer, an outline to dissolve, and a path to draw. Alberta looks clean
+ * because the Green Area genuinely IS one shape, not because it is treated
+ * differently.
+ *
+ * So parts below what a screen can resolve are dropped from the geometry
+ * itself, before the response is built. Nothing about which LAND is included
+ * changes — only whether a shape too small to see is sent to be drawn.
+ *
+ * A FEATURE NEVER COMES BACK EMPTY. If every part is below the threshold the
+ * biggest one is kept regardless. A parcel that draws as two pixels is honest;
+ * a parcel that silently disappears is the empty-province failure this file
+ * exists to prevent.
+ */
+const partAreaDeg2 = (ring: any[]): number => {
+  if (!Array.isArray(ring) || ring.length < 4) return 0;
+  let sum = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const a = ring[j];
+    const b = ring[i];
+    if (!Array.isArray(a) || !Array.isArray(b)) return 0;
+    sum += a[0] * b[1] - b[0] * a[1];
+  }
+  return Math.abs(sum) / 2;
+};
+
+/**
+ * Drop sub-pixel parts of a MultiPolygon.
+ *
+ * `minPartDeg2` is in square degrees rather than km² on purpose: it is derived
+ * from the same simplification tolerance the source was queried with, so it
+ * scales with the zoom automatically and needs no latitude correction to
+ * answer the only question being asked — "is this bigger than a few pixels?"
+ *
+ * `maxParts` is the backstop for a parcel that is genuinely made of hundreds
+ * of visible pieces: keep the largest, drop the tail.
+ */
+export const pruneTinyParts = (geometry: any, minPartDeg2: number, maxParts: number): any => {
+  if (geometry?.type !== 'MultiPolygon' || !Array.isArray(geometry.coordinates)) {
+    return geometry;
+  }
+  const parts = geometry.coordinates as any[];
+  if (parts.length <= 1) return geometry;
+
+  const sized = parts
+    .map((poly) => ({ poly, area: partAreaDeg2(poly?.[0]) }))
+    .sort((a, b) => b.area - a.area);
+
+  let kept = sized.filter((x) => x.area >= minPartDeg2).slice(0, maxParts);
+  // Never nothing: the biggest piece survives whatever the threshold says.
+  if (kept.length === 0) kept = sized.slice(0, 1);
+  if (kept.length === parts.length) return geometry;
+
+  return kept.length === 1
+    ? { type: 'Polygon', coordinates: kept[0].poly }
+    : { type: 'MultiPolygon', coordinates: kept.map((x) => x.poly) };
+};
+
+/** How many separate pieces one parcel may draw as. */
+const MAX_PARTS_DETAIL = 160;
+const MAX_PARTS_OVERVIEW = 24;
+
+const prunedFeatures = (
+  features: any[],
+  simplifyDegrees: number,
+  isOverview: boolean
+): any[] => {
+  /*
+   * FOUR SIMPLIFICATION STEPS ON A SIDE, IN BOTH MODES.
+   *
+   * `simplifyDegrees` is already the tolerance the source is being asked to
+   * generalise to — about one screen pixel on a phone at the view in question
+   * — so four of them is a blob roughly four pixels across. Below that there
+   * is nothing to look at and nothing to tap.
+   *
+   * It lands in the same place the feature-level filter does by a different
+   * route: at the zoom where the overview keeps parcels over 500 km², this
+   * drops parts under about 480 km². The two agree, which is what you want
+   * from a threshold and its finer-grained twin.
+   */
+  const minPartDeg2 = (4 * simplifyDegrees) ** 2;
+  const maxParts = isOverview ? MAX_PARTS_OVERVIEW : MAX_PARTS_DETAIL;
+  return features.map((f) => {
+    const geometry = pruneTinyParts(f?.geometry, minPartDeg2, maxParts);
+    return geometry === f?.geometry ? f : { ...f, geometry };
+  });
+};
+
+/**
+ * TAKE THE WATER OUT, AT EVERY ZOOM.
+ *
+ * A Crown land or BLM polygon includes the lakes inside it, correctly — the
+ * province owns the lakebed. Painted as this app's "you can sleep here" wash
+ * it tells campers to pitch on open water, so it is cut out of the geometry
+ * before the response is built. Server-side rather than in the browser
+ * because a real geometric difference costs a couple of hundred milliseconds
+ * and this answer is about to sit in a cache row for months.
+ */
+const withoutWater = (features: any[]): any[] =>
+  features.map((f) => {
+    const geometry = subtractLakes(f?.geometry);
+    return geometry === f?.geometry ? f : { ...f, geometry };
+  });
+
+/**
+ * ONE SHAPE PER SOURCE, FOR THE ZOOMED-OUT MAP.
+ *
+ * This is the difference between Ontario and Alberta, and it was never about
+ * the provinces. Alberta's Green Area arrives as a single polygon; Ontario's
+ * Crown land arrives as hundreds of General Use Areas, and hundreds of
+ * separate shapes at province scale is both the flicker the camper sees and
+ * most of the bytes on the wire.
+ *
+ * At overview zoom nobody is reading parcel edges — the question is "is there
+ * public land over there" — so each source's parcels are merged into one
+ * shape. It is a real boolean union, so it does not depend on neighbouring
+ * parcels having matching vertices the way the browser's edge-cancelling
+ * merge did, and the same input always produces the same output.
+ *
+ * THE MERGED SHAPE IS RENAMED, BECAUSE IT IS NO LONGER ONE PARCEL. Borrowing
+ * the name of whichever General Use Area happened to be first would put a
+ * specific, wrong name on a tap anywhere in the province. It takes the
+ * SOURCE's name instead — "Ontario Crown Land — General Use Area" — which is
+ * true of every square metre of the merged shape, and it keeps `_source`, so
+ * the published stay rules still resolve exactly as before.
+ */
+const mergedBySource = (features: any[]): any[] => {
+  const groups = new Map<string, any[]>();
+  for (const f of features) {
+    const id = String(f?.properties?._source ?? '');
+    const g = groups.get(id);
+    if (g) g.push(f);
+    else groups.set(id, [f]);
+  }
+
+  const out: any[] = [];
+  groups.forEach((group) => {
+    const merged = group.length > 1 ? unionParcels(group.map((f) => f.geometry)) : null;
+    if (!merged) {
+      // One parcel, or a union we could not trust. Either way the parcels
+      // themselves are still the honest answer.
+      out.push(...group);
+      return;
+    }
+    const first = group[0]?.properties ?? {};
+    out.push({
+      type: 'Feature',
+      geometry: merged.geometry,
+      properties: {
+        ...first,
+        _name: first._sourceName ?? first._name,
+        _designation: first._designation,
+        _mergedFrom: merged.merged
+      }
+    });
+  });
+  return out;
+};
+
 /**
  * Drop parcels too small to read at this zoom, largest first.
  *
@@ -395,12 +812,62 @@ const approxAreaSqKm = (geometry: any): number => {
  * filtering itself (migration 07 not run) or the data came from the live ArcGIS
  * services, which have no consistent area field to filter on.
  */
+/**
+ * How many parcels a source keeps in the overview even when all of them are
+ * below the area threshold. Small enough not to clutter a continental view,
+ * big enough that a province reads as "there is land here".
+ */
+const OVERVIEW_MIN_PER_SOURCE = 3;
+
 const largestParcels = (features: any[], minAreaSqKm: number, limit: number): any[] => {
   if (minAreaSqKm <= 0) return features.slice(0, limit);
-  return features
-    .map((f) => ({ f, area: approxAreaSqKm(f?.geometry) }))
-    .filter((x) => x.area >= minAreaSqKm)
-    .sort((a, b) => b.area - a.area)
+
+  const sized = features
+    .map((f) => ({ f, area: approxAreaSqKm(f?.geometry), source: String(f?.properties?._source ?? '') }))
+    .sort((a, b) => b.area - a.area);
+
+  const kept = sized.filter((x) => x.area >= minAreaSqKm);
+
+  /**
+   * A SOURCE MUST NEVER VANISH FROM THE OVERVIEW JUST FOR BEING SMALL-GRAINED.
+   *
+   * The threshold is an absolute number of km², and it was tuned against land
+   * that comes in continental slabs: Alberta's Green Area is 339,000 km² and
+   * Ontario's General Use Areas are enormous, so both survive any zoom. Land
+   * that comes in small pieces does not. Manitoba's fifteen provincial forests
+   * average about 1,500 km² and the largest is a couple of thousand, so at the
+   * zooms where someone is looking at the whole country every one of them was
+   * filtered out — while both neighbours stayed painted.
+   *
+   * The result on screen was a Manitoba-shaped hole between two provinces full
+   * of colour, which is this app's one forbidden sentence: it reads as "no
+   * public land here" when the truth is "these parcels are smaller than the
+   * ones next door". So every source that returned anything keeps its largest
+   * few, threshold or not. They may be a pixel or two at the widest zoom —
+   * that is a far better failure than a confident blank.
+   */
+  const keptIds = new Set(kept.map((x) => x.f));
+  const sourcesWithKept = new Set(kept.map((x) => x.source));
+  const perSource = new Map<string, number>();
+  const guaranteed: typeof sized = [];
+  for (const x of sized) {
+    if (keptIds.has(x.f) || sourcesWithKept.has(x.source)) continue;
+    const n = perSource.get(x.source) ?? 0;
+    if (n >= OVERVIEW_MIN_PER_SOURCE) continue;
+    perSource.set(x.source, n + 1);
+    guaranteed.push(x);
+  }
+
+  /**
+   * The guaranteed few go in FIRST, before the limit is applied.
+   *
+   * Appending them and then slicing by area — which is what this did at first —
+   * quietly undoes the guarantee exactly when it matters. One wide viewport had
+   * BLM alone return 500 parcels; sorted by area, every rescued Ontario or
+   * Manitoba shape fell past the cut and the provinces went blank again, for a
+   * different reason than before but with the identical result on screen.
+   */
+  return [...guaranteed, ...kept.sort((a, b) => b.area - a.area)]
     .slice(0, limit)
     .map((x) => x.f);
 };
@@ -445,13 +912,38 @@ interface SourceResult {
   ok: boolean;
   /** True when the server had more polygons than it was willing to return. */
   truncated: boolean;
+  /**
+   * Ran out of time, as opposed to refusing, erroring or answering oddly.
+   *
+   * The only failure worth retrying with a smaller ask: it says the service is
+   * up and the question was too big, which is a question we can make smaller.
+   */
+  timedOut?: boolean;
+  /**
+   * Where this answer came from.
+   *
+   * Reported in `meta` so the tile cache can be checked from outside without
+   * reading logs — Vercel keeps those for an hour on this plan, which is not
+   * long enough to notice a cache that quietly stopped working.
+   */
+  servedFrom?: 'memory' | 'db' | 'live';
 }
 
-const queryBoundarySource = async (
+/**
+ * Decimal places worth asking for, given how hard the geometry is being
+ * generalised anyway. Two vertices closer together than the tolerance are
+ * about to be collapsed into one, so digits below it are bytes for nothing.
+ * Floored at 3 (~100 m) and capped at 5 (~1 m).
+ */
+const precisionFor = (simplifyDegrees: number): number =>
+  Math.min(5, Math.max(3, Math.ceil(-Math.log10(Math.max(simplifyDegrees, 1e-6))) + 1));
+
+const queryBoundarySourceOnce = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
-  recordLimit: number
+  recordLimit: number,
+  timeoutOverrideMs?: number
 ): Promise<SourceResult> => {
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
 
@@ -464,7 +956,18 @@ const queryBoundarySource = async (
     outFields: source.outFields,
     returnGeometry: 'true',
     outSR: '4326',
-    geometryPrecision: '5',
+    /*
+     * ASK FOR NO MORE PRECISION THAN THE VIEW CAN SHOW.
+     *
+     * This was a flat 5 decimal places — about a metre — on every request,
+     * including the one that draws Ontario at the scale of the Great Lakes.
+     * Every one of those digits is bytes off a provincial ArcGIS server, over
+     * the wire, and through a JSON parse, to place a vertex a thousand times
+     * finer than the pixel it lands in. The tolerance we are already asking
+     * the server to generalise to says how fine is useful, so the precision
+     * follows it: metres up close, hundreds of metres at province scale.
+     */
+    geometryPrecision: String(precisionFor(simplifyDegrees)),
     maxAllowableOffset: String(simplifyDegrees),
     resultRecordCount: String(recordLimit),
     f: 'geojson'
@@ -473,7 +976,12 @@ const queryBoundarySource = async (
   const controller = new AbortController();
   // One unresponsive service used to hold the whole response for nine seconds.
   // It is reported as unavailable rather than waited on.
-  const timer = setTimeout(() => controller.abort(), 6000);
+  const timeoutMs = timeoutOverrideMs ?? source.timeoutMs ?? 6000;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     const response = await fetch(`${source.url}?${params.toString()}`, {
@@ -481,7 +989,15 @@ const queryBoundarySource = async (
       signal: controller.signal
     });
 
-    if (!response.ok) return { features: [], ok: false, truncated: false };
+    // Every failure below used to return silently, so a source that had
+    // stopped answering was indistinguishable in the logs from one that
+    // simply had no land in view. `available: false` in the response told
+    // you THAT it failed and never WHY, which is the same silent-empty trap
+    // this file's header warns about — one level further down.
+    if (!response.ok) {
+      console.warn(`[boundaries] ${source.id}: HTTP ${response.status} ${response.statusText}`);
+      return { features: [], ok: false, truncated: false };
+    }
 
     const data: any = await response.json();
 
@@ -491,10 +1007,24 @@ const queryBoundarySource = async (
       console.warn(`[boundaries] ${source.id}:`, data.error?.message ?? 'query error');
       return { features: [], ok: false, truncated: false };
     }
-    if (!Array.isArray(data?.features)) return { features: [], ok: false, truncated: false };
+    if (!Array.isArray(data?.features)) {
+      // Most often a service that ignored `f=geojson` and answered in Esri
+      // JSON, which has `features[].geometry.rings` and no `type`.
+      console.warn(
+        `[boundaries] ${source.id}: response had no GeoJSON feature array (keys: ${Object.keys(
+          data ?? {}
+        ).join(',') || 'none'})`
+      );
+      return { features: [], ok: false, truncated: false };
+    }
 
+    const returned = data.features.length;
     const features = data.features
-      .filter((f: any) => f?.geometry)
+      // Polygons only. Several government services publish a boundary as a
+      // LINE layer sitting next to the area layer, and a line drawn in the
+      // public-land style would read as a sliver of campable land that isn't
+      // there. Anything that is not an area is dropped rather than drawn.
+      .filter((f: any) => f?.geometry && /^(Multi)?Polygon$/.test(String(f.geometry.type ?? '')))
       .map((f: any) => {
         const props = f.properties ?? {};
         return {
@@ -520,12 +1050,63 @@ const queryBoundarySource = async (
       data?.properties?.exceededTransferLimit === true ||
       features.length >= recordLimit;
 
+    // The service answered with shapes and the geometry guard threw all of
+    // them away — almost certainly a line layer being read as an area layer.
+    // Silently drawing nothing here would look exactly like "no public land".
+    if (returned > 0 && features.length === 0) {
+      console.warn(
+        `[boundaries] ${source.id}: ${returned} features returned, none were polygons ` +
+          `(first geometry type: ${String(data.features[0]?.geometry?.type ?? 'none')})`
+      );
+    }
+
     return { features, ok: true, truncated };
-  } catch {
-    return { features: [], ok: false, truncated: false };
+  } catch (err) {
+    console.warn(
+      `[boundaries] ${source.id}: ${
+        timedOut ? `no response within ${timeoutMs}ms` : (err as Error).message
+      }`
+    );
+    return { features: [], ok: false, truncated: false, timedOut };
   } finally {
     clearTimeout(timer);
   }
+};
+
+/**
+ * ASK AMBITIOUSLY, THEN ASK THE WAY THAT ALWAYS WORKED.
+ *
+ * The overview record ceiling was raised so a province stops drawing as a
+ * handful of scattered parcels. The reason it was ever low is a real one — a
+ * provincial ArcGIS server given too much to generalise stops answering at
+ * all, and a source that drops out draws as empty ground, which is the worst
+ * thing this map can do.
+ *
+ * So the two are separated. The ambitious ask goes first; if and only if it
+ * TIMES OUT — the service is up, the question was too big — the same question
+ * is asked again immediately at the count that was in force before, which
+ * every source here is known to answer. An HTTP error, an ArcGIS error or a
+ * malformed body are not retried: those are not about size, and asking again
+ * would just spend the budget twice on the same failure.
+ *
+ * The retry is given a shorter clock than the first attempt so a genuinely
+ * dead service cannot hold the whole response for two full timeouts.
+ */
+const queryBoundarySource = async (
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  recordLimit: number
+): Promise<SourceResult> => {
+  const first = await queryBoundarySourceOnce(source, bbox, simplifyDegrees, recordLimit);
+  if (first.ok || !first.timedOut || recordLimit <= OVERVIEW_RETRY_RECORDS) return first;
+
+  console.info(
+    `[boundaries] ${source.id}: retrying at ${OVERVIEW_RETRY_RECORDS} records after timeout`
+  );
+  return queryBoundarySourceOnce(
+    source, bbox, simplifyDegrees, OVERVIEW_RETRY_RECORDS, 5000
+  );
 };
 
 /** Runs the query once per key, sharing one in-flight promise among callers. */
@@ -563,7 +1144,136 @@ const runQuery = (
   return promise;
 };
 
-const cachedQuery = (
+/* -------------------------------------------------------------------------- */
+/* The tile cache in Supabase                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * WHY A CACHE THAT OUTLIVES THE PROCESS.
+ *
+ * BLM units, national forests and Crown land change on the order of an act of
+ * legislature, and this API was asking eight government servers about them
+ * again and again. The only cache was `sourceCache`, a Map in one Node process
+ * — and the API runs as a Vercel serverless function, so that Map is empty
+ * every time a lambda is recycled. In practice a large share of requests were
+ * cold, and a cold request for Ontario waits on a provincial ArcGIS server
+ * that may take six seconds or simply not answer.
+ *
+ * So the answer is written to Supabase, keyed on the exact question. The
+ * second time anyone looks at that ground — any device, any lambda, weeks
+ * later — it is one indexed read.
+ *
+ * THIS IS NOT A SOURCE OF TRUTH AND MUST NEVER BECOME ONE. A miss falls
+ * straight through to the live services. A failed query is never written: a
+ * cached failure would hide real public land for as long as the row lived, and
+ * an empty map that looks confident is the worst thing this app can do.
+ *
+ * The proper answer is still `public_lands` and `npm run seed`, which the
+ * route already prefers and which has never been run against this database —
+ * `select count(*) from public_lands` returns zero, so that path has never
+ * fired once. See migration 19.
+ */
+let cacheClient: SupabaseClient | null | undefined;
+
+const getCacheClient = (): SupabaseClient | null => {
+  if (cacheClient !== undefined) return cacheClient;
+  cacheClient =
+    SUPABASE_URL && SERVICE_KEY
+      ? createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } })
+      : null;
+  if (!cacheClient) {
+    console.info('[boundaries] no service key — tile cache disabled, live services only.');
+  }
+  return cacheClient;
+};
+
+/**
+ * Switched off after the table itself proves unusable — migration 19 not run,
+ * key wrong, host unreachable. Deliberately NOT triggered by a miss: a miss is
+ * the correct answer for ground nobody has looked at yet, and treating it as a
+ * fault would disable the cache permanently on the very first request.
+ */
+let tileCacheOutage: { at: number } | null = null;
+const TILE_CACHE_RECHECK_MS = 5 * 60 * 1000;
+
+/** Boundaries do not move. Three months is conservative for a road atlas. */
+const TILE_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+const tileCacheGet = async (key: string): Promise<SourceResult | null> => {
+  const client = getCacheClient();
+  if (!client) return null;
+  if (tileCacheOutage && Date.now() - tileCacheOutage.at < TILE_CACHE_RECHECK_MS) return null;
+
+  try {
+    const { data, error } = await client
+      .from('boundary_tile_cache')
+      .select('features, truncated, fetched_at')
+      .eq('cache_key', key)
+      .maybeSingle();
+
+    if (error) {
+      console.warn(`[boundaries] tile cache unavailable: ${error.message}`);
+      tileCacheOutage = { at: Date.now() };
+      return null;
+    }
+    if (!data || !Array.isArray(data.features)) return null;
+    if (Date.now() - new Date(data.fetched_at as string).getTime() > TILE_CACHE_TTL_MS) return null;
+
+    return {
+      features: data.features as any[],
+      ok: true,
+      truncated: Boolean(data.truncated)
+    };
+  } catch (err) {
+    console.warn(`[boundaries] tile cache read failed: ${(err as Error).message}`);
+    tileCacheOutage = { at: Date.now() };
+    return null;
+  }
+};
+
+/** One write in fifty also trims the table. Cheap, and it never runs away. */
+const PRUNE_ODDS = 50;
+
+const tileCachePut = async (
+  key: string,
+  source: BoundarySource,
+  result: SourceResult
+): Promise<void> => {
+  const client = getCacheClient();
+  // Only real answers are stored, and an empty one is not worth a row: the
+  // upstream service may simply have had nothing in that box today.
+  if (!client || !result.ok || result.features.length === 0) return;
+  if (tileCacheOutage && Date.now() - tileCacheOutage.at < TILE_CACHE_RECHECK_MS) return;
+
+  try {
+    const { error } = await client.from('boundary_tile_cache').upsert(
+      {
+        cache_key: key,
+        source_id: source.id,
+        features: result.features,
+        feature_count: result.features.length,
+        truncated: result.truncated,
+        fetched_at: new Date().toISOString()
+      },
+      { onConflict: 'cache_key' }
+    );
+    if (error) {
+      console.warn(`[boundaries] tile cache write failed: ${error.message}`);
+      tileCacheOutage = { at: Date.now() };
+      return;
+    }
+    if (Math.floor(Math.random() * PRUNE_ODDS) === 0) {
+      await client.rpc('prune_boundary_tile_cache', {
+        in_max_age_days: 180,
+        in_max_rows: 20000
+      });
+    }
+  } catch (err) {
+    console.warn(`[boundaries] tile cache write failed: ${(err as Error).message}`);
+  }
+};
+
+const cachedQuery = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
@@ -572,17 +1282,51 @@ const cachedQuery = (
   const box = [bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon]
     .map((n) => n.toFixed(4))
     .join(',');
-  const key = `${source.id}|${box}|${recordLimit}`;
+  /*
+   * THE GENERALISATION IS PART OF THE QUESTION.
+   *
+   * It was missing from this key, so an overview request and a detailed one
+   * for the same box shared a row — and whichever asked first decided what
+   * fidelity the other got. Bucketed rather than raw so that near-identical
+   * tolerances still share, which is the whole point of a key.
+   */
+  const tolerance = simplifyDegrees.toPrecision(2);
+  const key = `${source.id}|${box}|${tolerance}|${recordLimit}`;
 
   const hit = sourceCache.get(key);
-  if (hit && Date.now() - hit.at < SOURCE_TTL_MS) return Promise.resolve(hit.result);
+  if (hit && Date.now() - hit.at < SOURCE_TTL_MS) {
+    return { ...hit.result, servedFrom: 'memory' };
+  }
 
-  const refresh = runQuery(key, source, bbox, simplifyDegrees, recordLimit, hit?.result);
+  /*
+   * Supabase before the network, but only on a cold key. A warm lambda never
+   * pays for this; a cold one pays a single indexed read instead of a round
+   * trip to a government ArcGIS server.
+   */
+  if (!hit) {
+    const stored = await tileCacheGet(key);
+    if (stored) {
+      if (sourceCache.size >= SOURCE_CACHE_MAX) {
+        const oldest = sourceCache.keys().next().value;
+        if (oldest) sourceCache.delete(oldest);
+      }
+      sourceCache.set(key, { at: Date.now(), result: stored });
+      return { ...stored, servedFrom: 'db' };
+    }
+  }
+
+  const refresh = runQuery(key, source, bbox, simplifyDegrees, recordLimit, hit?.result)
+    .then((result) => {
+      // Written behind the response, never in front of it: a camper waiting on
+      // a map should not also be waiting on our bookkeeping.
+      void tileCachePut(key, source, result);
+      return { ...result, servedFrom: 'live' as const };
+    });
 
   // Something cached but past its TTL: answer now, refresh behind the scenes.
   if (hit) {
     void refresh.catch(() => { /* runQuery already swallows failures */ });
-    return Promise.resolve(hit.result);
+    return { ...hit.result, servedFrom: 'memory' };
   }
   return refresh;
 };
@@ -633,6 +1377,69 @@ const DISCLAIMER =
   'inholdings are not shown. These polygons do not constitute ' +
   'permission to camp. Confirm local regulations before travelling.';
 
+/**
+ * THE PUBLIC-LAND POLYGONS FOR ONE BOX, FOR ANYTHING THAT IS NOT THE MAP.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS
+ * ---------------------------------------------------------------------------
+ *
+ * Beacon used to decide "is this public land?" by reading OpenStreetMap tags
+ * — `boundary=protected_area`, an `operator` string it pattern-matched — while
+ * this file sat next to it holding the actual government surface-management
+ * data the map has drawn all along. Two answers to one question, and the
+ * weaker one was wired to the feature that sends campers somewhere.
+ *
+ * That mismatch is the whole reason a scan came back as a list of car parks
+ * AND missed real public land at the same time: OSM's protected-area coverage
+ * is volunteer-drawn and thin, so a national forest with no OSM polygon looked
+ * exactly like a supermarket, and a conservancy easement with one looked
+ * exactly like a national forest.
+ *
+ * Same sources, same cache, same seeded-database-first path as `/api/boundaries`.
+ * If the map can draw it, Beacon can stand on it.
+ *
+ * Never throws. A source that is down contributes nothing and says so through
+ * `ok`, which the caller must report rather than reading as "not public".
+ */
+export interface PublicLandLookup {
+  /** False when every source failed — "could not check", never "not public". */
+  ok: boolean;
+  /** GeoJSON polygons carrying `_name`, `_designation`, `_source`. */
+  features: any[];
+}
+
+export const fetchPublicLand = async (
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  recordLimit = 400
+): Promise<PublicLandLookup> => {
+  const span = Math.max(
+    Math.abs(bbox.maxLat - bbox.minLat),
+    Math.abs(bbox.maxLon - bbox.minLon)
+  );
+  // A beacon scan is a few kilometres across, so the geometry can stay sharp.
+  // This is a point-in-polygon test, not something being drawn.
+  const simplifyDegrees = Math.max(0.00005, span / 2000);
+
+  try {
+    const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, 0);
+    if (seeded && seeded.features.length > 0) {
+      return { ok: true, features: seeded.features };
+    }
+
+    const results = await Promise.all(
+      BOUNDARY_SOURCES.map((source) => cachedQuery(source, bbox, simplifyDegrees, recordLimit))
+    );
+    return {
+      // Every single source failing is an outage, not an empty countryside.
+      ok: results.some((r) => r.ok),
+      features: results.flatMap((r) => r.features)
+    };
+  } catch {
+    return { ok: false, features: [] };
+  }
+};
+
 export const registerBoundaryRoutes = (app: Express): void => {
   app.get('/api/boundaries', async (req: Request, res: Response) => {
     const minLat = parseFloat(req.query.minLat as string);
@@ -676,7 +1483,7 @@ export const registerBoundaryRoutes = (app: Express): void => {
     const simplifyDegrees = isOverview
       ? Math.max(0.002, span / 400)
       : Math.max(0.0001, span / 800);
-    const recordLimit = isOverview ? 500 : recordLimitForSpan(span);
+    const recordLimit = isOverview ? overviewRecordLimit(span) : recordLimitForSpan(span);
     const responseTtl = isOverview ? OVERVIEW_TTL_MS : CACHE_TTL_MS;
 
     // Four decimals, not two: the client snaps its requests to a grid, so an
@@ -713,9 +1520,18 @@ export const registerBoundaryRoutes = (app: Express): void => {
     const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, minAreaSqKm);
     if (seeded) {
       // If the database did the area filtering, this is a no-op slice.
+      const pruned = prunedFeatures(
+        isOverview
+          ? largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit)
+          : seeded.features.slice(0, recordLimit),
+        simplifyDegrees,
+        isOverview
+      );
+      // Water out first, then merge — merging afterwards would just union the
+      // holes back shut along every shared shoreline.
       const kept = isOverview
-        ? largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit)
-        : seeded.features.slice(0, recordLimit);
+        ? mergedBySource(withoutWater(pruned))
+        : withoutWater(pruned);
       const truncated = seeded.features.length > recordLimit;
 
       await remember({
@@ -729,6 +1545,10 @@ export const registerBoundaryRoutes = (app: Express): void => {
           truncationNote: truncated
             ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
             : undefined,
+          // The map merges abutting parcels by cancelling shared edges, and it
+          // cannot do that without knowing how far this generalisation may
+          // have pushed the two sides of one apart.
+          simplifyDegrees,
           disclaimer: DISCLAIMER
         }
       });
@@ -743,9 +1563,18 @@ export const registerBoundaryRoutes = (app: Express): void => {
     );
 
     const anyTruncated = results.some((r) => r.truncated);
+    const prunedLive = prunedFeatures(
+      isOverview
+        ? largestParcels(results.flatMap((r) => r.features), minAreaSqKm, recordLimit)
+        : results.flatMap((r) => r.features),
+      simplifyDegrees,
+      isOverview
+    );
+    // Water out first, then merge — merging afterwards would union the holes
+    // back shut wherever two parcels meet along the same shoreline.
     const liveFeatures = isOverview
-      ? largestParcels(results.flatMap((r) => r.features), minAreaSqKm, recordLimit)
-      : results.flatMap((r) => r.features);
+      ? mergedBySource(withoutWater(prunedLive))
+      : withoutWater(prunedLive);
 
     const body = {
       type: 'FeatureCollection',
@@ -760,16 +1589,24 @@ export const registerBoundaryRoutes = (app: Express): void => {
           confidence: r.source.confidence,
           available: r.ok,
           featureCount: r.features.length,
-          truncated: r.truncated
+          truncated: r.truncated,
+          // memory / db / live — see `SourceResult.servedFrom`. This is how
+          // you check the Supabase tile cache is working without logs: ask
+          // for the same box twice and watch these turn from live to db.
+          servedFrom: r.servedFrom ?? 'live'
         })),
         truncated: anyTruncated,
         truncationNote: anyTruncated
           ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
           : undefined,
+        simplifyDegrees,
+        // Lakes the server was able to cut out of these shapes. Zero means
+        // the asset is missing from the bundle and water is being painted.
+        lakesKnown: lakeCount(),
         disclaimer: DISCLAIMER
       }
     };
 
     await remember(body);
   });
-};
+};

@@ -398,11 +398,111 @@ const buildLandMask = async (): Promise<void> => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Asset 3 — the big lakes, as shapes                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE MAP WAS TELLING PEOPLE THEY COULD CAMP ON A LAKE.
+ *
+ * Crown land and BLM polygons include the water inside them, and legally they
+ * are right to: the province owns the lakebed the same way it owns the shore.
+ * Painted as a green "you can sleep here" wash, that is a lie a camper can act
+ * on — a bay of Lake Nipigon came out the same colour as the pine forest
+ * around it.
+ *
+ * The land mask already knows where the water is, and the pin drop already
+ * refuses it. What was missing was the same knowledge in a form the FILL could
+ * use, because a bitmask cannot punch a hole in a polygon. So the same lake
+ * data that goes into the mask is also written out as shapes, and the boundary
+ * fill subtracts them — see `punchLakes` in MapComponent.
+ *
+ * WHAT THIS DOES NOT COVER, AND THE APP SAYS SO. Natural Earth's 1:10m lakes
+ * are the big ones — roughly the named ones on a wall map. The Canadian Shield
+ * has a quarter of a million lakes smaller than that, and none of them are
+ * here. This cuts out the water you can see from space, not every pond, and
+ * the boundary caveat about approximate edges continues to do the rest.
+ */
+/** Smallest lake worth shipping, as a bbox in square degrees (~40 km²). */
+const MIN_LAKE_DEG2 = 0.004;
+
+const buildLakes = async (): Promise<void> => {
+  const lakes = await fetchDataset('10m/physical/ne_10m_lakes.json');
+  const { minLon, minLat, maxLon, maxLat } = MAP_VIEW_BBOX;
+
+  /*
+   * Three decimals — about 110 m — and vertices closer together than 330 m
+   * thrown away.
+   *
+   * That sounds crude for a coastline and is exactly right for this one. The
+   * shape is a HOLE in a boundary whose own edge this app describes, out loud,
+   * as accurate to hundreds of metres; drawing the lake to eleven metres
+   * inside it would be precision theatre costing 800 KB. At full precision the
+   * file was 869 KB, which is not a thing to make a camper download on one bar
+   * of signal.
+   */
+  const round = (v: number): number => Math.round(v * 1e3) / 1e3;
+  const THIN_DEG = 0.003;
+
+  const kept: number[][][] = [];
+  for (const feature of lakes.features ?? []) {
+    for (const ring of ringsOf(feature.geometry as GeoJSON.Geometry)) {
+      if (ring.length < 4) continue;
+      const [rMinLon, rMinLat, rMaxLon, rMaxLat] = ringBounds(ring);
+      if (rMaxLon < minLon || rMinLon > maxLon) continue;
+      if (rMaxLat < minLat || rMinLat > maxLat) continue;
+      if ((rMaxLon - rMinLon) * (rMaxLat - rMinLat) < MIN_LAKE_DEG2) continue;
+
+      // Radial thinning: keep a vertex only once we have moved far enough
+      // from the last one we kept. Cheap, order-preserving, and on a 1:10m
+      // shoreline it removes most of the points without moving the shape.
+      const simplified: number[][] = [];
+      for (const [lon, lat] of ring) {
+        const point = [round(lon), round(lat)];
+        const last = simplified[simplified.length - 1];
+        if (last && Math.hypot(point[0] - last[0], point[1] - last[1]) < THIN_DEG) continue;
+        simplified.push(point);
+      }
+      if (simplified.length < 4) continue;
+      // Close it, since rounding may have moved the last point off the first.
+      const first = simplified[0];
+      const final = simplified[simplified.length - 1];
+      if (first[0] !== final[0] || first[1] !== final[1]) simplified.push([...first]);
+      kept.push(simplified);
+    }
+  }
+
+  await fs.mkdir(OUT_DIR, { recursive: true });
+  const file = path.join(OUT_DIR, 'lakes-us-ca.json');
+  /*
+   * Bare rings with a precomputed bbox each, not a FeatureCollection. The
+   * client does one thing with this — ask "does this lake sit inside that
+   * parcel?" thousands of times per pan — and every GeoJSON wrapper around
+   * the answer is a property it never reads.
+   */
+  const payload = {
+    format: 'wl-lakes-1',
+    note: 'Natural Earth 1:10m lakes, trimmed to the coverage area. Big lakes only.',
+    lakes: kept.map((ring) => {
+      const [a, b, c, d] = ringBounds(ring);
+      return { bbox: [a, b, c, d], ring };
+    })
+  };
+  const json = JSON.stringify(payload);
+  await fs.writeFile(file, json, 'utf-8');
+
+  process.stdout.write(
+    `  wrote   public/map/lakes-us-ca.json — ${(json.length / 1024).toFixed(0)} KB, ` +
+    `${kept.length} lakes\n`
+  );
+};
+
+/* ------------------------------------------------------------------ */
 
 const main = async (): Promise<void> => {
   process.stdout.write('Building map assets\n');
   await buildAdmin1();
   await buildLandMask();
+  await buildLakes();
   process.stdout.write('Done. Commit public/map/ with your change.\n');
 };
 
