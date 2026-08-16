@@ -709,7 +709,9 @@
   bottom: 100%;
   left: 50%;
   transform: translateX(-50%);
-  margin-bottom: 4px;
+  /* `--wl-tour-lift` climbs the bubble over a marker already standing on this
+     point — see PIN_LIFT_PX in MapComponent. Zero everywhere else. */
+  margin-bottom: calc(4px + var(--wl-tour-lift, 0px));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -729,11 +731,38 @@
   box-shadow: 0 2px 10px rgba(2, 6, 23, 0.6);
   animation: moook-in-up-centred var(--dur-base) var(--ease-moook) backwards;
 }
+.wl-tour-stop-label b { font-weight: 800; }
+/* The rules — one per line, and a step down from the name without dropping to
+   the size of the caveat underneath them. These are the part to act on. */
+.wl-tour-stop-label i {
+  font-style: normal;
+  font-weight: 700;
+  font-size: 9.5px;
+  opacity: 0.97;
+}
 .wl-tour-stop-label em {
   font-style: normal;
   font-weight: 600;
   font-size: 9px;
   opacity: 0.92;
+}
+
+/* A LABEL CARRYING A LIST IS A LITTLE CARD, NOT A CAPTION.
+   Three centred lines of different lengths come out ragged and slow to read,
+   so as soon as there are rules to list the whole thing goes left-aligned and
+   a touch wider, and the caveat gets a hairline to sit under. */
+.wl-tour-stop-label-card {
+  align-items: flex-start;
+  text-align: left;
+  max-width: 15rem;
+  padding: 5px 9px;
+  gap: 1px;
+}
+.wl-tour-stop-label-card em {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(248, 250, 252, 0.25);
+  align-self: stretch;
 }
 
 /* The tracker that runs one lap around a warned area — see `orbit` in

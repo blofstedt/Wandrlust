@@ -171,6 +171,21 @@ const COLOR = {
  */
 export { FACILITY_COLOR };
 
+/**
+ * The mark on anything naming the public land underneath you.
+ *
+ * A TENT, NOT A SHIELD. This used to be 🛡️, and a shield says "protected
+ * area — keep out", which is the exact opposite of what BLM, Crown land and
+ * the national forests mean to a camper: this is the land you ARE allowed to
+ * sleep on. The pin sheet already made this call with `TentTree`; the map's
+ * chip and its tour label now agree with it.
+ *
+ * It promises no more than the chip's own words do. Where the rules are
+ * stricter — a wilderness area, a permit, a closure — the lines beside the
+ * glyph say so, and the glyph never argues with them.
+ */
+export const LAND_GLYPH = '\u{1F3D5}️';
+
 /** "300 m" under a kilometre, "1.4 km" over it. */
 const nearDistance = (km: number): string =>
   km < 1 ? `${Math.max(10, Math.round((km * 1000) / 10) * 10)} m` : `${km.toFixed(1)} km`;
@@ -448,7 +463,7 @@ export const conditionDots = (
       label: land.name,
       full: (detail ? `${land.name} \u2014 ${detail}` : land.name) +
         ' \u2014 tap to see the parcel this came from. Its edges are approximate.',
-      glyph: '\u{1F6E1}\uFE0F',
+      glyph: LAND_GLYPH,
       tone: 'neutral',
       action: 'land'
     });
