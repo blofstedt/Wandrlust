@@ -4,6 +4,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 
 import { registerBoundaryRoutes } from './server/boundaryRoutes';
+import { registerLandPackRoutes } from './server/landPackRoutes';
 import { registerWeatherRoutes } from './server/weatherRoutes';
 import { registerPushRoutes } from './server/pushRoutes';
 import { registerCellRoutes } from './server/cellRoutes';
@@ -40,6 +41,11 @@ const startServer = async (): Promise<void> => {
 
   // Public land boundaries — three authoritative government ArcGIS services.
   registerBoundaryRoutes(app);
+
+  // The full-detail offline land pack, served cell by cell out of Supabase.
+  // Reports itself unavailable — rather than empty — until `public_lands` is
+  // seeded, so the app never offers a download that cannot work.
+  registerLandPackRoutes(app);
 
   // Weather plus fire / flood / storm alerts (NWS + Environment Canada).
   registerWeatherRoutes(app);

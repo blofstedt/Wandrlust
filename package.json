@@ -23,6 +23,7 @@
     "seed:sites": "tsx scripts/seedSupabase.ts --sites",
     "seed:lands": "tsx scripts/seedSupabase.ts --lands",
     "map:assets": "tsx scripts/buildMapAssets.ts",
+    "map:land": "tsx scripts/buildLandOverlay.ts",
     "vapid": "tsx scripts/generateVapidKeys.ts"
   },
   "dependencies": {

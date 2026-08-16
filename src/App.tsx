@@ -19,6 +19,8 @@ import { MapComponent } from './components/MapComponent';
 import { CampsiteCard } from './components/CampsiteCard';
 import { CampsiteDetailModal } from './components/CampsiteDetailModal';
 import { OfflineManagerModal } from './components/OfflineManagerModal';
+import { MapDataChoiceScreen } from './components/MapDataChoiceScreen';
+import { shouldAskMapDataChoice } from './services/landOverlayService';
 import { AddHereConfirm } from './components/AddHereConfirm';
 import { AddFacilitySheet } from './components/AddFacilitySheet';
 import { FacilityCard } from './components/FacilityCard';
@@ -75,6 +77,25 @@ export default function App() {
   // Navigation & view
   const [activeView, setActiveView] = useState<AppView>('map');
   const [isOfflineMode, setIsOfflineMode] = useState(false);
+
+  /**
+   * Whether to ask which map data this device should carry.
+   *
+   * Starts false rather than true: the chooser is a blocking screen, and
+   * flashing it up for the moment it takes storage to answer would show a
+   * returning camper a decision they made weeks ago. It appears only once
+   * `shouldAskMapDataChoice` has confirmed both that nobody has chosen AND
+   * that there is something to choose between.
+   */
+  const [askMapData, setAskMapData] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    shouldAskMapDataChoice().then((ask) => {
+      if (!cancelled) setAskMapData(ask);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // Map & location
   const [center, setCenter] = useState<[number, number]>(HOME_CENTER);
@@ -1192,6 +1213,15 @@ export default function App() {
                  pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]
                  pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
     >
+      {/*
+        The first-run map data choice, over everything.
+
+        The map underneath keeps mounting and loading while this is up, so
+        picking "Quick map" lands on a map that is already drawn rather than on
+        a spinner.
+      */}
+      {askMapData && <MapDataChoiceScreen onChosen={() => setAskMapData(false)} />}
+
       <div className="w-full h-full flex flex-col flex-1 min-h-0">
         <Navbar
           activeView={activeView}

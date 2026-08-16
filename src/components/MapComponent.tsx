@@ -31,6 +31,9 @@ import {
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
 import {
+  loadLandOverlay, overviewCollection, packCollection, LandOverlay
+} from '../services/landOverlayService';
+import {
   fetchActiveFires, findFiresNear, boxAround, isUnderControl, FIRE_ALERT_RADIUS_KM, ActiveFire
 } from '../services/fireService';
 import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
@@ -1582,6 +1585,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const loadedZoomRef = useRef<number>(0);
   const collectionRef = useRef<BoundaryCollection>(EMPTY_BOUNDARIES);
   const boundaryRendererRef = useRef<L.Canvas | null>(null);
+  /**
+   * The overview that ships with the app, parsed once.
+   *
+   * A ref rather than state on purpose: it is read inside the boundary effect
+   * and must not be a dependency of it. Putting a few thousand parcels in
+   * state would tear down and rebuild the whole Leaflet layer stack the moment
+   * the file finished parsing.
+   */
+  const landOverlayRef = useRef<LandOverlay | null>(null);
   /** Which tier is on screen, and at what settings — see `render`. */
   const loadedDetailRef = useRef<BoundaryDetail | null>(null);
   const overviewTierRef = useRef<number>(0);
@@ -2208,6 +2220,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
+  /* The bundled overview                                                */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Parse the shipped overview once, then nudge the boundary effect.
+   *
+   * The nudge is a synthetic `moveend` rather than a state change wired into
+   * the boundary effect's dependencies. Adding a dependency would run that
+   * effect's cleanup — which strips the boundary layer off the map — so the
+   * one thing that arrives to make the map faster would have made it flash
+   * empty first.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    loadLandOverlay().then((overlay) => {
+      if (cancelled || !overlay) return;
+      landOverlayRef.current = overlay;
+      const map = mapRef.current;
+      if (map && isMapReady) {
+        try { map.fire('moveend'); } catch { /* map torn down mid-parse */ }
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [isMapReady]);
+
+  /* ------------------------------------------------------------------ */
   /* Public land boundaries                                              */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
@@ -2747,12 +2786,71 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const myId = ++requestId;
       controller?.abort();
       controller = new AbortController();
+
+      /**
+       * ---------------------------------------------------------------------
+       * DRAW WHAT IS ALREADY ON THE DEVICE, THEN GO AND ASK
+       * ---------------------------------------------------------------------
+       *
+       * Everything below this point is a network round trip: eight government
+       * ArcGIS services, or Supabase, or a cache warmed by neither on a cold
+       * start. Until it lands the map has nothing to show, and "nothing to
+       * show" on a map of public land is a blank continent — the one thing
+       * this app must never draw.
+       *
+       * So local data paints FIRST, synchronously, from whatever this device
+       * carries: the downloaded full-detail pack if there is one, otherwise
+       * the overview that shipped with the app. The remote answer replaces it
+       * a moment later if it is better.
+       *
+       * The pack is preferred over the bundled overview because it IS the real
+       * geometry — a camper who paid for the download should never be shown
+       * the coarse shape while the accurate one sits on their phone unused.
+       */
+      const localPack = await packCollection(box);
+      if (cancelled || myId !== requestId) return;
+
+      const local = localPack ?? overviewCollection(landOverlayRef.current, box);
+      if (local) render(local, localPack ? detail : 'overview');
+
+      /*
+       * With the full pack on the device there is nothing better to fetch:
+       * it is the same data the server would return, already local. Stopping
+       * here is what makes the pack worth downloading — no round trip, and it
+       * behaves identically with no signal.
+       */
+      if (localPack) {
+        loadedBoxRef.current = box;
+        loadedZoomRef.current = currentZoom;
+        loadedDetailRef.current = detail;
+        overviewTierRef.current = tier;
+        collectionRef.current = localPack;
+        setBoundaries(localPack);
+        return;
+      }
+
       const collection = await fetchBoundaries(box, controller.signal, detail, currentZoom);
       if (cancelled || myId !== requestId) return;
 
       // `null` means the request was superseded. Keep what is on screen rather
       // than blanking the map between one viewport and the next.
       if (!collection) return;
+
+      /*
+       * The network came back with nothing where the device has something.
+       *
+       * `fetchBoundaries` returns an empty collection for a failure, for a
+       * viewport outside coverage, and for genuinely empty ground alike — it
+       * cannot tell them apart, and neither can this. What we do know is that
+       * local data says there IS public land here, and replacing a drawn
+       * continent with a blank one on the strength of an ambiguous empty
+       * response is the wrong way to be wrong.
+       *
+       * Note this cannot suppress a true empty: where the ground really is
+       * empty the local layer had nothing either, so `local` is null and this
+       * never fires.
+       */
+      if (local && collection.features.length === 0) return;
 
       loadedBoxRef.current = box;
       loadedZoomRef.current = currentZoom;

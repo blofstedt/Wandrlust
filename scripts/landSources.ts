@@ -88,43 +88,90 @@ export const EXCLUDED_DESIGNATIONS =
 
 export const LAND_SOURCES: LandSourceSpec[] = [
   /* ================= UNITED STATES ================= */
+  /**
+   * ---------------------------------------------------------------------------
+   * WHY THERE ARE NOW TWO US FEDERAL SOURCES WHERE THERE WAS ONE
+   * ---------------------------------------------------------------------------
+   *
+   * This registry used to carry a single `blm_sma_national` entry pointed at
+   * `.../SurfaceManagementAgency/FeatureServer/0` and filtered
+   * `ADMIN_AGENCY_CODE IN ('BLM','FS')`. Both halves of that were broken, and
+   * `server/boundaryRoutes.ts` had already found out and fixed it on the live
+   * path — the fix was simply never carried back here:
+   *
+   *   1. THAT LAYER IS A CLIPPED SAMPLE. Its real name is
+   *      `SurfaceManagementAgency_Clip`. A query for Moab — ringed by BLM land
+   *      — returned nothing. Nationally it held single-digit features.
+   *   2. `'FS'` MATCHES NOTHING. The field's values are BIA, BLM, DOD, NPS,
+   *      PVT, ST, USFS. Every national forest in the country was excluded by a
+   *      two-letter typo.
+   *
+   * That combination was never merely useless, it was actively dangerous,
+   * because `boundaryRoutes.ts` PREFERS seeded data over the live services. A
+   * seed run with the old config would have written a nearly-empty United
+   * States into `public_lands` and the map would have started drawing that in
+   * place of the working live path — public land silently disappearing from
+   * the map, which is this app's one forbidden failure.
+   *
+   * These two entries mirror the endpoints and filters that are verified and
+   * in production in `boundaryRoutes.ts`. If you change one, change both.
+   */
   {
-    id: 'blm_sma_national',
-    label: 'BLM Surface Management Agency (national)',
+    // Verified in production: 71,046 features nationally; returns Moab.
+    id: 'blm_lands',
+    label: 'BLM public land',
     attribution: 'Bureau of Land Management, Geospatial Business Platform',
     licence: 'Public domain (US Government work)',
     jurisdiction: 'US',
-    url: 'https://services3.arcgis.com/ZyW3beZDqER6f82o/ArcGIS/rest/services/SurfaceManagementAgency/FeatureServer/0/query',
-    where: "ADMIN_AGENCY_CODE IN ('BLM','FS')",
+    url: 'https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/BLM_Lands/FeatureServer/0/query',
+    where: '1=1',
     outFields: '*',
     confidence: 'managing_agency',
     edgeAccuracy: 'administrative',
     campingBasisKind: 'agency_policy_inference',
     maxRecordCount: 2000,
     bbox: [-125.0, 24.5, -66.9, 49.5],
-    externalId: (p) =>
-      String(p.OBJECTID ?? p.objectid ?? `${p.ADMIN_AGENCY_CODE}:${p.ADMIN_UNIT_NAME}`),
-    name: (p) => p.ADMIN_UNIT_NAME || p.ADMIN_AGENCY_CODE || 'Federal land',
-    designation: (p) =>
-      p.ADMIN_AGENCY_CODE === 'BLM' ? 'Bureau of Land Management'
-      : p.ADMIN_AGENCY_CODE === 'FS' ? 'US Forest Service'
-      : String(p.ADMIN_AGENCY_CODE ?? 'Federal'),
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? p.unit_name ?? p.UNIT_NAME),
+    name: (p) => p.unit_name || p.UNIT_NAME || 'BLM land',
+    designation: () => 'Bureau of Land Management',
     campingBasis: (p) => {
-      const unit = String(p.ADMIN_UNIT_NAME ?? '');
+      const unit = String(p.unit_name ?? p.UNIT_NAME ?? '');
       if (EXCLUDED_DESIGNATIONS.test(unit)) return null;
-      const code = p.ADMIN_AGENCY_CODE;
-      if (code === 'BLM') {
-        return 'BLM-administered surface, no excluded designation in the unit name. BLM policy generally permits dispersed camping up to 14 days per 28-day period. Subject to field-office travel management plans and seasonal closures not represented in this dataset.';
-      }
-      if (code === 'FS') {
-        return 'National Forest System land, no excluded designation in the unit name. USFS policy generally permits dispersed camping up to 14 days. Subject to forest-specific orders and Motor Vehicle Use Maps not represented in this dataset.';
-      }
-      return null;
+      return 'BLM-administered surface, no excluded designation in the unit name. BLM policy generally permits dispersed camping up to 14 days per 28-day period. Subject to field-office travel management plans and seasonal closures not represented in this dataset.';
     },
     stayLimitDays: () => 14,
     permit: () => ({ required: false, name: null }),
     notes:
       'Authoritative for WHICH AGENCY manages a surface. Explicitly NOT a land-ownership or parcel boundary dataset — BLM states so in its own metadata. Private inholdings are not depicted.'
+  },
+  {
+    // Verified in production: 112 national forests; returns Custer Gallatin.
+    id: 'usfs_national_forest',
+    label: 'National Forest',
+    attribution: 'USDA Forest Service, Enterprise Data Warehouse',
+    licence: 'Public domain (US Government work)',
+    jurisdiction: 'US',
+    url: 'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_ForestSystemBoundaries_01/MapServer/1/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 1000,
+    bbox: [-125.0, 24.5, -66.9, 49.5],
+    externalId: (p) =>
+      String(p.OBJECTID ?? p.objectid ?? p.FORESTORGCODE ?? p.FORESTNAME ?? p.forestname),
+    name: (p) => p.FORESTNAME || p.forestname || 'National Forest',
+    designation: () => 'US Forest Service',
+    campingBasis: (p) => {
+      const unit = String(p.FORESTNAME ?? p.forestname ?? '');
+      if (EXCLUDED_DESIGNATIONS.test(unit)) return null;
+      return 'National Forest System land, no excluded designation in the unit name. USFS policy generally permits dispersed camping up to 14 days. Subject to forest-specific orders and Motor Vehicle Use Maps not represented in this dataset.';
+    },
+    stayLimitDays: () => 14,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Administrative forest boundaries. A national forest boundary encloses private inholdings and wilderness alike; neither is depicted here, so a point inside one of these polygons is not by itself campable ground.'
   },
   {
     id: 'padus_open_access',
