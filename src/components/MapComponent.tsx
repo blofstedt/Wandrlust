@@ -20,6 +20,7 @@ import { hazardReportStyle, reportStanding } from '../config/hazardReports';
 import { beaconTierStyle } from '../config/beacon';
 import { facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
 import { landRules } from '../config/landRules';
+import { loadLakes, lakesInBox, type LakeRing } from '../services/lakeService';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
 import {
   fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
@@ -41,7 +42,7 @@ import {
 import {
   AlertBadge, PointWarning, BADGE_COLOR, CLOUD_TINT, warningsForPoint, alertBadge,
   localizedPinHtml, cloudPieces,
-  dissolveKey, dissolveSegments, dissolvedFill
+  dissolveKey, dissolveSegments, dissolvedFill, punchLakes
 } from '../utils/alertOverlay';
 import {
   MarkerDot, amenityDots, conditionDots, facilityDots, fireDots, hazardDots,
@@ -1585,6 +1586,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /** Which tier is on screen, and at what settings — see `render`. */
   const loadedDetailRef = useRef<BoundaryDetail | null>(null);
   const overviewTierRef = useRef<number>(0);
+  /**
+   * The lakes to subtract from the boundary fill, once they have arrived.
+   *
+   * Empty until the file lands, and the render signature counts them — so the
+   * first draw paints the water green exactly as before and the frame after
+   * the load cuts it out, rather than the boundaries waiting on a download
+   * before they appear at all.
+   */
+  const lakesRef = useRef<LakeRing[]>([]);
+  const [lakeCount, setLakeCount] = useState(0);
   const renderSignatureRef = useRef<string>('');
   const renderedCollectionRef = useRef<BoundaryCollection | null>(null);
   /**
@@ -2355,7 +2366,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       collection: BoundaryCollection,
       centreLat: number,
       currentZoom: number,
-      minDim: (g: unknown) => number
+      minDim: (g: unknown) => number,
+      /** How far apart two parcels may be and still merge — see `mergeSnap`. */
+      snap: number
     ): { group: L.LayerGroup; widest: number } => {
       const rings = ringBudget(collection.features.length);
       const renderer = boundaryRenderer();
@@ -2385,14 +2398,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // Drop the seams shared by two parcels in the same group, so abutting
         // Crown/BLM/PLUZ land draws as one outline instead of a web of internal
         // lines. What survives is the true outer edge of the merged shape.
-        // ~100 m snap: merges same-type parcels split only by a small
-        // vertex mismatch (rasterised vector tiles are routinely off by
-        // 30-80 m at shared edges), so adjacent Crown/BLM/PLUZ land of
-        // one designation reads as a single shape. Tighter than 100m and
-        // the doubled outline shows up where two parcels' shared edge
-        // doesn't quite align; looser than 200m and parcels with a real
-        // gap of that size start to merge by accident.
-        const segments = dissolveSegments(features, 1e-3);
+        // The snap merges same-type parcels split only by a vertex mismatch:
+        // rasterised vector tiles are routinely off by 30-80 m at a shared
+        // edge, and the server's own generalisation adds far more than that
+        // when zoomed out. It floors at ~100 m and tracks that generalisation
+        // above it — see `mergeSnap`, which is where the whole "why does
+        // Ontario draw as a mesh and Alberta as one shape" answer lives.
+        const segments = dissolveSegments(features, snap);
         if (segments.length === 0) return;
         const line = { type: 'MultiLineString', coordinates: segments } as any;
 
@@ -2476,7 +2488,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // overview redraws nothing at all.
       const zoomKey = overview ? 'ov' : String(Math.round(currentZoom));
       const fingerprint = parcelFingerprint(collection);
-      const signature = `${detail}|${zoomKey}|${fingerprint}`;
+      // The lake count is in here so the fill is rebuilt once, when the lakes
+      // finish loading. Same parcels, different holes.
+      const signature = `${detail}|${zoomKey}|${lakesRef.current.length}|${fingerprint}`;
 
       /**
        * Is this the same PARCEL SET that is already drawn?
@@ -2520,6 +2534,38 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * result cuts the work in half and lets the filter be a Map lookup
        * rather than a function call.
        */
+      /**
+       * HOW FAR APART TWO PARCELS MAY BE AND STILL COUNT AS TOUCHING.
+       *
+       * This is the number that decides whether a province reads as Alberta
+       * does — one clean shape — or as a mesh of thousands of outlines.
+       *
+       * Merging works by cancelling the edge two abutting parcels share, which
+       * requires both copies of that edge to still line up. They do at street
+       * zoom. They do not when zoomed out, because the server generalises each
+       * parcel INDEPENDENTLY, and two sides of one shared boundary can drift
+       * apart by as much as the whole simplification tolerance — 1.4 km on a
+       * province-wide view. Against that, a fixed 100 m tolerance recognises
+       * nothing, every internal seam survives, and Ontario draws every parcel
+       * separately while Alberta looks fine purely because the Green Area
+       * arrives as a single polygon that was never split to begin with.
+       *
+       * So the tolerance follows the generalisation the server reports, with
+       * the old 100 m as the floor for close-in views where nothing was
+       * generalised much. Doubled, because the drift is up to the tolerance on
+       * EACH side of the shared edge.
+       */
+      const mergeSnap = Math.min(
+        // AND A CEILING, BECAUSE MERGING IS ALSO A CLAIM. Two parcels joined
+        // across a gap say there is campable ground in that gap. At ~5 km the
+        // gap is about a pixel on the widest views this tolerance is reached
+        // at, so nobody can act on it and zooming in undoes it — but past that
+        // the merge stops being a rendering decision and starts being an
+        // assertion about land, so it stops here.
+        0.05,
+        Math.max(1e-3, (collection.meta?.simplifyDegrees ?? 0) * 2)
+      );
+
       const minDimCache = new Map<unknown, number>();
       const minDim = (g: unknown): number => {
         const cached = minDimCache.get(g);
@@ -2536,7 +2582,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (haloLayerRef.current) {
           try { group.removeLayer(haloLayerRef.current); } catch { /* gone */ }
         }
-        const { group: halo, widest } = buildHalo(collection, centreLat, currentZoom, minDim);
+        const { group: halo, widest } = buildHalo(collection, centreLat, currentZoom, minDim, mergeSnap);
         haloLayerRef.current = halo;
         group.addLayer(halo);
         fillLayerRef.current.setStyle((f: any) => parcelStyle(f, centreLat, currentZoom, false));
@@ -2553,7 +2599,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // No uncertainty band in the overview. At zoom 4 a ±200 m band is a
       // fraction of a pixel, so it would draw as a slightly thicker line that
       // says nothing — while costing one extra pass over every polygon.
-      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom, minDim);
+      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom, minDim, mergeSnap);
 
       /**
        * DISSOLVED FILL. Same-org, same-rule parcels are merged into a single
@@ -2572,10 +2618,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * "the green and yellow are merging", which was the larger group
        * painting over the smaller one.
        */
-      const dissolved = dissolvedFill(
-        collection.features as { properties?: Record<string, any>; geometry: unknown }[],
-        dissolveKey,
-        1e-3
+      /*
+       * …AND THEN THE WATER COMES BACK OUT OF IT.
+       *
+       * The parcels genuinely include their lakes — the province owns the
+       * lakebed — so the dissolve faithfully paints "you may sleep here" over
+       * open water. Every lake wholly inside a dissolved shape is subtracted
+       * from it as a hole, so the fill stops at the shoreline and the imagery
+       * underneath shows through as water. Big lakes only; see `lakeService`.
+       */
+      const dissolved = punchLakes(
+        dissolvedFill(
+          collection.features as { properties?: Record<string, any>; geometry: unknown }[],
+          dissolveKey,
+          mergeSnap
+        ),
+        /*
+         * Only the lakes over the ground these parcels came from.
+         *
+         * Keyed on the LOADED box rather than the viewport: panning inside
+         * loaded data deliberately does not rebuild the fill, so a lake
+         * chosen for the current view would be missing from the shape the
+         * moment you slid the map sideways.
+         */
+        lakesRef.current.length
+          ? lakesInBox(loadedBoxRef.current ?? {
+              minLat: -90, minLon: -180, maxLat: 90, maxLon: 180
+            })
+          : lakesRef.current
       );
       const dissolvedSorted = [...dissolved].sort((a, b) => {
         const ea = a.geometry as { type: string; coordinates: any };
@@ -2736,7 +2806,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         boundaryRendererRef.current = null;
       }
     };
-  }, [isMapReady, showBoundaries, isOfflineMode]);
+  }, [isMapReady, showBoundaries, isOfflineMode, lakeCount]);
+
+  /**
+   * Fetch the lakes the first time boundaries are actually going to be drawn.
+   *
+   * Not on startup: a camper who stays in the list view never needs them, and
+   * this is a couple of hundred kilobytes over what may be one bar of signal.
+   * Not blocking either — the boundaries draw the moment they arrive, and the
+   * water is cut out of them a beat later when this lands.
+   */
+  useEffect(() => {
+    if (!isMapReady || !showBoundaries) return;
+    if (lakesRef.current.length) return;
+    let alive = true;
+    void loadLakes().then((lakes) => {
+      if (!alive || !lakes.length) return;
+      lakesRef.current = lakes;
+      // Re-runs the boundary effect above, whose signature now differs.
+      setLakeCount(lakes.length);
+    });
+    return () => { alive = false; };
+  }, [isMapReady, showBoundaries]);
 
   /* ------------------------------------------------------------------ */
   /* Tap anywhere to pick a destination                                  */

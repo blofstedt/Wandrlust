@@ -593,6 +593,110 @@ const approxAreaSqKm = (geometry: any): number => {
   return 0;
 };
 
+/* -------------------------------------------------------------------------- */
+/* Parts of a parcel that are too small to see                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * THE THOUSANDS OF TINY SHAPES WERE NEVER THOUSANDS OF PARCELS.
+ *
+ * The area filter above works on FEATURES, and a feature is not a shape. One
+ * Ontario General Use Area is a single MultiPolygon whose coordinates hold
+ * every scrap of Crown land in that planning unit — the big blocks, and then
+ * several hundred slivers between a lake and a road, each one a fraction of a
+ * pixel wide at the zoom anyone looks at a province from.
+ *
+ * `approxAreaSqKm` sums all of them, so the feature sails through the filter
+ * and brings its whole confetti of parts along. That is what a camper sees as
+ * "thousands of individual parcels instead of grouping like Alberta does", and
+ * it is the same confetti the browser is paying for: every part is vertices to
+ * transfer, an outline to dissolve, and a path to draw. Alberta looks clean
+ * because the Green Area genuinely IS one shape, not because it is treated
+ * differently.
+ *
+ * So parts below what a screen can resolve are dropped from the geometry
+ * itself, before the response is built. Nothing about which LAND is included
+ * changes — only whether a shape too small to see is sent to be drawn.
+ *
+ * A FEATURE NEVER COMES BACK EMPTY. If every part is below the threshold the
+ * biggest one is kept regardless. A parcel that draws as two pixels is honest;
+ * a parcel that silently disappears is the empty-province failure this file
+ * exists to prevent.
+ */
+const partAreaDeg2 = (ring: any[]): number => {
+  if (!Array.isArray(ring) || ring.length < 4) return 0;
+  let sum = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const a = ring[j];
+    const b = ring[i];
+    if (!Array.isArray(a) || !Array.isArray(b)) return 0;
+    sum += a[0] * b[1] - b[0] * a[1];
+  }
+  return Math.abs(sum) / 2;
+};
+
+/**
+ * Drop sub-pixel parts of a MultiPolygon.
+ *
+ * `minPartDeg2` is in square degrees rather than km² on purpose: it is derived
+ * from the same simplification tolerance the source was queried with, so it
+ * scales with the zoom automatically and needs no latitude correction to
+ * answer the only question being asked — "is this bigger than a few pixels?"
+ *
+ * `maxParts` is the backstop for a parcel that is genuinely made of hundreds
+ * of visible pieces: keep the largest, drop the tail.
+ */
+export const pruneTinyParts = (geometry: any, minPartDeg2: number, maxParts: number): any => {
+  if (geometry?.type !== 'MultiPolygon' || !Array.isArray(geometry.coordinates)) {
+    return geometry;
+  }
+  const parts = geometry.coordinates as any[];
+  if (parts.length <= 1) return geometry;
+
+  const sized = parts
+    .map((poly) => ({ poly, area: partAreaDeg2(poly?.[0]) }))
+    .sort((a, b) => b.area - a.area);
+
+  let kept = sized.filter((x) => x.area >= minPartDeg2).slice(0, maxParts);
+  // Never nothing: the biggest piece survives whatever the threshold says.
+  if (kept.length === 0) kept = sized.slice(0, 1);
+  if (kept.length === parts.length) return geometry;
+
+  return kept.length === 1
+    ? { type: 'Polygon', coordinates: kept[0].poly }
+    : { type: 'MultiPolygon', coordinates: kept.map((x) => x.poly) };
+};
+
+/** How many separate pieces one parcel may draw as. */
+const MAX_PARTS_DETAIL = 160;
+const MAX_PARTS_OVERVIEW = 24;
+
+const prunedFeatures = (
+  features: any[],
+  simplifyDegrees: number,
+  isOverview: boolean
+): any[] => {
+  /*
+   * FOUR SIMPLIFICATION STEPS ON A SIDE, IN BOTH MODES.
+   *
+   * `simplifyDegrees` is already the tolerance the source is being asked to
+   * generalise to — about one screen pixel on a phone at the view in question
+   * — so four of them is a blob roughly four pixels across. Below that there
+   * is nothing to look at and nothing to tap.
+   *
+   * It lands in the same place the feature-level filter does by a different
+   * route: at the zoom where the overview keeps parcels over 500 km², this
+   * drops parts under about 480 km². The two agree, which is what you want
+   * from a threshold and its finer-grained twin.
+   */
+  const minPartDeg2 = (4 * simplifyDegrees) ** 2;
+  const maxParts = isOverview ? MAX_PARTS_OVERVIEW : MAX_PARTS_DETAIL;
+  return features.map((f) => {
+    const geometry = pruneTinyParts(f?.geometry, minPartDeg2, maxParts);
+    return geometry === f?.geometry ? f : { ...f, geometry };
+  });
+};
+
 /**
  * Drop parcels too small to read at this zoom, largest first.
  *
@@ -702,6 +806,15 @@ interface SourceResult {
   truncated: boolean;
 }
 
+/**
+ * Decimal places worth asking for, given how hard the geometry is being
+ * generalised anyway. Two vertices closer together than the tolerance are
+ * about to be collapsed into one, so digits below it are bytes for nothing.
+ * Floored at 3 (~100 m) and capped at 5 (~1 m).
+ */
+const precisionFor = (simplifyDegrees: number): number =>
+  Math.min(5, Math.max(3, Math.ceil(-Math.log10(Math.max(simplifyDegrees, 1e-6))) + 1));
+
 const queryBoundarySource = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
@@ -719,7 +832,18 @@ const queryBoundarySource = async (
     outFields: source.outFields,
     returnGeometry: 'true',
     outSR: '4326',
-    geometryPrecision: '5',
+    /*
+     * ASK FOR NO MORE PRECISION THAN THE VIEW CAN SHOW.
+     *
+     * This was a flat 5 decimal places — about a metre — on every request,
+     * including the one that draws Ontario at the scale of the Great Lakes.
+     * Every one of those digits is bytes off a provincial ArcGIS server, over
+     * the wire, and through a JSON parse, to place a vertex a thousand times
+     * finer than the pixel it lands in. The tolerance we are already asking
+     * the server to generalise to says how fine is useful, so the precision
+     * follows it: metres up close, hundreds of metres at province scale.
+     */
+    geometryPrecision: String(precisionFor(simplifyDegrees)),
     maxAllowableOffset: String(simplifyDegrees),
     resultRecordCount: String(recordLimit),
     f: 'geojson'
@@ -1073,9 +1197,13 @@ export const registerBoundaryRoutes = (app: Express): void => {
     const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, minAreaSqKm);
     if (seeded) {
       // If the database did the area filtering, this is a no-op slice.
-      const kept = isOverview
-        ? largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit)
-        : seeded.features.slice(0, recordLimit);
+      const kept = prunedFeatures(
+        isOverview
+          ? largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit)
+          : seeded.features.slice(0, recordLimit),
+        simplifyDegrees,
+        isOverview
+      );
       const truncated = seeded.features.length > recordLimit;
 
       await remember({
@@ -1089,6 +1217,10 @@ export const registerBoundaryRoutes = (app: Express): void => {
           truncationNote: truncated
             ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
             : undefined,
+          // The map merges abutting parcels by cancelling shared edges, and it
+          // cannot do that without knowing how far this generalisation may
+          // have pushed the two sides of one apart.
+          simplifyDegrees,
           disclaimer: DISCLAIMER
         }
       });
@@ -1103,9 +1235,13 @@ export const registerBoundaryRoutes = (app: Express): void => {
     );
 
     const anyTruncated = results.some((r) => r.truncated);
-    const liveFeatures = isOverview
-      ? largestParcels(results.flatMap((r) => r.features), minAreaSqKm, recordLimit)
-      : results.flatMap((r) => r.features);
+    const liveFeatures = prunedFeatures(
+      isOverview
+        ? largestParcels(results.flatMap((r) => r.features), minAreaSqKm, recordLimit)
+        : results.flatMap((r) => r.features),
+      simplifyDegrees,
+      isOverview
+    );
 
     const body = {
       type: 'FeatureCollection',
@@ -1126,6 +1262,7 @@ export const registerBoundaryRoutes = (app: Express): void => {
         truncationNote: anyTruncated
           ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
           : undefined,
+        simplifyDegrees,
         disclaimer: DISCLAIMER
       }
     };

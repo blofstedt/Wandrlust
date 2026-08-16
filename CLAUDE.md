@@ -96,6 +96,8 @@ public/
                            `npm run map:assets`, never fetched at runtime.
     admin1-us-ca.json      State / province outlines
     land-mask.bin          Land-vs-water bitmask for the pin check
+    lakes-us-ca.json       Big lakes, cut out of the boundary fill so it
+                           never paints "campable" over open water
 ```
 
 ## House rules
