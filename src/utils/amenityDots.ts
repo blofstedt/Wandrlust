@@ -6,8 +6,10 @@ import type { RouteResult } from '../services/routingService';
 import {
   ROAD_ACCESS_LABEL, SHADE_LABEL, TOILET_LABEL, WATER_LABEL, bestCellSignal
 } from './amenities';
-import { AlertBadge, BADGE_COLOR, WARNING_EMOJI, WARNING_LABEL } from './alertOverlay';
-import { FACILITY_GLYPH, FACILITY_LABEL } from '../services/nearbyAmenityService';
+import {
+  AlertBadge, PointWarning, BADGE_COLOR, WARNING_EMOJI
+} from './alertOverlay';
+import { FACILITY_COLOR, FACILITY_GLYPH, FACILITY_LABEL } from '../config/facilities';
 import { isUnderControl, type ActiveFire } from '../services/fireService';
 
 /**
@@ -50,6 +52,13 @@ export interface MarkerDot {
    * The words on the chip. SHORT — two or three, and the glyph carries the
    * subject. A chip is read at a glance over a map, so anything longer stops
    * being a label and starts being a paragraph lying across the terrain.
+   *
+   * THE ONE EXCEPTION IS A WARNING, which carries the agency's own product
+   * name — "Flash flood warning", "Special air quality statement". Those run
+   * three or four words and they are allowed to, because shortening one means
+   * choosing which half of "flash flood WARNING" to throw away and every
+   * candidate is load-bearing. The chip clamps its width and ellipsises rather
+   * than letting one lie across the map; the whole name is in `full`.
    */
   label: string;
   /**
@@ -92,18 +101,35 @@ export interface MarkerDot {
   /**
    * Something the chip DOES when tapped, rather than something it says.
    *
-   * `fires` takes the camera out to the fires the dot is counting, names each
-   * one, and comes back. Only set where the map has somewhere to take you:
-   * a chip with no action is a label and swallows no taps.
+   * EVERY CHIP IS TAPPABLE NOW. The ones listed here take the camera out to
+   * the thing they are talking about — the way the fire chip always did — and
+   * bring it back afterwards. A chip with no action still answers when tapped:
+   * it unfurls into its own full, hedged sentence, which on a phone was
+   * otherwise unreachable because it lived in a `title` attribute.
+   *
+   *   fires      the fires this chip is counting, named one at a time
+   *   alert      the warning area this point is standing in
+   *   land       the parcel the boundary layer matched under this point
+   *   road       the nearest mapped driveable track, drawn as a line
+   *   gap        where the router's road stops, and the walk left after it
+   *   directions hands off to the phone's own maps app — this is the car chip,
+   *              and it is why there is no longer a separate "Go" button
    */
-  action?: 'fires';
+  action?: 'fires' | 'alert' | 'land' | 'road' | 'gap' | 'directions';
+  /**
+   * Which warning family this chip stands for, on hazard chips only.
+   *
+   * Carried so the map can find the alert again when the chip is tapped,
+   * without re-deriving it from the label a human reads.
+   */
+  badge?: AlertBadge;
 }
 
 /**
  * One hue per subject, all of them at the same brightness so no single dot
  * shouts louder than its neighbour for reasons of palette rather than
  * meaning. Hazards are excluded — they come from `BADGE_COLOR`, so a dot
- * matches the cloud it is standing in.
+ * matches the warning area it is standing in.
  */
 const COLOR = {
   water: '#38BDF8',
@@ -136,20 +162,29 @@ const COLOR = {
   land: '#A78BFA'
 } as const;
 
-/** The colour a nearby facility's dot and its route line are drawn in. */
-export const FACILITY_COLOR: Record<NearbyFacilityKind, string> = {
-  toilet: COLOR.toilet,
-  shower: COLOR.shower,
-  water: COLOR.water,
-  dump: COLOR.dump,
-  fuel: COLOR.fuel,
-  groceries: COLOR.groceries,
-  trail: COLOR.trail,
-  fishing: COLOR.fishing,
-  boat: COLOR.boat,
-  waste: COLOR.waste,
-  road: COLOR.road
-};
+/**
+ * The colour a facility's dot, its pin and its route line are drawn in.
+ *
+ * Re-exported from `config/facilities.ts` rather than restated here. It used
+ * to be a second copy keyed off `COLOR` above, which meant a facility could
+ * be violet as a chip on a pin and something else as a pin of its own.
+ */
+export { FACILITY_COLOR };
+
+/**
+ * The mark on anything naming the public land underneath you.
+ *
+ * A TENT, NOT A SHIELD. This used to be 🛡️, and a shield says "protected
+ * area — keep out", which is the exact opposite of what BLM, Crown land and
+ * the national forests mean to a camper: this is the land you ARE allowed to
+ * sleep on. The pin sheet already made this call with `TentTree`; the map's
+ * chip and its tour label now agree with it.
+ *
+ * It promises no more than the chip's own words do. Where the rules are
+ * stricter — a wilderness area, a permit, a closure — the lines beside the
+ * glyph say so, and the glyph never argues with them.
+ */
+export const LAND_GLYPH = '\u{1F3D5}️';
 
 /** "300 m" under a kilometre, "1.4 km" over it. */
 const nearDistance = (km: number): string =>
@@ -159,18 +194,45 @@ const nearDistance = (km: number): string =>
  * A live hazard over this spot — smoke, a heat warning, a fire.
  *
  * These lead the row, because they change whether a camper should go at all.
- * They are the same colours and words as the hazard clouds drawn on the map,
- * so the dot above a pin and the shape it is standing in are obviously the
- * same warning.
+ * The colour is the family's, so the chip and the cloud it is standing in are
+ * obviously the same warning, but the WORDS are the agency's own product name:
+ * "Flash flood warning", not "Flood". See `PointWarning` for why the family
+ * word on its own was not good enough — three different water products, three
+ * different nights, one chip that read the same for all of them.
  */
-export const hazardDots = (badges: AlertBadge[]): MarkerDot[] =>
-  badges.map((b) => ({
+export const hazardDots = (warnings: PointWarning[]): MarkerDot[] =>
+  warnings.map(({ badge: b, label, count }) => ({
     key: `hz-${b}`,
     color: BADGE_COLOR[b],
-    label: WARNING_LABEL[b],
+    label,
+    /*
+     * "Where?" is the next question after "what?", and the answer is a shape
+     * an agency drew. Tapping goes and looks at it.
+     *
+     * The caveat rides along here rather than in a bubble the tour used to pop
+     * over the map. It is the single most important thing to say about a
+     * warning area and the worst possible place to say it was on top of the
+     * area itself, for the two seconds a tour lasts. Here it is on the chip and
+     * in the card, both of which can be read at leisure.
+     *
+     * A second product of the same family is COUNTED, not hidden. The chip
+     * names the most serious one; saying nothing about the rest would let a
+     * flood watch running behind a flash flood warning disappear entirely.
+     */
+    full:
+      `${label} covers this point.` +
+      (count > 1
+        ? ` ${count - 1} more ` +
+          `${count === 2 ? 'warning of the same kind covers' : 'warnings of the same kind cover'}` +
+          ' it too — open the spot to read them all.'
+        : '') +
+      ' Tap to see the area it covers. The shading is the forecast region the ' +
+      'warning was issued for, not the edge of the weather.',
     glyph: WARNING_EMOJI[b],
     tone: 'bad' as const,
-    urgent: true
+    urgent: true,
+    action: 'alert' as const,
+    badge: b
   }));
 
 /**
@@ -293,22 +355,56 @@ export const conditionDots = (
       color: COLOR.route,
       label: `${drive} \u00B7 ${Math.round(route.distanceKm)} km`,
       full: `${drive} drive, ${Math.round(route.distanceKm)} km by road` +
-        (worst ? ` \u2014 ${worst.message}` : ''),
+        (worst ? ` \u2014 ${worst.message}` : '') +
+        ' \u2014 tap to start navigating',
       glyph: '\u{1F697}',
-      tone: 'neutral'
+      tone: 'neutral',
+      // THE CAR CHIP IS THE GO BUTTON NOW. It used to be a green button under
+      // the pin saying the same thing twice: this chip already knows how long
+      // the drive is, so it is the obvious thing to press to start it.
+      action: 'directions'
     });
 
     // The gap is its own chip because it is its own problem: the drive is
     // fine and then it simply stops, and that is the bit worth a second look.
     if (route.gapToDestinationKm > 0.15) {
+      /*
+       * Say WHERE it stops, not just how far short.
+       *
+       * "1.8 km short" invites the obvious objection \u2014 there is a road right
+       * there on the map, why can't it see it? Usually it can: the road is
+       * mapped, and either the route ends on it or nothing would route onto
+       * it. Both of those are answers. The bare number is not.
+       */
+      const road = route.approach;
+      const nearer = route.nearestRoad;
+      const roadName = (r: NonNullable<typeof road>): string =>
+        r.name ?? `an unnamed ${r.kind.replace(/_/g, ' ')}`;
+      const away = (km: number): string =>
+        km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+
+      const full = road
+        ? `The route ends on ${roadName(road)}, ` +
+          `${route.gapToDestinationKm.toFixed(1)} km from the spot` +
+          (road.gated ? ', and OpenStreetMap records a gate on it' : '') +
+          ' \u2014 tap to see the road and where it stops'
+        : nearer && nearer.distanceKm < route.gapToDestinationKm - 0.15
+          ? `The route ends ${route.gapToDestinationKm.toFixed(1)} km out. ` +
+            `OpenStreetMap does show ${roadName(nearer)} about ` +
+            `${away(nearer.distanceKm)} from the spot, but nothing would route ` +
+            'onto it \u2014 tap to see both'
+          : `The road this router carries ends ${route.gapToDestinationKm.toFixed(1)} km ` +
+            'from the spot \u2014 usually an unmapped track, sometimes nothing at all ' +
+            '\u2014 tap to see where it stops';
+
       dots.push({
         key: 'route-gap',
         color: COLOR.rough,
         label: `${route.gapToDestinationKm.toFixed(1)} km short`,
-        full: `The road this router carries ends ${route.gapToDestinationKm.toFixed(1)} km ` +
-          'from the spot \u2014 usually an unmapped track, sometimes nothing at all',
+        full,
         glyph: '\u{1F6A7}',
-        tone: 'bad'
+        tone: 'bad',
+        action: 'gap'
       });
     }
   }
@@ -365,9 +461,11 @@ export const conditionDots = (
       key: 'land',
       color: COLOR.land,
       label: land.name,
-      full: detail ? `${land.name} \u2014 ${detail}` : land.name,
-      glyph: '\u{1F6E1}\uFE0F',
-      tone: 'neutral'
+      full: (detail ? `${land.name} \u2014 ${detail}` : land.name) +
+        ' \u2014 tap to see the parcel this came from. Its edges are approximate.',
+      glyph: LAND_GLYPH,
+      tone: 'neutral',
+      action: 'land'
     });
 
     // A permit is a thing to go and get before leaving, so it is not allowed
@@ -402,8 +500,17 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
       key: 'road',
       color: rough ? COLOR.rough : COLOR.road,
       label: `${ROAD_ACCESS_LABEL[a.roadAccess]} road`,
+      /*
+       * Tapping goes and finds the nearest mapped track and draws it. The two
+       * facts are NOT the same fact and the wording keeps them apart: the
+       * rating is a camper's account of the drive in, the line is whatever
+       * OpenStreetMap has near the spot. They usually agree. They can disagree.
+       */
+      full: `A camper recorded the road in as ${ROAD_ACCESS_LABEL[a.roadAccess].toLowerCase()}` +
+        ' — tap to see the nearest track the map has',
       glyph: '🛣️',
-      tone: rough ? 'neutral' : 'good'
+      tone: rough ? 'neutral' : 'good',
+      action: 'road'
     });
   }
 
@@ -563,7 +670,10 @@ export const facilityDots = (facilities: NearbyFacility[]): MarkerDot[] =>
             'impassable, or never widen into anywhere you could stop.',
           glyph: FACILITY_GLYPH.road,
           tone: 'good' as const,
-          facility: f
+          facility: f,
+          // Drawn as the line it is, rather than routed to as if it were a
+          // destination: nobody drives TO a road, they drive along it.
+          action: 'road' as const
         };
       }
 

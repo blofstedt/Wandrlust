@@ -126,15 +126,21 @@ export const SOURCE_LABEL: Record<WeatherSnapshot['source'], string> = {
   none: 'no source'
 };
 
+/**
+ * The colours here are the SAME hexes the map draws each family in
+ * (`BADGE_COLOR` in src/utils/alertOverlay.ts). A camper who taps a teal pin
+ * has to land on a teal card, or the two look like two different warnings.
+ * If you change one, change the other.
+ */
 export const HAZARD_STYLE: Record<
   HazardFamily,
   { label: string; color: string; bg: string; border: string; icon: string }
 > = {
-  fire: { label: 'Fire', color: '#F97316', bg: 'bg-orange-950/60', border: 'border-orange-600/60', icon: '🔥' },
-  flood: { label: 'Flood', color: '#0EA5E9', bg: 'bg-sky-950/60', border: 'border-sky-600/60', icon: '🌊' },
-  storm: { label: 'Storm', color: '#A855F7', bg: 'bg-purple-950/60', border: 'border-purple-600/60', icon: '⛈️' },
-  winter: { label: 'Winter', color: '#38BDF8', bg: 'bg-cyan-950/60', border: 'border-cyan-600/60', icon: '❄️' },
-  heat: { label: 'Heat', color: '#EF4444', bg: 'bg-red-950/60', border: 'border-red-600/60', icon: '🌡️' },
+  fire: { label: 'Fire', color: '#EA580C', bg: 'bg-orange-950/60', border: 'border-orange-600/60', icon: '🔥' },
+  flood: { label: 'Flood / rain', color: '#14B8A6', bg: 'bg-teal-950/60', border: 'border-teal-600/60', icon: '🌊' },
+  storm: { label: 'Storm', color: '#7C3AED', bg: 'bg-violet-950/60', border: 'border-violet-600/60', icon: '⛈️' },
+  winter: { label: 'Cold', color: '#7DD3FC', bg: 'bg-sky-950/60', border: 'border-sky-600/60', icon: '❄️' },
+  heat: { label: 'Heat', color: '#B91C1C', bg: 'bg-red-950/60', border: 'border-red-600/60', icon: '🌡️' },
   wind: { label: 'Wind', color: '#94A3B8', bg: 'bg-slate-800/60', border: 'border-slate-600/60', icon: '💨' },
   other: { label: 'Advisory', color: '#64748B', bg: 'bg-slate-800/60', border: 'border-slate-600/60', icon: 'ℹ️' }
 };
@@ -278,11 +284,86 @@ export const fetchWeather = async (
   }
 };
 
+/** Which agency was asked, and whether it answered. */
+export type AlertFeedId = 'nws' | 'eccc';
+export type AlertFeedState = 'ok' | 'unreachable' | 'skipped';
+
+export const ALERT_FEED_LABEL: Record<AlertFeedId, string> = {
+  nws: 'the US National Weather Service',
+  eccc: 'Environment Canada'
+};
+
+/** Which side of the border a silent feed leaves blank. */
+export const ALERT_FEED_AREA: Record<AlertFeedId, string> = {
+  nws: 'the US side',
+  eccc: 'the Canadian side'
+};
+
+export interface AreaAlertResult {
+  /**
+   * False when the lookup did not complete — offline, a 5xx, a cold serverless
+   * function, a phone whose radio has not woken up yet.
+   *
+   * THIS FLAG IS THE WHOLE POINT OF THIS TYPE. It used to return a bare array
+   * and fold every one of those cases into `[]`, which the map then drew as
+   * fact: the warning clouds were wiped off the screen by a request that never
+   * got an answer. "We could not check" and "there is nothing in force" are
+   * different facts about the weather, and only one of them is safe to draw.
+   */
+  ok: boolean;
+  alerts: HazardAlert[];
+  /** True when the request was cancelled by the caller. Not a failure. */
+  aborted: boolean;
+  /**
+   * Per-agency outcome, present whenever the server answered at all.
+   *
+   * `ok` here does NOT mean every warning in force came back — it means the
+   * agency was asked and replied. A feed marked `unreachable` alongside an
+   * `ok` one is the case this exists for: half the border was checked and the
+   * other half was not, and the map has to say which half.
+   */
+  feeds: Record<AlertFeedId, AlertFeedState>;
+  /**
+   * True when at least one agency we asked did not answer.
+   *
+   * The alerts that DID come back are still real and still drawn. What this
+   * changes is that the map must not treat the area as covered: it keeps
+   * retrying, and it puts the gap on screen rather than leaving a half-checked
+   * sky looking like a whole one.
+   */
+  partial: boolean;
+  /**
+   * True when the server answered about less ground than was asked for.
+   *
+   * The alerts endpoint clamps very wide viewports — see MAX_SPAN_LAT in
+   * server/weatherRoutes.ts. Warnings outside the clamp were never looked up,
+   * so the map must not record the whole padded box as loaded.
+   */
+  clipped: boolean;
+}
+
+/** Nothing was learned. Every field says so rather than implying a clear sky. */
+const NO_AREA_ALERTS = (aborted: boolean): AreaAlertResult => ({
+  ok: false,
+  alerts: [],
+  aborted,
+  feeds: { nws: 'skipped', eccc: 'skipped' },
+  partial: false,
+  clipped: false
+});
+
+const asFeeds = (raw: unknown): Record<AlertFeedId, AlertFeedState> => {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const read = (id: AlertFeedId): AlertFeedState =>
+    r[id] === 'ok' || r[id] === 'unreachable' ? (r[id] as AlertFeedState) : 'skipped';
+  return { nws: read('nws'), eccc: read('eccc') };
+};
+
 /** Alerts only, for a wide area — the map-wide hazard layer. */
 export const fetchAreaAlerts = async (
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   signal?: AbortSignal
-): Promise<HazardAlert[]> => {
+): Promise<AreaAlertResult> => {
   try {
     const params = new URLSearchParams({
       minLat: bbox.minLat.toFixed(4),
@@ -292,13 +373,46 @@ export const fetchAreaAlerts = async (
     });
 
     const res = await fetch(`/api/weather/alerts?${params}`, { signal });
-    if (!res.ok) return [];
+    if (!res.ok) return NO_AREA_ALERTS(false);
 
     const data = await res.json();
-    return Array.isArray(data?.alerts) ? sortAlerts(data.alerts) : [];
+    // A 200 carrying no `alerts` array is a broken response, not a quiet sky.
+    if (!Array.isArray(data?.alerts)) return NO_AREA_ALERTS(false);
+
+    return {
+      ok: true,
+      alerts: sortAlerts(data.alerts),
+      aborted: false,
+      feeds: asFeeds(data.feeds),
+      partial: data.partial === true,
+      clipped: data.clipped === true
+    };
   } catch {
-    return [];
+    // An abort is the caller changing their mind, and the caller already
+    // ignores superseded responses. It is neither a failure nor an answer.
+    return NO_AREA_ALERTS(Boolean(signal?.aborted));
   }
+};
+
+/**
+ * The sentence to put on the map when a feed went missing, or null when none
+ * did.
+ *
+ * Names the agency and the ground it leaves unchecked, because "some warnings
+ * may be missing" is the kind of hedge a camper learns to scroll past. "No
+ * warnings were checked on the Canadian side" is a fact they can act on.
+ */
+export const alertGapNote = (result: AreaAlertResult): string | null => {
+  const missing = (Object.keys(result.feeds) as AlertFeedId[])
+    .filter((id) => result.feeds[id] === 'unreachable');
+
+  if (missing.length === 0) return null;
+
+  const areas = missing.map((id) => ALERT_FEED_AREA[id]).join(' or ');
+  const who = missing.map((id) => ALERT_FEED_LABEL[id]).join(' and ');
+
+  return `No warnings could be checked on ${areas} — ${who} did not answer. ` +
+    'That is not the same as there being none.';
 };
 
 /* ------------------------------------------------------------------ *

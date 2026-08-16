@@ -8,6 +8,7 @@ import {
 } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { ReportContentSheet } from './ReportContentSheet';
+import { SpotByline } from './SpotByline';
 import {
   X,
   MapPin,
@@ -20,7 +21,7 @@ import {
   Dog,
   Trash2,
   Calendar,
-  ShieldCheck,
+  TicketCheck,
   Bookmark,
   Share2,
   Copy,
@@ -270,6 +271,12 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                     </>
                   )}
                 </div>
+                {/* The same byline the map sheet carries — a spot's author is
+                    part of what it is, not a property of which screen it is
+                    being read on. */}
+                <div className="mt-1.5">
+                  <SpotByline campsite={campsite} className="text-xs" />
+                </div>
               </div>
 
               {/* GPS Coords Copy & Map Links */}
@@ -309,7 +316,9 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
             <div className="bg-cyan-950/40 border border-cyan-500/40 rounded-2xl p-4 text-xs text-slate-200 space-y-3 shadow-lg">
               <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
                 <div className="flex items-center gap-2 font-bold text-sm text-cyan-300">
-                  <ShieldCheck className="w-4 h-4 text-cyan-400" />
+                  {/* A pass is a ticket, not a shield — same reasoning as the
+                      land badge: nothing here is about the land being guarded. */}
+                  <TicketCheck className="w-4 h-4 text-cyan-400" />
                   <span>Alberta Public Land Camping Pass Regulations</span>
                 </div>
                 <a
@@ -422,7 +431,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                 { icon: Calendar, tint: 'text-teal-400', label: 'Stay limit',
                   value: campsite.amenities.stayLimitDays !== undefined
                     ? `${campsite.amenities.stayLimitDays} days` : undefined },
-                { icon: ShieldCheck, tint: 'text-indigo-400', label: 'Permit',
+                { icon: TicketCheck, tint: 'text-indigo-400', label: 'Permit',
                   value: campsite.amenities.permitRequired === undefined
                     ? undefined : campsite.amenities.permitRequired ? 'Required' : 'Not required' },
                 { icon: Compass, tint: 'text-amber-400', label: 'Max rig length',

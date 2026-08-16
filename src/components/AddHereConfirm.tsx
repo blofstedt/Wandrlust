@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlusCircle, Crosshair, Loader2, MapPin } from 'lucide-react';
+import { PlusCircle, Crosshair, Loader2, MapPin, Droplets } from 'lucide-react';
 import { Sheet } from './ui/Sheet';
 
 /**
@@ -30,10 +30,19 @@ interface AddHereConfirmProps {
   onLocateUser: () => void;
   /** Open the submission form seeded with these coordinates. */
   onConfirm: (latitude: number, longitude: number) => void;
+  /**
+   * Open the FACILITY form instead, at the same coordinates.
+   *
+   * Offered here because "add" is ambiguous at the moment somebody taps a
+   * plus, and a camper standing at a dump station reaching for it means
+   * something this dialog can now do. Without the second door they would
+   * submit a campsite and then have to explain it was a toilet.
+   */
+  onAddFacility: (latitude: number, longitude: number) => void;
 }
 
 export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
-  isOpen, onClose, userLocation, isLocating, onLocateUser, onConfirm
+  isOpen, onClose, userLocation, isLocating, onLocateUser, onConfirm, onAddFacility
 }) => (
   <Sheet
     isOpen={isOpen}
@@ -67,6 +76,21 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
           >
             <PlusCircle className="w-4 h-4" />
             Yes, add my current location
+          </button>
+
+          {/*
+            The second thing "add" can mean. Quieter than the primary button
+            because a place to sleep is what the plus has always been for —
+            but present, because a toilet is the other thing a camper is
+            standing in front of when they reach for it.
+          */}
+          <button
+            type="button"
+            onClick={() => onAddFacility(userLocation[0], userLocation[1])}
+            className="w-full py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-[11px] flex items-center justify-center gap-2 hover:bg-slate-700"
+          >
+            <Droplets className="w-3.5 h-3.5" />
+            It&apos;s a toilet, tap or dump station — not a campsite
           </button>
         </>
       ) : (

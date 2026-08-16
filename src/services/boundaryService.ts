@@ -109,6 +109,54 @@ export interface BoundaryCollection {
     sources: BoundarySourceStatus[];
     disclaimer?: string;
     skipped?: string;
+    /** Which tier this came from — see `BoundaryDetail`. */
+    detail?: BoundaryDetail;
+    /**
+     * A source withheld polygons, so what is drawn is a sample.
+     *
+     * Always in the direction of "there is more than this", never less, and
+     * the map says so on screen rather than letting a thinly-painted province
+     * read as an empty one.
+     */
+    truncated?: boolean;
+    /**
+     * How hard the server generalised this geometry, in degrees.
+     *
+     * THE MAP NEEDS THIS TO MERGE PARCELS AT ALL. Two abutting parcels are
+     * merged into one shape by cancelling the edge they share, which works
+     * only if both sides of that edge still have the same vertices. The
+     * server simplifies each parcel independently, so at a wide viewport the
+     * two sides of a shared boundary drift apart by up to this much — and a
+     * merge tolerance of a fixed hundred metres stops recognising them as the
+     * same edge, which is when a province full of Crown land goes back to
+     * drawing as a mesh of thousands of separate outlines.
+     */
+    simplifyDegrees?: number;
+    /**
+     * THIS EMPTY ANSWER IS A FAILURE, NOT A FACT.
+     *
+     * -----------------------------------------------------------------------
+     * WHY THE MAP HAD TO BE TAUGHT THE DIFFERENCE
+     * -----------------------------------------------------------------------
+     *
+     * `features: []` used to mean four completely different things — the
+     * request failed, the server refused the viewport, every upstream service
+     * timed out, or there genuinely is no public land here — and the map could
+     * not tell them apart, so it drew all four the same way: a blank
+     * continent. Zooming out over Alberta hit the third case, the boundaries
+     * vanished, and the app said "there is nowhere to camp in Alberta" as
+     * confidently as if it knew.
+     *
+     * When this is true, NOTHING has been learned about the ground. The caller
+     * must keep whatever it is already showing and say the view failed to
+     * load, and the answer must never be cached — an unavailable response that
+     * lands in the seven-day disk cache takes a whole zoom level out for a
+     * week.
+     *
+     * Absent or false means the empty IS the answer: everything was asked, and
+     * there is nothing here.
+     */
+    unavailable?: boolean;
   };
 }
 
@@ -118,22 +166,79 @@ export const EMPTY_BOUNDARIES: BoundaryCollection = {
   meta: { sources: [] }
 };
 
+/**
+ * Nothing was learned. Distinct from `EMPTY_BOUNDARIES`, which is a real
+ * "we asked everything and there is no public land here".
+ */
+const unavailableBoundaries = (): BoundaryCollection => ({
+  type: 'FeatureCollection',
+  features: [],
+  meta: { sources: [], unavailable: true }
+});
+
 /** Colours keyed by what the data actually asserts. */
-export const BOUNDARY_STYLES: Record<
-  BoundaryConfidence,
-  { color: string; fillColor: string; fillOpacity: number; label: string }
+/**
+ * What the map paints, and the only distinction it paints.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS REPLACED THREE COLOURS KEYED ON `confidence`
+ * ---------------------------------------------------------------------------
+ *
+ * The map used to draw a different colour per confidence tier: green for
+ * Ontario's General Use Areas, amber for `managing_agency`, cyan for Alberta's
+ * PLUZ. That is a statement about HOW WE KNOW, and it was being used to answer
+ * a question the camper is actually asking, which is WHETHER I CAN SLEEP HERE.
+ *
+ * It also aged badly. `managing_agency` was written when the only members were
+ * BLM and the Forest Service, so its label read "Federal land (BLM / USFS)" —
+ * and every Canadian Crown land source added since (Alberta's Green Area,
+ * Saskatchewan's and Manitoba's provincial forests) landed in that same tier
+ * and was therefore being labelled as American federal land.
+ *
+ * So there is one group for land you may camp on, whoever administers it and
+ * however we came to know, and a separate, deliberately quieter treatment for
+ * the one kind of land that does NOT say that.
+ *
+ * THE LINE THAT MUST NOT MOVE. PAD-US `open_access_flag` means the public may
+ * ENTER — a state park is usually open access and usually forbids sleeping.
+ * Folding that in with BLM under one "camp here" colour would be the app
+ * claiming something no dataset says, so it keeps its own group and its own
+ * words. Everything else here has camping permitted either by explicit
+ * designation or by the managing agency's own general policy, which is the
+ * same standard the seeder applies in `scripts/landSources.ts`.
+ */
+export type BoundaryGroup = 'campable' | 'access_only';
+
+/**
+ * Which group a parcel belongs to.
+ *
+ * A missing `_campingBasisKind` reads as campable, because every source wired
+ * into this app asserts camping except PAD-US, which always sets the flag. The
+ * fallback is therefore the common case, not a guess about unknown land.
+ */
+export const boundaryGroupOf = (
+  properties: { _campingBasisKind?: CampingBasisKind } | undefined | null
+): BoundaryGroup =>
+  properties?._campingBasisKind === 'open_access_flag' ? 'access_only' : 'campable';
+
+export const BOUNDARY_GROUP_STYLES: Record<
+  BoundaryGroup,
+  { color: string; fillColor: string; fillOpacity: number; label: string; detail: string }
 > = {
-  designated_general_use: {
-    color: '#34D399', fillColor: '#10B981', fillOpacity: 0.4,
-    label: 'Designated General Use'
+  campable: {
+    color: '#34D399', fillColor: '#10B981', fillOpacity: 0.36,
+    label: 'Public land — camping allowed',
+    detail:
+      'BLM, National Forest and Canadian Crown land and provincial forests, drawn as one. ' +
+      'Camping is permitted here by designation or by the managing agency’s policy. ' +
+      'Local closures, fire bans and permit rules still apply and are not all in this data.'
   },
-  managing_agency: {
-    color: '#FBBF24', fillColor: '#F59E0B', fillOpacity: 0.32,
-    label: 'Federal land (BLM / USFS)'
-  },
-  managed_zone: {
-    color: '#22D3EE', fillColor: '#06B6D4', fillOpacity: 0.32,
-    label: 'Managed zone (PLUZ)'
+  access_only: {
+    color: '#60A5FA', fillColor: '#3B82F6', fillOpacity: 0.2,
+    label: 'Open to the public — camping not confirmed',
+    detail:
+      'The source says the public may enter. It does not say anyone may stay overnight, ' +
+      'and many areas flagged this way forbid it. Check before planning to sleep here.'
   }
 };
 
@@ -197,24 +302,64 @@ export type BoundaryDetail = 'full' | 'overview';
 /**
  * The box an overview request asks for.
  *
- * Snapped to a grid measured in map-widths, not in the small cells
- * `requestBoxFor` uses. At these zooms most of a continent is on screen, so a
- * grid that only just exceeds the viewport means two drags walk straight off
- * the loaded data and every gesture becomes a fresh request — which is exactly
- * the flicker this tier exists to remove.
+ * ---------------------------------------------------------------------------
+ * WHY ONTARIO LOOKED ALMOST EMPTY UNTIL YOU ZOOMED IN
+ * ---------------------------------------------------------------------------
  *
- * The cells are therefore several screens wide: 8° at zoom 6 up to 64° at zoom
- * 3, where a single request covers the entire supported area. Panning around
- * North America at zoom 3-4 makes one request for the whole session; at zoom 5-6
- * it makes a handful, and each is reused for a long time afterwards.
+ * This used to snap to a grid measured in whole map-widths — 8° at zoom 6, up
+ * to 64° at zoom 3 — so that panning at these zooms never left the loaded box.
+ * It succeeded at that and paid for it somewhere nobody was looking.
+ *
+ * A phone at zoom 5 shows about 17° of longitude. The old grid turned that
+ * into a request for a 48°×32° box: SEVEN AND A HALF SCREENS of ground. The
+ * per-source record cap is spent across the whole of it, so 80 parcels became
+ * about eleven on the screen the camper was actually looking at — and since
+ * the upstream services return whatever comes first rather than the biggest,
+ * those eleven were an arbitrary eleven. Ontario is covered in General Use
+ * Areas. It drew as a nearly empty province, and then filled in the moment you
+ * crossed into the detailed tier, which is this app's one forbidden sentence
+ * told by a rendering budget.
+ *
+ * So the box now follows the viewport: padded by 40% and snapped out to a grid
+ * of about half a screen. Roughly twice the viewport's area instead of seven
+ * times it, which is the same budget spent where somebody is looking.
+ *
+ * PANNING IS STILL CHEAP. That was the real reason for the huge cells and it
+ * is handled by caching rather than by over-fetching: overview responses live
+ * 12 hours in memory and 7 days on disk, the box is snapped so a small drag
+ * resolves to the identical URL, and the map only refetches when the view
+ * leaves the loaded box entirely.
  */
 export const overviewBoxFor = (view: BoundingBox, zoom: number): BoundingBox => {
-  const cell = Math.pow(2, 9 - Math.min(Math.max(Math.round(zoom), 3), 6));
+  const spanLat = Math.max(view.maxLat - view.minLat, 0.5);
+  const spanLon = Math.max(view.maxLon - view.minLon, 0.5);
+
+  /*
+   * A quarter of a screen per axis, rounded to a power of two.
+   *
+   * Per axis, because a phone's map is far taller than it is wide and one
+   * shared cell size sized to the tall side threw the box back out to six
+   * screens — the very thing this is here to stop.
+   *
+   * A power of two matters more than the exact size: it makes the grid line up
+   * with itself as the camper zooms, so successive views keep resolving to the
+   * same URL and the cache keeps hitting. Derived from the viewport rather
+   * than the zoom because a phone and a laptop show very different amounts of
+   * ground at the same zoom level.
+   */
+  const cellOf = (span: number) => Math.pow(2, Math.round(Math.log2(span / 4)));
+  const cellLat = cellOf(spanLat);
+  const cellLon = cellOf(spanLon);
+  // A quarter-screen of headroom each way: enough that a nudge does not
+  // refetch, small enough that the record budget is not spent off-screen.
+  const padLat = spanLat * 0.25;
+  const padLon = spanLon * 0.25;
+
   return {
-    minLat: Math.floor(view.minLat / cell) * cell,
-    minLon: Math.floor(view.minLon / cell) * cell,
-    maxLat: Math.ceil(view.maxLat / cell) * cell,
-    maxLon: Math.ceil(view.maxLon / cell) * cell
+    minLat: Math.floor((view.minLat - padLat) / cellLat) * cellLat,
+    minLon: Math.floor((view.minLon - padLon) / cellLon) * cellLon,
+    maxLat: Math.ceil((view.maxLat + padLat) / cellLat) * cellLat,
+    maxLon: Math.ceil((view.maxLon + padLon) / cellLon) * cellLon
   };
 };
 
@@ -329,16 +474,42 @@ export const fetchBoundaries = async (
 
   try {
     const response = await fetch(`/api/boundaries?${query}`, { signal });
-    if (!response.ok) return EMPTY_BOUNDARIES;
+    if (!response.ok) return unavailableBoundaries();
 
     const data = await response.json();
-    if (data?.type !== 'FeatureCollection') return EMPTY_BOUNDARIES;
+    if (data?.type !== 'FeatureCollection') return unavailableBoundaries();
 
     const collection: BoundaryCollection = {
       type: 'FeatureCollection',
       features: Array.isArray(data.features) ? data.features : [],
       meta: data.meta ?? { sources: [] }
     };
+
+    /**
+     * An empty answer only counts as an answer if everything was actually
+     * asked.
+     *
+     * The zoomed-out view queries eight government ArcGIS services at once,
+     * across a box the size of a continent, from a serverless function with a
+     * thirty-second ceiling. A provincial server having a slow afternoon comes
+     * back as `available: false` and no parcels — which, combined with the
+     * others, produces a perfectly well-formed response describing an empty
+     * Alberta. That is the response that was wiping the map.
+     *
+     * So: no features AND anything went wrong — the server skipped the
+     * viewport, or any single source is down — means we learned nothing.
+     * Every source up and still nothing is a real, and rare, empty.
+     */
+    const sources = collection.meta?.sources ?? [];
+    const nothingLearned =
+      collection.features.length === 0 &&
+      (Boolean(collection.meta?.skipped) ||
+        sources.length === 0 ||
+        sources.some((s) => s.available === false));
+
+    if (nothingLearned) {
+      return { ...collection, meta: { ...collection.meta, unavailable: true } };
+    }
 
     if (responseCache.size >= CACHE_MAX_ENTRIES) {
       // Evict the oldest DETAILED viewport. Overview tiles are exempt: there
@@ -356,6 +527,7 @@ export const fetchBoundaries = async (
     return collection;
   } catch (error) {
     if (signal?.aborted || (error as Error)?.name === 'AbortError') return null;
-    return EMPTY_BOUNDARIES;
+    // A dropped connection says nothing about the ground under the map.
+    return unavailableBoundaries();
   }
 };

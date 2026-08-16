@@ -259,13 +259,44 @@ export const BOUNDARY_OVERVIEW_MIN_ZOOM = 2;
  * at BOUNDARY_MIN_ZOOM.
  */
 export const overviewMinAreaSqKm = (zoom: number): number => {
+  /*
+   * HALVED, BECAUSE THE THRESHOLD WAS THROWING AWAY REAL PROVINCES.
+   *
+   * These were set against land that arrives in continental slabs. A great
+   * deal of Crown land does not: an Ontario General Use Area of 300 km² is a
+   * substantial place to camp and was being discarded at zoom 5 for being
+   * under 500. Enough of them were discarded that the province drew as a
+   * scattering of patches and then filled in the moment the detailed tier
+   * took over — sparse-and-wrong reading exactly like empty-and-wrong.
+   *
+   * A parcel at these thresholds is now roughly two pixels rather than four.
+   * Two pixels of truth beats four pixels of nothing, and the cost of drawing
+   * it is a fraction of what it was now that sub-pixel parts are pruned
+   * server-side.
+   */
+  /*
+   * THREE BANDS, NOT FIVE, AND THIS IS NOT A COSMETIC CHANGE.
+   *
+   * The threshold is part of the request URL, so a different number at every
+   * zoom level meant every single zoom step below 7 minted a brand-new
+   * continental request — eight government ArcGIS services, from scratch,
+   * four times over on the way from zoom 6 to zoom 3. Every one of those is a
+   * fresh chance for a slow provincial server to answer with nothing, and it
+   * is why zooming out felt like the boundaries were being deliberately
+   * thrown away.
+   *
+   * Banding means neighbouring zooms resolve to the same URL and reuse the
+   * same cached answer. It costs nothing upstream: the threshold is applied
+   * to parcels the server has ALREADY fetched, so a lower one only keeps more
+   * of what it is holding — which is also why the middle band drops to 600
+   * rather than 1500. Parcels are kept largest-first up to the record limit,
+   * so the big blocks are never crowded out by the smaller ones let through.
+   */
   // Zoomed fully out, only the continent-scale blocks are worth a draw call —
   // but there ARE some, so the map is never blank at minimum zoom.
-  if (zoom <= 2) return 8000;
-  if (zoom <= 3) return 4000;
-  if (zoom <= 4) return 1500;
-  if (zoom <= 5) return 500;
-  return 150;
+  if (zoom <= 2) return 4000;
+  if (zoom <= 4) return 600;
+  return 60;
 };
 
 
@@ -274,20 +305,44 @@ export const overviewMinAreaSqKm = (zoom: number): number => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The provinces whose Crown land this app can actually draw.
+ * The provinces whose Crown land this app can actually draw, and how much of
+ * each one it draws.
  *
- * Two, at the time of writing: Alberta (the Green Area, plus Public Land Use
- * Zones) and Ontario (CLUPA General Use Areas). Those are the only Canadian
- * jurisdictions publishing a queryable open layer that delineates land a
- * camper may actually use — see COVERAGE_GAPS in `scripts/landSources.ts` for
- * what each of the others publishes instead and why it doesn't qualify.
+ * Four, at the time of writing: Alberta (the Green Area, plus Public Land Use
+ * Zones), Ontario (CLUPA General Use Areas), Saskatchewan (the provincial
+ * forest) and Manitoba (the fifteen provincial forests). Those are the only
+ * Canadian jurisdictions publishing a queryable open layer that delineates
+ * land a camper may actually use — see COVERAGE_GAPS in
+ * `scripts/landSources.ts` for what each of the others publishes instead and
+ * why it doesn't qualify.
+ *
+ * WHY THE VALUE IS NOT JUST `true`. Saskatchewan is mapped for the forested
+ * centre and north and nothing else, because the only Crown land the province
+ * publishes further south is leases and cottage lots. Manitoba is thinner
+ * still. Filing either alongside Alberta as simply "covered" would make a
+ * blank map read as "we looked and there is nothing", which is the exact
+ * confusion this whole function exists to prevent — so they carry their own
+ * caveats instead of a null.
  *
  * The United States is not listed because its coverage is federal and
  * national: BLM and the US Forest Service publish one layer each covering
  * every state, so there is no state-by-state gap to declare. State trust and
  * state forest land is a separate gap, recorded in COVERAGE_GAPS.
  */
-const MAPPED_CA_PROVINCES = new Set<string>(['CA-AB', 'CA-ON']);
+const MAPPED_CA_PROVINCES = new Map<string, string | null>([
+  ['CA-AB', null],
+  // Ontario is the best-covered province here and still not a clean null.
+  // CLUPA stops before the Far North, which is planned under the Far North
+  // Act and is not in the layer we query — so the northern two fifths of the
+  // province draws blank while being overwhelmingly Crown land.
+  ['CA-ON', 'the Far North is not mapped'],
+  ['CA-SK', 'only the provincial forest is mapped'],
+  // Manitoba's caveat is the strongest of the three and has to be, because
+  // its coverage is the weakest: fifteen provincial forests, about 22,000 km²
+  // of a province that is roughly three quarters Crown land. Being listed
+  // here at all would otherwise imply the province is done.
+  ['CA-MB', 'only the 15 provincial forests are mapped — most Manitoba Crown land is not']
+]);
 
 /**
  * Why a province is blank, in a camper's words — or null when the blankness
@@ -307,6 +362,8 @@ const MAPPED_CA_PROVINCES = new Set<string>(['CA-AB', 'CA-ON']);
 export const landDataGap = (isoCode: string | null | undefined): string | null => {
   if (!isoCode) return null;
   if (!isoCode.startsWith('CA-')) return null;
-  if (MAPPED_CA_PROVINCES.has(isoCode)) return null;
+  // A mapped province may still carry a caveat — partial coverage is its own
+  // answer, and it is not the same as full coverage OR as no data at all.
+  if (MAPPED_CA_PROVINCES.has(isoCode)) return MAPPED_CA_PROVINCES.get(isoCode) ?? null;
   return 'no Crown land data yet';
 };

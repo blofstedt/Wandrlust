@@ -1,0 +1,106 @@
+# Build the bundled public-land overview, and optionally seed `public_lands`.
+#
+# WHY THIS RUNS IN CI RATHER THAN ANYWHERE ELSE
+#
+# The overlay is built from eight government ArcGIS services. A developer's
+# laptop can reach them; the agent sandbox cannot (outbound CONNECT to
+# gis.blm.gov and friends is refused at the proxy); and Vercel cannot hold a
+# job open long enough — the API is one serverless function with a 30-second
+# ceiling and a read-only filesystem.
+#
+# A CI runner has an open network, an hour of wall clock, and a checkout it can
+# commit back to. That makes it the only place this job has ever actually fit.
+#
+# Run it from the Actions tab. It is deliberately not on a schedule: these
+# boundaries move on a timescale of years, and a nightly job against public
+# infrastructure to rediscover that would be rude.
+
+name: Build land overlay
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_area:
+        description: 'Drop parcels smaller than this many km² (bigger = smaller file)'
+        required: false
+        default: '5'
+      offset:
+        description: 'Simplification in degrees (0.01 ≈ 1.1 km)'
+        required: false
+        default: '0.01'
+      seed_database:
+        description: 'Also seed public_lands for the full-detail pack (slow)'
+        type: boolean
+        required: false
+        default: false
+
+# The job commits the rebuilt overlay back to the branch.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Eight government services, tiled and rate-limited. This is not quick.
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Build the overview
+        run: |
+          npm run map:land -- \
+            --min-area=${{ inputs.min_area }} \
+            --offset=${{ inputs.offset }}
+
+      - name: Report the result
+        run: |
+          ls -lh public/map/public-land-overview.json
+          echo "### Land overlay rebuilt" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          node -e "
+            const o = require('./public/map/public-land-overview.json');
+            console.log('parcels     ', o.features.length);
+            console.log('built at    ', o.builtAt);
+            console.log('simplify    ', o.simplifyDegrees + ' deg');
+            console.log('min area    ', o.minAreaSqKm + ' km2');
+            for (const s of o.sources) {
+              console.log(
+                (s.ok ? '  ok   ' : '  FAIL ') + s.id.padEnd(32),
+                String(s.featuresKept).padStart(7),
+                s.truncated ? 'TRUNCATED' : ''
+              );
+            }
+          " >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # Optional, and off by default: this walks the same services again at
+      # full resolution and writes every polygon into Supabase. It is what
+      # makes the full-detail offline pack possible, and it takes hours.
+      - name: Seed public_lands
+        if: ${{ inputs.seed_database }}
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npm run seed -- --lands
+
+      - name: Commit the overlay
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+          if git diff --quiet -- public/map/public-land-overview.json; then
+            echo 'Overlay unchanged — nothing to commit.'
+            exit 0
+          fi
+
+          git add public/map/public-land-overview.json
+          git commit -m 'Rebuild bundled public-land overview'
+          git push

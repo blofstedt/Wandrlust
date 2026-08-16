@@ -27,6 +27,28 @@ const tileStore = localforage.createInstance({
 const SAVED_KEY = 'saved_campsites';
 const CUSTOM_KEY = 'custom_campsites';
 const REGIONS_KEY = 'offline_regions';
+/**
+ * Spots that came down with a map pack, kept apart from the bookmarks.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NOT `SAVED_KEY`, WHICH IS WHERE IT USED TO GO
+ * ---------------------------------------------------------------------------
+ *
+ * Downloading a region caches every campsite inside it so the area works with
+ * no signal. Those spots were being appended to the SAVED list, which is the
+ * camper's bookmarks — so one download turned "Saved (0)" into "Saved (47)",
+ * every one of them a place they had never chosen to keep.
+ *
+ * It did not stop at the display, either. The saved list is synced UP to the
+ * account on sign-in, so all forty-seven were then written to the server as
+ * that camper's own bookmarks, and the merge that follows only ever adds. A
+ * cache of somebody else's spots became permanent account data.
+ *
+ * Two lists, two meanings: SAVED is what a camper bookmarked, this is what a
+ * map pack brought with it. Only the first is theirs, only the first syncs, and
+ * this one is disposable — it goes when the region it came with goes.
+ */
+const OFFLINE_SITES_KEY = 'offline_campsites';
 
 const readList = async <T>(key: string): Promise<T[]> => {
   try {
@@ -68,6 +90,60 @@ export const toggleSaveCampsite = async (campsite: Campsite): Promise<boolean> =
 
   await writeList(SAVED_KEY, [{ ...campsite, savedOffline: true }, ...saved]);
   return true;
+};
+
+/**
+ * Fold the account's saved list into this device's.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS ONLY EVER ADDS
+ * ---------------------------------------------------------------------------
+ *
+ * The obvious implementation — take the server's list as the truth and
+ * overwrite — deletes saved spots, and it does it in exactly the situation
+ * where the camper can least afford it. `campsites_saved` legitimately returns
+ * fewer rows than the camper has saved: a site that has since been hidden, or
+ * one above their trust tier, drops out server-side while the row stays. A
+ * spot bookmarked while signed out is on the device and nowhere else. Treating
+ * either as "unsaved" throws away the only copy.
+ *
+ * So a union, keyed on id. Removing a bookmark is an explicit act on both
+ * sides — `toggleSaveCampsite` and `unsaveCampsiteRemote` — never a side
+ * effect of a sync.
+ *
+ * The DEVICE copy wins a collision. It is the richer record: it carries the
+ * amenities the camper filled in, and the server deliberately returns none
+ * (they are `not null default` columns, so reading them back would invent
+ * observations nobody made). Position is the one thing worth taking from the
+ * server, since a stealth site's coordinates may have sharpened or fuzzed
+ * since the device last looked.
+ *
+ * @returns the merged list, already persisted.
+ */
+export const mergeSavedCampsites = async (remote: Campsite[]): Promise<Campsite[]> => {
+  const local = await getSavedCampsites();
+  const byId = new Map<string, Campsite>();
+
+  for (const site of remote) byId.set(site.id, { ...site, savedOffline: true });
+
+  for (const site of local) {
+    const server = byId.get(site.id);
+    byId.set(site.id, server
+      ? {
+          ...site,
+          latitude: server.latitude,
+          longitude: server.longitude,
+          isApproximate: server.isApproximate,
+          isStealth: server.isStealth,
+          submissionState: server.submissionState,
+          savedOffline: true
+        }
+      : { ...site, savedOffline: true });
+  }
+
+  const merged = [...byId.values()];
+  await writeList(SAVED_KEY, merged);
+  return merged;
 };
 
 export const clearSavedCampsites = (): Promise<void> => writeList(SAVED_KEY, []);
@@ -158,6 +234,22 @@ export const getDownloadedRegions = (): Promise<OfflineRegion[]> =>
   readList<OfflineRegion>(REGIONS_KEY);
 
 /**
+ * The spots that came down with the map packs.
+ *
+ * These are the ONLY campsites this device holds that the camper neither
+ * submitted nor bookmarked, and they exist because they were asked for: a pack
+ * with no spots in it is a picture of a valley. Everything else on the map
+ * comes from the server while there is a connection to reach it.
+ */
+export const getOfflineCampsites = (): Promise<Campsite[]> =>
+  readList<Campsite>(OFFLINE_SITES_KEY);
+
+/** Inside a region's box, with no tolerance — the box is what was downloaded. */
+const withinBounds = (site: Campsite, bounds: OfflineRegion['bounds']): boolean =>
+  site.latitude >= bounds.south && site.latitude <= bounds.north &&
+  site.longitude >= bounds.west && site.longitude <= bounds.east;
+
+/**
  * Download and cache map tiles for a bounding box, plus the campsites inside
  * it, so the area is usable with no connectivity.
  */
@@ -210,12 +302,17 @@ export const downloadOfflineRegion = async (
     await Promise.all(tiles.slice(i, i + CONCURRENCY).map(fetchTile));
   }
 
-  // Persist the campsites themselves so the list view works offline too.
-  const saved = await getSavedCampsites();
-  const savedIds = new Set(saved.map((site) => site.id));
-  const additions = campsites.filter((site) => !savedIds.has(site.id));
+  /**
+   * Persist the campsites themselves so the area works with no signal.
+   *
+   * Into the pack's own list, NOT the bookmarks — see OFFLINE_SITES_KEY. A
+   * camper who downloads the Rockies has not bookmarked the Rockies.
+   */
+  const cached = await getOfflineCampsites();
+  const cachedIds = new Set(cached.map((site) => site.id));
+  const additions = campsites.filter((site) => !cachedIds.has(site.id));
   if (additions.length > 0) {
-    await writeList(SAVED_KEY, [...saved, ...additions.map((s) => ({ ...s, savedOffline: true }))]);
+    await writeList(OFFLINE_SITES_KEY, [...cached, ...additions]);
   }
 
   const region: OfflineRegion = {
@@ -247,6 +344,22 @@ export const deleteOfflineRegion = async (id: string): Promise<void> => {
 
   // Drop this region's tiles unless another stored region also covers them.
   const remaining = regions.filter((region) => region.id !== id);
+
+  /**
+   * The pack's spots go with its tiles.
+   *
+   * Kept only where another pack still covers the ground they sit on, which is
+   * the same rule the tiles follow one block down. A camper's own submissions
+   * and their bookmarks live in different lists entirely and are untouched by
+   * this — deleting a map pack must never delete somebody's spot.
+   */
+  const cached = await getOfflineCampsites();
+  if (cached.length > 0) {
+    await writeList(
+      OFFLINE_SITES_KEY,
+      cached.filter((site) => remaining.some((region) => withinBounds(site, region.bounds)))
+    );
+  }
   const stillNeeded = new Set<string>();
   remaining.forEach((region) => {
     enumerateTiles(region.bounds, region.zoomMin, region.zoomMax, region.tileCount).forEach(

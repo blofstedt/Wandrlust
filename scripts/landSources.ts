@@ -42,6 +42,22 @@ export interface LandSourceSpec {
   attribution: string;
   licence: string;
   jurisdiction: string;
+  /**
+   * How this source is read.
+   *
+   * `arcgis` (the default) pages a Feature/MapServer query endpoint with
+   * `where`, `outFields` and a bbox, which is what every source here used to
+   * be. `geojson` downloads one whole file in a single request.
+   *
+   * The second exists because MOST OF CANADA HAS NO QUERYABLE SERVICE. The
+   * provinces that publish campable Crown land at all publish it as a
+   * periodic file, so a fetcher that can only page ArcGIS could never reach
+   * them — and that, rather than anything about the code, is why Beacon has
+   * been blind everywhere but Ontario and Alberta. A downloaded file is
+   * seeded into `public_lands` exactly like a paged one, and from there the
+   * map and Beacon both read it without knowing the difference.
+   */
+  kind?: 'arcgis' | 'geojson';
   url: string;
   where: string;
   outFields: string;
@@ -72,43 +88,90 @@ export const EXCLUDED_DESIGNATIONS =
 
 export const LAND_SOURCES: LandSourceSpec[] = [
   /* ================= UNITED STATES ================= */
+  /**
+   * ---------------------------------------------------------------------------
+   * WHY THERE ARE NOW TWO US FEDERAL SOURCES WHERE THERE WAS ONE
+   * ---------------------------------------------------------------------------
+   *
+   * This registry used to carry a single `blm_sma_national` entry pointed at
+   * `.../SurfaceManagementAgency/FeatureServer/0` and filtered
+   * `ADMIN_AGENCY_CODE IN ('BLM','FS')`. Both halves of that were broken, and
+   * `server/boundaryRoutes.ts` had already found out and fixed it on the live
+   * path — the fix was simply never carried back here:
+   *
+   *   1. THAT LAYER IS A CLIPPED SAMPLE. Its real name is
+   *      `SurfaceManagementAgency_Clip`. A query for Moab — ringed by BLM land
+   *      — returned nothing. Nationally it held single-digit features.
+   *   2. `'FS'` MATCHES NOTHING. The field's values are BIA, BLM, DOD, NPS,
+   *      PVT, ST, USFS. Every national forest in the country was excluded by a
+   *      two-letter typo.
+   *
+   * That combination was never merely useless, it was actively dangerous,
+   * because `boundaryRoutes.ts` PREFERS seeded data over the live services. A
+   * seed run with the old config would have written a nearly-empty United
+   * States into `public_lands` and the map would have started drawing that in
+   * place of the working live path — public land silently disappearing from
+   * the map, which is this app's one forbidden failure.
+   *
+   * These two entries mirror the endpoints and filters that are verified and
+   * in production in `boundaryRoutes.ts`. If you change one, change both.
+   */
   {
-    id: 'blm_sma_national',
-    label: 'BLM Surface Management Agency (national)',
+    // Verified in production: 71,046 features nationally; returns Moab.
+    id: 'blm_lands',
+    label: 'BLM public land',
     attribution: 'Bureau of Land Management, Geospatial Business Platform',
     licence: 'Public domain (US Government work)',
     jurisdiction: 'US',
-    url: 'https://services3.arcgis.com/ZyW3beZDqER6f82o/ArcGIS/rest/services/SurfaceManagementAgency/FeatureServer/0/query',
-    where: "ADMIN_AGENCY_CODE IN ('BLM','FS')",
+    url: 'https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/BLM_Lands/FeatureServer/0/query',
+    where: '1=1',
     outFields: '*',
     confidence: 'managing_agency',
     edgeAccuracy: 'administrative',
     campingBasisKind: 'agency_policy_inference',
     maxRecordCount: 2000,
     bbox: [-125.0, 24.5, -66.9, 49.5],
-    externalId: (p) =>
-      String(p.OBJECTID ?? p.objectid ?? `${p.ADMIN_AGENCY_CODE}:${p.ADMIN_UNIT_NAME}`),
-    name: (p) => p.ADMIN_UNIT_NAME || p.ADMIN_AGENCY_CODE || 'Federal land',
-    designation: (p) =>
-      p.ADMIN_AGENCY_CODE === 'BLM' ? 'Bureau of Land Management'
-      : p.ADMIN_AGENCY_CODE === 'FS' ? 'US Forest Service'
-      : String(p.ADMIN_AGENCY_CODE ?? 'Federal'),
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? p.unit_name ?? p.UNIT_NAME),
+    name: (p) => p.unit_name || p.UNIT_NAME || 'BLM land',
+    designation: () => 'Bureau of Land Management',
     campingBasis: (p) => {
-      const unit = String(p.ADMIN_UNIT_NAME ?? '');
+      const unit = String(p.unit_name ?? p.UNIT_NAME ?? '');
       if (EXCLUDED_DESIGNATIONS.test(unit)) return null;
-      const code = p.ADMIN_AGENCY_CODE;
-      if (code === 'BLM') {
-        return 'BLM-administered surface, no excluded designation in the unit name. BLM policy generally permits dispersed camping up to 14 days per 28-day period. Subject to field-office travel management plans and seasonal closures not represented in this dataset.';
-      }
-      if (code === 'FS') {
-        return 'National Forest System land, no excluded designation in the unit name. USFS policy generally permits dispersed camping up to 14 days. Subject to forest-specific orders and Motor Vehicle Use Maps not represented in this dataset.';
-      }
-      return null;
+      return 'BLM-administered surface, no excluded designation in the unit name. BLM policy generally permits dispersed camping up to 14 days per 28-day period. Subject to field-office travel management plans and seasonal closures not represented in this dataset.';
     },
     stayLimitDays: () => 14,
     permit: () => ({ required: false, name: null }),
     notes:
       'Authoritative for WHICH AGENCY manages a surface. Explicitly NOT a land-ownership or parcel boundary dataset — BLM states so in its own metadata. Private inholdings are not depicted.'
+  },
+  {
+    // Verified in production: 112 national forests; returns Custer Gallatin.
+    id: 'usfs_national_forest',
+    label: 'National Forest',
+    attribution: 'USDA Forest Service, Enterprise Data Warehouse',
+    licence: 'Public domain (US Government work)',
+    jurisdiction: 'US',
+    url: 'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_ForestSystemBoundaries_01/MapServer/1/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 1000,
+    bbox: [-125.0, 24.5, -66.9, 49.5],
+    externalId: (p) =>
+      String(p.OBJECTID ?? p.objectid ?? p.FORESTORGCODE ?? p.FORESTNAME ?? p.forestname),
+    name: (p) => p.FORESTNAME || p.forestname || 'National Forest',
+    designation: () => 'US Forest Service',
+    campingBasis: (p) => {
+      const unit = String(p.FORESTNAME ?? p.forestname ?? '');
+      if (EXCLUDED_DESIGNATIONS.test(unit)) return null;
+      return 'National Forest System land, no excluded designation in the unit name. USFS policy generally permits dispersed camping up to 14 days. Subject to forest-specific orders and Motor Vehicle Use Maps not represented in this dataset.';
+    },
+    stayLimitDays: () => 14,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Administrative forest boundaries. A national forest boundary encloses private inholdings and wilderness alike; neither is depicted here, so a point inside one of these polygons is not by itself campable ground.'
   },
   {
     id: 'padus_open_access',
@@ -185,7 +248,8 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     stayLimitDays: () => 21,
     permit: () => ({ required: false, name: 'Non-residents require a Crown Land Camping Permit' }),
     notes:
-      'The ONLY source in this registry with a literal general-use designation. Ontario states CLUPA is "not to be used as a source of protected areas, crown land or private land boundaries."'
+      'The ONLY source in this registry with a literal general-use designation. Ontario states CLUPA is "not to be used as a source of protected areas, crown land or private land boundaries." ' +
+      'CLUPA covers southern, central and mid-northern Ontario. It stops before the Far North, which is planned under the Far North Act instead — see COVERAGE_GAPS for CA-ON-FARNORTH.'
   },
   {
     /**
@@ -249,6 +313,126 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     permit: () => ({ required: true, name: 'Alberta Public Land Camping Pass (Eastern Slopes zones)' }),
     notes:
       'Covers DESIGNATED MANAGEMENT ZONES only — not all Alberta Crown land. Large areas of campable Alberta Crown land fall outside any PLUZ and are absent here.'
+  },
+  {
+    /**
+     * Saskatchewan's provincial forest — the province's Green Area equivalent.
+     *
+     * This is admitted on exactly the footing the note above CANDIDATE_SOURCES
+     * lays out. It is a layer of LAND, not of what has been done to the land:
+     * the polygons are Crown resource land designated as provincial forest
+     * under The Forest Resources Management Regulations (F-19.1 Reg 1). The two
+     * Saskatchewan leads that stayed rejected — agricultural dispositions and
+     * cottage-lot subdivisions — are encumbrances, and mapping either would put
+     * someone on a grazing lease.
+     *
+     * It also lines up with where the province's own camping rule actually
+     * applies. Saskatchewan's 21-day free camping allowance is described
+     * against Crown resource land north of the provincial forest boundary,
+     * which is the boundary this layer draws.
+     *
+     * WHAT IT DELIBERATELY UNDERSTATES. Crown resource land is roughly 37
+     * million hectares and reaches beyond the forest boundary, so a blank
+     * southern Saskatchewan is still "no data", never "no public land" — which
+     * is why CA-SK stays in COVERAGE_GAPS with a narrowed reason rather than
+     * being struck off it.
+     */
+    id: 'saskatchewan_provincial_forest',
+    label: 'Saskatchewan Crown Land (Provincial Forest)',
+    attribution: 'Government of Saskatchewan, Ministry of Environment',
+    licence: 'Open Government Licence – Saskatchewan',
+    jurisdiction: 'CA-SK',
+    url: 'https://gis.saskatchewan.ca/arcgis/rest/services/Forestry/MapServer/0/query',
+    // The whole layer is the provincial forest, so there is nothing to filter
+    // on — and `outFields: '*'` means a field name cannot silently kill this
+    // source the way a guessed one would.
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    // The published layer is the Fire Management branch's display definition,
+    // not the surveyed one. Weaker than Alberta's, and labelled as such.
+    edgeAccuracy: 'generalised',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 1000,
+    bbox: [-110.1, 49.0, -101.3, 60.0],
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? 'provincial-forest'),
+    name: () => 'Crown Land (Provincial Forest)',
+    designation: () => 'Saskatchewan provincial forest',
+    campingBasis: () =>
+      'Crown resource land designated as provincial forest under The Forest Resources ' +
+      'Management Regulations. Saskatchewan generally allows recreational camping on ' +
+      'unoccupied provincial Crown land free, without a permit or registration, for up to ' +
+      '21 consecutive days at one site. That is inferred from provincial policy and not ' +
+      'from anything in this layer — the provincial forest also contains protected areas, ' +
+      'recreation sites, cottage subdivisions, outfitter allocations and leases where ' +
+      'camping is restricted or prohibited, and none of them are subtracted here.',
+    stayLimitDays: () => 21,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Layer 0 of the Forestry MapServer. Saskatchewan publishes it as the Fire Management ' +
+      'and Forest Protection Branch\'s spatial definition of the provincial forest, for ' +
+      'display and explicitly NOT as the official version — the legal boundary lives in the ' +
+      'regulations. Covers the forested centre and north of the province only; Crown ' +
+      'resource land outside the forest boundary is real and is not in here.'
+  },
+  {
+    /**
+     * Manitoba's provincial forests — fifteen of them, and a THIN SLICE.
+     *
+     * Admissible for the same reason Saskatchewan's is: a provincial forest is
+     * Crown land, designated under The Forest Act, and Manitoba's own rule is
+     * that a resident of Canada may camp free on unoccupied Crown land for up
+     * to 21 days at one site unless the site is posted otherwise. It is land,
+     * not an encumbrance on land.
+     *
+     * WHAT MANITOBA PUBLISHES THAT THIS DELIBERATELY DOES NOT USE. The other
+     * Crown-land layers on the provincial geoportal are Treaty Land
+     * Entitlement selections, TLE acquisitions and Northern Affairs community
+     * settlement parcels. Those are allocations — several of them First Nations
+     * land selections — and drawing any of them as somewhere to camp would be
+     * both wrong and offensive. They are recorded in CANDIDATE_SOURCES as
+     * permanently rejected rather than merely unexamined.
+     *
+     * HOW SMALL THIS IS, SAID PLAINLY. Fifteen forests, about 22,000 km².
+     * Manitoba is roughly 650,000 km² and something like three quarters of it
+     * is Crown land, most of that in the north where there is no provincial
+     * forest designation at all. So this source covers a few percent of the
+     * province's campable Crown land and CA-MB stays in COVERAGE_GAPS saying
+     * exactly that. A blank Manitoba means we have nothing to show.
+     */
+    id: 'manitoba_provincial_forest',
+    label: 'Manitoba Crown Land (Provincial Forest)',
+    attribution: 'Government of Manitoba',
+    licence: 'Open Government Licence – Manitoba',
+    jurisdiction: 'CA-MB',
+    url: 'https://services.arcgis.com/mMUesHYPkXjaFGfS/arcgis/rest/services/Manitoba_Provincial_Forests___Version_6/FeatureServer/1/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 2000,
+    bbox: [-102.1, 48.9, -88.9, 60.1],
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? p.FID ?? 'provincial-forest'),
+    name: (p) =>
+      String(
+        p.NAME ?? p.Name ?? p.FOREST_NAME ?? p.PF_NAME ?? p.PROVINCIAL_FOREST ?? 'Provincial Forest'
+      ),
+    designation: () => 'Manitoba provincial forest',
+    campingBasis: () =>
+      'Crown land designated as a provincial forest under The Forest Act. Manitoba generally ' +
+      'allows a resident of Canada to camp free, without a permit, for up to 21 days at one ' +
+      'site on unoccupied Crown land unless it is posted otherwise; non-residents may be ' +
+      'treated differently. That is inferred from provincial policy, not from anything in ' +
+      'this layer — provincial parks, wildlife management areas, posted closures and leases ' +
+      'sit inside and alongside these forests and are not subtracted here.',
+    stayLimitDays: () => 21,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Fifteen provincial forests, about 22,000 km² — a few percent of Manitoba Crown land, ' +
+      'concentrated in the south and centre. Hosted on ArcGIS Online, the same platform as ' +
+      'the BLM and PAD-US sources. Absence of a polygon anywhere in Manitoba is "no data", ' +
+      'and across most of the province that is emphatically not "no public land".'
   }
 ];
 
@@ -315,7 +499,25 @@ export const CANDIDATE_SOURCES: {
     appearsToBe:
       'Wildlife Management Areas and Special Conservation Areas — designated polygons on Crown land.',
     mustConfirm:
-      'These are restricted designations, the opposite of general use. Manitoba policy does allow free camping on Crown land for up to 21 days unless posted, so a plain Crown land ownership layer would qualify — locate one before using anything here.'
+      'Still rejected: restricted designations, the opposite of general use. The question this entry used to ask — "find a plain Crown land layer" — is now partly answered, by Manitoba_Provincial_Forests in LAND_SOURCES. That covers about 22,000 km²; the rest of Manitoba Crown land still has no admissible layer.'
+  },
+  {
+    jurisdiction: 'CA-MB',
+    region: 'Manitoba — Treaty Land Entitlement and settlement parcels',
+    url: 'https://geoportal.gov.mb.ca/datasets/manitoba::treaty-land-entitlement-sites-in-manitoba/explore',
+    appearsToBe:
+      'Crown land parcels under Treaty Land Entitlement agreements, TLE acquisitions, and Northern Affairs community flood settlement agreements, all pursuant to The Crown Lands Act.',
+    mustConfirm:
+      'NEVER USE. Recorded so nobody researches it twice and mistakes "Crown land" in the title for open land. These are allocations, several of them First Nations land selections. Drawing them as places to camp would be wrong on the facts and worse than wrong in what it implies.'
+  },
+  {
+    jurisdiction: 'CA-ON',
+    region: 'Ontario — Enhanced Management Areas',
+    url: 'https://ws.lioservices.lrc.gov.on.ca/arcgis2/rest/services/LIO_OPEN_DATA/LIO_Open06/MapServer/5/query',
+    appearsToBe:
+      'The other large CLUPA designation, in the same layer this app already queries — so adding it is a one-word change to the `where` clause and looks like free coverage.',
+    mustConfirm:
+      "Do not make that change. It is exactly the trap this array exists for. An Enhanced Management Area is Crown land, but Ontario's blanket permission to camp does NOT follow the designation the way it does in a General Use Area: each EMA has a reason for the extra management — remote access, tourism, natural heritage, intensive forestry — and its own policy report decides whether recreational use is permitted. That report is prose, not geometry, and it is not in this layer. Mapping EMAs as campable would put an explicit-designation label on land whose designation says the opposite of settled.",
   },
   {
     jurisdiction: 'CA-QC',
@@ -346,14 +548,21 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
   },
   {
     jurisdiction: 'CA-MB',
-    region: 'Manitoba',
-    reason: 'Manitoba operates a geoportal, but no confirmed open REST layer delineating campable Crown land.'
+    region: 'Manitoba (outside the provincial forests)',
+    reason:
+      'MOSTLY UNMAPPED. The fifteen provincial forests are now drawn — about 22,000 km², concentrated in the south and centre. Manitoba is roughly 650,000 km² and something like three quarters of it is Crown land, most of that in the north with no provincial forest designation and no admissible open layer. The other Crown land Manitoba publishes is Treaty Land Entitlement and settlement parcels, which are allocations and must never be drawn as campable. So across most of this province an empty map means we have nothing to show, not that there is nowhere to camp — and here that gap is the rule rather than the exception.'
   },
   {
     jurisdiction: 'CA-SK',
-    region: 'Saskatchewan',
+    region: 'Saskatchewan (outside the provincial forest)',
     reason:
-      'Crown land is administered through the Saskatchewan Land Information Services portal and the Crown land listings are sale/lease dispositions, not a layer of land open to camping. No confirmed open REST endpoint. Recorded here because it was previously absent from this list entirely — an unlisted gap is indistinguishable from covered ground, which is the failure this table exists to prevent.'
+      'PARTIAL COVERAGE. The provincial forest is now mapped, which is the forested centre and north of the province and where Saskatchewan describes its 21-day free camping allowance as applying. Everything south of the forest boundary is not: the Crown land published for that part of the province is agricultural dispositions and cottage subdivisions — leases and allocations, not land anyone may camp on. Saskatchewan administers roughly 37 million hectares of Crown resource land in total, so an empty map south of the forest boundary means we have nothing to show, never that there is nothing there.'
+  },
+  {
+    jurisdiction: 'CA-ON-FARNORTH',
+    region: "Ontario's Far North",
+    reason:
+      'CLUPA — the source of every Ontario polygon this app draws — covers southern, central and mid-northern Ontario and stops there. The Far North is planned separately under the Far North Act, through community-based land use plans led by First Nations, and those are not in the layer we query. Confirmed against the live service: a box from 52.0°N to 55.5°N returns exactly one General Use Area, all of it below 52.5°N. So roughly the northern two fifths of the province draws blank while being overwhelmingly Crown land. That blankness is missing data, not missing land.'
   },
   {
     jurisdiction: 'CA-QC',
@@ -377,6 +586,11 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'US-STATE',
     region: 'US state trust and state forest lands',
     reason:
-      'State-level camping rules vary by state and are not in the federal SMA layer. PAD-US includes some state lands where Pub_Access is populated, but coverage is uneven.'
+      'PAD-US is now queried live as well as seeded, so state forests, state trust ' +
+      'parcels, national grasslands and county holdings appear wherever USGS has ' +
+      'populated Pub_Access = OA. That is most of the country and not all of it, and ' +
+      'the flag means the public may ENTER — not that anyone may sleep there. State ' +
+      'camping rules still vary by state and are in no layer here, so a PAD-US parcel ' +
+      'is the weakest kind of lead this app produces.'
   }
 ];

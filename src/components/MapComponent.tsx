@@ -6,21 +6,33 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
-  Crosshair, Eye, Info, Layers, Loader2, MousePointerClick, Navigation, X
+  AlertTriangle, Crosshair, Eye, Info, Layers, Loader2, MousePointerClick,
+  Navigation, X
 } from 'lucide-react';
 
 import type {
-  Campsite, CellCoverage, DestinationLand, MapDestination, MapTileLayer, NearbyFacility
+  Campsite, CellCoverage, DestinationLand, FacilityKind, MapDestination, MapFacility,
+  MapTileLayer, NearbyFacility, BeaconSpot
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
 import { hazardReportStyle, reportStanding } from '../config/hazardReports';
-import { fetchHazardsNear, HazardRecord } from '../services/dataService';
+import { beaconTierStyle } from '../config/beacon';
+import { facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
+import { landRules } from '../config/landRules';
+import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
 import {
-  fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains, BOUNDARY_STYLES,
-  EMPTY_BOUNDARIES, BoundaryCollection, BoundaryConfidence, BoundaryFeature,
+  fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
+} from '../services/dataService';
+import {
+  fetchBoundaries, requestBoxFor, overviewBoxFor, boxContains,
+  BOUNDARY_GROUP_STYLES, boundaryGroupOf,
+  EMPTY_BOUNDARIES, BoundaryCollection, BoundaryFeature,
   BoundaryDetail, EdgeAccuracy
 } from '../services/boundaryService';
+import {
+  loadLandOverlay, overviewCollection, packCollection, LandOverlay
+} from '../services/landOverlayService';
 import {
   fetchActiveFires, findFiresNear, boxAround, isUnderControl, FIRE_ALERT_RADIUS_KM, ActiveFire
 } from '../services/fireService';
@@ -30,18 +42,20 @@ import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
 } from '../utils/fuzzyBoundary';
 import {
-  AlertBadge, BADGE_COLOR, badgesForPoint, alertBadge,
-  hazardCloudHtml, preciseMarkerHtml, isDiffuse, warningGlyphPattern, explodeToFeatures,
+  AlertBadge, PointWarning, BADGE_COLOR, CLOUD_TINT, warningsForPoint, alertBadge,
+  localizedPinHtml, cloudPieces,
   dissolveKey, dissolveSegments, dissolvedFill
 } from '../utils/alertOverlay';
 import {
   MarkerDot, amenityDots, conditionDots, facilityDots, fireDots, hazardDots,
-  FACILITY_COLOR
+  FACILITY_COLOR, LAND_GLYPH
 } from '../utils/amenityDots';
 import {
-  fetchNearbyFacilities, fetchNearestDriveableRoad, ROAD_RADIUS_KM,
-  FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM
+  fetchNearbyFacilities, fetchNearestDriveableRoad, findNearestDriveableRoad,
+  fetchFacilitiesInView, ROAD_RADIUS_KM,
+  FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM, FACILITY_MIN_ZOOM
 } from '../services/nearbyAmenityService';
+import type { FacilityLookupState } from './FacilityChips';
 import { calculateRoute, RouteResult } from '../services/routingService';
 import { directionsAppName, openDirections } from '../utils/handoff';
 import {
@@ -50,9 +64,11 @@ import {
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
-  fetchAreaAlerts, HazardAlert, HAZARD_STYLE, sortAlerts, WeatherSnapshot
+  fetchAreaAlerts, alertGapNote, HazardAlert, sortAlerts,
+  WeatherSnapshot
 } from '../services/weatherService';
-import { prefersReducedMotion } from '../utils/animation';
+import { prefersReducedMotion, haptic } from '../utils/animation';
+import { PointInfoSheet } from './PointInfoSheet';
 
 /** 1x1 transparent GIF, shown where no offline tile has been cached. */
 const TRANSPARENT_PIXEL =
@@ -125,6 +141,16 @@ const UNDERLAY_NATIVE_ZOOM = 8;
  * Never zooms OUT to reach it — see the effect that uses it.
  */
 const CAMPSITE_FOCUS_ZOOM = 14;
+
+/**
+ * How soft the edge of a weather cloud is, in screen pixels.
+ *
+ * Enough that no straight survey line from a forecast region survives, not so
+ * much that the area stops having a shape. A camper has to be able to tell
+ * roughly where the smoke is and must NOT be able to point at the line where
+ * it stops, because there isn't one.
+ */
+const CLOUD_BLUR_PX = 11;
 
 /**
  * The frame the map lives in — the box the user pans inside and cannot
@@ -281,6 +307,42 @@ const escapeHtml = (s: string): string => s
   .replace(/'/g, '&#39;');
 
 /**
+ * The outline of a shape, as Leaflet wants it: the biggest ring, `[lat, lon]`.
+ *
+ * A cloud piece is a MultiPolygon — several parcels the grouping pulled
+ * together — and the tracker follows the largest of them. Not all of them:
+ * a dot that teleported between blocks would read as several separate things
+ * being pointed at rather than one area being outlined. Holes are ignored for
+ * the same reason; the softened cloud fills them in anyway.
+ */
+const outerRing = (shape: GeoJSON.Feature): [number, number][] => {
+  const geometry = shape.geometry as { type?: string; coordinates?: unknown };
+  const polygons: [number, number][][][] =
+    geometry?.type === 'MultiPolygon'
+      ? (geometry.coordinates as [number, number][][][])
+      : geometry?.type === 'Polygon'
+        ? [geometry.coordinates as [number, number][][]]
+        : [];
+
+  let best: [number, number][] = [];
+  let bestArea = -1;
+  polygons.forEach((rings) => {
+    const ring = rings?.[0];
+    if (!Array.isArray(ring) || ring.length < 4) return;
+    // Shoelace, in square degrees. Only ever compared against itself.
+    let twice = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+      twice += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    }
+    const area = Math.abs(twice) / 2;
+    if (area > bestArea) { bestArea = area; best = ring; }
+  });
+
+  // GeoJSON counts [lon, lat]; everything Leaflet takes is the other way round.
+  return best.map(([lon, lat]) => [lat, lon] as [number, number]);
+};
+
+/**
  * Tapped: the same dots, each grown into the fact it stood for.
  *
  * The chip is short — a glyph and two or three words — and the whole hedged
@@ -326,40 +388,92 @@ const CHIP_LEAD_MS = 70;
  */
 const chipSignature = (d: MarkerDot): string => [
   d.color, d.label, d.full ?? '', d.glyph, d.tone,
-  d.hollow ? 'h' : '', d.action ?? '', d.facility?.id ?? ''
+  d.hollow ? 'h' : '', d.action ?? '', d.badge ?? '', d.facility?.id ?? ''
 ].join('\u0001');
 
+/**
+ * EVERY CHIP IS A BUTTON, AND EVERY CHIP LOOKS LIKE ONE.
+ *
+ * There used to be two kinds: a facility or the fire count, which were
+ * tappable and wore an arrow, and everything else, which was a label that
+ * swallowed nothing. That teaches the wrong lesson — a camper who has learned
+ * that most chips do nothing stops trying the ones that do.
+ *
+ * So all of them take taps, and the mark on the right says what kind of answer
+ * to expect:
+ *
+ *   ›   takes the camera to the thing the chip is talking about — the warning
+ *       area, the parcel, the track in, the fires — and brings it back.
+ *   …   has more to say than fits, and unfurls into the whole hedged sentence
+ *       in place.
+ *
+ * That second one matters more than it looks. The caveats — that a signal
+ * estimate is a distance to a mast with the terrain ignored, that a recorded
+ * "no water" is one camper's visit — lived in the `title` attribute, which on
+ * a phone means nowhere at all.
+ */
 const chipHtml = (d: MarkerDot, fresh: boolean, delay: number): string => {
   const go = d.facility;
-  const tappable = Boolean(go) || Boolean(d.action);
+  const travels = Boolean(d.action) || Boolean(go);
   const full = d.full ?? d.label;
   return (
     `<span class="wl-chip${d.tone === 'bad' ? ' wl-chip-bad' : ''}` +
-    `${tappable ? ' wl-chip-go' : ''}${fresh ? ' wl-chip-in' : ''}" ` +
+    `${travels ? ' wl-chip-go' : ''}` +
+    `${d.action === 'directions' ? ' wl-chip-nav' : ''}` +
+    `${fresh ? ' wl-chip-in' : ''}" ` +
     `data-key="${escapeHtml(d.key)}" data-sig="${escapeHtml(chipSignature(d))}" ` +
+    `data-label="${escapeHtml(d.label)}" data-full="${escapeHtml(full)}" ` +
     `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
     `${d.action ? `data-action="${d.action}" ` : ''}` +
-    `${tappable ? 'role="button" tabindex="0" ' : ''}` +
+    `${d.badge ? `data-badge="${escapeHtml(d.badge)}" ` : ''}` +
+    `role="button" tabindex="0" ` +
     `title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}" ` +
     `style="--wl-chip-color:${d.color}` +
     `${fresh ? `;animation-delay:${delay}ms` : ''}">` +
     `<i class="wl-chip-dot${d.hollow ? ' wl-chip-dot-hollow' : ''}"></i>` +
     `<span class="wl-chip-glyph" aria-hidden="true">${d.glyph}</span>` +
-    `${escapeHtml(d.label)}` +
-    `${tappable ? '<span class="wl-chip-arrow" aria-hidden="true">›</span>' : ''}</span>`
+    `<span class="wl-chip-text">${escapeHtml(d.label)}</span>` +
+    `<span class="wl-chip-arrow" aria-hidden="true">${travels ? '›' : '…'}</span>` +
+    `</span>`
   );
 };
 
-const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string => {
-  let arriving = 0;
-  const chips = dots
-    .map((d) => {
-      const fresh = animateKeys.has(d.key);
-      return chipHtml(d, fresh, fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0);
-    })
-    .join('');
-  return `<div class="wl-chips">${chips}</div>`;
+/**
+ * When each arriving chip pops, counted from the BOTTOM of the stack.
+ *
+ * The row is a column anchored above the pin, so the LAST chip in DOM order
+ * sits nearest the pin and the first sits highest. Staggering in DOM order
+ * therefore ran the wave downwards, from the sky into the pin, which reads as
+ * falling. Stacking is the other way round: the chip nearest the pin lands
+ * first and each one after it piles on top.
+ *
+ * Returned as a map rather than computed inline because `expandedDotRow` and
+ * `patchChipRow` both need the same answer, and two copies of a rule about
+ * timing drift into two slightly different animations.
+ */
+const chipDelays = (dots: MarkerDot[], animateKeys: Set<string>): Map<string, number> => {
+  const freshInOrder = dots.filter((d) => animateKeys.has(d.key));
+  const delays = new Map<string, number>();
+
+  freshInOrder.forEach((d, i) => {
+    // Reverse the index: the last fresh chip (nearest the pin) goes first.
+    const fromBottom = freshInOrder.length - 1 - i;
+    delays.set(d.key, CHIP_LEAD_MS + fromBottom * CHIP_STAGGER_MS);
+  });
+
+  return delays;
 };
+
+/** The chips alone, with no row around them. The peek builds its own row. */
+const chipsHtml = (dots: MarkerDot[], animateKeys: Set<string>): string => {
+  const delays = chipDelays(dots, animateKeys);
+  return dots
+    .map((d) => chipHtml(d, animateKeys.has(d.key), delays.get(d.key) ?? 0))
+    .join('');
+};
+
+const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string =>
+  `<div class="wl-chips">${chipsHtml(dots, animateKeys)}</div>`;
 
 /**
  * Add the chips that are new, leave the ones already there completely alone.
@@ -381,6 +495,45 @@ const expandedDotRow = (dots: MarkerDot[], animateKeys: Set<string>): string => 
  * Returns false if the marker is not on screen (clustered away, or not yet
  * added), in which case the caller falls back to rebuilding the icon.
  */
+/**
+ * Measure, change, then slide whatever moved into its new place.
+ *
+ * The stack is anchored under the pin and grows upwards, so a chip arriving
+ * anywhere in it shoves every chip above it up by its own height — instantly,
+ * because that is a layout change and layout does not animate. Four lookups
+ * landing meant four of those jolts while the camper was reading.
+ *
+ * FLIP: note where each chip was, let the change happen, then put each chip
+ * back where it started with a transform and release it on the next frame, so
+ * it travels to its new home on the same curve everything else in the app uses.
+ * A chip halfway through its own arrival pop is left alone — its animation owns
+ * the transform, and it has nowhere to slide from anyway.
+ */
+const flipRow = (row: Element, mutate: () => void): void => {
+  const before = new Map<HTMLElement, number>();
+  row.querySelectorAll<HTMLElement>(':scope > .wl-chip').forEach((el) => {
+    before.set(el, el.getBoundingClientRect().top);
+  });
+
+  mutate();
+
+  before.forEach((top, el) => {
+    if (!el.isConnected) return;
+    const dy = top - el.getBoundingClientRect().top;
+    if (Math.abs(dy) < 0.5) return;
+    el.style.transition = 'none';
+    el.style.transform = `translateY(${dy}px)`;
+    // Two frames: the first commits the offset, the second releases it. One is
+    // not enough — the browser coalesces both writes and nothing moves.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform var(--dur-base) var(--ease-moook)';
+        el.style.transform = '';
+      });
+    });
+  });
+};
+
 const patchChipRow = (
   root: HTMLElement | null | undefined,
   dots: MarkerDot[],
@@ -390,48 +543,248 @@ const patchChipRow = (
   if (!wrap) return false;
 
   let row = wrap.querySelector(':scope > .wl-chips');
+  const existed = Boolean(row);
   if (!row) {
     if (!dots.length) return true;
     row = document.createElement('div');
     row.className = 'wl-chips';
     wrap.insertBefore(row, wrap.firstChild);
   }
+  const target = row;
 
-  const existing = new Map<string, Element>();
-  row.querySelectorAll(':scope > .wl-chip').forEach((el) => {
-    const key = el.getAttribute('data-key');
-    if (key) existing.set(key, el);
-  });
+  const rebuild = (): void => {
+    const existing = new Map<string, Element>();
+    target.querySelectorAll(':scope > .wl-chip').forEach((el) => {
+      const key = el.getAttribute('data-key');
+      if (key) existing.set(key, el);
+    });
 
-  const wanted = new Set<string>();
-  let arriving = 0;
-  let placed: Element | null = null;
+    const wanted = new Set<string>();
+    const delays = chipDelays(dots, animateKeys);
+    let placed: Element | null = null;
 
-  for (const d of dots) {
-    wanted.add(d.key);
-    const fresh = animateKeys.has(d.key);
-    const delay = fresh ? CHIP_LEAD_MS + arriving++ * CHIP_STAGGER_MS : 0;
-    let node = existing.get(d.key) ?? null;
+    for (const d of dots) {
+      wanted.add(d.key);
+      const fresh = animateKeys.has(d.key);
+      const delay = fresh ? delays.get(d.key) ?? CHIP_LEAD_MS : 0;
+      let node = existing.get(d.key) ?? null;
 
-    if (!node || fresh || node.getAttribute('data-sig') !== chipSignature(d)) {
-      const holder = document.createElement('template');
-      holder.innerHTML = chipHtml(d, fresh, delay);
-      const next = holder.content.firstElementChild;
-      if (!next) continue;
-      if (node) node.replaceWith(next);
-      node = next;
+      if (!node || fresh || node.getAttribute('data-sig') !== chipSignature(d)) {
+        const holder = document.createElement('template');
+        holder.innerHTML = chipHtml(d, fresh, delay);
+        const next = holder.content.firstElementChild;
+        if (!next) continue;
+        if (node) node.replaceWith(next);
+        node = next;
+      }
+
+      // Only move a chip that is genuinely out of order: re-inserting an
+      // element restarts its animation, which is the popcorn all over again.
+      const slot = placed ? placed.nextElementSibling : target.firstElementChild;
+      if (node !== slot) target.insertBefore(node, slot);
+      placed = node;
     }
 
-    // Only move a chip that is genuinely out of order: re-inserting an
-    // element restarts its animation, which is the popcorn all over again.
-    const slot = placed ? placed.nextElementSibling : row.firstElementChild;
-    if (node !== slot) row.insertBefore(node, slot);
-    placed = node;
-  }
+    existing.forEach((el, key) => { if (!wanted.has(key)) el.remove(); });
+  };
 
-  existing.forEach((el, key) => { if (!wanted.has(key)) el.remove(); });
-  if (!dots.length) row.remove();
+  // A row being built from nothing has nothing to slide — that case is the
+  // whole stack arriving, which is the pop.
+  if (existed) flipRow(target, rebuild);
+  else rebuild();
+
+  if (!dots.length) target.remove();
   return true;
+};
+
+/**
+ * Take a stack away, top chip first, and say how long that will take.
+ *
+ * The wave came up from the pin outwards, so it leaves from the loose end
+ * inwards: the top chip goes first and the one resting on the pin goes last.
+ * Dismantling it in the order it was built looks like the bottom being pulled
+ * out from under the rest.
+ */
+const retractChips = (row: Element): number => {
+  const chips = Array.from(row.querySelectorAll<HTMLElement>(':scope > .wl-chip'));
+
+  chips.forEach((chip, i) => {
+    chip.classList.remove('wl-chip-in');
+    chip.style.animationDelay = `${i * PEEK_OUT_STAGGER_MS}ms`;
+    chip.classList.add('wl-chip-out');
+  });
+
+  return chips.length * PEEK_OUT_STAGGER_MS + PEEK_OUT_DURATION_MS;
+};
+
+/* ------------------------------------------------------------------ */
+/* The press-and-hold peek                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Hold a pin down and its chips rise; let go and they fall away again.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A PEEK RATHER THAN JUST TAPPING THE PIN
+ * ---------------------------------------------------------------------------
+ *
+ * Tapping selects a spot: it flies the camera, opens the sheet, fetches
+ * weather, fires, signal and facilities, and closes whatever was open before.
+ * That is the right weight for "I am considering this place" and far too much
+ * for "what is that one?" — which, three pins into a scan of a valley, is the
+ * question you actually have. The peek answers it without moving the map or
+ * disturbing the pin you already had open.
+ *
+ * ---------------------------------------------------------------------------
+ * IT ONLY EVER SHOWS WHAT IS ALREADY KNOWN
+ * ---------------------------------------------------------------------------
+ *
+ * The peek fires no requests. It draws the dots the pin is ALREADY wearing —
+ * hazards and the spot's own recorded facilities — grown into their words.
+ * That is deliberate twice over: a hold has to answer instantly to feel like
+ * a peek rather than a load, and firing weather and OSM lookups at every pin
+ * somebody rests a thumb on would hammer four upstream services for a glance.
+ *
+ * So a peeked pin shows less than a tapped one, and nothing it shows is a
+ * guess: it is the same set of facts, in the same words, that the ring of dots
+ * was already standing for.
+ */
+
+/** How long a press has to last before it counts as a hold, in ms. */
+const PEEK_HOLD_MS = 320;
+
+/** Movement that turns a hold into a map drag, in px. */
+const PEEK_SLOP_PX = 10;
+
+/** The beat between one chip leaving and the next, in ms. */
+const PEEK_OUT_STAGGER_MS = 34;
+
+/** Roughly the duration of --dur-tap, for cleaning up after the retract. */
+const PEEK_OUT_DURATION_MS = 160;
+
+/**
+ * Draw the peek stack into a pin that is not open.
+ *
+ * Built as its own row rather than by reusing `patchChipRow`, because that
+ * function is the OPEN pin's incremental updater and shares its memory of
+ * which chips have already popped. A peek must always play from nothing, and
+ * must never teach the open pin's memory that a chip has been seen.
+ */
+const openPeek = (wrap: Element, dots: MarkerDot[]): boolean => {
+  if (!dots.length) return false;
+
+  // A peek from a moment ago may still be retracting. Take it out at once and
+  // start over, rather than refusing — holding a pin again straight away and
+  // getting nothing feels like the gesture is broken.
+  wrap.querySelector(':scope > .wl-chips-peek')?.remove();
+
+  // A row that is not a peek belongs to an open pin, and that one has real
+  // lookups behind it. Never replace it.
+  if (wrap.querySelector(':scope > .wl-chips')) return false;
+
+  const row = document.createElement('div');
+  row.className = 'wl-chips wl-chips-peek';
+  // Every chip counts as fresh: a peek always plays the whole stack from
+  // nothing, because each one is its own separate glance.
+  row.innerHTML = chipsHtml(dots, new Set(dots.map((d) => d.key)));
+
+  wrap.insertBefore(row, wrap.firstChild);
+  return true;
+};
+
+/**
+ * Take the peek away, top chip first.
+ *
+ * The stack came up from the pin outwards, so it goes away from the loose end
+ * inwards — the top chip leaves first and the one resting on the pin leaves
+ * last. Dismantling it in the same order it was built would look like the
+ * bottom being pulled out from under the rest.
+ */
+const closePeek = (wrap: Element | null | undefined): void => {
+  const row = wrap?.querySelector(':scope > .wl-chips-peek');
+  if (!row) return;
+
+  // Removed on a timer rather than on animationend: a chip whose animation
+  // never fires — reduced motion, a backgrounded tab, an element detached
+  // mid-flight — would otherwise leave the row on the map for ever.
+  window.setTimeout(() => row.remove(), retractChips(row));
+};
+
+/**
+ * The same exit, for the OPEN pin's real stack.
+ *
+ * Closing a spot used to swap the whole icon on the spot, so the stack of
+ * answers vanished between one frame and the next while the hold-to-peek
+ * stack — the same chips, in the same column — always wound itself down
+ * politely. `onDone` is what actually rebuilds the pin, and it runs after the
+ * last chip has gone rather than on top of it.
+ */
+const retractChipRow = (
+  root: HTMLElement | null | undefined,
+  onDone: () => void
+): void => {
+  const row = root?.firstElementChild?.querySelector(':scope > .wl-chips');
+  if (!row || !row.querySelector(':scope > .wl-chip')) { onDone(); return; }
+  window.setTimeout(() => { row.remove(); onDone(); }, retractChips(row));
+};
+
+/* ------------------------------------------------------------------ */
+/* One wave, not four                                                  */
+/* ------------------------------------------------------------------ */
+/**
+ * THE OPEN PIN'S STACK ARRIVES THE WAY THE HELD PIN'S DOES: ALL AT ONCE.
+ *
+ * A pin answers in instalments — the tap, then the fires, then the weather and
+ * the drive, then whatever OpenStreetMap has up the road — and each instalment
+ * used to redraw the row the moment it landed. Every chip still popped, but the
+ * popping was spread over four separate arrivals a second or two apart, which
+ * reads as things dribbling in rather than as a stack being built. The
+ * press-and-hold peek looks better for one reason only: it has all its
+ * information at the moment it opens, so it plays as a single wave.
+ *
+ * So arrivals are collected and applied together. A change waits `WAIT` for
+ * the next one to join it, and the whole batch goes in as one wave — the same
+ * bottom-up stagger the peek plays. `MAX` is the backstop: a slow feed
+ * trickling in forever must not hold the answers off the screen indefinitely.
+ */
+const CHIP_BATCH_WAIT_MS = 420;
+const CHIP_BATCH_MAX_MS = 1400;
+
+interface ChipBatcher {
+  /** Queue the newest version of the row. Later calls replace earlier ones. */
+  schedule: (apply: () => void) => void;
+  cancel: () => void;
+}
+
+const createChipBatcher = (): ChipBatcher => {
+  let timer: number | null = null;
+  let firstAt = 0;
+  let pending: (() => void) | null = null;
+
+  const fire = (): void => {
+    timer = null;
+    firstAt = 0;
+    const apply = pending;
+    pending = null;
+    apply?.();
+  };
+
+  return {
+    schedule(apply) {
+      pending = apply;
+      const now = Date.now();
+      if (!firstAt) firstAt = now;
+      if (timer != null) window.clearTimeout(timer);
+      const leftOfMax = Math.max(0, CHIP_BATCH_MAX_MS - (now - firstAt));
+      timer = window.setTimeout(fire, Math.min(CHIP_BATCH_WAIT_MS, leftOfMax));
+    },
+    cancel() {
+      if (timer != null) window.clearTimeout(timer);
+      timer = null;
+      firstAt = 0;
+      pending = null;
+    }
+  };
 };
 
 /**
@@ -449,11 +802,6 @@ const freshChipKeys = (shown: Set<string>, dots: MarkerDot[]): Set<string> => {
   return fresh;
 };
 
-const NAV_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">' +
-  '<path d="M3 11 22 2l-9 19-2-8-8-2z"/></svg>';
-
 const INFO_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
   'stroke-linecap="round" style="width:12px;height:12px">' +
@@ -469,42 +817,144 @@ const CLOSE_SVG =
   'stroke-linecap="round" style="width:12px;height:12px">' +
   '<path d="M18 6 6 18M6 6l12 12"/></svg>';
 
-/** "Google Maps" or "Apple Maps" — the phone's own app, named on the button. */
+/** "Google Maps" or "Apple Maps" — the phone's own app, named on the chip. */
 const DIRECTIONS_LABEL = directionsAppName();
 
 /**
- * The two things you can DO with the open pin, directly under it.
+ * The car chip, when there is no route to put on it.
+ *
+ * Navigation lives on the drive chip now, and the drive chip only exists once
+ * a router has answered. Offline, or with every routing engine unreachable,
+ * that would leave an open pin with no way to set off at all — so a plain car
+ * chip stands in. It claims nothing about the drive, because nothing is known
+ * about the drive; it is a door to the phone's own maps app.
+ */
+const NAV_DOT: MarkerDot = {
+  key: 'nav',
+  color: '#93C5FD',
+  label: 'Take me there',
+  full: `Open this spot in ${DIRECTIONS_LABEL}. No route was worked out here, ` +
+    'so nothing about the drive is known yet.',
+  glyph: '\u{1F697}',
+  tone: 'neutral',
+  action: 'directions'
+};
+
+/**
+ * Put the car chip on the bottom of the stack, where the thumb already is.
+ *
+ * The stack builds upwards from the pin, so its last entry is the one nearest
+ * the pin and nearest the hand. That is the right place for the one chip that
+ * leaves the app, and it also keeps the drive in the same position whether it
+ * is a real route ("1 h 20 · 64 km") or the bare stand-in.
+ */
+const withNavChip = (dots: MarkerDot[]): MarkerDot[] => {
+  const drive = dots.find((d) => d.key === 'route');
+  return [...dots.filter((d) => d.key !== 'route'), drive ?? NAV_DOT];
+};
+
+/**
+ * What you can DO with the open pin, directly under it.
  *
  * They used to live in the footer of a panel over the bottom half of the
  * screen. Under the pin they are where the thumb already is and, more to the
- * point, they are attached to the thing they act on — tapping "take me there"
- * three pins into a browse can no longer mean the pin you were last reading
- * about rather than the one you are looking at.
+ * point, they are attached to the thing they act on — tapping something three
+ * pins into a browse can no longer mean the pin you were last reading about
+ * rather than the one you are looking at.
+ *
+ * THE GREEN "GO" BUTTON IS GONE FROM HERE. Navigation moved onto the car chip
+ * in the stack above, which was already saying "1 h 20 · 64 km" — the button
+ * was a second control for a thing the row was describing anyway, and the
+ * chip is the one carrying the number you decide on. What is left under the
+ * pin is what the chips cannot be: everything recorded about the spot, and
+ * the way out.
  */
-const pinActionsRow = (
-  label: string,
-  secondary?: { action: 'add' | 'details'; label: string; glyph: string }
-): string =>
+type PinAction = {
+  action: 'add' | 'add-facility' | 'details' | 'point';
+  label: string;
+  glyph: string;
+};
+
+const pinActionsRow = (secondary: PinAction[] = []): string =>
   `<div class="wl-pin-actions">` +
-  `<span class="wl-pin-action wl-pin-action-go" data-action="directions" ` +
-  `role="button" tabindex="0" title="Open in ${escapeHtml(label)}" ` +
-  `aria-label="Open in ${escapeHtml(label)}">${NAV_SVG}Go</span>` +
-  (secondary
-    ? `<span class="wl-pin-action" data-action="${secondary.action}" ` +
-      `role="button" tabindex="0" title="${escapeHtml(secondary.label)}" ` +
-      `aria-label="${escapeHtml(secondary.label)}">${secondary.glyph}</span>`
-    : '') +
+  secondary
+    .map(
+      (s) =>
+        `<span class="wl-pin-action" data-action="${s.action}" ` +
+        `role="button" tabindex="0" title="${escapeHtml(s.label)}" ` +
+        `aria-label="${escapeHtml(s.label)}">${s.glyph}</span>`
+    )
+    .join('') +
   `<span class="wl-pin-action wl-pin-action-close" data-action="close" ` +
   `role="button" tabindex="0" aria-label="Close this spot" title="Close">` +
   `${CLOSE_SVG}</span>` +
   `</div>`;
 
+/**
+ * The "more info" button, on both kinds of pin.
+ *
+ * A submitted spot's version opens everything recorded about it. A dropped
+ * pin has no record to open — it is bare ground somebody tapped — so its
+ * version opens what the map DOES know about that point: it unfurls every
+ * chip on the pin at once, each into its own full, hedged sentence. Same
+ * glyph, same place under the pin, same promise ("tell me more about this"),
+ * answered from whatever there is to answer with.
+ */
+const INFO_ACTION_SPOT: PinAction = {
+  action: 'details', label: 'Everything recorded about this spot', glyph: INFO_SVG
+};
+const INFO_ACTION_POINT: PinAction = {
+  action: 'point', label: 'What is known about this point', glyph: INFO_SVG
+};
+
+/**
+ * The tap-and-a-half glyph, for logging a toilet you are looking at.
+ *
+ * A SECOND BUTTON RATHER THAN A CHOICE INSIDE THE FIRST. "Add spot here" means
+ * somewhere to sleep, and a camper reaching for it while meaning "there's a
+ * dump station here" would have had to submit a campsite and then correct it.
+ * Two things, two buttons, and the labels say which is which.
+ *
+ * This is also the only way to mark a facility you are NOT standing at, which
+ * is the common case — you notice the tap on the way past and log it that
+ * evening. Everything else in the app takes its coordinate from the phone's
+ * own fix, which cannot describe the place you drove past this morning.
+ */
+const FACILITY_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">' +
+  '<path d="M7 3v8M7 21v-6M17 3v5a3 3 0 0 1-3 3h-1M17 21v-8"/>' +
+  '<path d="M4.5 7h5"/></svg>';
+
+/**
+ * The "nothing switched on" default, hoisted to module scope.
+ *
+ * A `= []` default in the destructure allocates a NEW array on every render,
+ * and the facility layer's effect depends on that array's identity — so an
+ * omitted prop would re-run the effect, clear the layer and refetch forever.
+ * One frozen instance means the identity is stable.
+ */
+const NO_FACILITY_KINDS: FacilityKind[] = [];
+
+const ADD_FACILITY_ACTION: PinAction = {
+  action: 'add-facility',
+  label: 'Add a toilet, tap or dump station here',
+  glyph: FACILITY_SVG
+};
+
 const buildCampsiteIcon = (
   isSelected: boolean,
   dots: MarkerDot[] = [],
-  directionsLabel?: string,
   /** Chip keys this pin has not shown yet. See `refreshIcon`. */
-  animateKeys: Set<string> = new Set()
+  animateKeys: Set<string> = new Set(),
+  /**
+   * Stamped on the wrapper so a delegated pointer handler can tell which pin
+   * was pressed. The press-and-hold peek listens on the map container rather
+   * than on each marker — markers are torn down and rebuilt by the cluster
+   * plugin constantly, and per-marker listeners would have to be reattached
+   * every time.
+   */
+  siteId?: string
 ): L.DivIcon => {
   const row = dots.length
     ? (isSelected ? expandedDotRow(dots, animateKeys) : collapsedDotRing(dots))
@@ -513,14 +963,11 @@ const buildCampsiteIcon = (
   return L.divIcon({
     className: 'custom-campsite-marker',
     html:
-      `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}">` +
+      `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}"` +
+      `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
       `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
-      `${isSelected && directionsLabel
-        ? pinActionsRow(directionsLabel, {
-          action: 'details', label: 'Everything recorded about this spot', glyph: INFO_SVG
-        })
-        : ''}` +
+      `${isSelected ? pinActionsRow([INFO_ACTION_SPOT]) : ''}` +
       `</div>`,
     iconSize: [32, 32],
     iconAnchor: [16, 16]
@@ -530,37 +977,170 @@ const buildCampsiteIcon = (
 /**
  * A camper's hazard report.
  *
- * Now the SAME animated cloud as an official warning, by request — coloured by
- * the hazard, carrying its icon, with a slow drifting strand keyed to the kind
- * (rising smoke for fire, sliding water for a washout, sharp cold for a snow
- * drift). A confirmed report gets a pale ring around the cloud.
+ * A TEARDROP PIN, and now the only HAZARD on this map wearing one. Official
+ * warnings gave theirs up because an agency warns over a polygon and the
+ * middle of a polygon is nobody's location; a camper report is the opposite —
+ * somebody drove up to this exact spot and told us what they found, which is
+ * the one kind of hazard a pin can honestly claim.
  *
- * The look matches; the behaviour does not, and that is where the honesty
- * lives. This marker stays interactive — tapping it opens the card that spells
- * out it is one camper's report, not verified — whereas an official warning is
- * drawn in a pointer-events:none pane and cannot be tapped at all.
+ * A washout, a weak bridge and a downed tree all read as one dark-grey
+ * barricade pin — they are the same decision for a driver, and the card names
+ * the actual kind when you tap it. Fire and flooding keep the fire and flood
+ * colours, so a camper's flood report matches the colour of the flood cloud an
+ * agency issued.
+ *
+ * The behaviour is where the honesty lives: this marker opens a card that
+ * spells out it is one person's report and not verified, and a report several
+ * people have confirmed gets a pale ring.
  */
 const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
   const style = hazardReportStyle(record.kind);
   const confirmed = reportStanding(record.confirms, record.disputes) === 'confirmed';
-  // Smaller than an official warning cloud: a report is a point on a road, not
-  // a region, so it should not shout over the area overlays.
-  const size = style.prominent ? 56 : 46;
-  const height = Math.round((size * 64) / 72);
+  // Slightly smaller than an official warning pin: a camper report is one
+  // person's account and should not shout over an agency's.
+  const size = style.prominent ? 32 : 27;
+  const height = Math.round((size * 44) / 36);
 
   return L.divIcon({
     className: 'hazard-report-marker',
-    html: hazardCloudHtml({
-      color: style.color,
-      motion: style.motion,
-      reduced: prefersReducedMotion(),
-      size,
-      glyph: style.emoji,
-      outline: confirmed
-    }),
+    html: localizedPinHtml({ kind: style.pin, size, ring: confirmed }),
     iconSize: [size, height],
-    // Anchor on the cloud body (~y 30/64) so it sits on the reported point.
-    iconAnchor: [size / 2, Math.round((size * 30) / 72)]
+    // The tip of the teardrop sits on the reported point.
+    iconAnchor: [size / 2, height]
+  });
+};
+
+/**
+ * A Beacon spot.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS LOOKS DELIBERATELY UNLIKE A CAMPSITE PIN
+ * ---------------------------------------------------------------------------
+ *
+ * A campsite pin means somebody put a campsite there. A Beacon spot means the
+ * app read some map data and thought "maybe". Drawing the two the same way
+ * would let a guess borrow a real site's authority at a glance, from across
+ * the map, before any text has been read.
+ *
+ * So this is a hollow ring, not a filled tent pin: an outline reads as
+ * provisional where a solid shape reads as a fact. The grey `lead` ring is
+ * dashed on top of that, because grey means nobody has ever been there, and
+ * that is the one state a camper most needs to catch without opening anything.
+ * A confirmed spot earns a solid ring and a filled centre — and it can only
+ * earn those from other campers.
+ *
+ * The ring fills clockwise as campers report in, so how far a spot has climbed
+ * is readable from the shape alone at a zoom where the colour is four pixels
+ * wide. Colour and fill say the same thing twice, which is what makes the
+ * ladder legible to anyone who cannot easily tell amber from lime.
+ *
+ * `flagged` breaks every one of those rules on purpose: solid red, filled
+ * centre, and a pulse. It is not a rung on the ladder, it is a warning, and it
+ * should be the first thing the eye lands on.
+ */
+const BEACON_RUNG: Partial<Record<BeaconSpot['tier'], number>> = {
+  lead: 0,
+  reported: 0.34,
+  corroborated: 0.67,
+  confirmed: 1
+};
+
+/**
+ * A Beacon pin you can actually find on the map.
+ *
+ * WHAT WAS WRONG. A lead was a 26px circle with a 2px DASHED border at 45%
+ * opacity over a 16%-opacity fill, wrapped round a 5px dot. Every one of
+ * those choices says "tentative", which is the right thing to say and the
+ * wrong way to say it: over satellite imagery — dappled forest, bright
+ * gravel, water — a translucent grey dashed hairline is not subtle, it is
+ * invisible. A camper cannot read a hedge off a pin they cannot see.
+ *
+ * WHAT CARRIES THE HEDGE INSTEAD. Colour and fill, exactly as everywhere else
+ * in this app: grey still means "nobody has been here", and the pin still
+ * fills in as the ladder is climbed. What changed is that all of it is now
+ * drawn on an opaque dark disc with a light outer ring, so the shape reads at
+ * a glance against anything underneath. Being legible is not the same as
+ * being confident, and the tooltip and card still say which one this is.
+ */
+const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
+  const style = beaconTierStyle(spot.tier);
+  const size = 30;
+  const isLead = spot.tier === 'lead';
+  const isFlagged = spot.tier === 'flagged';
+  const rung = BEACON_RUNG[spot.tier] ?? 0;
+
+  // The progress ring, drawn with a conic gradient behind the hollow centre.
+  // Cheap enough to put on 200 markers; no SVG, no extra DOM. A lead has no
+  // arc to draw, so it gets the flat dark disc.
+  const progress = rung > 0 && !isFlagged
+    ? `background:conic-gradient(${style.color} ${rung * 360}deg, rgba(15,23,42,0.92) ${rung * 360}deg);`
+    : `background:rgba(15,23,42,0.92);`;
+
+  const inner = isFlagged ? 12 : isLead ? 9 : 11;
+
+  const html =
+    `<div style="width:${size}px;height:${size}px;border-radius:9999px;` +
+    // Solid, not dashed, and at full opacity. The dash was the single biggest
+    // reason a lead vanished into gravel.
+    `border:2px solid ${style.color};${progress}` +
+    `display:flex;align-items:center;justify-content:center;box-sizing:border-box;` +
+    // A dark halo under everything, so the pin has an edge over pale ground
+    // (a bright gravel pit) as well as dark (forest canopy).
+    `box-shadow:0 0 0 1.5px rgba(2,6,23,0.85), 0 2px 6px rgba(2,6,23,0.55)` +
+    `${isFlagged ? `, 0 0 0 5px ${style.colorSoft}` : ''};">` +
+    `<div style="width:${inner}px;height:${inner}px;border-radius:9999px;` +
+    // A lead's centre is hollow — a ring of its own colour rather than a
+    // solid dot — which is the same "recorded, unconfirmed" language the
+    // facility pins and the chips above a spot already use.
+    `${isLead
+      ? `background:transparent;box-shadow:inset 0 0 0 2.5px ${style.color};`
+      : `background:${style.color};`}` +
+    `${!isFlagged && rung > 0 && rung < 1 ? 'box-shadow:0 0 0 2px #0f172a;' : ''}"></div>` +
+    `</div>`;
+
+  return L.divIcon({
+    // The danger pulse is an existing utility and collapses under
+    // prefers-reduced-motion with everything else.
+    className: `beacon-spot-marker${isFlagged ? ' anim-pulse-danger' : ''}`,
+    html,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2]
+  });
+};
+
+/**
+ * A facility pin — a toilet, a tap, a dump station.
+ *
+ * SMALLER AND QUIETER THAN A CAMPSITE PIN, on purpose. These arrive in
+ * handfuls when a chip is switched on, and at campsite weight a dozen of them
+ * would bury the thing the camper is actually choosing between. A facility is
+ * a detail of a trip, not the trip.
+ *
+ * FILL CARRIES THE EVIDENCE, exactly as it does on the dots above a pin and
+ * on Beacon's ladder. Solid means more than one source says so — it is in
+ * OpenStreetMap, or another camper agreed. A dashed hollow ring means one
+ * person said so and nobody has confirmed it yet. Neither is a promise, and
+ * the card the pin opens says which one it is in words.
+ */
+const buildFacilityIcon = (facility: MapFacility): L.DivIcon => {
+  const color = FACILITY_COLOR[facility.kind];
+  const { hollow } = facilitySourceStyle(facility.fromOsm, facility.confirmations);
+  const size = 24;
+
+  const html =
+    `<div style="width:${size}px;height:${size}px;border-radius:9999px;` +
+    `border:2px ${hollow ? 'dashed' : 'solid'} ${color};` +
+    `background:${hollow ? 'rgba(15,23,42,0.85)' : color};` +
+    `display:flex;align-items:center;justify-content:center;box-sizing:border-box;` +
+    `font-size:11px;line-height:1;box-shadow:0 1px 4px rgba(2,6,23,0.6);">` +
+    `<span aria-hidden="true">${FACILITY_GLYPH[facility.kind]}</span>` +
+    `</div>`;
+
+  return L.divIcon({
+    className: 'facility-marker',
+    html,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2]
   });
 };
 
@@ -578,9 +1158,20 @@ const buildHazardReportIcon = (record: HazardRecord): L.DivIcon => {
  * warnings over it, a fire burning near it, a toilet up the road — is stacked
  * above the pin in words, the same as it is above a spot somebody submitted.
  */
+/**
+ * How far a tour label has to climb to clear the dropped pin.
+ *
+ * The teardrop is 40px tall and stands ON the point, and a tour label hangs
+ * 19px above whatever point it is given — so a label placed at the pin came
+ * out underneath it, which is how "Approximate boundary — the edge can be
+ * hundreds of…" ended up as a sentence with the middle covered by a pin. This
+ * is the difference, plus a gap you can see through. See `atPin` on the tour
+ * label, which applies it and drops the glyph at the same time.
+ */
+const PIN_LIFT_PX = 34;
+
 const buildDestinationIcon = (
   dots: MarkerDot[] = [],
-  directionsLabel?: string,
   addLabel?: string,
   animateKeys: Set<string> = new Set()
 ): L.DivIcon =>
@@ -589,12 +1180,17 @@ const buildDestinationIcon = (
     html: `
       <div class="relative flex items-end justify-center anim-pin-drop">
         ${dots.length ? expandedDotRow(dots, animateKeys) : ''}
-        ${directionsLabel
-          ? pinActionsRow(
-            directionsLabel,
-            addLabel ? { action: 'add', label: addLabel, glyph: PLUS_SVG } : undefined
-          )
-          : ''}
+        ${pinActionsRow([
+          // The same "i" a submitted spot wears, for the same reason: this is
+          // where you ask the pin to say more. "Add spot here" keeps its own
+          // button — reading about a place and submitting it are different
+          // things, and the plus is the only way to do the second.
+          INFO_ACTION_POINT,
+          ...(addLabel ? [{ action: 'add' as const, label: addLabel, glyph: PLUS_SVG }] : []),
+          // Always offered, unlike "Add spot here" — a facility is worth
+          // marking on ground you would never sleep on, which is most ground.
+          ADD_FACILITY_ACTION
+        ])}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
           <path d="M12 1c5.2 0 9.4 4.2 9.4 9.4 0 6.8-9.4 20.6-9.4 20.6S2.6 17.2 2.6 10.4C2.6 5.2 6.8 1 12 1z"
@@ -675,87 +1271,6 @@ const featureMinDimPx = (map: L.Map, geometry: unknown): number => {
   return Math.min(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
 };
 
-/**
- * Read an SVG path's `d` attribute back into a list of [lon, lat] points.
- *
- * For the cloud's radial gradient we need a centroid per ring, and the
- * ring is owned by an SVG <path> rendered by Leaflet's geoJSON layer.
- * We don't have a back-reference to the source geometry from the path,
- * so we walk the `d` attribute and pull out every coordinate pair. This
- * skips arcs (we only care about point locations for the centroid) —
- * the resulting list is good enough for a mean-and-bbox.
- *
- * Returns null if the path's `d` is missing or unparseable. Callers
- * must handle that — a missing centroid means no gradient for that ring,
- * which is fine, the polygon's solid fill still draws.
- */
-const readRingFromPath = (path: SVGPathElement): [number, number][] | null => {
-  const d = path.getAttribute('d');
-  if (!d) return null;
-  const out: [number, number][] = [];
-  // Match all coordinate pairs in the `d` attribute. Each pair is
-  // either "x y" or "x,y" depending on the serializer; the regex
-  // tolerates both. We don't care which sub-path or which command —
-  // any point on the path is a valid input to a centroid.
-  const re = /(-?\d+(?:\.\d+)?)[ ,]+(-?\d+(?:\.\d+)?)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(d)) !== null) {
-    const lon = Number(m[1]);
-    const lat = Number(m[2]);
-    if (Number.isFinite(lon) && Number.isFinite(lat)) out.push([lon, lat]);
-  }
-  return out.length > 0 ? out : null;
-};
-
-/**
- * Centre and semi-axes of the ELLIPSE that covers a drawn ring, in the SVG
- * renderer's own units (screen pixels at the current zoom, not degrees —
- * the ring was read back out of a projected `d` attribute).
- *
- * WHY AN ELLIPSE AND NOT A CIRCLE. This feeds a userSpaceOnUse
- * radialGradient that tints the warned area. The previous version used a
- * single radius of half the SMALLER bbox dimension, which on a wide
- * warning — a heat advisory spanning several counties east to west but
- * only one or two north to south — drew a small circle of colour in the
- * middle of a very long polygon. The tiled thermometers filled the whole
- * shape while the red only reached a fraction of it, so the colour and
- * the icons disagreed about how big the warning was.
- *
- * Sizing the gradient to BOTH bbox dimensions makes the tint cover the
- * same ground the glyphs do. The centre is the bbox centre rather than
- * the mean of the vertices: vertex density varies wildly in agency
- * polygons (a coastline edge carries hundreds of points, a straight
- * county line carries two), and a mean pulled toward the busy edge puts
- * the bright part of the cloud off to one side of the area it describes.
- *
- * The 1.14 pad pushes the fully transparent stop just past the bbox, so
- * the polygon's corners still carry colour instead of falling outside
- * the ellipse and reading as clipped-off patches. The edge stays soft
- * because the last third of the gradient is already nearly transparent
- * by the time it reaches the boundary, and the per-path blur feathers
- * whatever is left.
- */
-const cloudEllipse = (
-  ring: [number, number][]
-): { cx: number; cy: number; rx: number; ry: number } => {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const [x, y] of ring) {
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  const PAD = 1.14;
-  return {
-    cx: (minX + maxX) / 2,
-    cy: (minY + maxY) / 2,
-    // A degenerate ring (every vertex on one line) would give a zero
-    // axis, which makes the gradient transform non-invertible and the
-    // fill vanish. Floor both axes at a sub-pixel value.
-    rx: Math.max(0.5, (PAD * (maxX - minX)) / 2),
-    ry: Math.max(0.5, (PAD * (maxY - minY)) / 2)
-  };
-};
 
 /**
  * A cheap content fingerprint for a boundary collection.
@@ -847,9 +1362,14 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
   if (!p) return undefined;
   return {
     name: p._name ?? 'Public land',
-    designation: p._designation ?? p._confidence ?? 'Public land',
+    // Falls back to the group's words, never to a raw enum — `_confidence`
+    // used to surface here as the literal string "managing_agency".
+    designation: p._designation ?? BOUNDARY_GROUP_STYLES[boundaryGroupOf(p)].label,
+    // Which agency's rulebook applies when the parcel's own record is silent.
+    sourceId: p._source ?? undefined,
     attribution: p._attribution ?? undefined,
     stayLimitDays: p._stayLimitDays ?? undefined,
+    moveDistanceKm: p._moveDistanceKm ?? undefined,
     permitRequired: p._permitRequired ?? undefined,
     permitName: p._permitName ?? undefined,
     permitUrl: p._permitUrl ?? undefined,
@@ -858,53 +1378,15 @@ const landFromFeature = (properties: Record<string, any> | undefined): Destinati
   };
 };
 
-
 /**
- * The warning triangle drawn over an active alert area.
- *
- * Sized generously and given a dark outline so it stays readable over both
- * bright snow and dark forest in satellite imagery.
+ * The name usually carries the designation already ("… National Forest"), and
+ * repeating it under the title is a wasted line on a bubble this small.
  */
-/**
- * An alert marker that says what KIND of alert it is at a glance.
- *
- * Every one of these used to be the same grey exclamation triangle, so a map
- * with a fire ban, a flood watch and a snowfall warning on it looked like
- * three copies of one anonymous hazard. The family's own colour and symbol now
- * carry the meaning: you should be able to tell fire from flood without
- * opening anything.
- *
- * Shape follows severity rather than adding a second colour language — a
- * severe or extreme alert gets the pointed triangle and a pulse, everything
- * milder gets a calmer rounded badge. That keeps the loud treatment for things
- * that have actually been called dangerous.
- */
-const buildHazardIcon = (alert: HazardAlert): L.DivIcon => {
-  const style = HAZARD_STYLE[alert.family] ?? HAZARD_STYLE.other;
-  const urgent = alert.severity === 'extreme' || alert.severity === 'severe';
-  const size = urgent ? 34 : 28;
+const landSubtitle = (land: DestinationLand): string | undefined =>
+  land.designation && !land.name.toLowerCase().includes(land.designation.toLowerCase())
+    ? land.designation
+    : undefined;
 
-  const shape = urgent
-    ? `<path d="M12 2.5 22.5 21H1.5Z" fill="${style.color}" stroke="#0F172A"
-             stroke-width="1.6" stroke-linejoin="round"/>`
-    : `<rect x="2" y="4" width="20" height="16" rx="5" fill="${style.color}"
-             stroke="#0F172A" stroke-width="1.5"/>`;
-
-  return L.divIcon({
-    className: 'hazard-alert-marker',
-    html: `
-      <div class="relative flex items-center justify-center${urgent ? ' anim-pulse-danger' : ''}"
-           style="width:${size}px;height:${size}px">
-        <svg viewBox="0 0 24 24" class="absolute inset-0 w-full h-full drop-shadow-lg"
-             aria-hidden="true">${shape}</svg>
-        <span class="relative" style="font-size:${
-          urgent ? size * 0.38 : size * 0.44
-        }px;line-height:1;${urgent ? 'padding-top:' + size * 0.16 + 'px' : ''}">${style.icon}</span>
-      </div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, urgent ? size * 0.78 : size / 2]
-  });
-};
 
 interface MapComponentProps {
   campsites: Campsite[];
@@ -936,6 +1418,15 @@ interface MapComponentProps {
   onClearDestination: () => void;
   /** Starts a submission at the dropped pin. Bare ground only. */
   onAddSpotHere: (lat: number, lon: number) => void;
+  /**
+   * Starts a facility submission at the dropped pin.
+   *
+   * Separate from `onAddSpotHere` because they are separate things: one is
+   * somewhere to sleep, the other is a toilet. Offered on any point, not just
+   * bare ground inside public land — a dump station in a town car park is
+   * worth marking and is nowhere you would camp.
+   */
+  onAddFacilityHere?: (lat: number, lon: number) => void;
   /** Fired when the user taps bare map. Carries the land under the tap. */
   onDropDestination: (lat: number, lon: number, land?: DestinationLand) => void;
   /**
@@ -945,11 +1436,69 @@ interface MapComponentProps {
    * reason chooses which notice to show.
    */
   onPinRefused?: (reason: 'water' | 'outside_coverage') => void;
+  /**
+   * How many pixels of the map are covered by a card App is showing over it —
+   * the campsite drawer, in practice. Zero when nothing is over the map.
+   *
+   * The map does not render that card, but it does have to get out from under
+   * it: the open pin is centred in the strip of screen that is left, and the
+   * view is given back when the card closes. See the effect that uses it.
+   */
+  bottomSheetPx?: number;
   /** Fired when a camper's hazard report is tapped. */
   onSelectHazardReport?: (record: HazardRecord) => void;
-  /** Fired when a precise official warning (fire / flood / storm) is tapped. */
-  onSelectAlert?: (alert: HazardAlert) => void;
+  /** Fired when a Beacon spot is tapped. */
+  onSelectBeaconSpot?: (spot: BeaconSpot) => void;
+  /**
+   * Bumped to force the Beacon layer to refetch.
+   *
+   * Needed because a takedown has to leave the map immediately. Without it the
+   * withdrawn spot would sit there until the camper panned 50 km — which is
+   * exactly the pin somebody else is about to drive to.
+   */
+  beaconRefreshKey?: number;
+
+  /**
+   * The facility layers switched on from the chips under the search.
+   *
+   * Empty means the layer is off entirely and nothing is fetched — this is
+   * the common case, and Overpass is not asked a question nobody posed.
+   */
+  facilityKinds?: FacilityKind[];
+  /** How the current lookup is going, so the chip row can say so in words. */
+  onFacilityStateChange?: (state: FacilityLookupState) => void;
+  /** Fired when a facility pin is tapped. */
+  onSelectFacility?: (facility: MapFacility) => void;
+  /**
+   * Bumped to force the facility layer to refetch.
+   *
+   * Same reason `beaconRefreshKey` exists: without it a camper adds a toilet,
+   * watches the sheet say "added", and sees nothing appear until they pan far
+   * enough to trip a reload. The pin was in the database the whole time.
+   */
+  facilityRefreshKey?: number;
 }
+
+/**
+ * Where to centre the map so `at` sits in the middle of what a card has left.
+ *
+ * A card over the bottom of the screen does not make the map smaller — Leaflet
+ * still thinks it owns the whole container — so the "centre" it flies to is
+ * behind the card. Everything the camper opened the card to look at ends up
+ * hidden by the card describing it.
+ *
+ * The fix is to move the centre DOWN by half of what is covered, which lifts
+ * the point up by the same amount into the middle of the strip that is showing.
+ * A floor keeps at least a band of map on screen, so a card dragged to full
+ * height cannot shove the pin off the top.
+ */
+const centreLeavingRoom = (
+  map: L.Map, at: L.LatLng, coveredPx: number, zoom: number
+): L.LatLng => {
+  const covered = Math.max(0, Math.min(coveredPx, map.getSize().y - 140));
+  if (covered <= 0) return at;
+  return map.unproject(map.project(at, zoom).add(L.point(0, covered / 2)), zoom);
+};
 
 /**
  * The map as the clustering plugin needs to see it: whole-number minimum zoom.
@@ -976,10 +1525,13 @@ const clusterView = (map: L.Map): L.Map =>
 
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation, weather,
-  coverage, route, onOpenDirections, onClearDestination, onAddSpotHere,
+  coverage, route, onOpenDirections, onClearDestination, onAddSpotHere, onAddFacilityHere,
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
-  destination, onDropDestination, onPinRefused, onSelectHazardReport, onSelectAlert
+  destination, onDropDestination, onPinRefused, onSelectHazardReport,
+  onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0,
+  facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
+  facilityRefreshKey = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -996,7 +1548,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const boundaryLayerRef = useRef<L.LayerGroup | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   /** Alert badges affecting each pinned campsite, keyed by id. */
-  const badgesByIdRef = useRef<Map<string, AlertBadge[]>>(new Map());
+  const badgesByIdRef = useRef<Map<string, PointWarning[]>>(new Map());
   /**
    * The destination the camera has already closed in on.
    *
@@ -1013,6 +1565,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * hundred metres of one clearing with no idea where it sat.
    */
   const preFocusViewRef = useRef<{ center: L.LatLng; zoom: number } | null>(null);
+  /**
+   * And where it was before a card slid up over the bottom of the screen.
+   *
+   * Separate from `preFocusViewRef` on purpose: a card can open and close
+   * several times over one pin, and each of those has to give back the view it
+   * borrowed without disturbing the wider one the pin borrowed first.
+   */
+  const preSheetViewRef = useRef<{ center: L.LatLng; zoom: number } | null>(null);
   /** Facilities near the selected spot, for the tappable chips. */
   const facilitiesRef = useRef<NearbyFacility[]>([]);
   /** Fires near the open point, read by the icon builders. */
@@ -1025,6 +1585,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const loadedZoomRef = useRef<number>(0);
   const collectionRef = useRef<BoundaryCollection>(EMPTY_BOUNDARIES);
   const boundaryRendererRef = useRef<L.Canvas | null>(null);
+  /**
+   * The overview that ships with the app, parsed once.
+   *
+   * A ref rather than state on purpose: it is read inside the boundary effect
+   * and must not be a dependency of it. Putting a few thousand parcels in
+   * state would tear down and rebuild the whole Leaflet layer stack the moment
+   * the file finished parsing.
+   */
+  const landOverlayRef = useRef<LandOverlay | null>(null);
   /** Which tier is on screen, and at what settings — see `render`. */
   const loadedDetailRef = useRef<BoundaryDetail | null>(null);
   const overviewTierRef = useRef<number>(0);
@@ -1042,10 +1611,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const haloLayerRef = useRef<L.LayerGroup | null>(null);
   const hazardLayerRef = useRef<L.LayerGroup | null>(null);
   const reportLayerRef = useRef<L.LayerGroup | null>(null);
+  const beaconLayerRef = useRef<L.LayerGroup | null>(null);
+  /**
+   * The facility PINS from the chips under the search.
+   *
+   * Not to be confused with `facilityLayerRef` above, which is the single
+   * route line drawn to one facility the camper tapped a chip for. Different
+   * lifetimes, different panes, and conflating them would have the search
+   * chips wipe the route line every time the map moved.
+   */
+  const facilityPinsLayerRef = useRef<L.LayerGroup | null>(null);
   /** State / province boundary lines. Cleared when `showAdmin1` is off. */
   const admin1LayerRef = useRef<L.LayerGroup | null>(null);
-  const warningRendererRef = useRef<L.Renderer | null>(null);
-  const warningGlyphRendererRef = useRef<L.Renderer | null>(null);
+  /** Canvas the warning clouds are painted on. See CLOUD_BLUR_PX. */
+  const warningCloudRendererRef = useRef<L.Renderer | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
 
   /**
@@ -1062,18 +1641,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   pinRefusedRef.current = onPinRefused;
   const reportTapRef = useRef(onSelectHazardReport);
   reportTapRef.current = onSelectHazardReport;
-  const alertTapRef = useRef(onSelectAlert);
-  alertTapRef.current = onSelectAlert;
+  const beaconTapRef = useRef(onSelectBeaconSpot);
+  beaconTapRef.current = onSelectBeaconSpot;
+  const facilityTapRef = useRef(onSelectFacility);
+  facilityTapRef.current = onSelectFacility;
+  const facilityStateRef = useRef(onFacilityStateChange);
+  facilityStateRef.current = onFacilityStateChange;
   const directionsRef = useRef(onOpenDirections);
   directionsRef.current = onOpenDirections;
   const clearDestinationRef = useRef(onClearDestination);
   clearDestinationRef.current = onClearDestination;
   const addSpotRef = useRef(onAddSpotHere);
   addSpotRef.current = onAddSpotHere;
+  const addFacilityRef = useRef(onAddFacilityHere);
+  addFacilityRef.current = onAddFacilityHere;
   const detailRef = useRef(onOpenDetailModal);
   detailRef.current = onOpenDetailModal;
   const destinationRef = useRef(destination);
   destinationRef.current = destination;
+
+  /** The drive to the open point, for the chips that show where it stops. */
+  const routeRef = useRef(route);
+  routeRef.current = route;
 
   /** Weather, signal and land for the open point, as chips. */
   const conditions = React.useMemo(
@@ -1105,7 +1694,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const [showBoundaries, setShowBoundaries] = useState(false);
   /**
-   * Weather warning overlay (clouds + flame icons). ON by default because
+   * Weather warning overlay (merged areas + event pins). ON by default because
    * warnings are the safety feature, and a camper who has the layer off
    * still gets a heads-up on the destination sheet and campsite bottom
    * sheet (the per-pin hazard panel reads from `hazards` state, not from
@@ -1125,7 +1714,27 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showAdmin1, setShowAdmin1] = useState(true);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [zoomTooFar, setZoomTooFar] = useState(false);
+  /**
+   * The wide view asked for boundaries and did not get an answer it could
+   * trust — so the map is showing whatever it had, which may be from the zoom
+   * above or from a moment ago. Silence here is what made this feel like a
+   * bug: the boundaries went, nothing said why, and the honest reading of an
+   * empty map is "there is no public land here".
+   */
+  const [wideViewFailed, setWideViewFailed] = useState(false);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
+  /** The same alerts, for the chip tours, which run outside React's render. */
+  const hazardsRef = useRef<HazardAlert[]>([]);
+  hazardsRef.current = hazards;
+  /**
+   * Which side of the border went unchecked, in words, or null when both
+   * agencies answered.
+   *
+   * A warning layer with a hole in it looks exactly like a warning layer over
+   * quiet ground, and there is no way for a camper to tell them apart by
+   * looking. This is the difference, printed on the map. See `alertGapNote`.
+   */
+  const [alertGap, setAlertGap] = useState<string | null>(null);
   /**
    * Toilets, taps and fuel within `FACILITY_RADIUS_KM` of the selected spot.
    *
@@ -1149,6 +1758,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [nearbyFires, setNearbyFires] = useState<
     Array<{ fire: ActiveFire; distanceKm: number }>
   >([]);
+
+  /** The card the "i" under a dropped pin opens, and how tall it currently is. */
+  const [pointCardOpen, setPointCardOpen] = useState(false);
+  const [pointCardPx, setPointCardPx] = useState(0);
+  /**
+   * How much of the map is under a card right now, whoever is rendering it.
+   *
+   * Never both at once in practice — bare ground gets the point card, a
+   * submitted spot gets App's campsite drawer — so the larger of the two is
+   * simply whichever one is open.
+   */
+  const overlayPx = Math.max(bottomSheetPx, pointCardPx);
+  /** The same number, for the camera effects that read it outside a render. */
+  const overlayPxRef = useRef(0);
+  overlayPxRef.current = overlayPx;
 
   /**
    * The one point the app is currently answering questions about.
@@ -1547,10 +2171,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     /**
      * ABOVE EVERY DATA LAYER, at 645.
      *
-     * It used to sit at 450 — under the warning clouds, the fire
+     * It used to sit at 450 — under the warning areas, the fire
      * perimeters, the camper reports and the pins. Anything whose shape
      * crossed the coverage line therefore carried on drawing at full
-     * strength over the grey: a heat cloud reaching down into Mexico, a
+     * strength over the grey: a heat area reaching down into Mexico, a
      * fire perimeter running off into the Pacific, a storm icon out over
      * open water. The mask said "we didn't look here" and the layer on
      * top of it said "here's what's here".
@@ -1604,6 +2228,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
+  /* The bundled overview                                                */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Parse the shipped overview once, then nudge the boundary effect.
+   *
+   * The nudge is a synthetic `moveend` rather than a state change wired into
+   * the boundary effect's dependencies. Adding a dependency would run that
+   * effect's cleanup — which strips the boundary layer off the map — so the
+   * one thing that arrives to make the map faster would have made it flash
+   * empty first.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    loadLandOverlay().then((overlay) => {
+      if (cancelled || !overlay) return;
+      landOverlayRef.current = overlay;
+      const map = mapRef.current;
+      if (map && isMapReady) {
+        try { map.fire('moveend'); } catch { /* map torn down mid-parse */ }
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [isMapReady]);
+
+  /* ------------------------------------------------------------------ */
   /* Public land boundaries                                              */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
@@ -1636,6 +2287,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       forget();
       setBoundaries(EMPTY_BOUNDARIES);
       setZoomTooFar(false);
+      setWideViewFailed(false);
       return;
     }
 
@@ -1706,9 +2358,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const SLIVER_PX = 2.5;
 
     const parcelStyle = (feature: any, centreLat: number, currentZoom: number, overview: boolean) => {
-      const confidence: BoundaryConfidence =
-        feature?.properties?._confidence ?? 'managing_agency';
-      const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
+      // Grouped by whether you can camp, not by which agency holds the title
+      // or how confident the dataset is. See BOUNDARY_GROUP_STYLES.
+      const style = BOUNDARY_GROUP_STYLES[boundaryGroupOf(feature?.properties)];
 
       if (overview) {
         // Hairline. At this zoom the band would be sub-pixel anyway, and a
@@ -1751,7 +2403,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       collection: BoundaryCollection,
       centreLat: number,
       currentZoom: number,
-      minDim: (g: unknown) => number
+      minDim: (g: unknown) => number,
+      /** How far apart two parcels may be and still merge — see `mergeSnap`. */
+      snap: number
     ): { group: L.LayerGroup; widest: number } => {
       const rings = ringBudget(collection.features.length);
       const renderer = boundaryRenderer();
@@ -1767,8 +2421,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // the source data don't draw. Real parcels are wide on both axes.
         if (minDim(feature.geometry) < SLIVER_PX) return;
         const accuracy: EdgeAccuracy = feature?.properties?._edgeAccuracy ?? 'administrative';
-        const confidence: BoundaryConfidence = feature?.properties?._confidence ?? 'managing_agency';
-        const style = BOUNDARY_STYLES[confidence] ?? BOUNDARY_STYLES.managing_agency;
+        const style = BOUNDARY_GROUP_STYLES[boundaryGroupOf(feature?.properties)];
         const key = dissolveKey(feature?.properties);
         const existing = bands.get(key);
         if (existing) existing.features.push(feature);
@@ -1782,14 +2435,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // Drop the seams shared by two parcels in the same group, so abutting
         // Crown/BLM/PLUZ land draws as one outline instead of a web of internal
         // lines. What survives is the true outer edge of the merged shape.
-        // ~100 m snap: merges same-type parcels split only by a small
-        // vertex mismatch (rasterised vector tiles are routinely off by
-        // 30-80 m at shared edges), so adjacent Crown/BLM/PLUZ land of
-        // one designation reads as a single shape. Tighter than 100m and
-        // the doubled outline shows up where two parcels' shared edge
-        // doesn't quite align; looser than 200m and parcels with a real
-        // gap of that size start to merge by accident.
-        const segments = dissolveSegments(features, 1e-3);
+        // The snap merges same-type parcels split only by a vertex mismatch:
+        // rasterised vector tiles are routinely off by 30-80 m at a shared
+        // edge, and the server's own generalisation adds far more than that
+        // when zoomed out. It floors at ~100 m and tracks that generalisation
+        // above it — see `mergeSnap`, which is where the whole "why does
+        // Ontario draw as a mesh and Alberta as one shape" answer lives.
+        const segments = dissolveSegments(features, snap);
         if (segments.length === 0) return;
         const line = { type: 'MultiLineString', coordinates: segments } as any;
 
@@ -1917,6 +2569,38 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * result cuts the work in half and lets the filter be a Map lookup
        * rather than a function call.
        */
+      /**
+       * HOW FAR APART TWO PARCELS MAY BE AND STILL COUNT AS TOUCHING.
+       *
+       * This is the number that decides whether a province reads as Alberta
+       * does — one clean shape — or as a mesh of thousands of outlines.
+       *
+       * Merging works by cancelling the edge two abutting parcels share, which
+       * requires both copies of that edge to still line up. They do at street
+       * zoom. They do not when zoomed out, because the server generalises each
+       * parcel INDEPENDENTLY, and two sides of one shared boundary can drift
+       * apart by as much as the whole simplification tolerance — 1.4 km on a
+       * province-wide view. Against that, a fixed 100 m tolerance recognises
+       * nothing, every internal seam survives, and Ontario draws every parcel
+       * separately while Alberta looks fine purely because the Green Area
+       * arrives as a single polygon that was never split to begin with.
+       *
+       * So the tolerance follows the generalisation the server reports, with
+       * the old 100 m as the floor for close-in views where nothing was
+       * generalised much. Doubled, because the drift is up to the tolerance on
+       * EACH side of the shared edge.
+       */
+      const mergeSnap = Math.min(
+        // AND A CEILING, BECAUSE MERGING IS ALSO A CLAIM. Two parcels joined
+        // across a gap say there is campable ground in that gap. At ~5 km the
+        // gap is about a pixel on the widest views this tolerance is reached
+        // at, so nobody can act on it and zooming in undoes it — but past that
+        // the merge stops being a rendering decision and starts being an
+        // assertion about land, so it stops here.
+        0.05,
+        Math.max(1e-3, (collection.meta?.simplifyDegrees ?? 0) * 2)
+      );
+
       const minDimCache = new Map<unknown, number>();
       const minDim = (g: unknown): number => {
         const cached = minDimCache.get(g);
@@ -1933,7 +2617,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (haloLayerRef.current) {
           try { group.removeLayer(haloLayerRef.current); } catch { /* gone */ }
         }
-        const { group: halo, widest } = buildHalo(collection, centreLat, currentZoom, minDim);
+        const { group: halo, widest } = buildHalo(collection, centreLat, currentZoom, minDim, mergeSnap);
         haloLayerRef.current = halo;
         group.addLayer(halo);
         fillLayerRef.current.setStyle((f: any) => parcelStyle(f, centreLat, currentZoom, false));
@@ -1950,7 +2634,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // No uncertainty band in the overview. At zoom 4 a ±200 m band is a
       // fraction of a pixel, so it would draw as a slightly thicker line that
       // says nothing — while costing one extra pass over every polygon.
-      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom, minDim);
+      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom, minDim, mergeSnap);
 
       /**
        * DISSOLVED FILL. Same-org, same-rule parcels are merged into a single
@@ -1969,10 +2653,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * "the green and yellow are merging", which was the larger group
        * painting over the smaller one.
        */
+      /*
+       * THE WATER IS ALREADY GONE BY THE TIME IT GETS HERE.
+       *
+       * This used to drop each lake in as an extra ring and let the even-odd
+       * fill rule turn it into a hole, which only works for a lake sitting
+       * entirely inside one polygon — so in Ontario, where the parcels are
+       * fragmented and the lakes are enormous, almost every lake straddled a
+       * boundary, was skipped, and stayed painted green.
+       *
+       * The server now does a real geometric difference before it answers, and
+       * the result is cached, so a correct cut costs nothing here. See
+       * `subtractLakes` in server/landGeometry.ts.
+       */
       const dissolved = dissolvedFill(
         collection.features as { properties?: Record<string, any>; geometry: unknown }[],
         dissolveKey,
-        1e-3
+        mergeSnap
       );
       const dissolvedSorted = [...dissolved].sort((a, b) => {
         const ea = a.geometry as { type: string; coordinates: any };
@@ -2047,6 +2744,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // is nothing legible to draw at any level of generalisation.
       if (currentZoom < BOUNDARY_OVERVIEW_MIN_ZOOM) {
         setZoomTooFar(true);
+        setWideViewFailed(false);
         setBoundaries(EMPTY_BOUNDARIES);
         forget();
         clearLayer();
@@ -2087,6 +2785,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (detail === 'full' && currentZoom > loadedZoomRef.current) {
           // Zoomed past the detail we fetched for: go and get finer geometry.
         } else {
+          setWideViewFailed(false);
           render(collectionRef.current, detail);
           return;
         }
@@ -2098,6 +2797,50 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const myId = ++requestId;
       controller?.abort();
       controller = new AbortController();
+
+      /**
+       * ---------------------------------------------------------------------
+       * DRAW WHAT IS ALREADY ON THE DEVICE, THEN GO AND ASK
+       * ---------------------------------------------------------------------
+       *
+       * Everything below this point is a network round trip: eight government
+       * ArcGIS services, or Supabase, or a cache warmed by neither on a cold
+       * start. Until it lands the map has nothing to show, and "nothing to
+       * show" on a map of public land is a blank continent — the one thing
+       * this app must never draw.
+       *
+       * So local data paints FIRST, synchronously, from whatever this device
+       * carries: the downloaded full-detail pack if there is one, otherwise
+       * the overview that shipped with the app. The remote answer replaces it
+       * a moment later if it is better.
+       *
+       * The pack is preferred over the bundled overview because it IS the real
+       * geometry — a camper who paid for the download should never be shown
+       * the coarse shape while the accurate one sits on their phone unused.
+       */
+      const localPack = await packCollection(box);
+      if (cancelled || myId !== requestId) return;
+
+      const local = localPack ?? overviewCollection(landOverlayRef.current, box);
+      if (local) render(local, localPack ? detail : 'overview');
+
+      /*
+       * With the full pack on the device there is nothing better to fetch:
+       * it is the same data the server would return, already local. Stopping
+       * here is what makes the pack worth downloading — no round trip, and it
+       * behaves identically with no signal.
+       */
+      if (localPack) {
+        setWideViewFailed(false);
+        loadedBoxRef.current = box;
+        loadedZoomRef.current = currentZoom;
+        loadedDetailRef.current = detail;
+        overviewTierRef.current = tier;
+        collectionRef.current = localPack;
+        setBoundaries(localPack);
+        return;
+      }
+
       const collection = await fetchBoundaries(box, controller.signal, detail, currentZoom);
       if (cancelled || myId !== requestId) return;
 
@@ -2105,6 +2848,40 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // than blanking the map between one viewport and the next.
       if (!collection) return;
 
+      /*
+       * ---------------------------------------------------------------------
+       * NOTHING CAME BACK. THAT IS NOT THE SAME AS NOTHING BEING THERE.
+       * ---------------------------------------------------------------------
+       *
+       * THIS IS THE FIX FOR "THE BOUNDARIES DISAPPEAR WHEN I ZOOM OUT".
+       *
+       * Crossing below zoom 7 switches to the overview tier, which is a fresh
+       * request for a box the size of several provinces, answered by eight
+       * government ArcGIS services inside one serverless function. When one of
+       * them is having a slow afternoon the response is a well-formed, utterly
+       * empty Alberta — and the map used to draw it, wiping boundaries that
+       * had loaded perfectly a second earlier at the zoom above.
+       *
+       * `fetchBoundaries` now marks an answer it could not stand behind. Where
+       * it is marked, we keep exactly what is on screen, leave the loaded box
+       * alone so the next gesture retries, and say on screen that the wide
+       * view did not load. A stale outline the camper can see is honest and
+       * useful; a blank continent is neither.
+       *
+       * A trustworthy empty — every source answered, there is nothing here —
+       * still clears the map, because that is a real answer.
+       */
+      if (collection.features.length === 0 && collection.meta?.unavailable) {
+        setWideViewFailed(true);
+        return;
+      }
+
+      // Local data says there IS public land here and the network disagrees
+      // without having failed. Keep the local answer: it is drawn from a
+      // dataset that shipped with the app, not from a service having a moment.
+      if (local && collection.features.length === 0) return;
+
+      setWideViewFailed(false);
       loadedBoxRef.current = box;
       loadedZoomRef.current = currentZoom;
       loadedDetailRef.current = detail;
@@ -2134,6 +2911,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     };
   }, [isMapReady, showBoundaries, isOfflineMode]);
+
 
   /* ------------------------------------------------------------------ */
   /* Tap anywhere to pick a destination                                  */
@@ -2292,6 +3070,305 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
   }, [isMapReady, isOfflineMode]);
 
+  /**
+   * Beacon spots.
+   *
+   * Same shape as the hazard-report layer above — own pane, debounced on
+   * `moveend`, cleared at the start of the effect AND in the cleanup, because
+   * Leaflet layers stack up invisibly otherwise.
+   *
+   * Two differences worth knowing. It refetches on `beaconRefreshKey` as well
+   * as on movement, and spots that are genuinely gone never arrive here at all
+   * — `beacon_spots_near` filters them in SQL — so there is no way for a client
+   * bug to leave one drawn. Flagged spots deliberately DO arrive, and are drawn
+   * red.
+   *
+   * `beaconRefreshKey` is not a nicety. Without it the layer only reloaded when
+   * the map moved more than 10 km, which meant a camper could send a beacon,
+   * watch it find three spots, and see nothing appear on the map underneath —
+   * the leads were in the database the whole time and the layer had simply not
+   * been told to look again. Anything that writes a spot must bump the key.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!beaconLayerRef.current) return;
+      try { map.removeLayer(beaconLayerRef.current); } catch { /* detached */ }
+      beaconLayerRef.current = null;
+    };
+
+    if (isOfflineMode) { clear(); return; }
+
+    if (!map.getPane('beaconPane')) {
+      map.createPane('beaconPane');
+      const pane = map.getPane('beaconPane');
+      // Below the camper hazard reports (610) — a lead is the least urgent
+      // thing on the map and must never cover a washout warning.
+      if (pane) pane.style.zIndex = '600';
+    }
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let loadedAt: [number, number] | null = null;
+    /** The radius the held spots were fetched at, so a zoom-out re-asks. */
+    let loadedRadiusKm: number | null = null;
+
+    const render = (spots: BeaconSpot[]) => {
+      clear();
+      if (spots.length === 0) return;
+
+      const group = L.layerGroup([], { pane: 'beaconPane' });
+      spots.forEach((spot) => {
+        if (typeof spot.latitude !== 'number' || typeof spot.longitude !== 'number') return;
+        // Same rule as the alerts, fires and reports: no icon on the grey.
+        if (!isWithinCoverage(spot.latitude, spot.longitude)) return;
+
+        const style = beaconTierStyle(spot.tier);
+        const marker = L.marker([spot.latitude, spot.longitude], {
+          pane: 'beaconPane',
+          icon: buildBeaconIcon(spot),
+          // The tooltip carries the tier's MEANING, not its name, so hovering
+          // a grey ring says "nobody has been here" rather than "Lead". On a
+          // flagged spot the camper's own words come first — that warning is
+          // the reason the pin is still here at all.
+          title: spot.knock?.comment
+            ? `${spot.label} — knock reported: “${spot.knock.comment}”`
+            : `${spot.label} — ${style.meaning}`,
+          riseOnHover: true
+        });
+        marker.on('click', () => beaconTapRef.current?.(spot));
+        group.addLayer(marker);
+      });
+
+      beaconLayerRef.current = group.addTo(map);
+    };
+
+    const run = async () => {
+      const centre = map.getCenter();
+
+      /**
+       * ASK FOR WHAT IS ON SCREEN, NOT FOR A FIXED 25 km.
+       *
+       * The radius was hard-coded at 25 km round the map centre, which is
+       * fine at close zoom and invisible at any other. A camper who scanned a
+       * forest road and then went back to looking at their home town had
+       * leads sitting in the database a hundred-odd kilometres away, on a map
+       * showing that whole region, with nothing drawn and nothing said. The
+       * feature looked broken because the query was smaller than the view.
+       *
+       * Reaching the corner of the viewport means the layer answers for
+       * exactly the ground being looked at. Floored at 25 km so a close zoom
+       * still picks up spots just off-screen, and capped at 200 because that
+       * is where `beacon_spots_near` clamps anyway.
+       */
+      const radiusKm = Math.min(
+        200,
+        Math.max(25, map.distance(centre, map.getBounds().getNorthEast()) / 1000)
+      );
+
+      /*
+       * The "already loaded" guard has to scale with that radius. At 25 km a
+       * 10 km move was a sixth of the loaded area; against a 200 km fetch it
+       * was refetching the same rows on every small pan.
+       */
+      const reuseWithinM = Math.max(10_000, radiusKm * 1000 * 0.4);
+      /*
+       * And the guard has to know what radius the held data was fetched AT.
+       * Zooming out without panning leaves the centre where it was, so a
+       * distance-only test would keep serving the small answer forever and
+       * the new ground would stay empty. Only a LARGER ask invalidates.
+       */
+      const staleRadius = loadedRadiusKm !== null && radiusKm > loadedRadiusKm * 1.25;
+      if (
+        loadedAt && !staleRadius &&
+        map.distance(centre, L.latLng(loadedAt)) < reuseWithinM
+      ) return;
+
+      const spots = await fetchBeaconSpotsNear(centre.lat, centre.lng, radiusKm);
+      if (cancelled) return;
+
+      loadedAt = [centre.lat, centre.lng];
+      loadedRadiusKm = radiusKm;
+      render(spots);
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 700);
+    };
+
+    load();
+    map.on('moveend', load);
+
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend', load);
+      clear();
+    };
+  }, [isMapReady, isOfflineMode, beaconRefreshKey]);
+
+  /* ------------------------------------------------------------------ */
+  /* Facilities in view — the chips under the search                     */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Every toilet / tap / dump station on screen, from BOTH sources.
+   *
+   * Same shape as the Beacon layer above — own pane, debounced on `moveend`,
+   * cleared at the start of the effect AND in the cleanup, because Leaflet
+   * layers stack up invisibly otherwise. Three things differ.
+   *
+   * ONE: IT IS OFF BY DEFAULT AND ASKS NOTHING WHEN IT IS OFF. No chip on,
+   * no Overpass query. This is the only layer on the map the camper switches
+   * on deliberately, so it must cost nothing when they have not.
+   *
+   * TWO: A ZOOM FLOOR. Overpass will not answer a continent-sized box, and a
+   * toilet drawn at country zoom is a dot in the wrong state anyway. Below
+   * `FACILITY_MIN_ZOOM` the layer clears and reports `zoomed-out`, so the
+   * chip row says "zoom in to look for toilets" — the one thing it must never
+   * do is come back empty and let that read as "there are none".
+   *
+   * THREE: NO "ALREADY LOADED NEARBY" SHORT-CIRCUIT. The Beacon layer skips a
+   * refetch while the centre has moved under 10 km, which it can afford
+   * because it asks about a radius round that centre. The query here IS the
+   * viewport box, so a zoom change with the centre unmoved is a completely
+   * different question — and Leaflet fires `moveend` after a zoom, so the
+   * reload happens without a second listener.
+   *
+   * Every outcome is reported upward — loading, failed, empty, capped — and
+   * the wording lives in `FacilityChips`. An empty result is an absence of
+   * survey, never an absence of facilities.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!facilityPinsLayerRef.current) return;
+      try { map.removeLayer(facilityPinsLayerRef.current); } catch { /* detached */ }
+      facilityPinsLayerRef.current = null;
+    };
+
+    // Nothing switched on, or no map to draw on: spend nothing.
+    if (facilityKinds.length === 0 || isOfflineMode) {
+      clear();
+      facilityStateRef.current?.({ status: 'idle' });
+      return;
+    }
+
+    if (!map.getPane('facilityPane')) {
+      map.createPane('facilityPane');
+      const pane = map.getPane('facilityPane');
+      // Below the Beacon spots (600) and the hazard reports (610). A toilet
+      // is the least urgent thing on this map and must never cover a washout.
+      if (pane) pane.style.zIndex = '580';
+    }
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+
+    const render = (facilities: MapFacility[]) => {
+      clear();
+      if (facilities.length === 0) return;
+
+      const group = L.layerGroup([], { pane: 'facilityPane' });
+      facilities.forEach((facility) => {
+        // Same rule as the alerts, fires, reports and beacons: no icon on the
+        // grey outside the supported region.
+        if (!isWithinCoverage(facility.latitude, facility.longitude)) return;
+
+        const { meaning } = facilitySourceStyle(facility.fromOsm, facility.confirmations);
+        const marker = L.marker([facility.latitude, facility.longitude], {
+          pane: 'facilityPane',
+          icon: buildFacilityIcon(facility),
+          // The tooltip carries where it came from, not just what it is —
+          // hovering an unconfirmed pin says so before the camper drives to it.
+          title: `${facility.name ?? FACILITY_LABEL[facility.kind]} — ${meaning}`,
+          riseOnHover: true
+        });
+        marker.on('click', () => facilityTapRef.current?.(facility));
+        group.addLayer(marker);
+      });
+
+      facilityPinsLayerRef.current = group.addTo(map);
+    };
+
+    const run = async () => {
+      if (map.getZoom() < FACILITY_MIN_ZOOM) {
+        clear();
+        facilityStateRef.current?.({ status: 'zoomed-out' });
+        return;
+      }
+
+      facilityStateRef.current?.({ status: 'loading' });
+
+      const bounds = map.getBounds();
+      const centre = map.getCenter();
+      /* The radius that covers the corners of the box, so the camper-added
+         layer answers for everything the OpenStreetMap box does. Capped,
+         because at low zoom the corner distance grows faster than usefulness. */
+      const radiusKm = Math.min(
+        map.distance(centre, bounds.getNorthEast()) / 1000,
+        200
+      );
+
+      const [osm, pois] = await Promise.all([
+        fetchFacilitiesInView(
+          {
+            south: bounds.getSouth(), west: bounds.getWest(),
+            north: bounds.getNorth(), east: bounds.getEast()
+          },
+          facilityKinds
+        ),
+        fetchPoisNear(centre.lat, centre.lng, Math.max(radiusKm, 1))
+      ]);
+      if (cancelled) return;
+
+      /* Camper rows arrive as every kind at once — the RPC does not filter by
+         kind, because a camper toggling a second chip should not pay for a
+         second round trip. Narrowing happens here. */
+      const wanted = new Set(facilityKinds);
+      const camperAdded = pois
+        .map((row) => {
+          const kind = facilityKindFromDb(row.kind);
+          return kind && wanted.has(kind) ? poiToMapFacility(row, kind) : null;
+        })
+        .filter((f): f is MapFacility => f !== null)
+        .filter((f) => bounds.contains(L.latLng(f.latitude, f.longitude)));
+
+      const merged = mergeFacilities(camperAdded, osm.facilities);
+      render(merged);
+
+      /* `ok: false` means every Overpass mirror failed. Camper-added pins may
+         still have arrived, and they are still drawn — but the row must say
+         "couldn't check" rather than counting them as the whole answer. */
+      facilityStateRef.current?.(
+        osm.ok
+          ? { status: 'done', count: merged.length, truncated: osm.truncated }
+          : { status: 'failed' }
+      );
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 700);
+    };
+
+    load();
+    map.on('moveend', load);
+
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend', load);
+      clear();
+    };
+    // `facilityKinds` is an array from a parent render. App memoises it, so
+    // this depends on the identity rather than on a join of the contents.
+  }, [isMapReady, isOfflineMode, facilityKinds, facilityRefreshKey]);
+
   /* ------------------------------------------------------------------ */
   /* The dropped destination pin                                         */
   /* ------------------------------------------------------------------ */
@@ -2305,14 +3382,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const destinationHtmlRef = useRef('');
   /** The dropped pin's own memory of which chips it has popped in. */
   const destinationChipKeysRef = useRef<Set<string>>(new Set());
+  /** Its answers, gathered so they arrive as one wave. See `createChipBatcher`. */
+  const destinationBatchRef = useRef(createChipBatcher());
   const destinationDots = useMemo(() => {
     if (!destination || destination.campsite) return [];
-    return [
-      ...hazardDots(badgesForPoint(destination.latitude, destination.longitude, hazards)),
+    return withNavChip([
+      ...hazardDots(warningsForPoint(destination.latitude, destination.longitude, hazards)),
       ...fireDots(nearbyFires),
       ...conditions,
       ...facilityDots(facilities)
-    ];
+    ]);
   }, [destination, hazards, nearbyFires, conditions, facilities]);
   const destinationDotsRef = useRef(destinationDots);
   destinationDotsRef.current = destinationDots;
@@ -2322,6 +3401,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!map || !isMapReady) return;
 
     const clear = () => {
+      destinationBatchRef.current.cancel();
       if (!destinationMarkerRef.current) return;
       try { map.removeLayer(destinationMarkerRef.current); } catch { /* detached */ }
       destinationMarkerRef.current = null;
@@ -2337,7 +3417,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       {
         icon: buildDestinationIcon(
           destinationDotsRef.current,
-          DIRECTIONS_LABEL,
           'Add spot here',
           freshChipKeys(destinationChipKeysRef.current, destinationDotsRef.current)
         ),
@@ -2362,28 +3441,42 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * the drop rather than to every arrival after it.
    */
   useEffect(() => {
-    const marker = destinationMarkerRef.current;
-    if (!marker) return;
-    const fresh = freshChipKeys(destinationChipKeysRef.current, destinationDots);
-    // Patched in place for the same reason a submitted pin is: rebuilding the
-    // icon would drop the teardrop again and cut the chips off mid-pop.
-    if (patchChipRow(marker.getElement(), destinationDots, fresh)) return;
-    const icon = buildDestinationIcon(
-      destinationDots, DIRECTIONS_LABEL, 'Add spot here', fresh
-    );
-    const html = (icon.options.html as string) ?? '';
-    if (html === destinationHtmlRef.current) return;
-    destinationHtmlRef.current = html;
-    marker.setIcon(icon);
+    if (!destinationMarkerRef.current) return;
+
+    /*
+     * Held back until the answers stop coming, so they arrive as one wave.
+     *
+     * A dropped pin on bare ground starts with NOTHING — every chip it will
+     * ever wear (the warnings over it, the fires, the weather, the drive, the
+     * track up the road) is a separate request. Applied as they landed, that
+     * was five separate arrivals over a couple of seconds. The batcher gives
+     * them a beat to catch up with each other and then plays the whole stack
+     * in one go, which is what the press-and-hold peek has always looked like.
+     */
+    destinationBatchRef.current.schedule(() => {
+      const marker = destinationMarkerRef.current;
+      if (!marker) return;
+      const dots = destinationDotsRef.current;
+      const fresh = freshChipKeys(destinationChipKeysRef.current, dots);
+      // Patched in place for the same reason a submitted pin is: rebuilding
+      // the icon would drop the teardrop again and cut the chips off mid-pop.
+      if (patchChipRow(marker.getElement(), dots, fresh)) return;
+      const icon = buildDestinationIcon(dots, 'Add spot here', fresh);
+      const html = (icon.options.html as string) ?? '';
+      if (html === destinationHtmlRef.current) return;
+      destinationHtmlRef.current = html;
+      marker.setIcon(icon);
+    });
   }, [destinationDots]);
 
   /**
-   * The open pin sits dead centre.
+   * The open pin sits dead centre — or in the middle of whatever a card leaves.
    *
-   * It used to be parked in the strip of map left over above a half-screen
-   * panel, because the panel described the pin and covered it at the same
-   * time. There is no panel any more — everything it said is on the pin — so
-   * the pin gets the middle of the screen, which is where a camper looks.
+   * Dead centre is the ordinary case: nothing is over the map, so the pin gets
+   * the middle of the screen, which is where a camper looks. When a card IS up
+   * — the point card, or a spot's drawer — the pin is centred in the strip
+   * above it instead, so the thing being described is never behind the thing
+   * describing it. See `centreLeavingRoom`.
    *
    * Tapping a submitted spot also moves the camera IN, once per selection, so
    * the chips that just unfolded have room and the roads into the spot are
@@ -2405,7 +3498,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           ? Math.max(map.getZoom(), CAMPSITE_FOCUS_ZOOM)
           : map.getZoom();
 
-        const centre = L.latLng(destination.latitude, destination.longitude);
+        const centre = centreLeavingRoom(
+          map,
+          L.latLng(destination.latitude, destination.longitude),
+          overlayPxRef.current,
+          zoomTo
+        );
 
         // Already close enough that moving would just look twitchy.
         const shift = map
@@ -2430,6 +3528,70 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     return () => clearTimeout(timer);
   }, [destination, isMapReady]);
+
+  /**
+   * A card slides up, the map slides the pin out from under it — and back.
+   *
+   * Opening a card takes half the screen away, and the half it takes is the
+   * half the pin was sitting in. So the map lifts the pin into the strip that
+   * is left, and when the card closes it gives that borrowed view straight
+   * back. Dragging the card between its snap points re-aims without saving
+   * anything new, so however many times it is resized, closing it still returns
+   * to the one view it interrupted.
+   *
+   * It does NOT give the view back when the pin itself has gone. Closing a pin
+   * already restores the wider view the camper was browsing in, and two
+   * restores racing each other on one frame is how you land somewhere neither
+   * of them meant.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    if (overlayPx > 0) {
+      if (readLat === null || readLon === null) return;
+      if (!preSheetViewRef.current) {
+        preSheetViewRef.current = { center: map.getCenter(), zoom: map.getZoom() };
+      }
+      // A beat, so the card has finished growing before the pin is aimed at
+      // the gap above it.
+      const timer = setTimeout(() => {
+        try {
+          const zoomNow = map.getZoom();
+          const centre = centreLeavingRoom(
+            map, L.latLng(readLat, readLon), overlayPx, zoomNow
+          );
+          const shift = map
+            .latLngToContainerPoint(centre)
+            .distanceTo(map.getSize().divideBy(2));
+          if (shift < 8) return;
+          if (prefersReducedMotion()) map.setView(centre, zoomNow, { animate: false });
+          else map.panTo(centre, { animate: true, duration: 0.45 });
+        } catch { /* map torn down mid-timeout */ }
+      }, 120);
+      return () => clearTimeout(timer);
+    }
+
+    const previous = preSheetViewRef.current;
+    preSheetViewRef.current = null;
+    if (!previous || readLat === null || readLon === null) return;
+
+    try {
+      if (prefersReducedMotion()) {
+        map.setView(previous.center, previous.zoom, { animate: false });
+      } else {
+        map.panTo(previous.center, { animate: true, duration: 0.45 });
+      }
+    } catch { /* map torn down */ }
+  }, [overlayPx, readLat, readLon, isMapReady]);
+
+  /**
+   * The point card belongs to the pin that opened it.
+   *
+   * Picking somewhere else, or letting the pin go, takes the card with it —
+   * otherwise it sits there describing a point that is no longer on screen.
+   */
+  useEffect(() => { setPointCardOpen(false); }, [destination]);
 
   /**
    * Closing the card gives the camera back.
@@ -2462,16 +3624,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [destination, isMapReady]);
 
   /* ------------------------------------------------------------------ */
-  /* Fire, flood and storm alerts                                        */
+  /* Weather alerts — one soft area per warned region                     */
   /* ------------------------------------------------------------------ */
   /**
-   * Active alerts drawn as warning triangles over the area they cover.
+   * Active alerts, every one of them drawn as a cloud over the ground the
+   * agency named. Fire, flood, smoke, rain, storm, heat, cold and wind differ
+   * only in colour.
    *
-   * Only alerts the feed gave a geometry for can be placed. NWS sends
+   * Only alerts the feed gave a geometry for can be drawn. NWS sends
    * `geometry: null` for its zone-based products, and those are counted and
-   * reported rather than dropped silently or, worse, pinned to a guessed
-   * location — a fire warning shown over the wrong valley is actively
-   * dangerous. The count of unplaceable alerts is surfaced in the status chip.
+   * reported rather than dropped silently or, worse, shaded over a guessed
+   * area — a fire warning shown over the wrong valley is actively dangerous.
+   * The count of undrawable alerts is surfaced in the status chip.
    */
   useEffect(() => {
     const map = mapRef.current;
@@ -2486,10 +3650,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (isOfflineMode) {
       clear();
       setHazards([]);
+      // Offline is its own notice, top-left. A second one naming an agency
+      // that was never going to be asked would just be noise.
+      setAlertGap(null);
       return;
     }
 
-    // Layer off: clear the existing clouds and skip the fetch. The
+    // Layer off: clear the existing overlays and skip the fetch. The
     // hazard state is intentionally NOT cleared — the per-pin
     // destination sheet and campsite bottom sheet read from `hazards`
     // directly, so a hidden layer does not silence the pin card. A
@@ -2501,99 +3668,83 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
 
-    // TWO panes, because the two tiers behave differently.
+    // ONE pane, because there is now one thing to draw.
     //
-    //   warningPane      — the diffuse clouds and every tinted area fill. It is
-    //                      pointer-events:none, so a tap on a cloud falls straight
-    //                      through to the map (which drops a spot and shows the
-    //                      warning in the sheet). Scenery, not a control.
-    //   warningIconPane  — the precise fire/flood/storm icons. Interactive, and
-    //                      above the campsite pins, because a flame on the map is
-    //                      worth more than the pin beneath it and it has to be
-    //                      tappable to open its card.
-    if (!map.getPane('warningPane')) {
-      map.createPane('warningPane');
-      const wpane = map.getPane('warningPane');
-      if (wpane) {
-        wpane.style.zIndex = '460';
-        wpane.style.pointerEvents = 'none';
-        // The soft edge used to be a CSS filter on this whole pane. That forced
-        // the compositor to re-rasterize the blurred output on every paint, and
-        // during a pan or zoom that meant every animation frame: a six-pixel
-        // blur over an area that moves with the map is the most expensive thing
-        // the GPU can be asked to do. We now do the blur on each cloud path
-        // instead, via an SVG <feGaussianBlur> the renderer owns (see below).
-        // The browser can cache the filter output per element, and a pan
-        // becomes a translate of already-rasterized layers rather than a
-        // full re-blur of the pane every tick.
+    //   warningCloudPane — every warned area, whatever the family. Blurred as a
+    //                      whole (see CLOUD_BLUR_PX), which is what turns a
+    //                      shape with an edge into a cloud without one.
+    //
+    // There used to be two more: a sharp pane for the outline of a fire or
+    // flood polygon, and an icon pane for the teardrop pins that sat on top of
+    // them. Both went when those families started clouding like everything
+    // else — see alertOverlay.ts.
+    //
+    // pointer-events:none, so a tap on a cloud falls straight through to the
+    // map, which drops a spot and shows the warning in that spot's sheet. That
+    // is deliberately the only way to read a warning: the sheet knows the
+    // alert covers the point under your thumb, which an icon floating in the
+    // middle of a forecast region never did.
+    if (!map.getPane('warningCloudPane')) {
+      map.createPane('warningCloudPane');
+      const cpane = map.getPane('warningCloudPane');
+      if (cpane) {
+        cpane.style.zIndex = '455';
+        cpane.style.pointerEvents = 'none';
+        /**
+         * THE CLOUD'S SOFT EDGE, IN ONE LINE.
+         *
+         * A compositor blur over the whole pane, exactly how the boundary
+         * layer draws its uncertainty band. The alternative — feathering each
+         * shape with a stack of translucent strokes — costs a path per ring
+         * per step, and an SVG filter per shape was what made the old cloud
+         * layer re-rasterise the map on every frame of a pan. This is one
+         * GPU-composited blur for every warning on screen.
+         *
+         * Screen-space on purpose: the softness is a statement about how well
+         * the edge is known, which does not sharpen up because you zoomed in.
+         */
+        cpane.style.filter = `blur(${CLOUD_BLUR_PX}px)`;
       }
     }
-    // The tiled family glyph (thermometer / smoke / snowflake …) over each cloud.
-    // Separate, un-blurred pane so the icons stay legible while the fill beneath
-    // them is soft-edged.
-    if (!map.getPane('warningGlyphPane')) {
-      map.createPane('warningGlyphPane');
-      const gpane = map.getPane('warningGlyphPane');
-      if (gpane) { gpane.style.zIndex = '461'; gpane.style.pointerEvents = 'none'; }
-    }
-    if (!map.getPane('warningIconPane')) {
-      map.createPane('warningIconPane');
-      const ipane = map.getPane('warningIconPane');
-      if (ipane) ipane.style.zIndex = '616';
-    }
-
-    // One SVG renderer for the cloud fills, one for the glyph tiles. SVG rather
-    // than the boundary canvas because only SVG can carry the pattern fill the
-    // repeating glyph needs.
-    if (!warningRendererRef.current) {
-      warningRendererRef.current = L.svg({ pane: 'warningPane', padding: 0.3 });
-    }
-    if (!warningGlyphRendererRef.current) {
-      warningGlyphRendererRef.current = L.svg({ pane: 'warningGlyphPane', padding: 0.3 });
+    // Canvas for the clouds: they are big, they are blurred, and a canvas is
+    // what the pane-level blur is cheap on — the GPU blurs one bitmap rather
+    // than re-rasterising a tree of paths.
+    if (!warningCloudRendererRef.current) {
+      warningCloudRendererRef.current = L.canvas({ pane: 'warningCloudPane', padding: 0.3 });
     }
     // Non-null: just created above if missing.
-    const warningRenderer = warningRendererRef.current!;
-    const glyphRenderer = warningGlyphRendererRef.current!;
+    const cloudRenderer = warningCloudRendererRef.current!;
 
     /**
-     * THE BLUR — and why it lives on each path now, not on the pane.
+     * WHAT USED TO BE HERE, AND WHY IT IS GONE. TWICE.
      *
-     * The first version put `filter: blur(6px)` on the whole warningPane,
-     * which forced the compositor to re-blur every cloud on every paint —
-     * a six-pixel blur over an area that moves with the map is the most
-     * expensive thing the GPU can be asked to do, and a pan/zoom turned it
-     * into every animation frame.
+     * FIRST VERSION. Every area event was a "cloud" built three ways at once:
+     * a per-polygon radial gradient hand-written into the renderer's <defs>, a
+     * per-path CSS blur, and the family's glyph TILED across the whole shape.
+     * All of it re-measured on every zoom, because the gradients lived in
+     * projected screen space. The tiling is what put a dozen lightning bolts
+     * across one valley for a single storm warning.
      *
-     * The second version (the one being replaced here) tried an SVG
-     * <feGaussianBlur> in the renderer's <defs>, with each cloud path
-     * pointing at it via `filter="url(#…)"`. That was supposed to give
-     * per-path caching, but it broke the clouds entirely:
+     * SECOND VERSION. A flat fill with a crisp 2px outer stroke on the merged
+     * forecast zones. Cheap and legible, and wrong in the one way this app
+     * cannot be wrong: it drew the SURVEYED EDGES of administrative regions as
+     * the edge of the weather. Smoke does not stop at a township line. The
+     * outline also had to be reconstructed from cancelled segments, and when
+     * that reconstruction could not close a chain it drew a straight line
+     * across the shape and left the rest over as a second phantom polygon.
      *
-     *   1. The defs was injected on the FIRST effect run, BEFORE the
-     *      renderer's `_container` had been created (Leaflet mints the SVG
-     *      element lazily, the first time a layer is added to the map that
-     *      uses this renderer). On a cold start, the defs injection was a
-     *      no-op and the filter URL on every cloud path pointed at a filter
-     *      that did not exist — the clouds drew as nothing.
-     *   2. Even when the defs DID land, the per-path `eachLayer` walked
-     *      `sub._path` BEFORE the layer was added to the group, when those
-     *      path elements did not exist yet. The filter attribute was set on
-     *      zero paths, so the clouds drew as nothing.
-     *
-     * The fix is per-element CSS filter, applied as an inline style on
-     * each cloud path after it has been added to the map. The browser
-     * caches each filtered element as its own compositing layer, and a
-     * pan/zoom becomes a translate of those layers rather than a full
-     * re-blur. There is no defs to inject, no path attribute to set after
-     * the fact, and no first-render race.
+     * NOW. The zones are grouped into contiguous areas, simplified, rounded
+     * off, and drawn on a canvas in a pane with one compositor blur over it.
+     * No gradients, no defs, no tiling, no reconstructed outline, and no edge
+     * anywhere that claims to be where the hazard stops.
      */
 
     let cancelled = false;
     let controller: AbortController | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
-    // The area the current clouds were fetched for. A pan or zoom whose new
+    // The area the current warnings were fetched for. A pan or zoom whose new
     // view still sits inside this padded box reuses what is already drawn
-    // instead of refetching and rebuilding — which is what made the clouds
+    // instead of refetching and rebuilding — which is what made the overlays
     // blink out and back on every gesture. Warnings do not depend on zoom, so
     // only leaving the loaded area triggers a refetch.
     let loadedAlertBox: L.LatLngBounds | null = null;
@@ -2602,294 +3753,164 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // a storm in Ontario can flicker when a slow refetch from a Calgary
     // pan lands after a fast Ontario refetch. The boundary effect uses the
     // same pattern; doing it here too is what stops the "shows up then
-    // disappears" flicker on the cloud layer.
+    // disappears" flicker on the warning layer.
     let requestId = 0;
-
     /**
-     * The diffuse cloud layers currently on the map, with the colour each one
-     * paints. Kept so the gradients can be re-measured after a zoom.
+     * Backoff for a lookup that could not complete.
+     *
+     * A camper who reopens the app on a waking radio gets one failed request
+     * and then, with the box-loaded guard suppressing `moveend` refetches,
+     * nothing at all until they pan. So a failure schedules its own retry —
+     * doubling from 4 seconds up to a minute, reset the moment one succeeds.
+     *
+     * Capped rather than infinite-backoff-forever because the common case here
+     * is a phone that will be back on signal within a minute, and the whole
+     * point is that the warnings return without the camper doing anything.
      */
-    let drawnClouds: { geo: L.GeoJSON; color: string }[] = [];
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = 4000;
+    const RETRY_MAX = 60_000;
 
-    /**
-     * TURN THE CLOUD POLYGONS INTO CLOUDS.
-     *
-     * MUST run with the layers already added to the MAP. Leaflet mints a
-     * Path's `_path` element in `onAdd`; adding a layer to a detached
-     * LayerGroup creates nothing. The previous version measured `_path` at
-     * build time, always found `undefined`, and so every cloud kept its flat
-     * `fillOpacity: 1` fill — an opaque slab with a hard edge, which is not
-     * what a smoke plume or a heat mass is supposed to look like.
-     *
-     * Each drawn ring gets its own radial gradient: solid at the centre, fully
-     * transparent at the rim, in the renderer's own coordinate space so it
-     * stays a true circle rather than stretching to the polygon's bounding
-     * box. A MultiPolygon's pieces are disjoint, so each piece is measured
-     * separately — one gradient across all of them would peak in the gap
-     * between two of them. A light per-path blur feathers the polygon edge so
-     * the gradient's transparent stop is never seen as a cutoff.
-     *
-     * Re-run on zoom: Leaflet re-projects each path's `d` when the zoom
-     * settles, so the coordinates the gradients were built from are stale and
-     * the soft centre would drift off the warned area.
-     */
-    const paintClouds = (): void => {
-      const csvg = (warningRenderer as unknown as { _container?: SVGSVGElement })._container;
-      if (!csvg) return;
-
-      let cdefs = csvg.querySelector('defs');
-      if (!cdefs) {
-        cdefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-        csvg.insertBefore(cdefs, csvg.firstChild);
-      }
-      // Rebuilt from scratch every time, so gradients never accumulate.
-      cdefs.innerHTML = '';
-      let nextId = 0;
-
-      for (const { geo, color } of drawnClouds) {
-        geo.eachLayer((sub) => {
-          const el = (sub as unknown as { _path?: SVGPathElement })._path;
-          if (!el) return;
-          const ring = readRingFromPath(el);
-          if (!ring) return;
-          const { cx, cy, rx, ry } = cloudEllipse(ring);
-
-          const id = `wl-cloud-${nextId++}`;
-          const grad = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
-          grad.setAttribute('id', id);
-          grad.setAttribute('cx', String(cx));
-          grad.setAttribute('cy', String(cy));
-          grad.setAttribute('r', String(rx));
-          grad.setAttribute('gradientUnits', 'userSpaceOnUse');
-          // SVG radial gradients are circles. Squashing the y axis about the
-          // centre turns this one into an ellipse with semi-axes rx and ry,
-          // so the tint stretches the full length AND width of the warned
-          // area instead of sitting in a circle in the middle of it.
-          if (Math.abs(ry - rx) > 0.5) {
-            const k = ry / rx;
-            grad.setAttribute(
-              'gradientTransform',
-              `translate(0 ${cy * (1 - k)}) scale(1 ${k})`
-            );
-          }
-          // The middle two thirds stay near full strength so the colour
-          // reads as a mass over the whole warning, and the fade is spent
-          // in the outer third — a plateau, not a spotlight. Without it a
-          // gradient this large would be visibly brighter at one point,
-          // which looks like the warning is centred somewhere it isn't.
-          const STOPS: [string, string][] = [
-            ['0%', '0.5'],
-            ['45%', '0.46'],
-            ['70%', '0.32'],
-            ['88%', '0.12'],
-            ['100%', '0']
-          ];
-          for (const [offset, opacity] of STOPS) {
-            const stop = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-            stop.setAttribute('offset', offset);
-            stop.setAttribute('stop-color', color);
-            stop.setAttribute('stop-opacity', opacity);
-            grad.appendChild(stop);
-          }
-          cdefs!.appendChild(grad);
-
-          el.setAttribute('fill', `url(#${id})`);
-          // Blur scales with the cloud so a county-sized warning gets a
-          // proportionally soft rim rather than the same 12px hairline
-          // feather a small one gets. Capped so the biggest warnings do
-          // not turn into an expensive full-screen blur.
-          const softness = Math.round(Math.min(28, Math.max(10, Math.min(rx, ry) * 0.18)));
-          el.style.filter = `blur(${softness}px)`;
-        });
-      }
+    const scheduleAlertRetry = () => {
+      if (retryTimer) return;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        retryDelay = Math.min(retryDelay * 2, RETRY_MAX);
+        void run();
+      }, retryDelay);
     };
 
     /**
-     * Draw the active warnings, split by tier.
+     * Draw the active warnings. Every family draws the same way: one soft area
+     * per contiguous warned region, in that family's colour, no icons.
      *
-     *   DIFFUSE (smoke / heat / cold / wind) — a tinted area fill plus a slowly
-     *   animated CLOUD at its centre. Non-interactive; the top-left legend says
-     *   what each colour and icon means, and tapping a spot inside one surfaces
-     *   the detail through the destination sheet.
+     * Fire and flood used to be the exception, drawn as teardrop pins on the
+     * alert's centroid. They are not any more, and alertOverlay.ts carries the
+     * reasoning — the short version is that a red flag warning and a flash
+     * flood warning are issued over a polygon like everything else, so the
+     * centroid was the middle of an administrative shape and a pin on it
+     * claimed somebody had stood there.
      *
-     *   PRECISE (fire / flood / storm) — a faint area hint plus a crisp, TAPPABLE
-     *   icon at the centre. Tapping it opens the warning in the bottom card.
+     * THE MERGE IS THE POINT. Environment Canada and the NWS issue these
+     * products once per forecast zone, so a single rainfall warning arrives as
+     * eleven adjacent blocks. Drawn as they come, that is a honeycomb of
+     * internal lines — which is what the map looked like before, and it read
+     * as eleven separate warnings. `cloudPieces` groups the blocks that touch
+     * into ONE area and softens their surveyed edges away.
      *
      * Alerts the feed gave no geometry for are counted, never pinned to a guess.
      *
-     * NOTHING IS DRAWN OUTSIDE THE COVERAGE AREA. The weather feeds are wider
+     * NOTHING IS CLAIMED OUTSIDE THE COVERAGE AREA. The weather feeds are wider
      * than this app is: a viewport near the border pulls back marine zones out
-     * in the Atlantic, Mexican border counties, whole territories north of
-     * 60°. Those were landing as icons and clouds on top of the grey — a
-     * "Storm" chip floating over an area the map has just finished saying it
-     * knows nothing about. The alert is still in `hazards` state, so a pin near
-     * the line still reports it in its card; it just doesn't get drawn out
-     * there.
+     * in the Atlantic, Mexican border counties, whole territories north of 60°.
+     * The grey coverage mask sits above every layer on the map (pane 645), so
+     * anything reaching past the line is greyed out with the ground it covers.
      */
     const render = (alerts: HazardAlert[]) => {
-      const placeable = alerts.filter(
-        (a) =>
-          Array.isArray(a.centroid) &&
-          a.geometry &&
-          isWithinCoverage(a.centroid[0], a.centroid[1])
-      );
-
       const group = L.layerGroup([]);
-      const present = new Set<AlertBadge>();
-      // Diffuse glyph layers, wired to their patterns once the paths exist.
-      const glyphTargets: { geo: L.GeoJSON; badge: 'heat' | 'smoke' | 'winter' | 'wind' | 'storm' }[] = [];
-      /**
-       * The diffuse cloud layers, paired with the colour their gradient uses.
-       *
-       * ONLY THE LAYER IS COLLECTED HERE — NOT ITS PATHS.
-       *
-       * Leaflet mints a Path's `_path` element in `onAdd`, which does not run
-       * until the layer is on the MAP. Adding it to a LayerGroup that is itself
-       * still detached creates nothing. The previous version walked `_path`
-       * right here, always got undefined, and so every cloud silently kept its
-       * flat `fillOpacity: 1` fill with no gradient and no blur — a hard opaque
-       * slab instead of a soft cloud. The walk now happens after
-       * `group.addTo(map)` below, where the elements actually exist.
-       */
-      const cloudLayers: { geo: L.GeoJSON; color: string }[] = [];
+      /** Alerts gathered by family, so each family clouds as one. */
+      const areas = new Map<AlertBadge, HazardAlert[]>();
 
-      placeable.forEach((alert) => {
+      alerts.forEach((alert) => {
+        if (!alert.geometry) return;
         const badge = alertBadge(alert);
         if (!badge) return;
-        present.add(badge);
-        const color = BADGE_COLOR[badge];
 
-        if (isDiffuse(badge)) {
-          // The cloud is a per-polygon radial gradient — opaque in the
-          // middle, fully transparent at the polygon's bounding box edge —
-          // plus a small per-path blur to soften the polygon outline itself.
-          // The gradient does most of the work: a polygon filled with a
-          // radial fade-out has no perceptible boundary, which is what
-          // reads as "atmospheric" rather than "cartographic overlay".
-          //
-          // Why per-polygon gradients, not a single pane-level gradient:
-          // two adjacent heat polygons are separate <path> elements with
-          // different bounding boxes, and a single gradient stretched
-          // across both would make one of them peak where the other should.
-          // Each polygon gets its own gradient centred on its own
-          // centroid, so the centre of each cloud is solid colour and
-          // each edge fades independently. The gradients live in the
-          // cloud renderer's <defs> and are rebuilt every render — a few
-          // dozen small elements, the cost is invisible.
-          //
-          // The per-path CSS blur (12px) is a small additional softness
-          // — it feathers the polygon's hard edge so the gradient's
-          // "fully transparent" stops are not seen as a visible cutoff.
-          // Exploded into one Feature per piece FIRST. A merged multi-zone
-          // warning is a MultiPolygon, and Leaflet would draw all of its
-          // scattered blocks into a single <path> sharing a single fill —
-          // which means a single gradient spread across the gaps between
-          // them, leaving the blocks themselves untinted. One path per
-          // piece is what lets `paintClouds` size a gradient to each one.
-          const pieces = explodeToFeatures(alert.geometry);
-          const cloudGeo = L.geoJSON(pieces as any, {
-            pane: 'warningPane',
-            renderer: warningRenderer,
-            interactive: false,
-            style: {
-              stroke: false,
-              fill: true,
-              fillColor: color,
-              fillOpacity: 1
-            }
-          } as RenderedGeoJSONOptions);
-          group.addLayer(cloudGeo);
-          cloudLayers.push({ geo: cloudGeo, color });
-          // The same area, filled with the tiled family glyph — thermometers
-          // for heat — in the crisp glyph pane above the blur. Wired to its
-          // pattern in <defs> below.
-          const glyphGeo = L.geoJSON(pieces as any, {
-            pane: 'warningGlyphPane',
-            renderer: glyphRenderer,
-            interactive: false,
-            style: { stroke: false, fill: true, fillOpacity: 1 }
-          } as RenderedGeoJSONOptions);
-          group.addLayer(glyphGeo);
-          glyphTargets.push({ geo: glyphGeo, badge: badge as 'heat' | 'smoke' | 'winter' | 'wind' | 'storm' });
-        } else {
-          // A faint hint of the area, so the icon has context, and the tappable
-          // icon itself in the interactive pane above.
-          group.addLayer(
-            L.geoJSON(alert.geometry as any, {
-              pane: 'warningPane',
-              renderer: warningRenderer,
-              interactive: false,
-              style: { color, weight: 1.4, opacity: 0.55, fillColor: color, fillOpacity: 0.1 }
-            } as RenderedGeoJSONOptions)
-          );
-          const marker = L.marker(alert.centroid as [number, number], {
-            pane: 'warningIconPane',
-            icon: L.divIcon({
-              className: 'weather-warning-icon',
-              html: preciseMarkerHtml(badge),
-              iconSize: [36, 44],
-              iconAnchor: [18, 44]
-            }),
-            title: `${alert.event} — tap for details`,
-            riseOnHover: true
-          });
-          marker.on('click', () => alertTapRef.current?.(alert));
-          group.addLayer(marker);
-        }
+        /**
+         * NO CENTROID TEST HERE, and that is the fix for the smoke area that
+         * blinked in and out over BC.
+         *
+         * An area is drawn from its geometry, so it never needed the alert's
+         * single centroid — but it was being filtered on it, and that centroid
+         * is the average of the biggest region in the alert. For a coastal BC
+         * region it lands in the Pacific, outside coverage, and the whole
+         * warning was dropped. Worse, Environment Canada publishes one row per
+         * region and the server merges the rows it can see, so panning changed
+         * which regions were merged, which moved the centroid, which flipped
+         * the test — the area appeared and vanished as you dragged.
+         *
+         * The centroid is not used to DRAW anything any more either. Fire and
+         * flood used to be pinned on it; see the note at the top of the
+         * "EVERY OFFICIAL WARNING IS AN AREA" section in alertOverlay.ts.
+         */
+        const bucket = areas.get(badge);
+        if (bucket) bucket.push(alert);
+        else areas.set(badge, [alert]);
       });
 
-      // Swap: the fresh clouds go on the map before the old ones come off, so
+      areas.forEach((familyAlerts, badge) => {
+        const pieces = cloudPieces(familyAlerts.map((a) => a.geometry));
+        if (pieces.length === 0) return;
+        // The wash is the light tint; anything that names this family keeps the
+        // saturated colour. See CLOUD_TINT for why they differ.
+        const color = CLOUD_TINT[badge] ?? BADGE_COLOR[badge];
+
+        pieces.forEach((piece) => {
+          /**
+           * ONE PATH PER AREA, and the softening is already in the geometry.
+           *
+           * `fillRule: 'nonzero'` is what makes two overlapping warnings of the
+           * same family read as one mass instead of punching a hole where they
+           * cross — Leaflet's default is `evenodd`, which does exactly that
+           * hole. The stroke is wide, dim and the same colour as the fill: once
+           * the pane blur lands on it, it is a slightly denser rim rather than
+           * a line, which is what stops the cloud from looking like a spill.
+           */
+          group.addLayer(
+            L.geoJSON(piece.shape, {
+              pane: 'warningCloudPane',
+              renderer: cloudRenderer,
+              interactive: false,
+              style: {
+                color,
+                // The rim: wide, soft, and denser than the middle. Blurred it
+                // stops being a line and becomes the edge of a bank of weather,
+                // which is what gives the cloud a shape you can see at a glance
+                // without ever drawing an edge you could point at.
+                weight: 14,
+                opacity: 0.45,
+                fill: true,
+                // Dense enough to see over bright green farmland and dark
+                // forest alike, light enough to read the ground through. A
+                // warning you cannot see is the same as no warning.
+                fillOpacity: 0.3,
+                fillRule: 'nonzero',
+                lineJoin: 'round',
+                lineCap: 'round'
+              }
+            } as RenderedGeoJSONOptions)
+          );
+
+          /**
+           * NO BADGE ON A WARNED AREA. There used to be one per area.
+           *
+           * A cloud covers ground the camper is not asking about. Pinning an
+           * icon in the middle of it put a tappable thing on the map at a
+           * point that means nothing — the centre of a smoke area is not
+           * where the smoke is, it is just the middle of some forecast
+           * regions — and it competed for the thumb with the campsite pins,
+           * which are what the map is actually for.
+           *
+           * These warnings are read where they matter instead: as a chip on
+           * the pin you are standing on, whether that is a submitted spot or
+           * a pin you dropped on bare ground. That chip knows the warning
+           * covers THAT point, which the badge never did, and tapping it runs
+           * the tour that goes and shows you the area. See `runAlertTour`.
+           */
+        });
+      });
+
+      // Swap: the fresh layer goes on the map before the old one comes off, so
       // there is no blank frame between one render and the next.
       const previous = hazardLayerRef.current;
       hazardLayerRef.current = group.addTo(map);
       if (previous) { try { map.removeLayer(previous); } catch { /* detached */ } }
-
-      // Give the clouds their gradients now that their paths exist.
-      drawnClouds = cloudLayers;
-      paintClouds();
-
-      // Leaflet's style API has no pattern option, so each glyph pattern is
-      // defined in the glyph renderer's <defs> and the cloud's glyph path is
-      // pointed at it. Defs are rebuilt every render, so nothing accumulates.
-      const gsvg = (glyphRenderer as unknown as { _container?: SVGSVGElement })._container;
-      if (gsvg && glyphTargets.length) {
-        let defs = gsvg.querySelector('defs');
-        if (!defs) {
-          defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-          gsvg.insertBefore(defs, gsvg.firstChild);
-        }
-        defs.innerHTML = '';
-        const injected = new Set<string>();
-        for (const { badge } of glyphTargets) {
-          const pattern = warningGlyphPattern(badge);
-          if (injected.has(pattern.id)) continue;
-          injected.add(pattern.id);
-          const parsed = new DOMParser()
-            .parseFromString(
-              `<svg xmlns="http://www.w3.org/2000/svg">${pattern.def}</svg>`,
-              'image/svg+xml'
-            )
-            .documentElement.firstElementChild;
-          if (parsed) defs.appendChild(document.importNode(parsed, true));
-        }
-        for (const { geo, badge } of glyphTargets) {
-          const pattern = warningGlyphPattern(badge);
-          geo.eachLayer((sub) => {
-            const el = (sub as unknown as { _path?: SVGPathElement })._path;
-            if (!el) return;
-            el.setAttribute('fill', `url(#${pattern.id})`);
-            el.setAttribute('fill-opacity', '1');
-            el.setAttribute('stroke', 'none');
-          });
-        }
-      }
-
     };
 
     const run = async () => {
       const b = map.getBounds();
-      // Still inside the area we last fetched for: the clouds already cover the
-      // view, so leave them exactly as they are. This is the guard that stops
+      // Still inside the area we last fetched for: the warnings already cover
+      // the view, so leave them exactly as they are. This is the guard that stops
       // the constant refetch-and-rebuild on every small pan or zoom.
       if (loadedAlertBox && loadedAlertBox.contains(b)) return;
 
@@ -2902,11 +3923,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // the loaded area and reuses the data. The 0.4 pad (a 1.4x box) was
       // tight enough that zooming out a level invalidated the loaded box
       // and triggered a refetch that, in the worst case, returned the
-      // same alert with `centroid: null` for a moment and the cloud
+      // same alert with `centroid: null` for a moment and the warning
       // disappeared mid-pan. 1.0 is the floor that keeps a multi-zoom-out
       // gesture from churning the layer.
       const padded = b.pad(1.0);
-      const alerts = await fetchAreaAlerts(
+      const result = await fetchAreaAlerts(
         {
           minLat: padded.getSouth(), minLon: padded.getWest(),
           maxLat: padded.getNorth(), maxLon: padded.getEast()
@@ -2917,8 +3938,73 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // way, do not write over fresher data.
       if (cancelled || myId !== requestId) return;
 
-      loadedAlertBox = padded;
-      const sorted = sortAlerts(alerts);
+      /**
+       * A LOOKUP THAT FAILED LEAVES THE WARNINGS EXACTLY WHERE THEY ARE.
+       *
+       * This is the "I came back to the app and the clouds were gone" bug, and
+       * it had two halves that made each other worse.
+       *
+       * Backgrounding a phone browser kills in-flight requests and drops the
+       * radio. Coming back fires a resize, which fires `moveend`, which ran
+       * this — against a network that had not woken up yet. The fetch failed,
+       * failure was indistinguishable from an empty sky, and `render([])` wiped
+       * every cloud off the map.
+       *
+       * Then the second half: `loadedAlertBox` was set REGARDLESS of the
+       * outcome, so the "we already have this area" guard at the top of `run`
+       * suppressed every retry. The warnings did not come back when the signal
+       * did — they stayed gone until the camper panned clean out of the box.
+       *
+       * So: on a failure, keep the layer, do not record the box, and let the
+       * next `moveend` — or the retry below — have another go. Drawing nothing
+       * is a claim that there is nothing, and that is the one claim this app
+       * must never make about a weather warning.
+       */
+      if (!result.ok) {
+        if (!result.aborted) {
+          scheduleAlertRetry();
+          /*
+           * The clouds already drawn stay, and now they carry a date stamp of
+           * sorts: a line saying the check did not go through. Warnings left on
+           * screen with nothing said about them are the stale-and-silent case
+           * this whole path exists to avoid.
+           */
+          setAlertGap(
+            'Warnings could not be checked just now. Anything shaded below is ' +
+            'from the last successful check, and may have changed.'
+          );
+        }
+        return;
+      }
+
+      /**
+       * A HALF-ANSWER IS DRAWN, AND THEN SAID OUT LOUD.
+       *
+       * `partial` means one agency answered and the other did not; `clipped`
+       * means the server narrowed the query because the view was too wide to
+       * ask about (see MAX_SPAN_LAT in server/weatherRoutes.ts). Either way the
+       * warnings that came back are real and get drawn — but the area is NOT
+       * recorded as loaded, so the guard at the top of `run` cannot suppress
+       * the next attempt, and the retry keeps going until the gap closes.
+       *
+       * This is the other half of the fix for the map that shaded the American
+       * side of the border and left Canada blank. The server used to throw a
+       * half-answer away entirely, which did not make the map honest — it just
+       * left the previous answer on screen with nothing saying it was stale.
+       */
+      const complete = !result.partial && !result.clipped;
+
+      if (complete) {
+        loadedAlertBox = padded;
+        retryDelay = 4000;
+      } else {
+        loadedAlertBox = null;
+        if (result.partial) scheduleAlertRetry();
+      }
+
+      setAlertGap(alertGapNote(result));
+
+      const sorted = sortAlerts(result.alerts);
       setHazards(sorted);
       render(sorted);
     };
@@ -2928,34 +4014,43 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       debounce = setTimeout(run, 600);
     };
 
-    /**
-     * A zoom re-projects every path, so the cloud gradients — which are built
-     * in the renderer's coordinate space — have to be measured again or the
-     * soft centre of each cloud slides off the area it belongs to. Cheap: it
-     * touches only the clouds already drawn, and never refetches.
-     */
-    const repaint = (): void => { if (drawnClouds.length) paintClouds(); };
-
     load();
+    // Nothing to re-measure on zoom any more: the fill, the stroke and the
+    // badge are all plain geometry Leaflet re-projects itself.
     map.on('moveend zoomend', load);
-    map.on('zoomend', repaint);
+
+    /**
+     * Coming back to the app re-checks the warnings.
+     *
+     * A phone that has been in a pocket for two hours is showing warnings from
+     * two hours ago, and a warning that has since been cancelled — or a new one
+     * that has since been issued — is exactly the thing a camper reopens the
+     * app to find out about. `moveend` does not reliably fire on return, and
+     * when it does the box-loaded guard swallows it, so ask explicitly.
+     *
+     * `loadedAlertBox` is dropped first so the guard cannot suppress this one.
+     */
+    const onWake = () => {
+      if (document.visibilityState !== 'visible') return;
+      loadedAlertBox = null;
+      load();
+    };
+    document.addEventListener('visibilitychange', onWake);
+    window.addEventListener('online', onWake);
 
     return () => {
       cancelled = true;
       controller?.abort();
       if (debounce) clearTimeout(debounce);
+      if (retryTimer) clearTimeout(retryTimer);
       map.off('moveend zoomend', load);
-      map.off('zoomend', repaint);
-      drawnClouds = [];
+      document.removeEventListener('visibilitychange', onWake);
+      window.removeEventListener('online', onWake);
       clear();
-      // Drop the SVG renderers too, so a remount does not stack a second one.
-      if (warningRendererRef.current) {
-        try { map.removeLayer(warningRendererRef.current); } catch { /* detached */ }
-        warningRendererRef.current = null;
-      }
-      if (warningGlyphRendererRef.current) {
-        try { map.removeLayer(warningGlyphRendererRef.current); } catch { /* detached */ }
-        warningGlyphRendererRef.current = null;
+      // Drop the renderer too, so a remount does not stack a second one.
+      if (warningCloudRendererRef.current) {
+        try { map.removeLayer(warningCloudRendererRef.current); } catch { /* detached */ }
+        warningCloudRendererRef.current = null;
       }
     };
   }, [isMapReady, isOfflineMode, showWarnings]);
@@ -3193,6 +4288,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * lookup landing afterwards only animates the chip it brought.
    */
   const shownChipKeysRef = useRef<Set<string>>(new Set());
+  /** The open pin's answers, gathered so they arrive together as one wave. */
+  const openBatchRef = useRef(createChipBatcher());
+
+  /**
+   * The press-and-hold peek.
+   *
+   * `peekSwallowClickRef` is read by the marker's own click handler, which
+   * Leaflet fires on release — a hold that showed the stack must not also
+   * select the spot.
+   */
+  const peekRef = useRef<{
+    wrap: Element;
+    timer: number | null;
+    startX: number;
+    startY: number;
+    open: boolean;
+  } | null>(null);
+  const peekSwallowClickRef = useRef(false);
 
   /**
    * Icon for a pinned site: hollow or filled, with its dot row.
@@ -3202,7 +4315,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const dotsForId = useCallback((id: string): MarkerDot[] => {
     const isSelected = selectedIdRef.current === id;
-    return [
+    const dots = [
       ...hazardDots(badgesByIdRef.current.get(id) ?? []),
       // A fire burning up the valley, for the open pin only — it is one
       // request per selection, and it is where the map's flame layer went.
@@ -3216,6 +4329,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // looked up for the spot being read.
       ...(isSelected ? facilityDots(facilitiesRef.current) : [])
     ];
+    // Only the open pin gets the car chip: a resting pin's ring of dots is
+    // facts about the spot, and "you could drive here" is not one of them.
+    return isSelected ? withNavChip(dots) : dots;
   }, []);
 
   const iconForId = useCallback((id: string, animate = false) => {
@@ -3226,8 +4342,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     return buildCampsiteIcon(
       isSelected,
       dots,
-      isSelected ? DIRECTIONS_LABEL : undefined,
-      isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined
+      isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined,
+      id
     );
   }, [dotsForId]);
 
@@ -3251,17 +4367,31 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const open = marker.getElement()?.firstElementChild?.classList.contains('wl-pin-wrap-on');
 
     if (isSelected && !animate && open) {
-      const dots = dotsForId(id);
-      if (patchChipRow(
-        marker.getElement(),
-        dots,
-        freshChipKeys(shownChipKeysRef.current, dots)
-      )) {
-        // The cached HTML no longer describes the DOM, so the next full
-        // rebuild must not be skipped as a no-op.
-        iconHtmlRef.current.delete(id);
-        return;
-      }
+      /*
+       * Collected, not applied on the spot. The lookups behind an open pin
+       * finish at different times, and patching each one in as it lands is
+       * what turned one stack into four dribbles. See `createChipBatcher`.
+       */
+      openBatchRef.current.schedule(() => {
+        const live = markersRef.current.get(id);
+        if (!live || selectedIdRef.current !== id) return;
+        const dots = dotsForId(id);
+        if (patchChipRow(
+          live.getElement(),
+          dots,
+          freshChipKeys(shownChipKeysRef.current, dots)
+        )) {
+          // The cached HTML no longer describes the DOM, so the next full
+          // rebuild must not be skipped as a no-op.
+          iconHtmlRef.current.delete(id);
+          return;
+        }
+        // Clustered away or not yet on screen: fall back to a full rebuild.
+        const rebuilt = iconForId(id);
+        iconHtmlRef.current.set(id, (rebuilt.options.html as string) ?? '');
+        live.setIcon(rebuilt);
+      });
+      return;
     }
 
     const icon = iconForId(id, animate);
@@ -3324,7 +4454,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         icon: iconForId(site.id),
         title: `${site.name} — added by a camper`
       });
-      marker.on('click', () => onSelectCampsite(site));
+      marker.on('click', () => {
+        // A hold that showed the peek must not also open the spot. Without
+        // this, letting go fires the click and the pin you only wanted to
+        // glance at takes over the screen.
+        if (peekSwallowClickRef.current) return;
+        onSelectCampsite(site);
+      });
       marker.on('dblclick', () => onOpenDetailModal(site));
       markersRef.current.set(site.id, marker);
       return marker;
@@ -3338,6 +4474,119 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     clusterRef.current = cluster;
   }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenDetailModal, iconForId]);
 
+  /**
+   * Press and hold a pin to peek at its chips.
+   *
+   * ONE DELEGATED LISTENER ON THE MAP, not a listener per marker. The cluster
+   * plugin creates and destroys marker elements constantly as you pan and
+   * zoom, so per-marker handlers would need reattaching on every one of those
+   * — and would leak the ones it missed. The pin carries `data-site-id` and
+   * this finds it with `closest`.
+   *
+   * The gesture has to lose gracefully to the map itself: a finger that moves
+   * more than a few pixels is panning, not holding, and the peek must get out
+   * of the way rather than fighting the drag. Hence the slop check, and the
+   * cancel on any map movement at all.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    const container = map?.getContainer();
+    if (!map || !isMapReady || !container) return;
+
+    const cancelTimer = () => {
+      const peek = peekRef.current;
+      if (peek?.timer != null) window.clearTimeout(peek.timer);
+    };
+
+    /** Put everything back. `swallow` when a peek actually opened. */
+    const endPeek = (swallow: boolean) => {
+      const peek = peekRef.current;
+      if (!peek) return;
+      cancelTimer();
+
+      if (peek.open) {
+        closePeek(peek.wrap);
+        if (swallow) {
+          peekSwallowClickRef.current = true;
+          // Cleared on a timer rather than in the click handler: a hold that
+          // ends off the marker produces no click at all, and a flag nobody
+          // clears would swallow the NEXT genuine tap instead.
+          window.setTimeout(() => { peekSwallowClickRef.current = false; }, 350);
+        }
+      }
+      peekRef.current = null;
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      // Secondary buttons and pinch-zoom second fingers are not holds.
+      if (e.button != null && e.button > 0) return;
+      if (peekRef.current) return;
+
+      const target = e.target as Element | null;
+      const wrap = target?.closest?.('.wl-pin-wrap[data-site-id]');
+      if (!wrap) return;
+
+      // An open pin already shows its chips — and a real one, with the
+      // lookups behind it. Peeking it would replace a better answer.
+      if (wrap.classList.contains('wl-pin-wrap-on')) return;
+
+      const id = wrap.getAttribute('data-site-id');
+      if (!id) return;
+
+      const timer = window.setTimeout(() => {
+        const peek = peekRef.current;
+        if (!peek) return;
+        if (openPeek(peek.wrap, dotsForId(id))) {
+          peek.open = true;
+          haptic('tap');
+        }
+      }, PEEK_HOLD_MS);
+
+      peekRef.current = {
+        wrap, timer, open: false, startX: e.clientX, startY: e.clientY
+      };
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const peek = peekRef.current;
+      if (!peek || peek.open) return;
+
+      const moved = Math.hypot(e.clientX - peek.startX, e.clientY - peek.startY);
+      // Still inside the slop: the finger is resting, not travelling.
+      if (moved <= PEEK_SLOP_PX) return;
+      endPeek(false);
+    };
+
+    const onPointerUp = () => endPeek(true);
+    const onPointerCancel = () => endPeek(false);
+    // Any camera movement while holding means the map won the gesture.
+    const onMapMove = () => endPeek(false);
+
+    container.addEventListener('pointerdown', onPointerDown);
+    // On window, not the container: a finger released off the edge of a pin,
+    // or off the map entirely, still has to put the stack away.
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    map.on('movestart', onMapMove);
+    map.on('zoomstart', onMapMove);
+
+    return () => {
+      cancelTimer();
+      // Drop the row outright rather than animating on the way out — the
+      // component is going away and there is nothing left to animate onto.
+      peekRef.current?.wrap.querySelector(':scope > .wl-chips-peek')?.remove();
+      peekRef.current = null;
+
+      container.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      map.off('movestart', onMapMove);
+      map.off('zoomstart', onMapMove);
+    };
+  }, [isMapReady, dotsForId]);
+
   // Swap only the two icons that changed.
   useEffect(() => {
     const previousId = selectedIdRef.current;
@@ -3349,9 +4598,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // icon is rebuilt, so a toilet 4 km from the previous pin cannot appear
     // over the new one for the moment before the fetch lands.
     facilitiesRef.current = [];
+    // Anything the old pin was still waiting to show belongs to the old pin.
+    openBatchRef.current.cancel();
     if (previousId) {
-      refreshIcon(previousId);
-      markersRef.current.get(previousId)?.setZIndexOffset(0);
+      /*
+       * The stack winds itself down before the pin closes, top chip first —
+       * the same exit a held pin plays when the finger comes off it. Closing
+       * used to swap the icon on the spot, so a column of answers a camper was
+       * halfway through reading vanished between two frames.
+       */
+      const closing = markersRef.current.get(previousId);
+      retractChipRow(closing?.getElement(), () => {
+        refreshIcon(previousId);
+        markersRef.current.get(previousId)?.setZIndexOffset(0);
+      });
     }
     if (nextId) {
       const marker = markersRef.current.get(nextId);
@@ -3381,22 +4641,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * because the cluster badge never depended on the child icon.
    */
   useEffect(() => {
-    const next = new Map<string, AlertBadge[]>();
+    const next = new Map<string, PointWarning[]>();
     for (const site of pinnedCampsites) {
-      const badges = hazards.length
-        ? badgesForPoint(site.latitude, site.longitude, hazards)
+      const found = hazards.length
+        ? warningsForPoint(site.latitude, site.longitude, hazards)
         : [];
-      if (badges.length) next.set(site.id, badges);
+      if (found.length) next.set(site.id, found);
     }
     const prev = badgesByIdRef.current;
     badgesByIdRef.current = next;
     if (!isMapReady) return;
 
-    /** A marker has changed only if its badge set has changed. */
-    const sameBadges = (a: AlertBadge[] | undefined, b: AlertBadge[]): boolean => {
+    /**
+     * A marker has changed only if its warnings have.
+     *
+     * The LABEL is compared as well as the family, not just the family it used
+     * to be. The chip now carries the agency's product name, so a flood watch
+     * upgrading to a flash flood warning is the same badge with different
+     * words — and comparing families alone would leave the old wording sitting
+     * on the pin through the one change a camper most needs to see.
+     */
+    const sameBadges = (a: PointWarning[] | undefined, b: PointWarning[]): boolean => {
       if (!a) return b.length === 0;
       if (a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i].badge !== b[i].badge) return false;
+        if (a[i].label !== b[i].label) return false;
+        if (a[i].count !== b[i].count) return false;
+      }
       return true;
     };
 
@@ -3508,25 +4780,134 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const tourRunningRef = useRef(false);
   const tourLayerRef = useRef<L.LayerGroup | null>(null);
+  /**
+   * Stop the tour that is on screen, right now.
+   *
+   * A tour used to be something you started and then sat through. That was
+   * fine at two seconds and is not fine at ten: the land label is meant to be
+   * read, so it stays up long enough to read, which means there has to be a
+   * way to say "done". Two things call this — the little × on the label
+   * itself, and the × under the pin, which a camper reasonably expects to put
+   * away everything the pin has put on the map, not just the pin.
+   *
+   * Null when nothing is running.
+   */
+  const endTourRef = useRef<(() => void) | null>(null);
+  const endTour = useCallback(() => { endTourRef.current?.(); }, []);
 
-  const runFireTour = useCallback(async () => {
+  /**
+   * THE SHAPE OF EVERY "GO AND LOOK" ON THIS MAP.
+   *
+   * The fire chip has always done this: pull the camera out far enough to hold
+   * the spot and the thing being asked about in one frame, draw the thing,
+   * name it, wait long enough to read it, then put the camera back exactly
+   * where it was found. Tapping a chip is a question about something you
+   * cannot currently see, and the map itself is the answer — briefly, rather
+   * than as a paragraph.
+   *
+   * Every chip that has somewhere to take you now runs through here, so they
+   * all behave identically: one tour at a time, nothing in a tour is tappable,
+   * and the borrowed view is always given back, including when the middle of
+   * the tour throws.
+   */
+  const runTour = useCallback(async (
+    steps: (ctx: {
+      map: L.Map;
+      layer: L.LayerGroup;
+      /** Scaled down under prefers-reduced-motion, never to zero. */
+      wait: (ms: number) => Promise<void>;
+      reduced: boolean;
+      /**
+       * Frame these bounds, never closer than `maxZoom` and never further out
+       * than `minZoom`. The floor is the important half — see the note on the
+       * implementation. `anchor` is what stays centred when the floor means
+       * the bounds cannot all fit.
+       */
+      frame: (
+        bounds: L.LatLngBounds, maxZoom?: number, minZoom?: number, anchor?: L.LatLng
+      ) => void;
+      /** A named marker pinned on the map, in a colour. */
+      label: (at: L.LatLngExpression, opts: {
+        title: string;
+        /** A quieter line straight under the title — what kind of thing it is. */
+        sub?: string;
+        /**
+         * The facts, one bullet each. Kept apart from `detail` so a rule you
+         * can act on ("14 nights in any 28-day period") never reads at the
+         * same weight as the hedge underneath it.
+         */
+        lines?: string[];
+        /** The caveat, in the smaller, quieter type under everything else. */
+        detail?: string;
+        glyph: string;
+        color: string;
+        /**
+         * This label lands on the dropped pin rather than somewhere else.
+         *
+         * Two things follow, and they are the same thought twice. The bubble
+         * climbs clear of the teardrop, which is 40px tall and otherwise
+         * covers the bottom two lines of the thing the label is explaining.
+         * And the glyph is dropped: the pin IS the mark for this point, so a
+         * second one drawn on top of it marks nothing and hides the first.
+         */
+        atPin?: boolean;
+        /** Give the camper an × to stop the tour early. Long labels only. */
+        closable?: boolean;
+      }) => void;
+      /**
+       * Run a glowing tracker once along this path. Resolves at the end of it.
+       */
+      trace: (path: [number, number][], color: string, ms: number) => Promise<void>;
+      /** False once this tour has been torn down — check it after every await. */
+      alive: () => boolean;
+    }) => Promise<void>
+  ) => {
     const map = mapRef.current;
-    const point = readPointRef.current;
-    const near = nearbyFiresRef.current;
-    if (!map || !point || !near.length || tourRunningRef.current) return;
+    if (!map || tourRunningRef.current) return;
 
     tourRunningRef.current = true;
     const reduced = prefersReducedMotion();
-    const wait = (ms: number) => new Promise((r) => setTimeout(r, reduced ? ms / 3 : ms));
     const home = { center: map.getCenter(), zoom: map.getZoom() };
-    // Five is as many labels as fit on a phone before they stack on top of
-    // each other; the rest are still counted on the chip.
-    const shown = near.slice(0, 5);
 
     const layer = L.layerGroup().addTo(map);
     tourLayerRef.current = layer;
+
+    /*
+     * EVERY WAIT IS INTERRUPTIBLE.
+     *
+     * A tour is a chain of sleeps, so "stop" has to mean the sleep the tour is
+     * currently in ends now — otherwise the camper taps the × and the shape,
+     * the label and the borrowed camera all sit there until the timer that was
+     * already running happens to expire. Each pending wait keeps its resolver
+     * here; `cancel` fires all of them, and `alive()` has already gone false by
+     * then, so the step function bails at its next check instead of drawing the
+     * next thing onto a torn-down layer.
+     */
+    let cancelled = false;
+    const pending = new Set<() => void>();
+    const wait = (ms: number) => new Promise<void>((resolve) => {
+      if (cancelled) { resolve(); return; }
+      const done = () => {
+        pending.delete(done);
+        window.clearTimeout(timer);
+        resolve();
+      };
+      const timer = window.setTimeout(done, reduced ? ms / 3 : ms);
+      pending.add(done);
+    });
+
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      // alive() reads this, so it must go first.
+      if (tourLayerRef.current === layer) tourLayerRef.current = null;
+      // Off the screen in this frame rather than whenever the chain unwinds.
+      try { layer.clearLayers(); } catch { /* already gone */ }
+      Array.from(pending).forEach((done) => done());
+    };
+    endTourRef.current = cancel;
     /**
-     * The pin's own row of chips steps aside while the fires are on screen.
+     * The pin's own row of chips steps aside while the tour is on screen.
      *
      * The row is a stack of labels sitting exactly where the camera is about
      * to pull out to, so it would otherwise be reading the weather over the
@@ -3538,54 +4919,193 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     container.classList.add('wl-touring');
 
     try {
-      const bounds = L.latLngBounds([point.lat, point.lon] as L.LatLngExpression, [
-        point.lat, point.lon
-      ] as L.LatLngExpression);
-      shown.forEach((n) => bounds.extend([n.fire.centroid.lat, n.fire.centroid.lon]));
+      await steps({
+        map,
+        layer,
+        wait,
+        reduced,
+        alive: () => tourLayerRef.current === layer,
+        /**
+         * PULL OUT ONLY AS FAR AS THE ANSWER NEEDS.
+         *
+         * This was a plain `fitBounds`, and Leaflet's `fitBounds` takes a
+         * maximum zoom and no minimum — so a warning issued for half a
+         * province threw the camera out to the continent, and the answer to
+         * "where is this smoke?" became a map of the west coast with the pin
+         * lost somewhere in it. Nobody can see anything at that scale.
+         *
+         * So the fit is worked out first and then FLOORED, which means an area
+         * bigger than the floor allows is deliberately shown part-framed: a
+         * recognisable piece of ground with the shading over it beats the whole
+         * shape at a zoom where neither the shape nor the ground reads.
+         *
+         * When the floor does bite, the `anchor` — the pin the camper is asking
+         * from — is what stays in the middle. Centring on the middle of an area
+         * that does not fit can leave the pin off the screen entirely, which is
+         * the one thing a tour must never do: it is answering a question about
+         * that pin.
+         *
+         * The centring is otherwise Leaflet's own `fitBounds` maths, lifted
+         * here because `fitBounds` takes no minimum and would drop the floor.
+         */
+        frame: (bounds, maxZoom = 11, minZoom, anchor) => {
+          try {
+            const padTL = L.point(60, 90);
+            const padBR = L.point(60, 110);
+            const fit = map.getBoundsZoom(bounds, false, padTL.add(padBR));
+            let z = Math.min(fit, maxZoom);
+            const floored = minZoom != null && z < minZoom;
+            if (floored) z = minZoom as number;
+            z = Math.max(z, map.getMinZoom());
 
-      map.fitBounds(bounds, {
-        padding: L.point(70, 90),
-        maxZoom: 11,
-        animate: !reduced
+            const offset = padBR.subtract(padTL).divideBy(2);
+            const sw = map.project(bounds.getSouthWest(), z);
+            const ne = map.project(bounds.getNorthEast(), z);
+            const centre = floored && anchor
+              ? anchor
+              : map.unproject(sw.add(ne).divideBy(2).add(offset), z);
+
+            if (reduced) map.setView(centre, z, { animate: false });
+            else map.flyTo(centre, z, { duration: 0.8 });
+          } catch { /* degenerate bounds */ }
+        },
+        /**
+         * A LITTLE NEON TRACKER, ONCE AROUND THE THING YOU ASKED ABOUT.
+         *
+         * It runs along the EDGE OF THE SHADING that is already on the map.
+         * It used to run around a plain ellipse drawn outside the bounding box
+         * instead, on the reasoning that a path hugging the cloud would read
+         * as the boundary of the weather — but an ellipse round a bounding box
+         * is not a smaller claim, it is a bigger one: on a long diagonal area
+         * it flung the dot hundreds of kilometres off the shape, over ground
+         * the warning had nothing to do with, and it never once looked like it
+         * was pointing at the cloud.
+         *
+         * Following the shading claims nothing new. That soft edge is drawn on
+         * the map already, it is the forecast region and not the weather, and
+         * the tracker leaves no stroke behind it — it is a moving glow, gone in
+         * two seconds, that says "this shape, this one" and nothing else.
+         *
+         * Under `prefers-reduced-motion` there is no lap: the tracker simply
+         * appears at the start of the path, holds, and goes.
+         */
+        trace: (path, color, ms) => new Promise<void>((resolve) => {
+          if (path.length < 2) { resolve(); return; }
+
+          // Distance along the path, in degrees. Crude next to a great-circle
+          // measure and exactly right for the job: it only has to pace a dot
+          // evenly over a shape a few degrees across.
+          const run: number[] = [0];
+          for (let i = 1; i < path.length; i += 1) {
+            run.push(run[i - 1] + Math.hypot(
+              path[i][0] - path[i - 1][0],
+              path[i][1] - path[i - 1][1]
+            ));
+          }
+          const total = run[run.length - 1];
+          if (total <= 0) { resolve(); return; }
+
+          // `p` only ever moves forward, so the segment search carries on from
+          // where the last frame left it rather than starting over.
+          let seg = 1;
+          const at = (p: number): L.LatLngExpression => {
+            const want = p * total;
+            while (seg < run.length - 1 && run[seg] < want) seg += 1;
+            const span = run[seg] - run[seg - 1];
+            const k = span > 0 ? (want - run[seg - 1]) / span : 0;
+            const a = path[seg - 1];
+            const b = path[seg];
+            return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+          };
+
+          const tracker = L.marker(at(0), {
+            icon: L.divIcon({
+              className: 'wl-tour-tracker',
+              html: `<span class="wl-tour-tracker-dot" style="--wl-tracker-color:${color}"></span>`,
+              iconSize: [16, 16],
+              iconAnchor: [8, 8]
+            }),
+            interactive: false,
+            zIndexOffset: 900
+          }).addTo(layer);
+
+          const done = () => {
+            try { tracker.remove(); } catch { /* layer already torn down */ }
+            resolve();
+          };
+
+          // Through `wait` rather than a bare timer, so a cancelled tour is
+          // not held open by a lap nobody is watching any more.
+          if (reduced) { void wait(ms).then(done); return; }
+
+          const t0 = performance.now();
+          const step = (now: number) => {
+            // The tour was torn down under us — stop moving a dead marker.
+            if (tourLayerRef.current !== layer) { done(); return; }
+            const p = Math.min(1, (now - t0) / ms);
+            // Ease the lap so it leaves and arrives softly instead of
+            // snapping into motion at full speed.
+            const eased = p < 0.5 ? 2 * p * p : 1 - ((-2 * p + 2) ** 2) / 2;
+            try { tracker.setLatLng(at(eased)); } catch { done(); return; }
+            if (p >= 1) { done(); return; }
+            requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        }),
+        label: (at, {
+          title, sub, lines = [], detail, glyph, color, atPin = false, closable = false
+        }) => {
+          const facts = lines.filter(Boolean);
+          L.marker(at, {
+            icon: L.divIcon({
+              className: 'wl-tour-stop',
+              html:
+                `<div class="wl-tour-stop-wrap" ` +
+                `style="--wl-tour-color:${color};` +
+                `--wl-tour-lift:${atPin ? PIN_LIFT_PX : 0}px">` +
+                // A stack of facts reads as a little card, left-aligned;
+                // a single line stays centred over its glyph as before.
+                `<span class="wl-tour-stop-label` +
+                `${facts.length ? ' wl-tour-stop-label-card' : ''}` +
+                `${closable ? ' wl-tour-stop-label-closable' : ''}">` +
+                `<b>${escapeHtml(title)}</b>` +
+                (sub ? `<small>${escapeHtml(sub)}</small>` : '') +
+                facts.map((l) => `<i>${escapeHtml(l)}</i>`).join('') +
+                `${detail ? `<em>${escapeHtml(detail)}</em>` : ''}` +
+                (closable
+                  ? `<span class="wl-tour-stop-close" data-action="tour-close" ` +
+                    `role="button" tabindex="0" aria-label="Close" title="Close">` +
+                    `${CLOSE_SVG}</span>`
+                  : '') +
+                `</span>` +
+                // Nothing under the bubble when it is standing on the pin —
+                // see `atPin`.
+                (atPin
+                  ? ''
+                  : `<span class="wl-tour-stop-glyph" aria-hidden="true">${glyph}</span>`) +
+                `</div>`,
+              iconSize: [30, 30],
+              iconAnchor: [15, 15]
+            }),
+            /*
+             * The MARKER stays non-interactive — nothing in a tour is a target
+             * — and the × opts itself back in with `pointer-events: auto`, the
+             * same way a chip does. It is caught by the map container's
+             * delegated handler on `data-action`.
+             */
+            interactive: false,
+            zIndexOffset: 800
+          }).addTo(layer);
+        }
       });
-      await wait(750);
-
-      for (const { fire, distanceKm } of shown) {
-        if (!tourLayerRef.current) return;
-        const held = isUnderControl(fire);
-        const status = fire.status?.trim()
-          ? fire.status
-          : held
-          ? 'Reported under control'
-          : 'Not reported under control';
-
-        L.marker([fire.centroid.lat, fire.centroid.lon], {
-          icon: L.divIcon({
-            className: 'wl-fire-stop',
-            html:
-              `<div class="wl-fire-stop-wrap">` +
-              `<span class="wl-fire-stop-label${held ? '' : ' wl-fire-stop-label-hot'}">` +
-              `${escapeHtml(status)}` +
-              `<em>${escapeHtml(fire.name)} · ${distanceKm.toFixed(1)} km away</em>` +
-              `</span>` +
-              `<span class="wl-fire-stop-glyph" aria-hidden="true">🔥</span>` +
-              `</div>`,
-            iconSize: [30, 30],
-            iconAnchor: [15, 15]
-          }),
-          interactive: false,
-          zIndexOffset: 800
-        }).addTo(layer);
-
-        await wait(850);
-      }
-
-      await wait(900);
     } finally {
       layer.remove();
       tourLayerRef.current = null;
+      if (endTourRef.current === cancel) endTourRef.current = null;
       container.classList.remove('wl-touring');
       try {
+        // The camera is given back whether the tour finished or was stopped:
+        // it was always borrowed.
         if (reduced) map.setView(home.center, home.zoom, { animate: false });
         else map.flyTo(home.center, home.zoom, { duration: 0.8 });
       } catch { /* map torn down */ }
@@ -3593,13 +5113,517 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
   }, []);
 
+  /**
+   * Tapping the fire chip: go and look, then come back.
+   *
+   * The chip says "3 active fires, nearest 21 km away", and the next question
+   * is always the same one — WHERE, and are they out? Each fire is named in
+   * turn, its label popping in over its own flame so it is obvious which one
+   * is being talked about.
+   *
+   * The labels quote the agency's own reading and nothing more: "reported
+   * under control" is never shortened to "out", and a fire the feed gives no
+   * status for says that rather than being assumed to be running.
+   */
+  const runFireTour = useCallback(() => runTour(async (t) => {
+    const point = readPointRef.current;
+    // Five is as many labels as fit on a phone before they stack on top of
+    // each other; the rest are still counted on the chip.
+    const shown = nearbyFiresRef.current.slice(0, 5);
+    if (!point || !shown.length) return;
+
+    const bounds = L.latLngBounds(
+      [point.lat, point.lon] as L.LatLngExpression,
+      [point.lat, point.lon] as L.LatLngExpression
+    );
+    shown.forEach((n) => bounds.extend([n.fire.centroid.lat, n.fire.centroid.lon]));
+    t.frame(bounds, 11);
+    await t.wait(750);
+
+    for (const { fire, distanceKm } of shown) {
+      if (!t.alive()) return;
+      const held = isUnderControl(fire);
+      t.label([fire.centroid.lat, fire.centroid.lon], {
+        title: fire.status?.trim()
+          ? fire.status
+          : held ? 'Reported under control' : 'Not reported under control',
+        detail: `${fire.name} · ${distanceKm.toFixed(1)} km away`,
+        glyph: '\u{1F525}',
+        color: held ? '#F97316' : '#EF4444'
+      });
+      await t.wait(850);
+    }
+
+    await t.wait(900);
+  }), [runTour]);
+
+  /**
+   * Tapping a warning chip: where does this actually apply?
+   *
+   * The chip says "Heatwave" and the honest follow-up is "over what?" — a
+   * warning is a shape an agency drew, and the shape is the answer. Every
+   * alert of that family covering this point is drawn at once, because a
+   * camper standing under two overlapping heat products is standing under one
+   * heat problem.
+   *
+   * A zone-based product says so on its label. Its outline is the edge of the
+   * FORECAST REGION the warning was issued for, not the edge of the weather,
+   * and that is exactly the sort of thing this app must not let a shape imply
+   * on its own.
+   */
+  const runAlertTour = useCallback((badge: AlertBadge) => runTour(async (t) => {
+    const point = readPointRef.current;
+    if (!point) return;
+
+    const covering = hazardsRef.current.filter(
+      (a) =>
+        a.geometry &&
+        alertBadge(a) === badge &&
+        pointInGeometry(point.lat, point.lon, a.geometry)
+    );
+    if (!covering.length) return;
+
+    const color = BADGE_COLOR[badge];
+
+    /**
+     * The SAME cloud that is on the map, lifted a little.
+     *
+     * This used to draw the raw alert geometry with a crisp 2.5px stroke —
+     * the surveyed parcel edges, hard, directly on top of the soft cloud
+     * already drawn for the same warning. Two different shapes for one
+     * warning, and the sharper of the two was the one this app is least
+     * entitled to draw. `cloudPieces` gives back exactly the shape the cloud
+     * layer uses, so the tour highlights the thing you are looking at instead
+     * of contradicting it.
+     */
+    const pieces = cloudPieces(covering.map((a) => a.geometry));
+    if (!pieces.length) return;
+
+    const shapes = L.geoJSON(
+      {
+        type: 'FeatureCollection',
+        features: pieces.map((p) => p.shape)
+      } as any,
+      {
+        style: {
+          color,
+          weight: 10,
+          opacity: 0.35,
+          fillColor: color,
+          fillOpacity: 0.26,
+          fillRule: 'nonzero',
+          lineJoin: 'round',
+          lineCap: 'round'
+        }
+      } as RenderedGeoJSONOptions
+    ).addTo(t.layer);
+
+    /**
+     * FRAME THE PIECE THE CAMPER IS STANDING IN, NOT EVERY PIECE THERE IS.
+     *
+     * `covering` is the whole family — one air quality statement can arrive as
+     * a dozen disjoint regions strung along a mountain range, and framing all
+     * of them together is what used to throw the camera out to a map of the
+     * west coast. The camper asked about the one over their head. The rest
+     * stay drawn, because they are the same warning, and the camera simply
+     * does not try to hold them.
+     */
+    const here =
+      pieces.find((p) => pointInGeometry(point.lat, point.lon, p.shape.geometry)) ?? pieces[0];
+    const edge = outerRing(here.shape);
+    const bounds = (edge.length ? L.latLngBounds(edge) : shapes.getBounds())
+      .extend([point.lat, point.lon]);
+
+    /**
+     * A LIMIT ON HOW FAR OUT THIS IS ALLOWED TO GO.
+     *
+     * Warning areas run from a single valley to most of a province, and fitting
+     * the big ones threw the camera to a map of the west coast — the shading a
+     * smear across it, the pin a speck, and no way to tell what ground any of
+     * it was over. Past roughly zoom 7 there is nothing left to recognise, and
+     * seven levels out is already further than anyone means by "zoom out a bit".
+     * Beyond that the tour shows part of the area properly instead of all of it
+     * uselessly, with the pin held in the middle.
+     */
+    const floor = Math.max(t.map.getZoom() - 7, 7);
+    t.frame(bounds, 11, floor, L.latLng(point.lat, point.lon));
+    // Longer than the other tours wait: the camera is flying, and the tracker
+    // has to set off along an edge that has stopped moving.
+    await t.wait(1000);
+    if (!t.alive()) return;
+
+    /*
+     * NO LABEL OVER THE PIN ANY MORE.
+     *
+     * There used to be a bubble here naming the warning and carrying its
+     * caveat. It landed on top of the shape it was describing, at the exact
+     * moment the camper was trying to look at that shape, and the caveat it
+     * carried is not a thing to read in the two seconds a tour lasts. Both now
+     * live where they can be read properly: on the chip itself, and in the
+     * card the "i" opens.
+     */
+    await t.trace(edge, color, 2400);
+    await t.wait(500);
+  }), [runTour]);
+
+  /**
+   * Tapping the land chip: which shape said that, and what are the rules on it?
+   *
+   * The chip names a forest or a district; this draws the parcel the name came
+   * from AND spells out what the name means for tonight — how many days, what
+   * you have to buy first, whether there is a fire ban. A camper tapping the
+   * name of a national forest is not asking to be told the name back.
+   *
+   * Those edges are approximate to within hundreds of metres — which is why the
+   * fills are off by default — so the caveat rides underneath the rules, on
+   * screen, attached to the thing it is about.
+   */
+  const runLandTour = useCallback(() => runTour(async (t) => {
+    const point = readPointRef.current;
+    if (!point) return;
+
+    // Smallest matching parcel wins, exactly as it does when a pin is dropped:
+    // a wilderness area inside a national forest carries the stricter rules.
+    let best: { feature: BoundaryFeature; extent: number } | null = null;
+    for (const feature of collectionRef.current.features) {
+      if (!pointInGeometry(point.lat, point.lon, feature.geometry)) continue;
+      const extent = bboxExtent(feature.geometry);
+      if (!best || extent < best.extent) best = { feature, extent };
+    }
+    if (!best) return;
+
+    const shape = L.geoJSON(best.feature as any, {
+      style: {
+        color: '#A78BFA', weight: 2.5, opacity: 0.95,
+        fillColor: '#A78BFA', fillOpacity: 0.2
+      }
+    }).addTo(t.layer);
+
+    t.frame(shape.getBounds(), 12);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    /*
+     * MAKE ROOM ABOVE THE PIN FOR A CARD THIS TALL.
+     *
+     * The camera was framed on the PARCEL, which says nothing about where in
+     * the viewport the pin ends up — on a tall thin forest it lands near the
+     * top, and a bubble carrying four rules and a hedge then opens off the top
+     * of the screen. So if the pin is sitting too high to hang the card above
+     * it, the view slides up and the pin comes down into the lower half first.
+     */
+    const HEADROOM_PX = 250;
+    try {
+      const seat = t.map.latLngToContainerPoint([point.lat, point.lon]);
+      if (seat.y < HEADROOM_PX) {
+        t.map.panBy([0, seat.y - HEADROOM_PX], { animate: !t.reduced, duration: 0.4 });
+        await t.wait(500);
+        if (!t.alive()) return;
+      }
+    } catch { /* map torn down mid-tour */ }
+
+    const land = landFromFeature(best.feature.properties as any);
+    const card = land ? landRules(land) : null;
+
+    t.label([point.lat, point.lon], {
+      title: land?.name ?? 'Public land',
+      sub: land ? landSubtitle(land) : undefined,
+      lines: card?.rules ?? [],
+      /*
+       * Two hedges, and both have to be here. Where the rules are the agency's
+       * general ones rather than this parcel's record, saying so is the whole
+       * condition on showing them at all — see `src/config/landRules.ts`. The
+       * boundary caveat is the house rule and never comes off.
+       */
+      detail: (card?.basis ? `${card.basis}. ` : '') +
+        'Boundary approximate — the edge can be hundreds of metres out',
+      glyph: LAND_GLYPH,
+      color: '#A78BFA',
+      // The dropped pin is standing on this exact point: climb over it, and
+      // don't draw a second mark on top of it.
+      atPin: true,
+      closable: true
+    });
+
+    /*
+     * TEN SECONDS, AND AN × FOR THE IMPATIENT.
+     *
+     * This is the one tour label that is a piece of reading rather than a
+     * caption: a name, a stay limit, a permit, a hedge. Two seconds was enough
+     * for the name alone and the rest may as well not have been there. Ten is
+     * a proper read with time to go back over a line — and because ten seconds
+     * is a long time to be made to wait, the label carries its own way out.
+     */
+    await t.wait(10000);
+  }), [runTour]);
+
+  /**
+   * Tapping a road chip: show me the track.
+   *
+   * A road is a LINE, and it used to be treated as a destination — a dot on
+   * the single nearest vertex, and a router asked how to drive to a road you
+   * are already standing beside. Now the way itself is drawn.
+   *
+   * Two chips land here. The facility chip already carries its line, so it
+   * draws instantly. The spot's own "gravel road" chip is a camper's rating
+   * with no geometry behind it at all, so the track is looked up on the spot,
+   * and the label keeps the two apart: the rating describes the drive in, the
+   * line is only whatever OpenStreetMap has near the pin.
+   */
+  const runRoadTour = useCallback((facility: NearbyFacility | null) => runTour(async (t) => {
+    const point = readPointRef.current;
+    if (!point) return;
+
+    let road = facility;
+    /**
+     * `checked` is the difference between two sentences that look alike and
+     * mean opposite things: "nobody has mapped a track here" and "we could not
+     * find out". The chip already carries its own line when the facility lookup
+     * found one, so that path never has to ask.
+     */
+    let checked = true;
+    if (!road?.line?.length) {
+      t.label([point.lat, point.lon], {
+        title: 'Looking for the track…', glyph: '\u{1F6E3}️', color: '#FDE047',
+        atPin: true
+      });
+      const found = await findNearestDriveableRoad(point.lat, point.lon, ROAD_RADIUS_KM);
+      if (!t.alive()) return;
+      road = found.road;
+      checked = found.ok;
+      t.layer.clearLayers();
+    }
+
+    if (!road?.line?.length) {
+      t.label([point.lat, point.lon], checked
+        ? {
+            title: 'No mapped track within 2 km',
+            detail: 'OpenStreetMap has nothing here, which is not the same as nothing being here',
+            glyph: '\u{1F6E3}️',
+            color: '#FDE047',
+            atPin: true
+          }
+        : {
+            title: 'Could not check for a track',
+            detail: 'OpenStreetMap did not answer. That is not a report that there is no road',
+            glyph: '\u{1F6E3}️',
+            color: '#FDE047',
+            atPin: true
+          });
+      await t.wait(2600);
+      return;
+    }
+
+    // A dark under-stroke first, so a yellow line stays legible over pale
+    // desert and bright sand.
+    L.polyline(road.line, { color: '#0F172A', weight: 9, opacity: 0.45 }).addTo(t.layer);
+    const line = L.polyline(road.line, {
+      color: '#FDE047', weight: 5, opacity: 0.95, lineCap: 'round', lineJoin: 'round'
+    }).addTo(t.layer);
+
+    t.frame(line.getBounds().extend([point.lat, point.lon]), 15);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    const away = road.distanceKm < 1
+      ? `${Math.round(road.distanceKm * 1000)} m`
+      : `${road.distanceKm.toFixed(1)} km`;
+    t.label([road.latitude, road.longitude], {
+      title: road.name ?? 'Nearest mapped track',
+      detail: `${away} away — it may be gated, seasonal or impassable`,
+      glyph: '\u{1F6E3}️',
+      color: '#FDE047'
+    });
+
+    /**
+     * LONG ENOUGH TO ACTUALLY LOOK AT THE ROAD.
+     *
+     * The line was on screen for about three seconds all in, and most of that
+     * went on the camera still settling and the label arriving. By the time you
+     * had found the yellow line against the imagery it was being taken away —
+     * so the answer to "where is the track" was one you had to ask for twice.
+     * Five seconds is a glance, a second glance, and time to see where it goes.
+     */
+    await t.wait(4500);
+  }), [runTour]);
+
+  /**
+   * Tapping the gap chip: where does the road actually stop, and what is there?
+   *
+   * The chip says "1.8 km short" and the only useful version of that is on the
+   * map. It used to be one dashed line into nowhere and a label saying the
+   * road ends here, which reads as the app not knowing about roads that are
+   * plainly drawn on the basemap underneath it.
+   *
+   * It knows. So the tour now shows the road too, in one of two shapes:
+   *
+   *   THE ROUTE ENDS ON A ROAD — the road is drawn in yellow, named, and the
+   *   dashed stretch runs from it to the pin. That is "you drive this, then
+   *   you're on your own for 400 m".
+   *
+   *   A CLOSER ROAD EXISTS THAT NOTHING WOULD ROUTE ONTO — it is drawn too, in
+   *   a dimmer, dashed yellow to keep it visibly different from the drive, and
+   *   labelled as what it is: mapped, close, and not reachable by any engine
+   *   we asked. That is the honest answer to "why is it ignoring that road",
+   *   and it is one the camper can act on with satellite imagery.
+   *
+   * The dashed stretch is still never called a route. Nobody has said there is
+   * anything to drive, walk or push a rig along in that gap.
+   */
+  const runGapTour = useCallback(() => runTour(async (t) => {
+    const point = readPointRef.current;
+    const route = routeRef.current;
+    const line = route?.geometry ?? [];
+    const end = line[line.length - 1];
+    if (!point || !end) return;
+
+    const gap = route?.gapToDestinationKm ?? 0;
+    const approach = route?.approach ?? null;
+    const nearest = route?.nearestRoad ?? null;
+
+    // A road we could not route onto is only worth showing when it is
+    // meaningfully closer than where the drive gave up.
+    const stranded =
+      !approach && nearest && nearest.distanceKm < gap - 0.15 ? nearest : null;
+    const shown = approach ?? stranded;
+
+    const bounds = L.latLngBounds(end, [point.lat, point.lon]);
+
+    if (shown?.line?.length) {
+      // Dark under-stroke first, so yellow survives pale rock and bright sand.
+      L.polyline(shown.line, { color: '#0F172A', weight: 9, opacity: 0.45 }).addTo(t.layer);
+      L.polyline(shown.line, {
+        color: '#FDE047',
+        weight: 5,
+        opacity: stranded ? 0.75 : 0.95,
+        // Dashed when nothing can route onto it: the line is a fact about the
+        // map, not a way in, and it must not look like the drive.
+        dashArray: stranded ? '10 8' : undefined,
+        lineCap: 'round',
+        lineJoin: 'round'
+      }).addTo(t.layer);
+      bounds.extend(L.latLngBounds(shown.line));
+    }
+
+    L.polyline([end, [point.lat, point.lon]], {
+      color: '#F59E0B', weight: 4, opacity: 0.95, dashArray: '2 9', lineCap: 'round'
+    }).addTo(t.layer);
+    L.circleMarker(end, {
+      radius: 6, color: '#F59E0B', weight: 3, fillColor: '#0F172A', fillOpacity: 1
+    }).addTo(t.layer);
+
+    t.frame(bounds, 14);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    const named = (road: NonNullable<typeof shown>): string =>
+      road.name ?? `an unnamed ${road.kind.replace(/_/g, ' ')}`;
+    const away = (km: number): string =>
+      km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+
+    t.label(end, {
+      title: approach
+        ? `The drive ends on ${named(approach)}`
+        : 'The mapped road ends here',
+      detail: approach
+        ? `${away(gap)} left on foot or an unmapped track` +
+          (approach.gated ? ' — OpenStreetMap records a gate on this road' : '')
+        : `${away(gap)} left — an unmapped track, or nothing at all`,
+      glyph: '\u{1F6A7}',
+      color: '#F59E0B'
+    });
+
+    // The second label only exists when there is a second thing to say.
+    if (stranded) {
+      await t.wait(2000);
+      if (!t.alive()) return;
+
+      t.label([stranded.lat, stranded.lon], {
+        title: `${named(stranded)} — ${away(stranded.distanceKm)} away`,
+        detail: 'Mapped, but no router could find a way onto it. Check satellite ' +
+          'imagery before counting on it',
+        glyph: '\u{1F6E3}️',
+        color: '#FDE047'
+      });
+    }
+
+    await t.wait(2400);
+  }), [runTour]);
+
   // A tour still running when the map goes away would keep adding flames to a
   // layer nobody can see, and then fly a torn-down camera home.
   useEffect(() => () => { tourLayerRef.current?.remove(); tourLayerRef.current = null; }, []);
 
   /**
-   * A tap on something the open pin offers: a facility chip, the fire chip,
-   * the directions button, or the close button.
+   * A chip that has no journey in it still answers when tapped.
+   *
+   * It unfurls into its own full sentence — the hedged one, with the caveats —
+   * for a few seconds, and then goes back to being short. That sentence has
+   * always existed; it lived in the `title` attribute, which is a hover
+   * tooltip, which on the phone this app is used on is nowhere at all. So
+   * "Strong signal" could never tell anybody it means a distance to a mast
+   * with the terrain ignored.
+   *
+   * The rest of the stack slides to make room rather than jumping, and the
+   * chip puts itself away on a timer — a tap is a glance, not a state to have
+   * to get back out of.
+   */
+  const unfurlTimersRef = useRef(new Map<HTMLElement, number>());
+
+  const unfurlChip = useCallback((chip: HTMLElement) => {
+    const text = chip.querySelector<HTMLElement>(':scope > .wl-chip-text');
+    const row = chip.parentElement;
+    if (!text || !row) return;
+
+    const timers = unfurlTimersRef.current;
+    const running = timers.get(chip);
+    if (running) window.clearTimeout(running);
+
+    const short = chip.getAttribute('data-label') ?? text.textContent ?? '';
+    const full = chip.getAttribute('data-full') ?? short;
+
+    // Already open: tapping again puts it away rather than doing nothing.
+    if (chip.classList.contains('wl-chip-open')) {
+      timers.delete(chip);
+      flipRow(row, () => {
+        chip.classList.remove('wl-chip-open');
+        text.textContent = short;
+      });
+      return;
+    }
+
+    flipRow(row, () => {
+      chip.classList.add('wl-chip-open');
+      text.textContent = full;
+    });
+    haptic('tap');
+
+    timers.set(chip, window.setTimeout(() => {
+      timers.delete(chip);
+      if (!chip.isConnected) return;
+      const home = chip.parentElement;
+      const close = () => {
+        chip.classList.remove('wl-chip-open');
+        text.textContent = short;
+      };
+      if (home) flipRow(home, close);
+      else close();
+    }, 5200));
+  }, []);
+
+  useEffect(() => () => {
+    unfurlTimersRef.current.forEach((id) => window.clearTimeout(id));
+    unfurlTimersRef.current.clear();
+  }, []);
+
+  /**
+   * A tap on anything the open pin offers.
+   *
+   * EVERY CHIP GOES THROUGH HERE NOW, not just the two that used to be
+   * tappable. A chip that stands for something on the map takes the camera to
+   * it and brings it back; the car chip hands off to the phone's maps app; and
+   * a chip that is purely a fact unfurls into its full wording. Nothing on the
+   * pin is inert any more, which is what makes the arrows worth trusting.
    *
    * Delegated from the map container in the CAPTURE phase, which is the only
    * place it works: these live inside a marker's icon, so Leaflet's own marker
@@ -3614,34 +5638,123 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const onTap = (event: Event) => {
       const target = event.target as HTMLElement | null;
-      const hit = target?.closest?.('[data-facility],[data-action]') as HTMLElement | null;
+      const hit = target?.closest?.(
+        '.wl-chip,[data-facility],[data-action]'
+      ) as HTMLElement | null;
       if (!hit) return;
+      // A peeked stack is a look, not a menu — see the CSS note on .wl-chips-peek.
+      if (hit.closest('.wl-chips-peek')) return;
 
       const action = hit.getAttribute('data-action');
       const facilityId = hit.getAttribute('data-facility');
       const facility = facilityId
         ? facilitiesRef.current.find((f) => f.id === facilityId)
         : undefined;
-      if (!action && !facility) return;
+      const isChip = hit.classList.contains('wl-chip');
+      if (!action && !facility && !isChip) return;
 
       event.preventDefault();
       event.stopPropagation();
 
-      if (facility) setFacilityTrip({ facility, route: null, loading: true });
-      else if (action === 'fires') void runFireTour();
-      else if (action === 'directions') directionsRef.current();
-      else if (action === 'close') clearDestinationRef.current();
-      else if (action === 'details' && destinationRef.current?.campsite) {
-        detailRef.current(destinationRef.current.campsite);
-      } else if (action === 'add') {
-        const at = readPointRef.current;
-        if (at) addSpotRef.current(at.lat, at.lon);
+      switch (action) {
+        case 'fires': void runFireTour(); return;
+        case 'alert': {
+          const badge = hit.getAttribute('data-badge') as AlertBadge | null;
+          if (badge) void runAlertTour(badge);
+          return;
+        }
+        case 'land': void runLandTour(); return;
+        case 'gap': void runGapTour(); return;
+        case 'road': void runRoadTour(facility ?? null); return;
+        case 'directions': directionsRef.current(); return;
+        // The × on a tour label. Stops the tour and nothing else — the pin it
+        // was launched from stays open, because you asked about one chip.
+        case 'tour-close': endTour(); return;
+        /*
+         * The × under the pin means "put all of this away".
+         *
+         * It used to mean "put the pin away", which left whatever the pin had
+         * drawn on the map — a parcel outlined in violet, a label spelling out
+         * its rules, a camera parked somewhere the camper never chose to be —
+         * sitting there with nothing left to explain it and no way to dismiss
+         * it. The tour goes first so the camera lands back home before the pin
+         * it belonged to disappears.
+         */
+        case 'close':
+          endTour();
+          clearDestinationRef.current();
+          return;
+        case 'details':
+          if (destinationRef.current?.campsite) detailRef.current(destinationRef.current.campsite);
+          return;
+        // The "i" under a dropped pin. It used to unfurl every chip in place,
+        // above a pin that might be anywhere on the screen; now it opens the
+        // card at the bottom, which reads the same at any zoom. See
+        // `PointInfoSheet`.
+        case 'point': setPointCardOpen(true); return;
+        case 'add': {
+          const at = readPointRef.current;
+          if (at) addSpotRef.current(at.lat, at.lon);
+          return;
+        }
+        case 'add-facility': {
+          const at = readPointRef.current;
+          if (at) addFacilityRef.current?.(at.lat, at.lon);
+          return;
+        }
+        default: break;
       }
+
+      // A facility with no action of its own: frame it with the spot and ask
+      // for a route, which is the old behaviour and still the right one.
+      if (facility) { setFacilityTrip({ facility, route: null, loading: true }); return; }
+      if (isChip) unfurlChip(hit);
     };
 
     container.addEventListener('click', onTap, true);
     return () => container.removeEventListener('click', onTap, true);
-  }, [isMapReady, runFireTour]);
+  }, [
+    isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour,
+    unfurlChip, endTour
+  ]);
+
+  /**
+   * The pin going away takes its tour with it, however it went.
+   *
+   * The × under the pin is not the only way to close one — a new pin, a search
+   * result, the Escape key and the bottom sheet all clear the destination too,
+   * and a tour outliving the pin it was launched from is the same orphaned
+   * overlay every time. One place to say it, rather than five.
+   */
+  useEffect(() => {
+    if (!destination) endTour();
+  }, [destination, endTour]);
+
+  /**
+   * "Show me on the map", from a line in the point card.
+   *
+   * The card is the long-form version of the pin's chips, so its rows run the
+   * same tours those chips do. The card gets out of the way first: a tour
+   * borrows the camera, and it cannot borrow a screen that is half covered.
+   */
+  const showDotOnMap = useCallback((dot: MarkerDot) => {
+    setPointCardOpen(false);
+    // A beat, so the map has its full height back before a tour measures it.
+    window.setTimeout(() => {
+      switch (dot.action) {
+        case 'fires': void runFireTour(); return;
+        case 'alert': if (dot.badge) void runAlertTour(dot.badge); return;
+        case 'land': void runLandTour(); return;
+        case 'gap': void runGapTour(); return;
+        case 'road': void runRoadTour(dot.facility ?? null); return;
+        case 'directions': directionsRef.current(); return;
+        default:
+          if (dot.facility) {
+            setFacilityTrip({ facility: dot.facility, route: null, loading: true });
+          }
+      }
+    }, 380);
+  }, [runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour]);
 
   /**
    * Frame the spot and the facility together, then ask for a route.
@@ -3869,7 +5982,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         A stack of standing notices: a parcel-count chip with an expandable
         source legend, an amber "Storm in view" panel, and a camper-report
         count. All three described things already visible on the map — the
-        shaded warning clouds, the coloured dots on the pins, the report
+        shaded warning areas, the coloured dots on the pins, the report
         markers — and between them they covered the top third of a phone
         screen with text you could not dismiss. A permanent caption over the
         map is not information; it is something to look past.
@@ -3907,6 +6020,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           <div className="bg-slate-800/95 backdrop-blur-md border border-slate-600 text-slate-300 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
             <Eye className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
             <span>Outside coverage. Wandrlust supports {COVERAGE_LABEL}.</span>
+          </div>
+        )}
+
+        {/*
+          A HOLE IN THE WARNING LAYER, NAMED.
+
+          The shading over one country and nothing over the next looks
+          identical whether the second country is quiet or simply was not
+          asked. Amber rather than red: nothing is known to be wrong, and
+          dressing "we could not check" as a hazard would be its own kind of
+          overstatement. It clears itself the moment both feeds answer.
+        */}
+        {showWarnings && alertGap && (
+          <div className="bg-amber-950/90 backdrop-blur-md border border-amber-700/70 text-amber-100 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+            <span className="leading-snug">{alertGap}</span>
           </div>
         )}
       </div>
@@ -4186,7 +6315,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         covers the entire screen is invisible until somebody tells you it's
         there — but once you know, the hint is clutter, so it removes itself.
       */}
-      {!destination && (
+      {!destination && !pointCardOpen && (
         <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
           <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl">
             <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -4195,6 +6324,82 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             </span>
           </div>
         </div>
+      )}
+
+      {/*
+        A ZOOMED-OUT MAP IS A SAMPLE, AND IT HAS TO SAY SO.
+
+        At these zooms the map shows the biggest parcels a source will hand
+        over, not all of them — and a camper reading a sparsely-painted Ontario
+        concludes there is little Crown land in Ontario, then zooms in and
+        watches it fill. That is the same forbidden sentence the app refuses to
+        say in words, said instead by a rendering budget. It is only ever true
+        that MORE exists than is drawn, never less, so the map says which way
+        it is wrong.
+
+        Only when a source actually withheld something: a view whose parcels
+        all fit is a complete answer and does not need apologising for. Said at
+        any zoom, not just the overview — the detailed tier has a cap of its
+        own, and a sample is a sample wherever it happens.
+      */}
+      {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && (
+        <div className="absolute bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
+            <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
+            <span className="text-[10px] font-semibold text-violet-200">
+              Largest areas only — zoom in for the rest
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/*
+        THE MAP SAYS WHEN IT DOESN'T KNOW, RATHER THAN GOING QUIET.
+
+        Two different silences used to look identical, and both looked like
+        "there is no public land out here":
+
+          - zoomed past the point where any boundary is legible at all, and
+          - the wide view asked and got an answer it could not stand behind,
+            which happens when one of eight government servers is slow.
+
+        The second is the one that stings, because the boundaries were there a
+        second ago at the zoom above. So the map keeps drawing what it had and
+        this says why, in words a camper can act on. Amber rather than violet:
+        the truncation chip above is a caveat about a good answer, this is a
+        missing answer, and they must not read the same.
+      */}
+      {showBoundaries && (wideViewFailed || zoomTooFar) && (
+        <div className="absolute bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
+          <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
+            <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
+            <span className="text-[10px] font-semibold text-amber-200 leading-snug">
+              {zoomTooFar
+                ? 'Too far out to draw public land — zoom in to see it'
+                : 'Couldn’t load public land for this wide view. What’s drawn may be incomplete — zoom in for the real picture.'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/*
+        Everything known about a dropped pin, as a card rather than as a stack
+        of pills unfurling over the map. Rendered here rather than in App
+        because the map already holds the answers this card lists — they are
+        the same dots the pin is wearing — and because the map has to know how
+        much screen the card is taking to keep the pin above it.
+      */}
+      {readLat !== null && readLon !== null && (
+        <PointInfoSheet
+          isOpen={pointCardOpen}
+          dots={destinationDots}
+          latitude={readLat}
+          longitude={readLon}
+          land={destination?.land}
+          onClose={() => setPointCardOpen(false)}
+          onShowOnMap={showDotOnMap}
+          onHeightChange={setPointCardPx}
+        />
       )}
     </div>
   );

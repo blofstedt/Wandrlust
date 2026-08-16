@@ -238,4 +238,91 @@ export const fetchAllTiled = async (
   }
 
   return stats;
-};
+};
+/* ------------------------------------------------------------------ */
+/* Whole-file sources                                                  */
+/* ------------------------------------------------------------------ */
+/**
+ * Download one GeoJSON file and hand its features over in batches.
+ *
+ * WHY THIS SITS BESIDE THE TILED FETCHER. Everything above pages an ArcGIS
+ * query endpoint, subdividing whenever a tile looks truncated. That is the
+ * right shape for a service and the wrong shape for a province that publishes
+ * its Crown land as a file and nothing else — which is most of Canada. The
+ * tiled fetcher could not reach them at all, so they were absent from the app
+ * and recorded as coverage gaps.
+ *
+ * Deliberately dumb: one request, no paging, no retry ladder. A file source
+ * either answers or it does not, and pretending otherwise would invent
+ * partial coverage that nobody could distinguish from the real thing.
+ *
+ * Reports the same `FetchStats` as the tiled path so the seeder's logging and
+ * its truncation warnings work identically for both.
+ */
+export const fetchGeoJsonFile = async (
+  /** An http(s) URL, or a path to a file on disk. */
+  url: string,
+  onFeatures: (features: any[]) => Promise<void>,
+  batchSize = 500
+): Promise<FetchStats> => {
+  const stats: FetchStats = {
+    tilesQueried: 1, tilesSubdivided: 0, featuresFetched: 0,
+    uniqueFeatures: 0, errors: 0, truncationSuspected: false
+  };
+
+  try {
+    /**
+     * A LOCAL PATH IS AS VALID A SOURCE AS A URL, and for this data it is
+     * often the only one.
+     *
+     * The provinces that publish campable Crown land publish it as a periodic
+     * file — a download page, an email, a quarterly refresh — not as a service
+     * anybody can query. Insisting on a URL would mean either inventing deep
+     * links that rot, or leaving those provinces out entirely, and this app
+     * has already recorded them as coverage gaps for exactly that reason.
+     *
+     * So: drop the province's GeoJSON somewhere, point `url` at the path, run
+     * the seeder. Same gate, same geometry check, same audit row as anything
+     * fetched over the wire — and the file is the province's own, not a guess.
+     */
+    let body: any;
+
+    if (/^https?:\/\//i.test(url)) {
+      const res = await fetch(url, { headers: { Accept: 'application/geo+json, application/json' } });
+      if (!res.ok) {
+        stats.errors = 1;
+        console.warn(`    download failed: HTTP ${res.status} ${res.statusText}`);
+        return stats;
+      }
+      body = await res.json();
+    } else {
+      const { readFile } = await import('node:fs/promises');
+      body = JSON.parse(await readFile(url, 'utf8'));
+    }
+
+    const features: any[] = Array.isArray(body?.features)
+      ? body.features
+      : Array.isArray(body) ? body : [];
+
+    if (features.length === 0) {
+      // Loud, because a silently empty source is indistinguishable from a
+      // region with no public land — the exact confusion this app exists to
+      // avoid. A seed run that prints this has NOT covered that province.
+      stats.errors = 1;
+      console.warn('    download returned no features — treat this source as UNCONFIRMED.');
+      return stats;
+    }
+
+    stats.featuresFetched = features.length;
+    stats.uniqueFeatures = features.length;
+
+    for (let i = 0; i < features.length; i += batchSize) {
+      await onFeatures(features.slice(i, i + batchSize));
+    }
+    return stats;
+  } catch (err) {
+    stats.errors = 1;
+    console.warn(`    download failed: ${(err as Error).message}`);
+    return stats;
+  }
+};

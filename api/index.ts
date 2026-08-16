@@ -93,7 +93,18 @@ app.get('/api/health', (_req, res) => {
       supabaseUrl: Boolean(process.env.VITE_SUPABASE_URL),
       serviceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
       vapidPublic: Boolean(process.env.VITE_VAPID_PUBLIC_KEY),
-      vapidPrivate: Boolean(process.env.VAPID_PRIVATE_KEY)
+      vapidPrivate: Boolean(process.env.VAPID_PRIVATE_KEY),
+      mapillaryToken: Boolean(process.env.MAPILLARY_TOKEN),
+      /**
+       * The agent string, printed rather than reduced to a boolean.
+       *
+       * The National Weather Service and OpenStreetMap both refuse callers
+       * they cannot identify, and this deployment spent its whole life sending
+       * a placeholder that read "set NWS_USER_AGENT in .env" — a to-do note in
+       * the field where a contact belongs. Nothing about it is secret and
+       * seeing the exact string is the difference between knowing and guessing.
+       */
+      nwsUserAgent: process.env.NWS_USER_AGENT?.trim() || '(built-in default)'
     }
   });
 });
@@ -125,6 +136,21 @@ await safeRegister(
   'boundaries',
   () => import('../server/boundaryRoutes.js'),
   'registerBoundaryRoutes'
+);
+
+/**
+ * The full-detail offline land pack, served out of Supabase cell by cell.
+ *
+ * Registered right after boundaries because it is the same subject matter and
+ * has the same failure mode: without it the app cannot download detailed maps,
+ * and an app that offers a download button which 404s is worse than one that
+ * says the pack is unavailable. The route answers `available: false` on its
+ * own when Supabase is absent, so registering it is always safe.
+ */
+await safeRegister(
+  'land-pack',
+  () => import('../server/landPackRoutes.js'),
+  'registerLandPackRoutes'
 );
 
 // Weather: NWS + Environment Canada. No API keys needed.
@@ -188,6 +214,34 @@ await safeRegister(
   'registerPushRoutes'
 );
 
+// Beacon: scans OpenStreetMap for places you might legally sleep. Needs
+// Supabase to store and rank what it finds; MAPILLARY_TOKEN is optional and
+// only adds the street-sign check.
+await safeRegister(
+  'beacon',
+  () => import('../server/beaconRoutes.js'),
+  'registerBeaconRoutes'
+);
+
+/**
+ * Spot context: the name a coordinate gets, and the facilities within 5 km.
+ *
+ * MISSING FOR THE SAME REASON FIRES AND ALERTS WERE, which is the third time
+ * this file has grown a route that `server.ts` had and it did not. Every
+ * deployed request to /api/spot/context fell through to the 404 below, the
+ * client turned that into `poiLookupFailed: true` exactly as designed, and the
+ * report sheet therefore asked every camper about showers, restrooms and fuel
+ * that OpenStreetMap could already have answered — while naming their spot
+ * "Spot at 38.573, -109.549" instead of "Manti-La Sal National Forest Pullout".
+ *
+ * A pure Overpass proxy with an in-memory cache; no keys, nothing to configure.
+ */
+await safeRegister(
+  'spot',
+  () => import('../server/spotRoutes.js'),
+  'registerSpotRoutes'
+);
+
 /**
  * Which feature owns a path, so a route that failed to LOAD can say so.
  *
@@ -208,7 +262,9 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/route/, 'routing'],
   [/^\/api\/push/, 'push'],
   [/^\/api\/alerts/, 'alerts'],
-  [/^\/api\/fires/, 'fires']
+  [/^\/api\/fires/, 'fires'],
+  [/^\/api\/beacon/, 'beacon'],
+  [/^\/api\/spot/, 'spot']
 ];
 
 // Unknown /api routes return JSON, not the SPA's HTML. A typo in a fetch URL

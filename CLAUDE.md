@@ -52,6 +52,9 @@ question shouldn't rewrite components.
 | Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
 | Search, filters, view switching | `src/App.tsx`, `src/components/Navbar.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
 | A campsite's detail view | `src/components/CampsiteBottomSheet.tsx` (map pin), `src/components/CampsiteDetailModal.tsx` (list card), `src/components/CampsiteCard.tsx` | map internals |
+| Submitting a spot, reporting on one | `src/components/SpotReportSheet.tsx`, `src/config/spotReport.ts`, `src/components/ui/ScalePicker.tsx` | boundaries, weather |
+| Beacon spots, the evidence ladder, the knock | `src/config/beacon.ts` (tiers + thresholds), `src/components/BeaconPanel.tsx`, `BeaconVerifyPanel.tsx`, `supabase_migration_14_spot_reports.sql` | campsites |
+| Naming a spot, finding nearby facilities | `server/spotContext.ts`, `server/spotRoutes.ts`, `src/services/spotContextService.ts` | all of `src/components/` |
 | Weather / fire / flood / storm | `src/services/weatherService.ts`, `src/components/HazardAlertPanel.tsx`, `server/weatherRoutes.ts`, `shared/hazards.ts` | everything else |
 | Notifications | `src/services/pushService.ts`, `src/components/PushSettings.tsx`, `server/pushRoutes.ts`, `public/sw.js` | components |
 | Sign in / accounts / trust tiers | `src/contexts/AuthContext.tsx`, `src/components/AuthModal.tsx`, `src/components/UserMenu.tsx`, `src/lib/supabase.ts`, `AUTH_SETUP.md` | map, weather |
@@ -69,7 +72,8 @@ question shouldn't rewrite components.
 server.ts                  Express API + Vite middleware, one process
 shared/hazards.ts          Alert classification shared by client and server
 server/
-  boundaryRoutes.ts        /api/boundaries — 3 government ArcGIS services, cached
+  boundaryRoutes.ts        /api/boundaries — 8 government ArcGIS services, cached
+  landGeometry.ts          Merges parcels into one shape, cuts lakes out of them
   weatherRoutes.ts         /api/weather + /api/weather/alerts (NWS + Env. Canada)
   openMeteo.ts             Hourly forecast for Canada and NWS gaps
   routeRoutes.ts           /api/route — ORS, then Valhalla, then OSRM
@@ -93,6 +97,9 @@ public/
                            `npm run map:assets`, never fetched at runtime.
     admin1-us-ca.json      State / province outlines
     land-mask.bin          Land-vs-water bitmask for the pin check
+    lakes-us-ca.json       Big lakes. Bundled into the SERVER (not fetched
+                           by the browser) and subtracted from every parcel
+                           so the map never paints "campable" over water.
 ```
 
 ## House rules
@@ -114,6 +121,40 @@ public/
    directly — go through the SQL functions.
 7. **Add types to `src/types.ts`**, not inline in a component.
 8. **Run `npm run lint`** (a TypeScript typecheck) before saying you're done.
+
+## Shipping — do this every time, without being asked
+
+**Work that stays on a branch does not exist.** Vercel builds a branch push as a
+private preview with its own URL, behind a login Brian does not use. It is not
+the app on his phone. Several changes sat finished-and-invisible this way, and
+were reported as "still broken" because from where he was standing they were.
+
+So finishing a change means:
+
+1. Commit on the working branch.
+2. **Merge it into `main` and push.** Vercel deploys `main` to production
+   automatically — that is the only thing that reaches Brian.
+3. **Delete the branch**, local and remote, once merged.
+4. Say that it is live, not that it is ready.
+
+Do not wait to be asked to merge, and do not leave a branch open "in case".
+If a change is worth committing it is worth shipping.
+
+**Then check it actually works in production.** The deployed API reports itself:
+
+```
+/api/boundaries?minLat=..&minLon=..&maxLat=..&maxLon=..&detail=overview&minAreaSqKm=99999999
+```
+
+returns `meta.sources[]` with `available` and `featureCount` per source and no
+geometry to wade through. `available:false` means that source is failing right
+now. Vercel's runtime logs say why — but retention is one hour on this plan, so
+look immediately, not tomorrow.
+
+**Test wide as well as narrow.** A source can answer a one-degree box perfectly
+and time out on a viewport of the whole Great Lakes. That is exactly how Ontario
+and Saskatchewan came to draw as empty provinces while every small-box test
+passed. Always check a continent-sized box too.
 
 ## Commands
 
@@ -141,8 +182,45 @@ npm run vapid    # generate push notification keys
   the rest. Absence of a polygon means "no data", never "no public land".
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
-- **Migrations must run in order,** 01 through 09. `supabase_schema.sql` is
-  destructive — it drops and recreates.
+- **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.
+  `supabase_schema.sql` is destructive — it drops and recreates.
+- **`public_lands` is EMPTY in production, and always has been.** `npm run seed`
+  writes it, `boundaries_in_bbox` reads it, and `boundaryRoutes.ts` prefers it
+  over the live ArcGIS services — a whole path that has never once fired,
+  because nobody ran the seed. Verified: `select count(*) from public_lands`
+  returns 0. Until it is seeded, every boundary request goes to eight
+  government servers, and the only thing between a camper and a slow
+  provincial ArcGIS box is `boundary_tile_cache` (migration 19), which fills
+  itself from real traffic. **Seeding it properly is still the fix**; it needs
+  a machine that can reach the sources, which the agent sandbox cannot.
+  `meta.sources[].servedFrom` on `/api/boundaries` says `memory`, `db` or
+  `live` per source — ask for the same box twice and watch it turn `db`.
+- **A merged pull request is not a shipped feature.** Vercel deploys the code
+  the moment `main` moves; nothing deploys the SQL. Migration 14 sat unapplied
+  for a release and migration 17 for another, and both times the symptom was a
+  feature that looked broken rather than absent — an RPC that is not there
+  comes back as an error, every service turns an error into its safe empty
+  value, and the button, the ladder or the panel simply never appears. **If a
+  change adds or edits a `supabase_migration_*.sql`, apply it to the live
+  database in the same session and say so.** Check first, do not assume:
+  `select proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'`.
+- **A spot is only yours to delete while it is only yours.** The camper who
+  added a spot can remove it — from the pin's info sheet, and from the Beacon
+  sheet — right up until somebody else reviews it, checks in, saves it or
+  reports on it. After that it is on other people's maps and the remove control
+  is replaced by a sentence saying so. Migration 17 decides; the client asks
+  first only so it never draws a button that would be refused. This is not the
+  knock path and must never be folded into it: taking down your own pin records
+  no enforcement and never turns anything red.
+- **An unanswered question is not a zero.** Every scale in a spot report is
+  nullable, and null means nobody answered. Never `coalesce(..., 0)` one of
+  them on the way out — a spot nobody has rated must not read as "pitch black,
+  no view, sloped".
+- **A knock turns a spot red, it does not delete it.** `flagged` stays on the
+  map carrying the reporter's words; only `withdrawn` (gated, built on, gone)
+  disappears. Deleting a spot somebody got moved on from just means the next
+  camper rediscovers the same pullout with no warning attached.
 - **The API runs as one Vercel serverless function.** The filesystem is
   read-only apart from `/tmp`, and there is a 30-second cap. "Download a big
   dataset on first request and cache it on disk" silently fails and re-downloads
@@ -159,4 +237,4 @@ npm run vapid    # generate push notification keys
 - **No smooth easing.** The motion is Pebble's frame-based "moook" curve on
   purpose — mechanical, with an overshoot that settles. That's the personality.
 - **No purchase prompts outside Settings.** The support link buys nothing in the
-  app. Points are earned, never sold.
+  app. Points are earned, never sold.
