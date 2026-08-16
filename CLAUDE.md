@@ -180,8 +180,19 @@ npm run vapid    # generate push notification keys
   the rest. Absence of a polygon means "no data", never "no public land".
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
-- **Migrations must run in order,** `supabase_schema.sql` then 02 through 17.
+- **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.
   `supabase_schema.sql` is destructive — it drops and recreates.
+- **`public_lands` is EMPTY in production, and always has been.** `npm run seed`
+  writes it, `boundaries_in_bbox` reads it, and `boundaryRoutes.ts` prefers it
+  over the live ArcGIS services — a whole path that has never once fired,
+  because nobody ran the seed. Verified: `select count(*) from public_lands`
+  returns 0. Until it is seeded, every boundary request goes to eight
+  government servers, and the only thing between a camper and a slow
+  provincial ArcGIS box is `boundary_tile_cache` (migration 19), which fills
+  itself from real traffic. **Seeding it properly is still the fix**; it needs
+  a machine that can reach the sources, which the agent sandbox cannot.
+  `meta.sources[].servedFrom` on `/api/boundaries` says `memory`, `db` or
+  `live` per source — ask for the same box twice and watch it turn `db`.
 - **A merged pull request is not a shipped feature.** Vercel deploys the code
   the moment `main` moves; nothing deploys the SQL. Migration 14 sat unapplied
   for a release and migration 17 for another, and both times the symptom was a

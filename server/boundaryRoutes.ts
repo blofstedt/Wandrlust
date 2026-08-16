@@ -77,6 +77,11 @@ const gzipAsync = promisify(gzip);
  */
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON = process.env.VITE_SUPABASE_ANON_KEY;
+/**
+ * The tile cache is written as well as read, and RLS locks it to the server.
+ * Same key the alert ingester, push dispatcher and Beacon routes already use.
+ */
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 let seededClient: SupabaseClient | null | undefined;
 
@@ -842,6 +847,14 @@ interface SourceResult {
    * up and the question was too big, which is a question we can make smaller.
    */
   timedOut?: boolean;
+  /**
+   * Where this answer came from.
+   *
+   * Reported in `meta` so the tile cache can be checked from outside without
+   * reading logs — Vercel keeps those for an hour on this plan, which is not
+   * long enough to notice a cache that quietly stopped working.
+   */
+  servedFrom?: 'memory' | 'db' | 'live';
 }
 
 /**
@@ -1059,7 +1072,136 @@ const runQuery = (
   return promise;
 };
 
-const cachedQuery = (
+/* -------------------------------------------------------------------------- */
+/* The tile cache in Supabase                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * WHY A CACHE THAT OUTLIVES THE PROCESS.
+ *
+ * BLM units, national forests and Crown land change on the order of an act of
+ * legislature, and this API was asking eight government servers about them
+ * again and again. The only cache was `sourceCache`, a Map in one Node process
+ * — and the API runs as a Vercel serverless function, so that Map is empty
+ * every time a lambda is recycled. In practice a large share of requests were
+ * cold, and a cold request for Ontario waits on a provincial ArcGIS server
+ * that may take six seconds or simply not answer.
+ *
+ * So the answer is written to Supabase, keyed on the exact question. The
+ * second time anyone looks at that ground — any device, any lambda, weeks
+ * later — it is one indexed read.
+ *
+ * THIS IS NOT A SOURCE OF TRUTH AND MUST NEVER BECOME ONE. A miss falls
+ * straight through to the live services. A failed query is never written: a
+ * cached failure would hide real public land for as long as the row lived, and
+ * an empty map that looks confident is the worst thing this app can do.
+ *
+ * The proper answer is still `public_lands` and `npm run seed`, which the
+ * route already prefers and which has never been run against this database —
+ * `select count(*) from public_lands` returns zero, so that path has never
+ * fired once. See migration 19.
+ */
+let cacheClient: SupabaseClient | null | undefined;
+
+const getCacheClient = (): SupabaseClient | null => {
+  if (cacheClient !== undefined) return cacheClient;
+  cacheClient =
+    SUPABASE_URL && SERVICE_KEY
+      ? createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } })
+      : null;
+  if (!cacheClient) {
+    console.info('[boundaries] no service key — tile cache disabled, live services only.');
+  }
+  return cacheClient;
+};
+
+/**
+ * Switched off after the table itself proves unusable — migration 19 not run,
+ * key wrong, host unreachable. Deliberately NOT triggered by a miss: a miss is
+ * the correct answer for ground nobody has looked at yet, and treating it as a
+ * fault would disable the cache permanently on the very first request.
+ */
+let tileCacheOutage: { at: number } | null = null;
+const TILE_CACHE_RECHECK_MS = 5 * 60 * 1000;
+
+/** Boundaries do not move. Three months is conservative for a road atlas. */
+const TILE_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+const tileCacheGet = async (key: string): Promise<SourceResult | null> => {
+  const client = getCacheClient();
+  if (!client) return null;
+  if (tileCacheOutage && Date.now() - tileCacheOutage.at < TILE_CACHE_RECHECK_MS) return null;
+
+  try {
+    const { data, error } = await client
+      .from('boundary_tile_cache')
+      .select('features, truncated, fetched_at')
+      .eq('cache_key', key)
+      .maybeSingle();
+
+    if (error) {
+      console.warn(`[boundaries] tile cache unavailable: ${error.message}`);
+      tileCacheOutage = { at: Date.now() };
+      return null;
+    }
+    if (!data || !Array.isArray(data.features)) return null;
+    if (Date.now() - new Date(data.fetched_at as string).getTime() > TILE_CACHE_TTL_MS) return null;
+
+    return {
+      features: data.features as any[],
+      ok: true,
+      truncated: Boolean(data.truncated)
+    };
+  } catch (err) {
+    console.warn(`[boundaries] tile cache read failed: ${(err as Error).message}`);
+    tileCacheOutage = { at: Date.now() };
+    return null;
+  }
+};
+
+/** One write in fifty also trims the table. Cheap, and it never runs away. */
+const PRUNE_ODDS = 50;
+
+const tileCachePut = async (
+  key: string,
+  source: BoundarySource,
+  result: SourceResult
+): Promise<void> => {
+  const client = getCacheClient();
+  // Only real answers are stored, and an empty one is not worth a row: the
+  // upstream service may simply have had nothing in that box today.
+  if (!client || !result.ok || result.features.length === 0) return;
+  if (tileCacheOutage && Date.now() - tileCacheOutage.at < TILE_CACHE_RECHECK_MS) return;
+
+  try {
+    const { error } = await client.from('boundary_tile_cache').upsert(
+      {
+        cache_key: key,
+        source_id: source.id,
+        features: result.features,
+        feature_count: result.features.length,
+        truncated: result.truncated,
+        fetched_at: new Date().toISOString()
+      },
+      { onConflict: 'cache_key' }
+    );
+    if (error) {
+      console.warn(`[boundaries] tile cache write failed: ${error.message}`);
+      tileCacheOutage = { at: Date.now() };
+      return;
+    }
+    if (Math.floor(Math.random() * PRUNE_ODDS) === 0) {
+      await client.rpc('prune_boundary_tile_cache', {
+        in_max_age_days: 180,
+        in_max_rows: 20000
+      });
+    }
+  } catch (err) {
+    console.warn(`[boundaries] tile cache write failed: ${(err as Error).message}`);
+  }
+};
+
+const cachedQuery = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
@@ -1068,17 +1210,51 @@ const cachedQuery = (
   const box = [bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon]
     .map((n) => n.toFixed(4))
     .join(',');
-  const key = `${source.id}|${box}|${recordLimit}`;
+  /*
+   * THE GENERALISATION IS PART OF THE QUESTION.
+   *
+   * It was missing from this key, so an overview request and a detailed one
+   * for the same box shared a row — and whichever asked first decided what
+   * fidelity the other got. Bucketed rather than raw so that near-identical
+   * tolerances still share, which is the whole point of a key.
+   */
+  const tolerance = simplifyDegrees.toPrecision(2);
+  const key = `${source.id}|${box}|${tolerance}|${recordLimit}`;
 
   const hit = sourceCache.get(key);
-  if (hit && Date.now() - hit.at < SOURCE_TTL_MS) return Promise.resolve(hit.result);
+  if (hit && Date.now() - hit.at < SOURCE_TTL_MS) {
+    return { ...hit.result, servedFrom: 'memory' };
+  }
 
-  const refresh = runQuery(key, source, bbox, simplifyDegrees, recordLimit, hit?.result);
+  /*
+   * Supabase before the network, but only on a cold key. A warm lambda never
+   * pays for this; a cold one pays a single indexed read instead of a round
+   * trip to a government ArcGIS server.
+   */
+  if (!hit) {
+    const stored = await tileCacheGet(key);
+    if (stored) {
+      if (sourceCache.size >= SOURCE_CACHE_MAX) {
+        const oldest = sourceCache.keys().next().value;
+        if (oldest) sourceCache.delete(oldest);
+      }
+      sourceCache.set(key, { at: Date.now(), result: stored });
+      return { ...stored, servedFrom: 'db' };
+    }
+  }
+
+  const refresh = runQuery(key, source, bbox, simplifyDegrees, recordLimit, hit?.result)
+    .then((result) => {
+      // Written behind the response, never in front of it: a camper waiting on
+      // a map should not also be waiting on our bookkeeping.
+      void tileCachePut(key, source, result);
+      return { ...result, servedFrom: 'live' as const };
+    });
 
   // Something cached but past its TTL: answer now, refresh behind the scenes.
   if (hit) {
     void refresh.catch(() => { /* runQuery already swallows failures */ });
-    return Promise.resolve(hit.result);
+    return { ...hit.result, servedFrom: 'memory' };
   }
   return refresh;
 };
@@ -1331,7 +1507,11 @@ export const registerBoundaryRoutes = (app: Express): void => {
           confidence: r.source.confidence,
           available: r.ok,
           featureCount: r.features.length,
-          truncated: r.truncated
+          truncated: r.truncated,
+          // memory / db / live — see `SourceResult.servedFrom`. This is how
+          // you check the Supabase tile cache is working without logs: ask
+          // for the same box twice and watch these turn from live to db.
+          servedFrom: r.servedFrom ?? 'live'
         })),
         truncated: anyTruncated,
         truncationNote: anyTruncated
@@ -1344,4 +1524,4 @@ export const registerBoundaryRoutes = (app: Express): void => {
 
     await remember(body);
   });
-};
+};
