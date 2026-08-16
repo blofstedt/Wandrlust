@@ -382,6 +382,31 @@ const main = async (): Promise<void> => {
   }
 
   /*
+   * An overlay with no parcels in it must never reach the disk.
+   *
+   * This is not a theoretical guard. A typo in `--source=` filters the
+   * registry down to nothing, every loop below runs zero times, and the old
+   * code cheerfully wrote a well-formed file containing an empty continent and
+   * exited 0 — which the app would have loaded, believed, and painted as "no
+   * public land anywhere in North America".
+   *
+   * Nothing fetched is a failed run, and a failed run leaves the committed
+   * overlay alone.
+   */
+  if (sources.length === 0) {
+    console.error(
+      `\n✖ no sources matched${only ? ` --source=${only}` : ''}. Known ids: ` +
+        LAND_SOURCES.map((s) => s.id).join(', ')
+    );
+    process.exit(1);
+  }
+
+  if (allFeatures.length === 0) {
+    console.error('\n✖ every source returned nothing — refusing to write an empty overlay.');
+    process.exit(1);
+  }
+
+  /*
    * Refuse to write a half-continent over a good file — and decide this BEFORE
    * writing, not after.
    *
