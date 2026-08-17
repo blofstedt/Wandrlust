@@ -6548,13 +6548,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         all fit is a complete answer and does not need apologising for. Said at
         any zoom, not just the overview — the detailed tier has a cap of its
         own, and a sample is a sample wherever it happens.
+
+        IT NO LONGER SAYS "LARGEST AREAS ONLY". That was true when the overview
+        kept the big parcels and deleted the small ones; it now welds abutting
+        parcels into blocks BEFORE judging what is too small to draw, so what is
+        missing here is whatever a source withheld at its record cap, which has
+        nothing to do with size. Saying "largest only" would send a camper
+        looking for the small parcels that are, in fact, already on the screen
+        inside the block.
       */}
       {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && (
         <div className="absolute bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
             <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
             <span className="text-[10px] font-semibold text-violet-200">
-              Largest areas only — zoom in for the rest
+              There's more here — zoom in to see it all
             </span>
           </div>
         </div>

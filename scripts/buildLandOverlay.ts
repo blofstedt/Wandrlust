@@ -36,6 +36,19 @@
  * A DROPPED PARCEL IS NOT ABSENT LAND. Everything cut here is cut for size, so
  * the meta block below records the thresholds used and the map repeats them.
  *
+ * IT DOES NOT MERGE, AND THE LIVE API NOW DOES. Read this before running it.
+ * `server/boundaryRoutes.ts` welds abutting parcels from one source into blocks
+ * before deciding what is too small to draw — which is what stopped Ontario
+ * rendering as a scatter of flecks over a province that is mostly Crown land.
+ * This file writes loose parcels, and the client drops the small ones by
+ * bounding-box span (`overviewMinSpanDegrees`) when zoomed out, so an overlay
+ * built today would bring the old sparse Ontario back with it, on a path that
+ * takes priority over the network. Nothing is broken right now — the overlay
+ * has never been built and the file has never been committed — but whoever runs
+ * this first needs to weld here too, at a few zoom bands, since the browser
+ * cannot afford a boolean union on ten thousand parcels. `unionParcels` in
+ * server/landGeometry.ts is the piece to reuse.
+ *
  * ---------------------------------------------------------------------------
  * WHERE IT RUNS
  * ---------------------------------------------------------------------------
