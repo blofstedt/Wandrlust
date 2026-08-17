@@ -303,6 +303,37 @@ export const OVERVIEW_BOX: BoundingBox = { ...COVERAGE_BBOX };
  */
 export const OVERVIEW_MIN_AREA_SQ_KM = 120;
 
+/**
+ * -----------------------------------------------------------------------------
+ * THE SAME DATA, DRAWN COARSER THE FURTHER OUT YOU ARE.
+ * -----------------------------------------------------------------------------
+ *
+ * This applies ONLY to the overview that ships with the app, and the difference
+ * matters. Everything above is about a REMOTE answer, which arrives as a capped
+ * sample — the government services return a couple of hundred areas per request
+ * and pick them arbitrarily, so asking twice gives two different answers and
+ * anything that varies the request makes land flicker. That is why the remote
+ * overview is one fixed question asked once.
+ *
+ * The bundled file has no cap and no sampling. It is the whole coverage area,
+ * complete, on the device. Choosing what to draw from it is therefore a pure
+ * function of zoom and viewport: pan away and back at the same zoom and you get
+ * exactly the same shapes, every time. Nothing can flicker, so it is free to
+ * show less when zoomed out and more as you come in — which is the right thing
+ * to do anyway, because 10,000 parcels on one continental screen is a lot of
+ * geometry to dissolve and draw for shapes a pixel wide.
+ *
+ * The number is the smallest bounding-box side, in degrees, worth drawing. It
+ * is measured against a box the parcel already carries, so the test costs
+ * nothing, and each band lands at roughly five pixels on screen.
+ */
+export const overviewMinSpanDegrees = (zoom: number): number => {
+  if (zoom <= 3) return 0.6;   // ~65 km — the continental blocks
+  if (zoom <= 4) return 0.3;   // ~33 km
+  if (zoom <= 5) return 0.12;  // ~13 km
+  return 0;                    // zoom 6: everything the file holds
+};
+
 
 /* -------------------------------------------------------------------------- */
 /* Which jurisdictions actually have parcel data behind them                   */

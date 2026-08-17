@@ -61,6 +61,7 @@ import { directionsAppName, openDirections } from '../utils/handoff';
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, OVERVIEW_BOX,
+  overviewMinSpanDegrees, clampToCoverage,
   COVERAGE_LABEL, isWithinCoverage
 } from '../config/coverage';
 import {
@@ -1614,6 +1615,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * each start their own copy of a request the others are already waiting on.
    */
   const overviewInFlightRef = useRef<Promise<BoundaryCollection | null> | null>(null);
+  /**
+   * The slice of the bundled overview currently drawn, and what it was chosen
+   * for. Rebuilt only when the view leaves the window or the zoom band changes
+   * — see the overview branch of the boundary effect.
+   */
+  const overviewWindowRef = useRef<
+    { box: BoundingBox; minSpan: number; collection: BoundaryCollection } | null
+  >(null);
   /** Which tier is on screen, and at what settings — see `render`. */
   const loadedDetailRef = useRef<BoundaryDetail | null>(null);
   const renderSignatureRef = useRef<string>('');
@@ -2870,6 +2879,63 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * the first.
        */
       if (detail === 'overview') {
+        /* -----------------------------------------------------------------
+         * THE COPY ON THE DEVICE WINS, WHENEVER THERE IS ONE.
+         * -----------------------------------------------------------------
+         *
+         * `public/map/public-land-overview.json` is built by CI from the same
+         * eight sources and committed into the app, and where it exists it
+         * beats the network answer on every axis that matters: about a
+         * kilometre of generalisation instead of twenty-four, ten thousand
+         * parcels instead of a two-hundred-record sample, National Forest
+         * included even on the days the Forest Service's own server is
+         * refusing requests — and no round trip, so it is there before the
+         * map has finished drawing and it works with no signal at all.
+         *
+         * It is also complete and deterministic, which is what lets it be
+         * windowed. The remote overview must be one fixed continental
+         * question because its answer is a capped arbitrary sample and two
+         * different questions give two different samples. Nothing here is
+         * sampled: the same zoom over the same ground selects exactly the
+         * same parcels every time, so panning away and back cannot change
+         * what is drawn. That is what makes it safe to show the big blocks
+         * when zoomed out and progressively more as you come in — which is
+         * also the only way to draw ten thousand parcels without stalling.
+         */
+        const overlay = landOverlayRef.current;
+        if (overlay) {
+          const minSpan = overviewMinSpanDegrees(currentZoom);
+          const held = overviewWindowRef.current;
+
+          // Rebuild only when the view leaves the window we selected for, or
+          // when the zoom band changes what this zoom is allowed to show.
+          if (!held || held.minSpan !== minSpan || !boxContains(held.box, view)) {
+            // A whole viewport of headroom on each side, clipped to what we
+            // have data for, so an ordinary pan reuses the same selection.
+            const padLat = Math.max(view.maxLat - view.minLat, 0.5);
+            const padLon = Math.max(view.maxLon - view.minLon, 0.5);
+            const box = clampToCoverage({
+              minLat: view.minLat - padLat, maxLat: view.maxLat + padLat,
+              minLon: view.minLon - padLon, maxLon: view.maxLon + padLon
+            });
+            overviewWindowRef.current = {
+              box,
+              minSpan,
+              collection: overviewCollection(overlay, box, minSpan) ?? EMPTY_BOUNDARIES
+            };
+          }
+
+          const local = overviewWindowRef.current!.collection;
+          setWideViewFailed(false);
+          loadedDetailRef.current = 'overview';
+          collectionRef.current = local;
+          setBoundaries(local);
+          render(local, 'overview');
+          return;
+        }
+
+        // No bundled file in this build. Fall back to the one continental
+        // request, held for the session — see the note above.
         const held = overviewCollectionRef.current;
         if (held) {
           setWideViewFailed(false);
@@ -2880,19 +2946,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           return;
         }
 
-        // Nothing held yet. Paint whatever shipped with the app while the one
-        // request is in flight, so the first zoom-out is never a blank
-        // continent.
-        const bundled = overviewCollection(landOverlayRef.current, OVERVIEW_BOX);
-        if (bundled) render(bundled, 'overview');
-
         const fetched = await loadOverview();
         if (cancelled) return;
 
         if (!fetched) {
           // Superseded, or an answer we could not stand behind. Either way
           // keep what is drawn — see the note on `meta.unavailable`.
-          if (!bundled) setWideViewFailed(true);
+          setWideViewFailed(true);
           return;
         }
 
@@ -3038,6 +3098,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      */
     const prefetch = setTimeout(() => {
       if (cancelled || overviewCollectionRef.current) return;
+      // The bundled file is better than anything this request can return, and
+      // it is already here. Asking eight government servers for a worse copy
+      // of it would be pure waste.
+      if (landOverlayRef.current) return;
       void loadOverview();
     }, 4000);
 
