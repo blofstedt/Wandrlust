@@ -20,10 +20,16 @@ name: Build land overlay
 on:
   workflow_dispatch:
     inputs:
+      # 5 km² was the first default and it is a fine number for FIDELITY — a
+      # 5 km² parcel is about two pixels at zoom 6, so it is genuinely visible.
+      # It is the wrong number for a file every camper downloads: it produced
+      # 10,587 parcels and 7.8 MB, which is a real download on a phone before
+      # the map has drawn anything. 25 keeps everything about 5 km across and
+      # up, which is what a zoomed-out map can show anyway.
       min_area:
         description: 'Drop parcels smaller than this many km² (bigger = smaller file)'
         required: false
-        default: '5'
+        default: '25'
       offset:
         description: 'Simplification in degrees (0.01 ≈ 1.1 km)'
         required: false
@@ -81,16 +87,19 @@ jobs:
           " >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      # Optional, and off by default: this walks the same services again at
-      # full resolution and writes every polygon into Supabase. It is what
-      # makes the full-detail offline pack possible, and it takes hours.
-      - name: Seed public_lands
-        if: ${{ inputs.seed_database }}
-        env:
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: npm run seed -- --lands
-
+      # ---------------------------------------------------------------------
+      # COMMIT BEFORE ANYTHING OPTIONAL RUNS.
+      #
+      # This used to come last, after the optional seed. The first real run
+      # spent six and a half minutes building a perfectly good 10,587-parcel
+      # overlay, the seed step then exited 1 because the Supabase secrets are
+      # not set on this repo, and GitHub skipped every remaining step —
+      # including this one. The overlay was thrown away at the last hurdle and
+      # the run went red having actually succeeded at its job.
+      #
+      # The thing this workflow exists to produce is now safe on the branch
+      # before any of the optional extras get a chance to fail.
+      # ---------------------------------------------------------------------
       - name: Commit the overlay
         run: |
           git config user.name  'github-actions[bot]'
@@ -104,3 +113,26 @@ jobs:
           git add public/map/public-land-overview.json
           git commit -m 'Rebuild bundled public-land overview'
           git push
+
+      # Optional, and off by default: this walks the same services again at
+      # full resolution and writes every polygon into Supabase. It is what
+      # makes the full-detail offline pack possible, and it takes hours.
+      #
+      # It needs two repository secrets. Without them there is nothing to fail
+      # about — the box was ticked for something this repo cannot do — so it
+      # says so and stops, rather than failing a run whose real work is done
+      # and already pushed.
+      - name: Seed public_lands
+        if: ${{ inputs.seed_database }}
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo 'Skipping the seed: VITE_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY'
+            echo 'are not set as repository secrets (Settings > Secrets and'
+            echo 'variables > Actions). The overlay above was built and pushed.'
+            echo '### Seed skipped — Supabase secrets not set' >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          npm run seed -- --lands

@@ -316,18 +316,73 @@ const intersects = (a: BoundingBox, b: BoundingBox): boolean =>
 export const overlayParcelsIn = (
   overlay: LandOverlay | null,
   box: BoundingBox,
-  limit = 4000
+  /**
+   * Smallest bounding-box side, in degrees, worth returning — see
+   * `overviewMinSpanDegrees`. Zero keeps everything.
+   *
+   * The file holds ten thousand parcels covering a continent. Handing all of
+   * them to the map at zoom 3 means dissolving and drawing several hundred
+   * thousand vertices to produce shapes a pixel across, which is a stalled
+   * phone in exchange for nothing anybody can see.
+   */
+  minSpanDeg = 0,
+  limit = 6000
 ): OverlayParcel[] => {
   if (!overlay) return [];
 
-  const hits: OverlayParcel[] = [];
+  const inBox: OverlayParcel[] = [];
   for (const parcel of overlay.parcels) {
-    if (!intersects(parcel.bounds, box)) continue;
-    hits.push(parcel);
-    if (hits.length >= limit) break;
+    if (intersects(parcel.bounds, box)) inBox.push(parcel);
   }
-  return hits;
+
+  if (minSpanDeg <= 0) return inBox.slice(0, limit);
+
+  /**
+   * The LONGER side, not the shorter one. A parcel following a river or a
+   * forest edge can be a hundred kilometres of visible land and only a few
+   * wide, and testing its narrow side would erase it from the map.
+   */
+  const span = (p: OverlayParcel): number =>
+    Math.max(p.bounds.maxLat - p.bounds.minLat, p.bounds.maxLon - p.bounds.minLon);
+
+  const kept = inBox.filter((p) => span(p) >= minSpanDeg);
+
+  /**
+   * A SOURCE MUST NEVER VANISH FROM THE MAP JUST FOR BEING SMALL-GRAINED.
+   *
+   * The threshold is an absolute size, and public land does not arrive in
+   * uniform sizes. Alberta's Green Area is one enormous shape and survives any
+   * zoom; Manitoba's provincial forests average a fifteenth of that and, at
+   * the zoom where somebody is looking at the whole country, every one of them
+   * falls under the line — while both its neighbours stay painted. The result
+   * on screen is a Manitoba-shaped hole between two provinces full of colour,
+   * which reads as "no public land here" when the truth is "these parcels are
+   * smaller than the ones next door".
+   *
+   * So a source that has anything in view keeps its largest few regardless.
+   * They may be a couple of pixels; that is a far better failure than a
+   * confident blank. The server learned this the same way — see
+   * OVERVIEW_MIN_PER_SOURCE in server/boundaryRoutes.ts.
+   */
+  const keptSources = new Set(kept.map((p) => p.sourceId));
+  const perSource = new Map<string, number>();
+  const rescued = inBox
+    .filter((p) => !keptSources.has(p.sourceId))
+    .sort((a, b) => span(b) - span(a))
+    .filter((p) => {
+      const n = perSource.get(p.sourceId) ?? 0;
+      if (n >= MIN_PER_SOURCE) return false;
+      perSource.set(p.sourceId, n + 1);
+      return true;
+    });
+
+  // Rescued first, so the guarantee survives the limit rather than being
+  // quietly undone by it.
+  return [...rescued, ...kept].slice(0, limit);
 };
+
+/** How many parcels a source keeps even when all of them are below the line. */
+const MIN_PER_SOURCE = 3;
 
 /* -------------------------------------------------------------------------- */
 /* The full-detail pack                                                        */
@@ -591,11 +646,13 @@ export const packParcelsIn = async (box: BoundingBox): Promise<any[]> => {
  */
 export const overviewCollection = (
   overlay: LandOverlay | null,
-  box: BoundingBox
+  box: BoundingBox,
+  /** See `overviewMinSpanDegrees` — how much detail this zoom can show. */
+  minSpanDeg = 0
 ): BoundaryCollection | null => {
   if (!overlay) return null;
 
-  const parcels = overlayParcelsIn(overlay, box);
+  const parcels = overlayParcelsIn(overlay, box, minSpanDeg);
   if (parcels.length === 0) return null;
 
   const labelOf = new Map(overlay.sources.map((s) => [s.id, s]));
@@ -633,6 +690,19 @@ export const overviewCollection = (
       })),
       disclaimer: overlay.disclaimer,
       detail: 'overview',
+      /**
+       * A ZOOM THAT SHOWS ONLY THE BIG AREAS HAS TO SAY SO.
+       *
+       * `minSpanDeg` above the line means this view is deliberately drawing
+       * the larger parcels and holding the rest back until you come in. That
+       * is a sample, and a sample the camper is not told about is the one
+       * sentence this app refuses to say — a thinly-painted province reads as
+       * an empty one. It is only ever true that MORE exists than is drawn, so
+       * the map says which way it is wrong.
+       *
+       * At zoom 6 the band is zero, nothing is held back, and this is false.
+       */
+      truncated: minSpanDeg > 0,
       /*
        * The map merges abutting parcels by cancelling their shared edge, and
        * it can only recognise a shared edge if it knows how far generalisation
