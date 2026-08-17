@@ -71,7 +71,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
  * though the source is `.ts`: that is the ESM convention, referring to the
  * compiled output. `npm run check:imports` now fails the build over it.
  */
-import { subtractLakes, unionParcels, lakeCount } from './landGeometry.js';
+import { subtractLakes, unionParcels, lakeCount, ringsIn } from './landGeometry.js';
 
 const gzipAsync = promisify(gzip);
 
@@ -716,33 +716,42 @@ export const pruneTinyParts = (geometry: any, minPartDeg2: number, maxParts: num
 
 /** How many separate pieces one parcel may draw as. */
 const MAX_PARTS_DETAIL = 160;
-const MAX_PARTS_OVERVIEW = 24;
+/**
+ * A merged overview shape is not a parcel — it is every parcel one source has
+ * in view, welded into one feature covering a province or a whole agency. So
+ * its allowance is per SOURCE rather than per parcel, and it has to be
+ * generous: an archipelago of Crown land around a hundred northern lakes is
+ * genuinely a hundred pieces, and capping it at a couple of dozen is how a
+ * province ends up looking emptier than it is.
+ *
+ * It is still far fewer shapes than the overview used to draw — two dozen
+ * parts each across two hundred separate parcels.
+ */
+const MAX_PARTS_MERGED = 250;
+/**
+ * Parts kept per parcel on the way INTO the merge.
+ *
+ * Nothing here is about what is legible; it is about what the union can afford
+ * to chew on. The threshold that decides what a camper actually sees is
+ * applied afterwards, once neighbours have had their chance to join up.
+ */
+const MAX_PARTS_FOR_MERGE = 400;
 
-const prunedFeatures = (
-  features: any[],
-  simplifyDegrees: number,
-  isOverview: boolean
-): any[] => {
-  /*
-   * FOUR SIMPLIFICATION STEPS ON A SIDE, IN BOTH MODES.
-   *
-   * `simplifyDegrees` is already the tolerance the source is being asked to
-   * generalise to — about one screen pixel on a phone at the view in question
-   * — so four of them is a blob roughly four pixels across. Below that there
-   * is nothing to look at and nothing to tap.
-   *
-   * It lands in the same place the feature-level filter does by a different
-   * route: at the zoom where the overview keeps parcels over 500 km², this
-   * drops parts under about 480 km². The two agree, which is what you want
-   * from a threshold and its finer-grained twin.
-   */
-  const minPartDeg2 = (4 * simplifyDegrees) ** 2;
-  const maxParts = isOverview ? MAX_PARTS_OVERVIEW : MAX_PARTS_DETAIL;
-  return features.map((f) => {
+/**
+ * FOUR SIMPLIFICATION STEPS ON A SIDE.
+ *
+ * `simplifyDegrees` is already the tolerance the source is being asked to
+ * generalise to — about one screen pixel on a phone at the view in question —
+ * so four of them is a blob roughly four pixels across. Below that there is
+ * nothing to look at and nothing to tap.
+ */
+const visiblePartDeg2 = (simplifyDegrees: number): number => (4 * simplifyDegrees) ** 2;
+
+const prunedFeatures = (features: any[], minPartDeg2: number, maxParts: number): any[] =>
+  features.map((f) => {
     const geometry = pruneTinyParts(f?.geometry, minPartDeg2, maxParts);
     return geometry === f?.geometry ? f : { ...f, geometry };
   });
-};
 
 /**
  * TAKE THE WATER OUT, AT EVERY ZOOM.
@@ -782,7 +791,66 @@ const withoutWater = (features: any[]): any[] =>
  * true of every square metre of the merged shape, and it keeps `_source`, so
  * the published stay rules still resolve exactly as before.
  */
-const mergedBySource = (features: any[]): any[] => {
+/**
+ * The grid parcels are snapped to before welding, as a multiple of the
+ * generalisation tolerance. See `snapMultiPoly` in landGeometry.ts.
+ *
+ * ONE, and that is a measured number rather than a guessed one. Simulating what
+ * the upstream servers actually do to a shared edge — thin each side's copy
+ * independently, so the two wander either side of the truth — and unioning 36
+ * parcels that all abut:
+ *
+ *     edge drift      no snap   0.25x   0.5x    1x     2x
+ *     10% of tol.        1        1       1      1      2
+ *     25% of tol.       11        7       1      1      1
+ *     50% of tol.       31       —       18      1      3
+ *
+ * (parts after the union; 1 is a perfect weld, 36 is total failure)
+ *
+ * A bigger grid is not a better weld. Past about one tolerance, snapping starts
+ * pushing neighbouring edges onto DIFFERENT grid lines as often as onto the
+ * same one, and the weld gets worse again.
+ *
+ * One tolerance is also the honest ceiling. It is the distance the geometry was
+ * already generalised by before it got here, so snapping to that grid cannot
+ * move an edge further than the upstream server already moved it — and it is
+ * never applied at the zooms where a camper reads an edge.
+ */
+const MERGE_SNAP_STEPS = 1;
+
+/**
+ * Rings one source may hand the clipper before its geometry gets trimmed.
+ *
+ * Measured rather than feared. Unioning synthetic parcels of the shape Ontario
+ * sends — a main block plus a tail of slivers — on this machine:
+ *
+ *     200 parcels x 10 parts   (2,000 rings)    75 ms
+ *     200 parcels x 40 parts   (8,000 rings)   113 ms
+ *     500 parcels x 10 parts   (5,000 rings)   120 ms
+ *
+ * So the budget is set well above what any source returns, because every ring
+ * trimmed to get under it is land that then cannot weld to its neighbours —
+ * which is the entire failure this pipeline was reordered to fix. It is passed
+ * to `unionParcels` explicitly, overriding the far more cautious default in
+ * landGeometry.ts that was written before anyone had timed this.
+ */
+const MERGE_RING_BUDGET = 12000;
+
+/**
+ * Wall clock the whole merge may spend, across every source.
+ *
+ * The API is one Vercel function with a thirty-second ceiling and this runs
+ * after eight government services have already been waited on. A merged shape
+ * is a nicety; answering at all is not — so when the budget runs out the
+ * remaining sources fall back to drawing their parcels, which is what the map
+ * did before any of this existed.
+ */
+const MERGE_BUDGET_MS = 9000;
+
+const ringsInGroup = (features: any[]): number =>
+  features.reduce((n, f) => n + ringsIn(f?.geometry), 0);
+
+const mergedBySource = (features: any[], simplifyDegrees: number): any[] => {
   const groups = new Map<string, any[]>();
   for (const f of features) {
     const id = String(f?.properties?._source ?? '');
@@ -791,13 +859,42 @@ const mergedBySource = (features: any[]): any[] => {
     else groups.set(id, [f]);
   }
 
+  const startedAt = Date.now();
   const out: any[] = [];
+
   groups.forEach((group) => {
-    const merged = group.length > 1 ? unionParcels(group.map((f) => f.geometry)) : null;
+    /*
+     * Trim the input until the clipper can afford it.
+     *
+     * Starting threshold is half a pixel — small enough that anything two
+     * neighbours could weld into something visible still goes in, large enough
+     * to shed the confetti of sub-pixel slivers a fragmented Crown land parcel
+     * carries. If that is still too much geometry the threshold quadruples and
+     * we look again, up to four times.
+     *
+     * Deterministic, because the same input has to produce the same map: this
+     * answer is about to sit in a cache for six hours.
+     */
+    let trimmed = group;
+    let minPart = (0.5 * simplifyDegrees) ** 2;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      trimmed = prunedFeatures(group, minPart, MAX_PARTS_FOR_MERGE);
+      if (ringsInGroup(trimmed) <= MERGE_RING_BUDGET) break;
+      minPart *= 4;
+    }
+
+    const merged =
+      Date.now() - startedAt < MERGE_BUDGET_MS
+        ? unionParcels(trimmed.map((f) => f.geometry), {
+            snapDegrees: simplifyDegrees * MERGE_SNAP_STEPS,
+            maxRings: MERGE_RING_BUDGET
+          })
+        : null;
+
     if (!merged) {
-      // One parcel, or a union we could not trust. Either way the parcels
-      // themselves are still the honest answer.
-      out.push(...group);
+      // Nothing to join, a union we could not trust, or no time left. Either
+      // way the parcels themselves are still the honest answer.
+      out.push(...trimmed);
       return;
     }
     const first = group[0]?.properties ?? {};
@@ -813,6 +910,64 @@ const mergedBySource = (features: any[]): any[] => {
     });
   });
   return out;
+};
+
+/**
+ * ---------------------------------------------------------------------------
+ * THE ZOOMED-OUT SHAPES, AND WHY THE ORDER OF THESE FOUR STEPS IS THE FEATURE
+ * ---------------------------------------------------------------------------
+ *
+ * Ontario used to draw as a scatter of green flecks over a province that is
+ * mostly Crown land, and the reason was the order this ran in, not the data.
+ *
+ * The overview USED TO throw parcels away first — everything under the area
+ * threshold, everything past the record cap, every part of a multipolygon
+ * under a few pixels — and merge whatever survived. So a hundred adjoining
+ * General Use Areas of two or three pixels each, which together carpet a
+ * region the size of a small country, were each individually judged too small
+ * to draw and deleted BEFORE anything got the chance to notice they were
+ * touching. What reached the merge was the handful of parcels that were
+ * already big on their own, which is exactly what a camper saw: a province
+ * reading as almost empty next to an Alberta that draws as one solid block,
+ * for no reason except that Alberta's Crown land arrives as a single polygon
+ * and Ontario's arrives in pieces.
+ *
+ * So the merge goes first now, and the size test happens afterwards, to the
+ * merged shape. A hundred small neighbours become one large block and the
+ * threshold has nothing to say about it. A small parcel genuinely out on its
+ * own is still dropped, because at this zoom it really is a fraction of a
+ * pixel — but it is dropped for being alone, not for being small in a crowd.
+ *
+ * NOTHING HERE PAINTS GROUND THAT NO SOURCE CLAIMED. The union only ever joins
+ * pieces that touch (within the snap, which is about a pixel — see
+ * `MERGE_SNAP_STEPS`), and it keeps holes: land inside a province that no
+ * source called public stays a hole in the merged shape. This makes the map
+ * show MORE of what the data already said, not more than the data says.
+ */
+const overviewShapes = (
+  features: any[],
+  simplifyDegrees: number,
+  minAreaSqKm: number,
+  recordLimit: number
+): any[] => {
+  // Water first, parcel by parcel. It has to happen before the merge — a
+  // merged province overlaps every lake on the continent at once, which is
+  // more than `subtractLakes` will take on, and it would give up and paint
+  // the water green. Parcel-sized shapes each overlap a handful.
+  const dry = withoutWater(features);
+
+  // Then weld. The trimming the union needs to stay affordable happens inside,
+  // per source, because the budget is per source.
+  const merged = mergedBySource(dry, simplifyDegrees);
+
+  // Now — and only now — drop what is still too small to see.
+  const visible = prunedFeatures(merged, visiblePartDeg2(simplifyDegrees), MAX_PARTS_MERGED);
+
+  // A safety net for sources whose union could not run: those still arrive as
+  // loose parcels and the area filter is all that stands between a continental
+  // view and a thousand specks. A merged shape is far larger than any
+  // threshold, so this is a no-op for everything that welded.
+  return largestParcels(visible, minAreaSqKm, recordLimit);
 };
 
 /**
@@ -1388,6 +1543,21 @@ const DISCLAIMER =
   'permission to camp. Confirm local regulations before travelling.';
 
 /**
+ * The zoomed-out map says one more thing, because it is doing one more thing.
+ *
+ * Its shapes are not parcels. Neighbouring parcels administered under the same
+ * rules are welded into blocks so a province reads at its true extent instead
+ * of as a scatter of the few parcels big enough to survive on their own — and
+ * a camper needs to know that the block is a region, not a boundary, before
+ * they read anything off its edge.
+ */
+const OVERVIEW_DISCLAIMER =
+  DISCLAIMER +
+  ' Zoomed out, neighbouring areas under the same rules are drawn merged ' +
+  'into one block, so an edge here is the rough extent of a region and not ' +
+  'the boundary of any one parcel. Zoom in for the real parcels.';
+
+/**
  * THE PUBLIC-LAND POLYGONS FOR ONE BOX, FOR ANYTHING THAT IS NOT THE MAP.
  *
  * ---------------------------------------------------------------------------
@@ -1529,19 +1699,29 @@ export const registerBoundaryRoutes = (app: Express): void => {
      */
     const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, minAreaSqKm);
     if (seeded) {
-      // If the database did the area filtering, this is a no-op slice.
-      const pruned = prunedFeatures(
-        isOverview
-          ? largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit)
-          : seeded.features.slice(0, recordLimit),
-        simplifyDegrees,
-        isOverview
-      );
-      // Water out first, then merge — merging afterwards would just union the
-      // holes back shut along every shared shoreline.
+      /*
+       * NOTE FOR WHOEVER FINALLY RUNS THE SEED. Migration 07's area filter runs
+       * in the database, so the small parcels are dropped before they get here
+       * and cannot be welded to their neighbours the way the live path welds
+       * them. That makes a seeded overview slightly sparser than a live one
+       * until `boundaries_in_bbox` learns to merge, or is asked for everything.
+       * It is not visible today: `public_lands` is empty and this branch has
+       * never fired in production.
+       */
       const kept = isOverview
-        ? mergedBySource(withoutWater(pruned))
-        : withoutWater(pruned);
+        ? overviewShapes(
+            largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit),
+            simplifyDegrees,
+            minAreaSqKm,
+            recordLimit
+          )
+        : withoutWater(
+            prunedFeatures(
+              seeded.features.slice(0, recordLimit),
+              visiblePartDeg2(simplifyDegrees),
+              MAX_PARTS_DETAIL
+            )
+          );
       const truncated = seeded.features.length > recordLimit;
 
       await remember({
@@ -1559,7 +1739,7 @@ export const registerBoundaryRoutes = (app: Express): void => {
           // cannot do that without knowing how far this generalisation may
           // have pushed the two sides of one apart.
           simplifyDegrees,
-          disclaimer: DISCLAIMER
+          disclaimer: isOverview ? OVERVIEW_DISCLAIMER : DISCLAIMER
         }
       });
       return;
@@ -1573,18 +1753,19 @@ export const registerBoundaryRoutes = (app: Express): void => {
     );
 
     const anyTruncated = results.some((r) => r.truncated);
-    const prunedLive = prunedFeatures(
-      isOverview
-        ? largestParcels(results.flatMap((r) => r.features), minAreaSqKm, recordLimit)
-        : results.flatMap((r) => r.features),
-      simplifyDegrees,
-      isOverview
-    );
-    // Water out first, then merge — merging afterwards would union the holes
-    // back shut wherever two parcels meet along the same shoreline.
+    const allLive = results.flatMap((r) => r.features);
+    /*
+     * The overview merges before it filters — see `overviewShapes`, which is
+     * where the whole "why does Ontario draw as flecks and Alberta as a block"
+     * answer lives. The detailed tier deliberately does not merge at all: past
+     * BOUNDARY_MIN_ZOOM a camper is reading edges, and every parcel is its own
+     * shape with its own name, stay limit and permit.
+     */
     const liveFeatures = isOverview
-      ? mergedBySource(withoutWater(prunedLive))
-      : withoutWater(prunedLive);
+      ? overviewShapes(allLive, simplifyDegrees, minAreaSqKm, recordLimit)
+      : withoutWater(
+          prunedFeatures(allLive, visiblePartDeg2(simplifyDegrees), MAX_PARTS_DETAIL)
+        );
 
     const body = {
       type: 'FeatureCollection',
@@ -1609,11 +1790,37 @@ export const registerBoundaryRoutes = (app: Express): void => {
         truncationNote: anyTruncated
           ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
           : undefined,
+        /**
+         * WHAT THE MERGE ACTUALLY DID, SO IT CAN BE CHECKED FROM OUTSIDE.
+         *
+         * One line per source that welded, saying how many parcels went in and
+         * how many pieces came out. Ontario reading `parcels: 200, pieces: 4`
+         * is the whole feature working; `parcels: 200, pieces: 190` says the
+         * union ran and found almost nothing touching, which would mean the
+         * snap is wrong; the source missing from this list entirely means the
+         * union did not run at all — out of time, or refused for size.
+         *
+         * Vercel keeps runtime logs for an hour on this plan, which is not long
+         * enough to notice a merge that quietly stopped working. This is in the
+         * response instead, where it can be read any time.
+         */
+        merged: isOverview
+          ? liveFeatures
+              .filter((f) => Number(f?.properties?._mergedFrom) > 0)
+              .map((f) => ({
+                source: String(f?.properties?._source ?? ''),
+                parcels: Number(f?.properties?._mergedFrom ?? 0),
+                pieces:
+                  f?.geometry?.type === 'MultiPolygon'
+                    ? (f.geometry.coordinates?.length ?? 0)
+                    : 1
+              }))
+          : undefined,
         simplifyDegrees,
         // Lakes the server was able to cut out of these shapes. Zero means
         // the asset is missing from the bundle and water is being painted.
         lakesKnown: lakeCount(),
-        disclaimer: DISCLAIMER
+        disclaimer: isOverview ? OVERVIEW_DISCLAIMER : DISCLAIMER
       }
     };
 

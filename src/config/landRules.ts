@@ -104,9 +104,28 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
     basis: 'A Public Land Use Zone overrides the general rule — check this one'
   },
 
+  /*
+   * "AT ONE SITE" MEANS THE SPOT YOU ARE PARKED ON, NOT THE POLYGON.
+   *
+   * All three provincial rules below are written as "21 days at any one site",
+   * and the phrase invites exactly one wrong reading: that a site is the parcel
+   * the map draws, so crossing an internal boundary would restart the clock.
+   * It does not. The site is the piece of ground your camp occupies — the
+   * pullout, the clearing, the beach — and the count follows YOU, not which
+   * administrative area you happen to be standing in. The map's polygons are
+   * planning units and forest designations; no province counts nights by them.
+   *
+   * This matters for what the map draws, and it is the reason the zoomed-out
+   * view is free to weld neighbouring parcels into one block: an internal line
+   * between two same-rules parcels carries no meaning a camper could act on,
+   * so hiding it hides nothing. The bullets below say "in one spot" instead of
+   * "at one site" for the same reason — plain, and impossible to read as a
+   * claim about the shape on the screen.
+   */
   saskatchewan_provincial_forest: {
     rules: [
-      '21 consecutive nights at one site',
+      '21 consecutive nights in one spot',
+      'The limit is per campsite, not per forest',
       'Free, with nothing to buy or register',
       'Parks and rec sites inside the forest differ'
     ],
@@ -115,7 +134,8 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
 
   manitoba_provincial_forest: {
     rules: [
-      '21 nights at one site, unless posted otherwise',
+      '21 nights in one spot, unless posted otherwise',
+      'The limit is per campsite, not per forest',
       'Free, no permit, for residents of Canada',
       'Parks and wildlife areas have their own rules'
     ],
@@ -124,7 +144,8 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
 
   ontario_clupa_general_use: {
     rules: [
-      '21 nights at one site per calendar year',
+      '21 nights in one spot per calendar year',
+      'The limit is per campsite, not per area',
       'Free for Canadian residents',
       'Non-residents need a permit across much of the north'
     ],

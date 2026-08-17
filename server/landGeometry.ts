@@ -162,19 +162,108 @@ export interface MergeResult {
 }
 
 /**
+ * ---------------------------------------------------------------------------
+ * WELDING PARCELS THAT ONLY LOOK SEPARATE
+ * ---------------------------------------------------------------------------
+ *
+ * A boolean union joins two parcels when they actually touch. Ontario's
+ * General Use Areas DO actually touch — they are planning units that tile the
+ * province — and they still failed to join, because by the time they reach
+ * this file they are not the shapes the province drew.
+ *
+ * Each parcel is generalised INDEPENDENTLY by the upstream ArcGIS server
+ * (`maxAllowableOffset`), so the two copies of a shared edge are thinned by
+ * different amounts and end up a little apart. The union then correctly reports
+ * two shapes with a hairline gap between them, over and over, all the way
+ * across a province — which draws as the mesh of outlines this whole file
+ * exists to stop.
+ *
+ * So coordinates are snapped to a grid first. Two edges that were meant to be
+ * the same edge land on the same grid points, become bit-identical, and weld.
+ *
+ * THE GRID IS TIED TO WHAT THE VIEW CAN SHOW, WHICH IS WHY THIS IS HONEST. The
+ * cell is a small multiple of the tolerance the geometry was already
+ * generalised to — about a pixel at the zoom the merged shape is drawn at. An
+ * edge can move by at most half a cell, in either direction, so this can no
+ * more invent land than the generalisation that preceded it already did, and it
+ * is never used at the zooms where a camper reads an edge.
+ */
+const snapMultiPoly = (mp: MultiPoly, cell: number): MultiPoly => {
+  if (!(cell > 0)) return mp;
+
+  const snapRing = (ring: unknown): Ring | null => {
+    if (!Array.isArray(ring)) return null;
+    const out: Ring = [];
+    for (const point of ring) {
+      if (!Array.isArray(point) || typeof point[0] !== 'number' || typeof point[1] !== 'number') {
+        return null;
+      }
+      const snapped: [number, number] = [
+        Math.round(point[0] / cell) * cell,
+        Math.round(point[1] / cell) * cell
+      ];
+      const previous = out[out.length - 1];
+      // Rounding routinely collapses a run of vertices onto one grid point.
+      if (previous && previous[0] === snapped[0] && previous[1] === snapped[1]) continue;
+      out.push(snapped);
+    }
+    if (out.length > 2) {
+      const [fx, fy] = out[0];
+      const [lx, ly] = out[out.length - 1];
+      if (fx !== lx || fy !== ly) out.push([fx, fy]);
+    }
+    // Fewer than four points is not a ring any more, it is a line.
+    return out.length >= 4 ? out : null;
+  };
+
+  const result: MultiPoly = [];
+  for (const poly of mp) {
+    const outer = snapRing(poly?.[0]);
+    // The outer ring collapsing means this part was smaller than one cell —
+    // under a pixel where this is used. Its holes go with it: a ring list whose
+    // first ring is a hole is not a polygon at all, and feeding one to the
+    // clipper is how you get a shape turned inside out.
+    if (!outer) continue;
+    const holes = poly
+      .slice(1)
+      .map(snapRing)
+      .filter((r): r is Ring => r !== null);
+    result.push([outer, ...holes]);
+  }
+  return result;
+};
+
+/**
  * One shape from many parcels.
  *
  * Returns null when there is nothing to do or the union could not be trusted,
  * and the caller keeps the parcels it already had.
  */
-export const unionParcels = (geometries: any[]): MergeResult | null => {
-  const parts: MultiPoly = [];
+export const unionParcels = (
+  geometries: any[],
+  options: {
+    /**
+     * Grid to snap to before unioning, in degrees. Zero unions the geometry
+     * exactly as it arrived. See `snapMultiPoly`.
+     */
+    snapDegrees?: number;
+    maxRings?: number;
+  } = {}
+): MergeResult | null => {
+  const { snapDegrees = 0, maxRings = MAX_RINGS_TO_UNION } = options;
+
+  let parts: MultiPoly = [];
   for (const g of geometries) {
     const mp = asMultiPoly(g);
     if (mp) parts.push(...mp);
   }
+  // One part, and nothing to join it to. Note this counts PARTS, not features:
+  // a single province-wide MultiPolygon is worth running through, because its
+  // own pieces weld to each other exactly the way two parcels do.
   if (parts.length < 2) return null;
-  if (ringCount(parts) > MAX_RINGS_TO_UNION) return null;
+  if (snapDegrees > 0) parts = snapMultiPoly(parts, snapDegrees);
+  if (parts.length < 2) return null;
+  if (ringCount(parts) > maxRings) return null;
 
   try {
     const merged = polygonClipping.union(
@@ -186,6 +275,12 @@ export const unionParcels = (geometries: any[]): MergeResult | null => {
   } catch {
     return null;
   }
+};
+
+/** Rings in one GeoJSON geometry. The cost of a union tracks this, not features. */
+export const ringsIn = (geometry: any): number => {
+  const mp = asMultiPoly(geometry);
+  return mp ? ringCount(mp) : 0;
 };
 
 /** How many lakes the server knows about. Reported in `meta` for sanity. */
