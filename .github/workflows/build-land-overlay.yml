@@ -112,7 +112,21 @@ jobs:
 
           git add public/map/public-land-overview.json
           git commit -m 'Rebuild bundled public-land overview'
-          git push
+
+          # The build takes several minutes and the branch can move under it,
+          # which would bounce this push as out of date after all that work.
+          # The overlay is a single generated file that nothing else writes, so
+          # replaying it on top of whatever landed meanwhile is always right.
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push rejected — rebasing onto the current branch (try $attempt)."
+            git pull --rebase origin "$GITHUB_REF_NAME"
+          done
+
+          echo 'Could not push the overlay after three attempts.'
+          exit 1
 
       # Optional, and off by default: this walks the same services again at
       # full resolution and writes every polygon into Supabase. It is what
