@@ -343,12 +343,13 @@ export const overviewMinSpanDegrees = (zoom: number): number => {
  * The provinces whose Crown land this app can actually draw, and how much of
  * each one it draws.
  *
- * Five, at the time of writing: Alberta (the Green Area, plus Public Land Use
+ * Eight, at the time of writing: Alberta (the Green Area, plus Public Land Use
  * Zones), Ontario (CLUPA General Use Areas), Saskatchewan (the provincial
- * forest), Manitoba (the fifteen provincial forests) and British Columbia (the
- * provincial forests). Those are the only Canadian jurisdictions publishing a
- * queryable open layer that delineates land a camper may actually use — see
- * COVERAGE_GAPS in
+ * forest), Manitoba (the fifteen provincial forests), British Columbia (the
+ * provincial forests), Quebec (the multiple-use land in the public land use
+ * plan), New Brunswick and Nova Scotia (the extent of Crown land itself).
+ * Those are the Canadian jurisdictions publishing a queryable open layer that
+ * delineates land a camper may actually use — see COVERAGE_GAPS in
  * `scripts/landSources.ts` for what each of the others publishes instead and
  * why it doesn't qualify.
  *
@@ -384,7 +385,23 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
   // land, and everything outside a Forest Act designation is unmapped here.
   // The province that this whole function was written about must not now be
   // filed as "covered" on the strength of one layer.
-  ['CA-BC', 'only the provincial forests are mapped — most BC Crown land is not']
+  ['CA-BC', 'only the provincial forests are mapped — most BC Crown land is not'],
+  /*
+   * Quebec is drawn from the public land use plan, which is the province's own
+   * map of its public land — so the coverage is real, and what is missing from
+   * it is the OTHER regimes sitting on the same ground: the protected areas
+   * this app deliberately leaves out, and the ZECs and outfitters it cannot
+   * mark.
+   */
+  ['CA-QC', 'protected areas, ZECs and outfitters are not marked'],
+  /*
+   * New Brunswick and Nova Scotia publish the extent of their Crown land
+   * itself, so a blank area there really is private or municipal land rather
+   * than missing data — the one thing this map is otherwise never allowed to
+   * imply. They get a plain null, like Alberta.
+   */
+  ['CA-NB', null],
+  ['CA-NS', null]
 ]);
 
 /**

@@ -288,6 +288,16 @@ interface BoundarySource {
    */
   generaliseLocally?: boolean;
   /**
+   * What to ask the service to answer in.
+   *
+   * `geojson` (the default) is what every ArcGIS source here uses. `esri` is
+   * for a service that answers a GeoJSON request with attributes and a null
+   * where the polygon should be — Quebec's does — and whose own format works
+   * fine. Esri JSON carries geometry as `rings`, which `esriRingsToGeoJson`
+   * turns back into polygons and holes.
+   */
+  format?: 'geojson' | 'esri';
+  /**
    * The layer's own area column, if it has one.
    *
    * ArcGIS: used to ask for the BIGGEST parcels in view once the viewport is
@@ -775,7 +785,8 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * written for.
      */
     generaliseLocally: true,
-    maxBytes: 20 * 1024 * 1024
+    maxBytes: 20 * 1024 * 1024,
+    format: 'esri'
   },
   {
     // Verified: returns General Use Areas for northern Ontario.
@@ -1480,7 +1491,7 @@ const arcgisQueryUrl = (
           maxAllowableOffset: String(simplifyDegrees)
         }),
     resultRecordCount: String(recordLimit),
-    f: 'geojson'
+    f: source.format === 'esri' ? 'json' : 'geojson'
   });
 
   /*
@@ -1791,6 +1802,73 @@ const wideStartingRecords = (span: number): number => {
   if (span > 10) return 4;
   if (span > 5) return 6;
   return 10;
+};
+
+/**
+ * Esri JSON rings back into GeoJSON polygons.
+ *
+ * Esri puts every ring of a feature in one flat list and tells the outers from
+ * the holes by winding: clockwise is an outer ring, counter-clockwise is a
+ * hole in whichever outer ring contains it. GeoJSON wants that structure made
+ * explicit, so this rebuilds it.
+ *
+ * IF THE WINDING IS NOT WHAT IT CLAIMS — some services publish everything one
+ * way round — every ring is treated as its own outer ring rather than thrown
+ * away. A hole drawn as solid land overstates by the area of a lake; a feature
+ * dropped for a winding rule overstates nothing and shows nothing, which on a
+ * map of where you may sleep is the worse of the two.
+ */
+const ringIsClockwise = (ring: number[][]): boolean => {
+  let sum = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    sum += (ring[i][0] - ring[j][0]) * (ring[i][1] + ring[j][1]);
+  }
+  return sum > 0;
+};
+
+const pointInRing = (point: number[], ring: number[][]): boolean => {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > point[1] !== yj > point[1] &&
+        point[0] < ((xj - xi) * (point[1] - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+};
+
+export const esriRingsToGeoJson = (rings: any): any | null => {
+  if (!Array.isArray(rings) || rings.length === 0) return null;
+
+  const usable = rings.filter(
+    (r: any) => Array.isArray(r) && r.length >= 4 && Array.isArray(r[0])
+  ) as number[][][];
+  if (usable.length === 0) return null;
+
+  let outers = usable.filter(ringIsClockwise);
+  const holes = usable.filter((r) => !ringIsClockwise(r));
+  // Nothing wound the way Esri says: keep the land, lose the holes.
+  if (outers.length === 0) outers = usable;
+
+  const polygons: number[][][][] = outers.map((outer) => [outer]);
+  if (outers.length === usable.length) {
+    // No holes to place.
+  } else {
+    for (const hole of holes) {
+      const owner = polygons.find((poly) => pointInRing(hole[0], poly[0]));
+      // A "hole" inside nothing is not a hole — it is an outer ring wound the
+      // other way. Keeping it as its own polygon loses no land; dropping it
+      // would, quietly.
+      if (owner) owner.push(hole);
+      else polygons.push([hole]);
+    }
+  }
+
+  return polygons.length === 1
+    ? { type: 'Polygon', coordinates: polygons[0] }
+    : { type: 'MultiPolygon', coordinates: polygons };
 };
 
 /** The GetFeature call for a WFS source. */
@@ -2141,6 +2219,23 @@ const queryBoundarySourceOnce = async (
       return { features: [], ok: false, truncated: false };
     }
 
+    /*
+     * Esri JSON is a different shape all the way down — `attributes` where
+     * GeoJSON has `properties`, `rings` where it has coordinates — so it is
+     * turned into GeoJSON here, once, and nothing after this line knows the
+     * difference.
+     */
+    if (source.format === 'esri') {
+      data.features = data.features
+        .map((f: any) => {
+          const geometry = esriRingsToGeoJson(f?.geometry?.rings);
+          return geometry
+            ? { type: 'Feature', geometry, properties: f?.attributes ?? {} }
+            : null;
+        })
+        .filter(Boolean);
+    }
+
     const returned = data.features.length;
 
     // Once per source per process: what the layer's area column actually says.
@@ -2236,7 +2331,10 @@ const queryBoundarySourceOnce = async (
     if (returned > 0 && features.length === 0) {
       console.warn(
         `[boundaries] ${source.id}: ${returned} features returned, none were polygons ` +
-          `(first geometry type: ${String(data.features[0]?.geometry?.type ?? 'none')})`
+          `(first geometry type: ${String(data.features[0]?.geometry?.type ?? 'none')})` +
+          // Verbatim, because "none" has meant three different things so far:
+          // a null geometry, an Esri ring list, and a line layer.
+          ` raw: ${JSON.stringify(data.features[0] ?? {}).slice(0, 300)}`
       );
     }
 

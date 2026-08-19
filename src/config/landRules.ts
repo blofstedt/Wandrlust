@@ -159,6 +159,58 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
     basis: "British Columbia's general Crown land rule, not a record for this forest"
   },
 
+  /*
+   * Quebec's 21 days come from the Loi sur les terres du domaine de l'État,
+   * and the setback is the part that catches people out — 60 m from water is
+   * further than it sounds when the reason you drove there was the lake.
+   *
+   * The last line is not a nicety. ZECs, réserves fauniques and pourvoiries
+   * cover a great deal of southern Quebec's public land, each with its own
+   * gate, fee and register, and none of them are cut out of the polygons this
+   * app draws.
+   */
+  quebec_patp: {
+    rules: [
+      '21 consecutive days in one spot',
+      'Stay 60 m back from water, roads and private land',
+      'Free, no permit, on plain public land',
+      'ZECs, réserves and pourvoiries run their own way'
+    ],
+    basis: "Québec's general public land rule, not a record for this zone"
+  },
+
+  /* New Brunswick calls a night out "occasional use", which needs no
+     authorisation. The 75 m setback is for RVs only — tents are exempt. */
+  new_brunswick_crown_land: {
+    rules: [
+      '21 days is the usual limit for casual camping',
+      'RVs stay 75 m back from any waterway',
+      'Free, and no authorisation for occasional use',
+      'Never block a road, trail or waterway'
+    ],
+    basis: "New Brunswick's general Crown land rule, not a record for this parcel"
+  },
+
+  /*
+   * NOVA SCOTIA GETS NO NUMBER, ON PURPOSE.
+   *
+   * Every other province in this file publishes a stay limit in plain words.
+   * Nova Scotia publishes what you may do on Crown land without a permit, and
+   * the day count is not in it — the figures that circulate come from camping
+   * guides rather than from the province. So this says what is actually known
+   * and leaves the number to the department, which is the honest shape of a
+   * rule nobody has written down.
+   */
+  nova_scotia_crown_land: {
+    rules: [
+      'Short recreational stays, no permit needed',
+      'Staying longer needs the department\'s permission',
+      'Wilderness areas and wildlife areas have their own rules',
+      'The woods close in bad fire seasons — check before you go'
+    ],
+    basis: "Nova Scotia's general Crown land guidance, not a record for this parcel"
+  },
+
   ontario_clupa_general_use: {
     rules: [
       '21 nights in one spot per calendar year',
