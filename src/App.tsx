@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type {
-  Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
+  Campsite, FilterState, GeocodedLocation, AppView, LegalDocKind,
   DestinationLand, MapDestination, CellCoverage, BeaconSpot, FacilityKind, MapFacility
 } from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
@@ -615,13 +615,18 @@ export default function App() {
    * decided to drive to it.
    */
   const handleNavigateToBeaconSpot = useCallback(
-    (latitude: number, longitude: number) => {
+    (latitude: number, longitude: number, label?: string) => {
       setIsBeaconOpen(false);
       setSelectedCampsite(null);
       setSelectedReport(null);
       setDestination({ latitude, longitude });
       setCenter([latitude, longitude]);
       setZoom((current) => Math.max(current, 14));
+      // BeaconPanel passes the spot's name. It used to be dropped on the
+      // floor — TypeScript allows a handler that takes fewer arguments —
+      // which left the header naming wherever the camper searched last
+      // while the map had already flown somewhere else.
+      if (label) setCurrentLocationName(label);
     },
     []
   );

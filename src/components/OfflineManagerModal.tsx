@@ -16,7 +16,7 @@ import {
   deleteLandPack
 } from '../services/landOverlayService';
 import {
-  Download, WifiOff, Trash2, CheckCircle2, Shield, HardDrive, MapPin, X,
+  Download, WifiOff, Trash2, CheckCircle2, HardDrive, X,
   Zap, AlertTriangle, Loader2
 } from 'lucide-react';
 
@@ -384,4 +384,4 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
     </div>
   );
 };
-
+

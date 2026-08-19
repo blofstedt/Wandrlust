@@ -62,7 +62,7 @@ Plain English. Grouped by why it mattered.
 
 ## Not touched on purpose
 
-- All five SQL migrations, the seeding scripts, the legal text, and the motion
+- Every SQL migration, the seeding scripts, the legal text, and the motion
   system. They were in good shape and changing them carries risk with no payoff.
 - The unused helpers in `dataService.ts` (bookings, POI voting, rig profiles).
   They're the matching half of tables that already exist in your database and
@@ -74,4 +74,4 @@ Plain English. Grouped by why it mattered.
   confident changes.
 - `PRODUCTION.md` still holds an honest list of what isn't launch-ready —
   boundary accuracy, Canadian coverage, the legal review. Nothing here changed
-  that list.
+  that list.

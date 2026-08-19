@@ -25,8 +25,9 @@
     "server",
     "shared",
     "scripts",
+    "api",
     "server.ts",
     "vite.config.ts"
   ],
   "exclude": ["node_modules", "dist"]
-}
+}

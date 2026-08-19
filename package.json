@@ -16,7 +16,6 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "icons": "node scripts/generateIcons.mjs",
-    "validate": "node scripts/validateData.mjs",
     "probe": "tsx scripts/probeLandSources.ts",
     "check:sql": "node scripts/checkMigrationColumns.mjs",
     "seed": "tsx scripts/seedSupabase.ts",

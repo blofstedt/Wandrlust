@@ -1,6 +1,5 @@
 node_modules/
 dist/
-server.js
 *.local
 
 # Environment

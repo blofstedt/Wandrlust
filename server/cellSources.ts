@@ -274,9 +274,24 @@ const parseElements = (elements: unknown): CellTower[] => {
 };
 
 const runOverpass = async (query: string, timeoutMs: number): Promise<CellTower[] | null> => {
+  /*
+   * `timeoutMs` is the budget for the WHOLE call, not for each mirror.
+   *
+   * It used to be per mirror, so three mirrors that all hung took three
+   * times as long as anything upstream expected — past the 30-second cap
+   * the whole API runs under on Vercel, which turns "no cell data" into "no
+   * response at all". The caller's own AbortController then only governed
+   * the OpenCellID leg, so nothing actually held this one to 12 seconds.
+   */
+  const deadline = Date.now() + timeoutMs;
+
   for (const mirror of OVERPASS_MIRRORS) {
+    const left = deadline - Date.now();
+    // Under a second left is not enough to be worth opening a connection.
+    if (left < 1000) break;
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), left);
     try {
       const res = await fetch(mirror, {
         method: 'POST',

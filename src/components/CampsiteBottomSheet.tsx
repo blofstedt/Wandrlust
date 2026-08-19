@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  X, MapPin, Star, Navigation, Bookmark, Signal, Droplet,
+  X, Star, Navigation, Bookmark, Signal, Droplet,
   Flame, Dog, Clock, TentTree, Loader2, CheckCircle2,
   ChevronUp, Camera, ThermometerSun, Copy, Check, Flag, Trash2
 } from 'lucide-react';
