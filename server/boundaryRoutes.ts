@@ -1707,6 +1707,24 @@ const noOrderBy = new Set<string>();
 const SORTED_ASK_RECORDS = 120;
 const SORTED_ASK_TIMEOUT_MS = 12000;
 
+/**
+ * Whether this ask wants the biggest parcels rather than the first ones.
+ *
+ * Lives here rather than inside the query because the CACHE has to know too.
+ * A sorted answer and an arbitrary one are different answers to the same
+ * question, and they were sharing a slot — so an Ontario cached from the old
+ * ask would have gone on being served for the ninety days that cache lives,
+ * and the fix would have looked like it had not worked.
+ */
+const wantsBiggestFirst = (
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number }
+): boolean =>
+  source.protocol !== 'wfs' &&
+  !!source.areaField &&
+  !noOrderBy.has(source.id) &&
+  Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon) > 2.5;
+
 const queryBoundarySourceOnce = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
@@ -1769,8 +1787,7 @@ const queryBoundarySourceOnce = async (
    * Same threshold as the WFS: past two and a half degrees the record cap is
    * doing the choosing, so it had better choose well.
    */
-  const sortWanted =
-    !isWfs && !sortless && span > 2.5 && !!source.areaField && !noOrderBy.has(source.id);
+  const sortWanted = !sortless && wantsBiggestFirst(source, bbox);
 
   const requestUrl = isWfs
     ? wfsQueryUrl(source, bbox, wfsRecordLimit, biggestFirst)
@@ -2257,7 +2274,9 @@ const cachedQuery = async (
    * tolerances still share, which is the whole point of a key.
    */
   const tolerance = simplifyDegrees.toPrecision(2);
-  const key = `${source.id}|${box}|${tolerance}|${recordLimit}`;
+  const key =
+    `${source.id}|${box}|${tolerance}|${recordLimit}` +
+    (wantsBiggestFirst(source, bbox) ? '|big' : '');
 
   const hit = sourceCache.get(key);
   if (hit && Date.now() - hit.at < SOURCE_TTL_MS) {
