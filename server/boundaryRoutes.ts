@@ -277,9 +277,18 @@ interface BoundarySource {
    */
   maxSpanDegrees?: number;
   /**
-   * WFS only. The layer's own area column, if it has one.
+   * The layer's own area column, if it has one.
    *
-   * What it buys is the wide view. Past `maxSpanDegrees` the full ask is
+   * ArcGIS: used to ask for the BIGGEST parcels in view once the viewport is
+   * wide, instead of whichever ones the database offers first. This is the
+   * whole difference between an Ontario that looks like Ontario and an Ontario
+   * that looks like a scatter of flecks — see `arcgisQueryUrl`. Prefer a plain
+   * attribute column (`SYS_AREA`, `gis_acres`) over a computed geometry one
+   * (`SHAPE.AREA`): the server can sort an indexed column, and these are the
+   * services that were already timing out on the wide ask.
+   *
+   *
+   * WFS: what it buys is the wide view. Past `maxSpanDegrees` the full ask is
    * hopeless, but "the biggest N shapes in view" is both affordable and the
    * right answer at that zoom — a forest too small to see is not what someone
    * looking at a whole province is asking about. Sorting is done by the
@@ -377,7 +386,9 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     campingBasisKind: 'agency_policy_inference',
     name: (p) => pick(p, 'unit_name') ?? 'BLM land',
     designation: () => 'Bureau of Land Management',
-    extent: CONUS
+    extent: CONUS,
+    // Hosted feature service: `Shape__Area` is a real, indexed column.
+    areaField: 'Shape__Area'
   },
   {
     // Verified: 112 national forests; returns Custer Gallatin for Bozeman.
@@ -394,7 +405,10 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     campingBasisKind: 'agency_policy_inference',
     name: (p) => pick(p, 'forestname', 'FORESTNAME') ?? 'National Forest',
     designation: () => 'US Forest Service',
-    extent: CONUS
+    extent: CONUS,
+    // An attribute, not a computed geometry area — this layer was already
+    // timing out on the wide ask and must not be made to work harder.
+    areaField: 'gis_acres'
   },
   {
     /**
@@ -618,9 +632,12 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     // Confirmed against production: none of the guessed field names matched
     // and all fifteen forests came back as the bare fallback, so this reads
     // whatever name-shaped field the layer actually carries.
-    name: (p) => nameLike(p, 'NAME', 'FOREST_NAME', 'PF_NAME', 'PROVINCIAL_FOREST') ?? 'Provincial Forest',
+    // Production printed this layer's fields: the name column is
+    // PROV_FOREST_NAME, which none of the earlier guesses had.
+    name: (p) => nameLike(p, 'PROV_FOREST_NAME', 'NAME', 'FOREST_NAME') ?? 'Provincial Forest',
     designation: () => 'Manitoba provincial forest',
-    extent: { minLat: 48.9, minLon: -102.1, maxLat: 60.1, maxLon: -88.9 }
+    extent: { minLat: 48.9, minLon: -102.1, maxLat: 60.1, maxLon: -88.9 },
+    areaField: 'AREA_HA'
   },
   {
     // Verified: returns General Use Areas for northern Ontario.
@@ -635,7 +652,13 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     campingBasisKind: 'explicit_designation',
     name: (p) => pick(p, 'NAME_ENG') ?? 'General Use Area',
     designation: (p) => pick(p, 'DESIGNATION_ENG') ?? 'General Use Area',
-    extent: { minLat: 41.6, minLon: -95.2, maxLat: 56.9, maxLon: -74.3 }
+    extent: { minLat: 41.6, minLon: -95.2, maxLat: 56.9, maxLon: -74.3 },
+    /*
+     * The reason this province stopped looking like confetti. `SYS_AREA` is
+     * LIO's own area attribute, chosen over the computed `SHAPE.AREA` because
+     * this service times out on the wide ask as it is.
+     */
+    areaField: 'SYS_AREA'
   },
   {
     /**
@@ -673,7 +696,8 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     campingBasisKind: 'open_access_flag',
     name: (p) => pick(p, 'BndryName', 'Unit_Nm') ?? 'Public land',
     designation: (p) => pick(p, 'Des_Tp', 'Mang_Name') ?? 'Open access public land',
-    extent: CONUS
+    extent: CONUS,
+    areaField: 'GIS_Acres'
   }
 ];
 
@@ -1251,6 +1275,11 @@ interface SourceResult {
    */
   overBudget?: boolean;
   /**
+   * The service refused the biggest-first sort, which is worth one more try
+   * without it — the sort is how the wide view chooses, not whether it draws.
+   */
+  orderByRejected?: boolean;
+  /**
    * Where this answer came from.
    *
    * Reported in `meta` so the tile cache can be checked from outside without
@@ -1274,7 +1303,8 @@ const arcgisQueryUrl = (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
-  recordLimit: number
+  recordLimit: number,
+  biggestFirst = false
 ): string => {
   const params = new URLSearchParams({
     where: source.where ?? '1=1',
@@ -1301,6 +1331,37 @@ const arcgisQueryUrl = (
     resultRecordCount: String(recordLimit),
     f: 'geojson'
   });
+
+  /*
+   * BIGGEST FIRST, ONCE THE VIEW IS WIDE.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY ONTARIO DREW AS FLECKS OVER A PROVINCE THAT IS MOSTLY CROWN LAND
+   * ---------------------------------------------------------------------------
+   *
+   * The wide ask has always been "give me the first N parcels that intersect
+   * this box", and N is small on purpose because these servers cannot
+   * generalise five hundred complex polygons inside a timeout. Then the area
+   * filter throws away everything too small to draw at that zoom.
+   *
+   * Put those two together and the survivors are: whichever parcels the
+   * database happened to hand over first, minus most of them. For a source
+   * like Alberta's Green Area — one polygon — that is the whole truth. For
+   * Ontario, which is thousands of General Use Areas covering most of the
+   * north, it is a random handful of small ones, and the province drew as
+   * confetti next to a solid Alberta. Nothing was wrong with the data.
+   *
+   * Every one of these services reports `supportsOrderBy: true` (checked in
+   * production, per layer), so the wide ask now says WHICH N it wants. At a
+   * zoom where a parcel under a few hundred km² is a pixel, the biggest ones
+   * are the only ones that were ever going to be drawn.
+   *
+   * Only applied on the wide ask, so a close-in view still gets everything in
+   * the box; and if a service ever refuses the parameter, the query is retried
+   * once without it rather than dropping the source.
+   */
+  if (biggestFirst && source.areaField) params.set('orderByFields', `${source.areaField} DESC`);
+
   return `${source.url}?${params.toString()}`;
 };
 
@@ -1633,42 +1694,8 @@ const wfsQueryUrl = (
  */
 const loggedWfsFields = new Set<string>();
 
-/**
- * TEMPORARY DIAGNOSTIC — asks each ArcGIS layer what it is called and what it
- * can do, once per process, and prints it.
- *
- * The zoomed-out map asks every source for a couple of hundred parcels and
- * gets whichever ones the database hands over first, which is why Ontario —
- * carpeted in Crown land — draws as a scatter of flecks next to a solid
- * Alberta. The fix is to ask for the BIGGEST parcels in view, and that needs
- * two facts per layer that cannot be read from a sandbox with no route to the
- * services: the name of its area column, and whether it will sort at all.
- *
- * Delete this once `areaField` is filled in below for the sources that have
- * one. It costs one request per source per cold lambda and never touches the
- * response — the boundaries are drawn from the query, not from this.
- */
-const loggedLayerFields = new Set<string>();
-
-const logLayerCapabilities = (source: BoundarySource): void => {
-  if (source.protocol === 'wfs' || source.areaField || loggedLayerFields.has(source.id)) return;
-  loggedLayerFields.add(source.id);
-
-  const metaUrl = `${source.url.replace(/\/query\/?$/, '')}?f=json`;
-  fetch(metaUrl, { headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' } })
-    .then((r) => r.json())
-    .then((meta: any) => {
-      const fields = Array.isArray(meta?.fields)
-        ? meta.fields.map((f: any) => String(f.name)).join(', ')
-        : 'none listed';
-      console.info(
-        `[boundaries] ${source.id}: layer "${meta?.name ?? '?'}" ` +
-          `orderBy=${meta?.advancedQueryCapabilities?.supportsOrderBy ?? 'unknown'} ` +
-          `fields: ${fields}`
-      );
-    })
-    .catch(() => {});
-};
+/** Services that turned out not to honour `orderByFields` after all. */
+const noOrderBy = new Set<string>();
 
 const queryBoundarySourceOnce = async (
   source: BoundarySource,
@@ -1726,11 +1753,14 @@ const queryBoundarySourceOnce = async (
   const biggestFirst = wideForWfs || wideRecordsOverride != null;
   const wfsRecordLimit = wideRecordsOverride ?? (wideForWfs ? wideStartingRecords(span) : recordLimit);
 
-  if (!isWfs) logLayerCapabilities(source);
-
   const requestUrl = isWfs
     ? wfsQueryUrl(source, bbox, wfsRecordLimit, biggestFirst)
-    : arcgisQueryUrl(source, bbox, simplifyDegrees, recordLimit);
+    : arcgisQueryUrl(
+        source, bbox, simplifyDegrees, recordLimit,
+        // Same threshold as the WFS: past two and a half degrees the record
+        // cap is doing the choosing, so it had better choose well.
+        span > 2.5 && !noOrderBy.has(source.id)
+      );
 
   const controller = new AbortController();
   // One unresponsive service used to hold the whole response for nine seconds.
@@ -1812,6 +1842,18 @@ const queryBoundarySourceOnce = async (
     // as an empty result would silently hide land, so it is a hard failure.
     if (data?.error) {
       console.warn(`[boundaries] ${source.id}:`, data.error?.message ?? 'query error');
+      /*
+       * Unless the only new thing we asked for was the sort. Every one of
+       * these layers advertises support for it, but an advertised capability
+       * and a working one are not the same thing, and losing a source over a
+       * nicety would be the empty-province failure all over again. Remember it
+       * and let the caller ask again the old way.
+       */
+      if (!isWfs && span > 2.5 && source.areaField && !noOrderBy.has(source.id)) {
+        console.info(`[boundaries] ${source.id}: dropping the biggest-first sort and retrying`);
+        noOrderBy.add(source.id);
+        return { features: [], ok: false, truncated: false, orderByRejected: true };
+      }
       return { features: [], ok: false, truncated: false };
     }
     if (!Array.isArray(data?.features)) {
@@ -1978,6 +2020,11 @@ const queryBoundarySource = async (
       );
     }
     return attempt;
+  }
+
+  // `noOrderBy` was set by the attempt itself, so this asks the plain way.
+  if (first.orderByRejected) {
+    return queryBoundarySourceOnce(source, bbox, simplifyDegrees, recordLimit);
   }
 
   if (first.ok || !first.timedOut || recordLimit <= OVERVIEW_RETRY_RECORDS) return first;
