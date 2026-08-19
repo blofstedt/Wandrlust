@@ -2120,6 +2120,26 @@ const wantsBiggestFirst = (
   );
 };
 
+/**
+ * A parcel's own id at its source, or null when it does not have one.
+ *
+ * ArcGIS GeoJSON puts the layer's OBJECTID on `feature.id`; a WFS puts
+ * `typename.fid` there. Either way it is the source's own primary key, which
+ * is exactly what a stored copy needs to be keyed on.
+ *
+ * NULL IS A REAL ANSWER AND MUST NOT BE PAPERED OVER. The obvious fallback —
+ * hashing the geometry — is wrong here, because this file asks every service
+ * to generalise to the current zoom, so the same parcel arrives as a different
+ * shape at every scale and would store as a new row each time. A parcel with
+ * no upstream id is left to the live path instead.
+ */
+const externalIdOf = (feature: any, props: Record<string, any>): string | null => {
+  const direct = feature?.id ?? props?.OBJECTID ?? props?.objectid ?? props?.FID ?? props?.fid;
+  if (direct === null || direct === undefined) return null;
+  const text = String(direct).trim();
+  return text.length > 0 ? text : null;
+};
+
 const queryBoundarySourceOnce = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
@@ -2417,7 +2437,19 @@ const queryBoundarySourceOnce = async (
             _edgeAccuracy: source.edgeAccuracy,
             _campingBasisKind: source.campingBasisKind,
             _name: source.name(props),
-            _designation: source.designation(props)
+            _designation: source.designation(props),
+            /*
+             * The parcel's identity, so storing it twice updates one row
+             * rather than making two. ArcGIS and WFS both put the layer's own
+             * object id on the FEATURE rather than in its properties, and it
+             * survives every zoom because it has nothing to do with geometry.
+             * Without an upstream id there is nothing stable to key on — the
+             * shape itself changes with the generalisation asked for — so the
+             * parcel is simply not storable, and `externalIdOf` says so by
+             * returning null rather than inventing one that would duplicate on
+             * the next fetch.
+             */
+            _externalId: externalIdOf(f, props)
           }
         };
       });
@@ -2925,6 +2957,280 @@ export const fetchPublicLand = async (
   }
 };
 
+/* -------------------------------------------------------------------------- */
+/* Filling `public_lands` from production                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ---------------------------------------------------------------------------
+ * THE MAP STORES WHAT IT FETCHES, AND STOPS ASKING
+ * ---------------------------------------------------------------------------
+ *
+ * `npm run seed` was always meant to fill `public_lands`, and in the life of
+ * this project it has never once run. The reason is mundane and permanent:
+ * seeding needs a machine that can reach eight government GIS services, and
+ * the only machine that can is this one — the deployed API. A laptop behind a
+ * proxy cannot, and neither can the agent sandbox this file is written in,
+ * which is refused at the gateway for every government host it has ever tried.
+ *
+ * So the API fills the table itself, out of the fetches it is ALREADY making.
+ * A camper looks at a valley, the live services answer, and on the way out
+ * those parcels are written down along with the exact box they cover. The
+ * second time anyone looks at that valley — any device, any lambda, weeks
+ * later — the government servers are not involved at all.
+ *
+ * Two rules keep this honest, and both are the difference between a cache and
+ * a lie.
+ *
+ * ONLY WHAT IS COMPLETE IS STORED. A truncated answer is the service saying
+ * "there is more here than I am willing to send". Stored and then served as
+ * though it were everything, it becomes the map telling a camper there is no
+ * public land in a place there is — the one thing this app may never do. A
+ * truncated result is used for the response and thrown away.
+ *
+ * ONLY WHAT IS SHARP IS STORED. Every other fetch in this file asks the
+ * service to generalise to the zoom being drawn, because that is all that is
+ * about to be shown. Stored geometry is read back at EVERY zoom, including the
+ * ones where someone is looking at an edge to decide where to sleep, so a
+ * coarse overview shape must never end up in the table. Anything thinner than
+ * `INGEST_MAX_TOLERANCE` is used and discarded.
+ *
+ * What those two rules leave is exactly the right thing: the detailed views a
+ * camper actually plans from, stored at the fidelity they were seen.
+ */
+
+/**
+ * The coarsest geometry worth keeping — about a hundred metres.
+ *
+ * Well inside the accuracy these sources claim for themselves (none of them is
+ * survey-grade and all say so), and fine enough that a stored parcel drawn at
+ * full zoom looks like the parcel rather than like a polygon of it.
+ */
+const INGEST_MAX_TOLERANCE = 0.001;
+
+/**
+ * Parcels per round trip to Supabase.
+ *
+ * Full-fidelity polygons are large — one Crown land parcel can be tens of
+ * kilobytes of coordinates — and a single request carrying hundreds of them is
+ * how a serverless function reaches its thirty-second ceiling having stored
+ * nothing. Fifty always lands.
+ */
+const INGEST_CHUNK = 50;
+
+/**
+ * How long the whole store may take, after the answer is already in hand.
+ *
+ * The camper's response is built and waiting by this point, so every
+ * millisecond here is latency they did not ask for. When the budget runs out
+ * the remaining sources are simply not stored this time; the next look at the
+ * same ground will store them instead.
+ */
+const INGEST_BUDGET_MS = 4000;
+
+/**
+ * `land_sources` has a foreign key from `public_lands` and it is empty, which
+ * on its own made storing a parcel impossible. The registry in this file is
+ * the truth about these sources, so it writes itself in, once per process.
+ */
+let landSourcesReady: Promise<boolean> | null = null;
+
+const ensureLandSources = (client: SupabaseClient): Promise<boolean> => {
+  if (landSourcesReady) return landSourcesReady;
+  landSourcesReady = Promise.resolve(client
+    .from('land_sources')
+    .upsert(
+      BOUNDARY_SOURCES.map((s) => ({
+        id: s.id,
+        label: s.label,
+        attribution: s.attribution,
+        edge_accuracy: s.edgeAccuracy,
+        camping_basis_kind: s.campingBasisKind
+      })),
+      { onConflict: 'id' }
+    )
+    .then(({ error }) => {
+      if (error) {
+        console.warn(`[ingest] land_sources not written: ${error.message}`);
+        // Deliberately not cached as a failure — a later request retries.
+        landSourcesReady = null;
+        return false;
+      }
+      return true;
+    }));
+  return landSourcesReady;
+};
+
+/**
+ * Store one source's parcels for the box they were fetched for.
+ *
+ * Returns the number stored, or null when this result was not storable — which
+ * is the ordinary case at overview zoom and carries no fault.
+ */
+const storeSourceParcels = async (
+  client: SupabaseClient,
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  features: any[]
+): Promise<number | null> => {
+  const storable = features.filter(
+    (f) =>
+      typeof f?.properties?._externalId === 'string' &&
+      f.properties._externalId.length > 0 &&
+      f?.geometry
+  );
+
+  let stored = 0;
+  for (let i = 0; i < storable.length; i += INGEST_CHUNK) {
+    const { data, error } = await client.rpc('ingest_land_parcels', {
+      in_source_id: source.id,
+      in_features: storable.slice(i, i + INGEST_CHUNK)
+    });
+    if (error) {
+      console.warn(`[ingest] ${source.id}: ${error.message}`);
+      return null;
+    }
+    stored += Number(data ?? 0);
+  }
+
+  /*
+   * The box is claimed only now, once its parcels are in.
+   *
+   * Claimed EVEN WHEN NOTHING WAS STORED, and that is deliberate: a complete,
+   * sharp answer of zero features is the source saying there is no public land
+   * in this box, which is knowledge worth keeping and exactly as true as a
+   * hundred parcels would have been. Without it the emptiest ground — most of
+   * a continent — would be re-asked of a government server forever.
+   */
+  const clipped = clipToExtent(bbox, source.extent);
+  const { error } = await client.rpc('record_land_coverage', {
+    in_source_id: source.id,
+    in_min_lat: clipped.minLat,
+    in_min_lon: clipped.minLon,
+    in_max_lat: clipped.maxLat,
+    in_max_lon: clipped.maxLon
+  });
+  if (error) {
+    console.warn(`[ingest] ${source.id} coverage not recorded: ${error.message}`);
+    return null;
+  }
+  return stored;
+};
+
+/**
+ * Write down everything in this response that is worth writing down.
+ *
+ * Runs after the answer is built, never before: this is bookkeeping, and a
+ * camper waiting on a map should not be waiting on it.
+ */
+const rememberLiveParcels = async (
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  results: { source: BoundarySource; features: any[]; ok: boolean; truncated: boolean }[],
+  alreadyCovered: Set<string>
+): Promise<void> => {
+  if (simplifyDegrees > INGEST_MAX_TOLERANCE) return;
+
+  const client = getCacheClient();
+  if (!client) return;
+
+  const worth = results.filter(
+    (r) =>
+      r.ok &&
+      !r.truncated &&
+      !alreadyCovered.has(r.source.id) &&
+      overlaps(bbox, r.source.extent)
+  );
+  if (worth.length === 0) return;
+
+  if (!(await ensureLandSources(client))) return;
+
+  const startedAt = Date.now();
+  for (const r of worth) {
+    if (Date.now() - startedAt > INGEST_BUDGET_MS) break;
+    const stored = await storeSourceParcels(client, r.source, bbox, r.features);
+    if (stored !== null) {
+      console.log(
+        `[ingest] ${r.source.id}: stored ${stored} of ${r.features.length} for ` +
+          `${bbox.minLat.toFixed(3)},${bbox.minLon.toFixed(3)} → ` +
+          `${bbox.maxLat.toFixed(3)},${bbox.maxLon.toFixed(3)}`
+      );
+    }
+  }
+};
+
+/**
+ * Which sources this database can answer for this exact box, on its own.
+ *
+ * "Covers" is meant strictly: the stored coverage must contain the whole
+ * viewport, not merely touch it. A source covering half the screen is not
+ * usable, because the half it does not cover would draw as empty land.
+ */
+const coveredSources = async (bbox: {
+  minLat: number;
+  minLon: number;
+  maxLat: number;
+  maxLon: number;
+}): Promise<Set<string>> => {
+  const client = getSeededClient();
+  if (!client) return new Set();
+  if (seededOutage && Date.now() - seededOutage.at < SEEDED_RECHECK_MS) return new Set();
+
+  try {
+    const { data, error } = await client.rpc('land_sources_covering', {
+      in_min_lat: bbox.minLat,
+      in_min_lon: bbox.minLon,
+      in_max_lat: bbox.maxLat,
+      in_max_lon: bbox.maxLon
+    });
+    if (error) {
+      console.warn(`[boundaries] coverage lookup unavailable: ${error.message}`);
+      return new Set();
+    }
+    return new Set(
+      (Array.isArray(data) ? data : [])
+        .map((row: any) => String(row?.source_id ?? ''))
+        .filter(Boolean)
+    );
+  } catch (err) {
+    console.warn(`[boundaries] coverage lookup failed: ${(err as Error).message}`);
+    return new Set();
+  }
+};
+
+/** Read the stored parcels for a set of sources this database fully covers. */
+const storedParcelsFor = async (
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  recordLimit: number,
+  minAreaSqKm: number,
+  sourceIds: string[]
+): Promise<any[] | null> => {
+  const client = getSeededClient();
+  if (!client || sourceIds.length === 0) return null;
+
+  try {
+    const { data, error } = await client.rpc('boundaries_in_bbox_sources', {
+      in_min_lat: bbox.minLat,
+      in_min_lon: bbox.minLon,
+      in_max_lat: bbox.maxLat,
+      in_max_lon: bbox.maxLon,
+      in_tolerance: simplifyDegrees,
+      in_limit: recordLimit + 1,
+      in_min_area_sq_km: minAreaSqKm,
+      in_source_ids: sourceIds
+    });
+    if (error) {
+      console.warn(`[boundaries] stored read unavailable: ${error.message}`);
+      return null;
+    }
+    return Array.isArray(data?.features) ? data.features : [];
+  } catch (err) {
+    console.warn(`[boundaries] stored read failed: ${(err as Error).message}`);
+    return null;
+  }
+};
+
 export const registerBoundaryRoutes = (app: Express): void => {
   app.get('/api/boundaries', async (req: Request, res: Response) => {
     const minLat = parseFloat(req.query.minLat as string);
@@ -2995,70 +3301,42 @@ export const registerBoundaryRoutes = (app: Express): void => {
     };
 
     /**
-     * The database first.
+     * THE DATABASE FIRST, BUT ONLY WHERE IT REALLY HAS THE GROUND.
      *
-     * A seeded region answers from one indexed query. Anything else — no
-     * Supabase, no migration, or simply nothing seeded for this viewport —
-     * returns null and drops through to the live proxy below, so an unseeded
-     * deploy behaves exactly as it did before.
+     * This used to be all-or-nothing: if `boundaries_in_bbox` returned
+     * anything at all for the viewport, the whole response was built from it
+     * and the live services were not consulted. That is safe only while the
+     * table is either empty or complete, and it is about to be neither —
+     * storing what we fetch fills it a viewport at a time.
+     *
+     * So the question is asked per source, and strictly: does the stored
+     * coverage CONTAIN this whole viewport? A source that covers half the
+     * screen is not usable, because the half it does not cover would draw as
+     * empty land — the map claiming there is no public land somewhere nobody
+     * has looked yet. Those sources go to the live services exactly as before,
+     * in the same response, and the two sets are drawn together.
      */
-    const seeded = await fetchSeededBoundaries(bbox, simplifyDegrees, recordLimit, minAreaSqKm);
-    if (seeded) {
-      /*
-       * NOTE FOR WHOEVER FINALLY RUNS THE SEED. Migration 07's area filter runs
-       * in the database, so the small parcels are dropped before they get here
-       * and cannot be welded to their neighbours the way the live path welds
-       * them. That makes a seeded overview slightly sparser than a live one
-       * until `boundaries_in_bbox` learns to merge, or is asked for everything.
-       * It is not visible today: `public_lands` is empty and this branch has
-       * never fired in production.
-       */
-      const kept = isOverview
-        ? overviewShapes(
-            largestParcels(seeded.features, seededHasAreaFilter ? 0 : minAreaSqKm, recordLimit),
-            simplifyDegrees,
-            minAreaSqKm,
-            recordLimit
-          )
-        : withoutWater(
-            prunedFeatures(
-              seeded.features.slice(0, recordLimit),
-              visiblePartDeg2(simplifyDegrees),
-              MAX_PARTS_DETAIL
-            )
-          );
-      const truncated = seeded.features.length > recordLimit;
-
-      await remember({
-        type: 'FeatureCollection',
-        features: kept,
-        meta: {
-          servedFrom: 'seeded' as const,
-          detail: isOverview ? ('overview' as const) : ('full' as const),
-          sources: seeded.sources.map((s) => ({ ...s, available: true, truncated })),
-          truncated,
-          truncationNote: truncated
-            ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
-            : undefined,
-          // The map merges abutting parcels by cancelling shared edges, and it
-          // cannot do that without knowing how far this generalisation may
-          // have pushed the two sides of one apart.
-          simplifyDegrees,
-          disclaimer: isOverview ? OVERVIEW_DISCLAIMER : DISCLAIMER
-        }
-      });
-      return;
-    }
+    const covered = await coveredSources(bbox);
+    const storedFeatures =
+      covered.size > 0
+        ? await storedParcelsFor(bbox, simplifyDegrees, recordLimit, minAreaSqKm, [...covered])
+        : null;
+    // A failed read is not a reason to draw nothing: fall back to live for
+    // those sources too.
+    const fromStore = storedFeatures ? covered : new Set<string>();
 
     const results = await Promise.all(
-      BOUNDARY_SOURCES.map(async (source) => ({
+      BOUNDARY_SOURCES.filter((source) => !fromStore.has(source.id)).map(async (source) => ({
         source,
         ...(await cachedQuery(source, bbox, simplifyDegrees, recordLimit))
       }))
     );
 
     const anyTruncated = results.some((r) => r.truncated);
-    const allLive = results.flatMap((r) => r.features);
+    // Stored parcels and freshly fetched ones are the same shape and carry the
+    // same properties, so everything downstream — the weld, the water, the
+    // area filter — treats them identically and cannot tell them apart.
+    const allLive = [...(storedFeatures ?? []), ...results.flatMap((r) => r.features)];
     /*
      * The overview merges before it filters — see `overviewShapes`, which is
      * where the whole "why does Ontario draw as flecks and Alberta as a block"
@@ -3078,19 +3356,38 @@ export const registerBoundaryRoutes = (app: Express): void => {
       meta: {
         servedFrom: 'live' as const,
         detail: isOverview ? ('overview' as const) : ('full' as const),
-        sources: results.map((r) => ({
-          id: r.source.id,
-          label: r.source.label,
-          attribution: r.source.attribution,
-          confidence: r.source.confidence,
-          available: r.ok,
-          featureCount: r.features.length,
-          truncated: r.truncated,
-          // memory / db / live — see `SourceResult.servedFrom`. This is how
-          // you check the Supabase tile cache is working without logs: ask
-          // for the same box twice and watch these turn from live to db.
-          servedFrom: r.servedFrom ?? 'live'
-        })),
+        sources: [
+          /*
+           * Sources answered out of `public_lands`. `servedFrom: 'stored'` is
+           * the one worth watching: it means this ground has been fetched from
+           * its government service once and will not be fetched again.
+           */
+          ...BOUNDARY_SOURCES.filter((source) => fromStore.has(source.id)).map((source) => ({
+            id: source.id,
+            label: source.label,
+            attribution: source.attribution,
+            confidence: source.confidence,
+            available: true,
+            featureCount: (storedFeatures ?? []).filter(
+              (f: any) => f?.properties?._source === source.id
+            ).length,
+            truncated: false,
+            servedFrom: 'stored' as const
+          })),
+          ...results.map((r) => ({
+            id: r.source.id,
+            label: r.source.label,
+            attribution: r.source.attribution,
+            confidence: r.source.confidence,
+            available: r.ok,
+            featureCount: r.features.length,
+            truncated: r.truncated,
+            // memory / db / live — see `SourceResult.servedFrom`. This is how
+            // you check the Supabase tile cache is working without logs: ask
+            // for the same box twice and watch these turn from live to db.
+            servedFrom: r.servedFrom ?? 'live'
+          }))
+        ],
         truncated: anyTruncated,
         truncationNote: anyTruncated
           ? 'More public land exists here than could be drawn at this zoom. Zoom in to see all of it.'
@@ -3128,6 +3425,20 @@ export const registerBoundaryRoutes = (app: Express): void => {
         disclaimer: isOverview ? OVERVIEW_DISCLAIMER : DISCLAIMER
       }
     };
+
+    /*
+     * Write down what was just fetched, so the next look at this ground does
+     * not trouble a government server at all.
+     *
+     * BEFORE THE RESPONSE, RELUCTANTLY. Bookkeeping belongs after it — nobody
+     * waiting on a map should wait on this — but a Vercel function may be
+     * frozen the moment it responds, and work scheduled after `remember` is
+     * work that might simply never happen. Silently never happening is exactly
+     * how `public_lands` stayed empty for the life of this project, so the
+     * cost is paid where it can be seen: a strict budget, once per patch of
+     * ground, on the first visit only.
+     */
+    await rememberLiveParcels(bbox, simplifyDegrees, results, fromStore);
 
     await remember(body);
   });
