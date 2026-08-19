@@ -1312,10 +1312,12 @@ const mergedBySource = (features: any[], simplifyDegrees: number): any[] => {
 
     const ranAt = Date.now();
     const hadTime = ranAt - startedAt < MERGE_BUDGET_MS;
+    const notes: string[] = [];
     const merged = hadTime
       ? unionParcels(trimmed.map((f) => f.geometry), {
           snapDegrees: simplifyDegrees * MERGE_SNAP_STEPS,
-          maxRings: MERGE_RING_BUDGET
+          maxRings: MERGE_RING_BUDGET,
+          onFallback: (reason) => notes.push(reason)
         })
       : null;
 
@@ -1328,7 +1330,8 @@ const mergedBySource = (features: any[], simplifyDegrees: number): any[] => {
       `[boundaries] merge ${String(group[0]?.properties?._source ?? '?')}: ` +
         `parcels=${group.length} rings=${ringsInGroup(group)}->${ringsBefore}->${ringsInGroup(trimmed)} ` +
         `trims=${attempts} ${hadTime ? `${Date.now() - ranAt}ms` : 'no-time'} ` +
-        `${merged ? `pieces=${merged.geometry?.type === 'MultiPolygon' ? merged.geometry.coordinates.length : 1}` : 'NOT MERGED'}`
+        `${merged ? `pieces=${merged.geometry?.type === 'MultiPolygon' ? merged.geometry.coordinates.length : 1}` : 'NOT MERGED'}` +
+        `${notes.length ? ` [${notes.join('; ')}]` : ''}`
     );
 
     if (!merged) {

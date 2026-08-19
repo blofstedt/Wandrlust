@@ -239,6 +239,61 @@ const snapMultiPoly = (mp: MultiPoly, cell: number): MultiPoly => {
  * Returns null when there is nothing to do or the union could not be trusted,
  * and the caller keeps the parcels it already had.
  */
+/**
+ * Parts welded in one go when the whole province will not go through at once.
+ *
+ * Sixty-four is small enough that a parcel the clipper chokes on takes only
+ * its own neighbourhood down with it, and large enough that a province still
+ * welds in a handful of passes.
+ */
+const WELD_CHUNK = 64;
+
+const unionOnce = (group: MultiPoly): MultiPoly | null => {
+  if (group.length === 0) return null;
+  if (group.length === 1) return group;
+  try {
+    const merged = polygonClipping.union(
+      [group[0]] as any,
+      ...group.slice(1).map((p) => [p] as any)
+    );
+    return merged && merged.length > 0 ? (merged as MultiPoly) : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * WELD IN CHUNKS WHEN THE WHOLE THING WILL NOT GO.
+ *
+ * polygon-clipping refuses a whole batch over one bad ring — a parcel that
+ * crosses itself after generalisation, a cadastral sliver of zero width — and
+ * it does not say which. New Brunswick's five hundred Crown parcels were being
+ * thrown out on that basis: the union returned nothing, the caller fell back to
+ * loose parcels, the area filter cut those to the three biggest, and half a
+ * province drew as three shapes.
+ *
+ * So a refusal is no longer the end of it. The parts are welded sixty-four at
+ * a time, a chunk the clipper refuses keeps its parcels unwelded rather than
+ * losing them, and the results are welded to each other. Worst case the
+ * province draws as its own parcels, which is what the map did before any of
+ * this existed — and never as nothing.
+ */
+const weld = (parts: MultiPoly, onFallback?: (reason: string) => void): MultiPoly | null => {
+  const whole = unionOnce(parts);
+  if (whole) return whole;
+
+  onFallback?.('whole union refused, welding in chunks');
+  const pieces: MultiPoly = [];
+  for (let i = 0; i < parts.length; i += WELD_CHUNK) {
+    const chunk = parts.slice(i, i + WELD_CHUNK);
+    const merged = unionOnce(chunk);
+    if (merged) pieces.push(...merged);
+    else pieces.push(...chunk);
+  }
+  if (pieces.length === 0) return null;
+  return unionOnce(pieces) ?? pieces;
+};
+
 export const unionParcels = (
   geometries: any[],
   options: {
@@ -248,9 +303,11 @@ export const unionParcels = (
      */
     snapDegrees?: number;
     maxRings?: number;
+    /** Called with a one-line reason whenever the straightforward path fails. */
+    onFallback?: (reason: string) => void;
   } = {}
 ): MergeResult | null => {
-  const { snapDegrees = 0, maxRings = MAX_RINGS_TO_UNION } = options;
+  const { snapDegrees = 0, maxRings = MAX_RINGS_TO_UNION, onFallback } = options;
 
   let parts: MultiPoly = [];
   for (const g of geometries) {
@@ -260,21 +317,26 @@ export const unionParcels = (
   // One part, and nothing to join it to. Note this counts PARTS, not features:
   // a single province-wide MultiPolygon is worth running through, because its
   // own pieces weld to each other exactly the way two parcels do.
-  if (parts.length < 2) return null;
-  if (snapDegrees > 0) parts = snapMultiPoly(parts, snapDegrees);
-  if (parts.length < 2) return null;
-  if (ringCount(parts) > maxRings) return null;
-
-  try {
-    const merged = polygonClipping.union(
-      [parts[0]] as any,
-      ...parts.slice(1).map((p) => [p] as any)
-    );
-    if (!merged || merged.length === 0) return null;
-    return { geometry: fromMultiPoly(merged as MultiPoly), merged: geometries.length };
-  } catch {
+  if (parts.length < 2) {
+    onFallback?.('fewer than two parts');
     return null;
   }
+  if (snapDegrees > 0) parts = snapMultiPoly(parts, snapDegrees);
+  if (parts.length < 2) {
+    onFallback?.('snapping collapsed everything to one part');
+    return null;
+  }
+  if (ringCount(parts) > maxRings) {
+    onFallback?.(`${ringCount(parts)} rings over the ${maxRings} budget`);
+    return null;
+  }
+
+  const merged = weld(parts, onFallback);
+  if (!merged) {
+    onFallback?.('clipper returned nothing');
+    return null;
+  }
+  return { geometry: fromMultiPoly(merged), merged: geometries.length };
 };
 
 /** Rings in one GeoJSON geometry. The cost of a union tracks this, not features. */
