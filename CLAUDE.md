@@ -178,10 +178,14 @@ npm run vapid    # generate push notification keys
   "The boundaries disappeared" is usually this.
 - **Coverage is CONUS + Canada only.** Outside it, the map greys out and queries
   are skipped. That's deliberate.
-- **Canadian boundary data is five provinces, three of them barely.** Ontario
-  and Alberta are properly covered; British Columbia, Saskatchewan and Manitoba
-  are only their provincial forests, which is a small share of each province's
-  Crown land. `coverage_gaps` records the rest, and `landDataGap` in
+- **Canadian boundary data is seven provinces, three of them barely.** Ontario,
+  Alberta, New Brunswick and Nova Scotia are properly covered — the last two
+  publish the extent of their Crown land itself, so a blank there really is
+  private land. British Columbia, Saskatchewan and Manitoba are only their
+  provincial forests, a small share of each province's Crown land. Quebec and
+  Newfoundland are the two big absences and both have a recorded reason in
+  `boundaryRoutes.ts` and `landSources.ts` — read those before researching
+  either again. `coverage_gaps` records the rest, and `landDataGap` in
   `src/config/coverage.ts` puts the caveat on screen. Absence of a polygon
   means "no data", never "no public land".
 - **BC is the one source that is not ArcGIS.** DataBC publishes WFS, which

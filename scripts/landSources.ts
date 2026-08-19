@@ -293,6 +293,76 @@ export const LAND_SOURCES: LandSourceSpec[] = [
       'dataset\'s object name — run `npm run probe -- --source=bc_provincial_forest` before trusting it.'
   },
   {
+    /**
+     * NEW BRUNSWICK — the extent of Crown land, published as open data by the
+     * province. About half of New Brunswick. Mirrors `new_brunswick_crown_land`
+     * in server/boundaryRoutes.ts; if you change one, change both.
+     */
+    id: 'new_brunswick_crown_land',
+    label: 'New Brunswick Crown Land',
+    attribution: 'Government of New Brunswick, Department of Natural Resources and Energy Development',
+    licence: 'Open Government Licence – New Brunswick',
+    jurisdiction: 'CA-NB',
+    url: 'https://gis-erd-der.gnb.ca/server/rest/services/OpenData/Crown_Lands/MapServer/0/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'cadastral_derived',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 1000,
+    bbox: [-69.2, 44.5, -63.6, 48.2],
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? ''),
+    name: () => 'Crown Land',
+    designation: () => 'New Brunswick Crown land',
+    campingBasis: () =>
+      'Provincial Crown land. New Brunswick treats overnight camping as occasional use, which needs no ' +
+      'authorisation, and publishes 21 days as the usual limit. That is policy rather than anything this ' +
+      'layer states, and leased or licensed Crown land is not subtracted from it.',
+    stayLimitDays: () => 21,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'An ownership layer, not a designation read as a proxy for one — the province publishes where its Crown land IS. ' +
+      'Accuracy varies from grant reference plans to registered surveys, per the department.'
+  },
+  {
+    /**
+     * NOVA SCOTIA — Crown parcels under the Crown Lands Act, including land the
+     * department holds only a partial interest in. Fragmented: roughly a third
+     * of the province in thousands of pieces.
+     *
+     * `stayLimitDays` is null on purpose. Every other province in this registry
+     * publishes a number; Nova Scotia publishes what may be done on Crown land
+     * without a permit and does not state one, and the figures in circulation
+     * come from camping guides. A number invented here would be indistinguish-
+     * able, to the app, from one a province actually stands behind.
+     */
+    id: 'nova_scotia_crown_land',
+    label: 'Nova Scotia Crown Land',
+    attribution: 'Government of Nova Scotia, Department of Natural Resources and Renewables',
+    licence: 'Open Government Licence – Nova Scotia',
+    jurisdiction: 'CA-NS',
+    url: 'https://nsgiwa.novascotia.ca/arcgis/rest/services/PLAN/PLANCrownLandsWM84V1/MapServer/0/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'cadastral_derived',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 1000,
+    bbox: [-66.5, 43.3, -59.6, 47.2],
+    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? ''),
+    name: () => 'Crown Land',
+    designation: () => 'Nova Scotia Crown land',
+    campingBasis: () =>
+      'Crown land under the administration of the Minister of Natural Resources and Renewables. Nova Scotia ' +
+      'permits short recreational stays without a permit; a longer stay needs the department. Wilderness areas ' +
+      'and wildlife management areas inside these parcels have their own rules, and the province closes the ' +
+      'woods entirely in bad fire seasons.',
+    stayLimitDays: () => null,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Includes parcels the department holds a partial interest in, so a polygon here is not necessarily wholly provincial.'
+  },
+  {
     id: 'ontario_clupa_general_use',
     label: 'Ontario Crown Land — General Use Area',
     attribution: "Land Information Ontario, King's Printer for Ontario",
@@ -636,13 +706,19 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'CA-QC',
     region: 'Quebec',
     reason:
-      "Terres du domaine de l'État are administered via MRNF; no confirmed open REST endpoint for general-use camping areas."
+      "UNRESOLVED, and the largest gap in the country by area — roughly 92% of Quebec is terres du domaine de l'État. The province's public land use plan (PATP) is the right layer and its ArcGIS service answers queries with attributes and no geometry at all, in either GeoJSON or Esri JSON: it is published for WMS. Until a service that returns polygons is found, Quebec draws nothing, and an empty Quebec means we cannot fetch the shapes — never that the land is not there."
   },
   {
-    jurisdiction: 'CA-ATL',
-    region: 'Atlantic Canada (NB, NS, PE, NL)',
+    jurisdiction: 'CA-PE',
+    region: 'Prince Edward Island',
     reason:
-      'Provincial Crown land datasets are published as periodic file downloads rather than queryable services.'
+      'Little public land, most of the island freehold, and no published general allowance for camping on it that we have found. Not mapped.'
+  },
+  {
+    jurisdiction: 'CA-NL',
+    region: 'Newfoundland and Labrador',
+    reason:
+      "MOST CROWN LAND IN THE COUNTRY, AND NO LAYER OF IT. About 95% of the province is Crown land. What Newfoundland publishes through its Land Use Atlas is the opposite: Crown TITLES and applications for them — the land that has been alienated — alongside protected areas, Indigenous lands and municipal plans. Both of its ArcGIS directories were listed and hold nothing else. Drawing the Crown land would mean drawing the province minus everything published, which would put private land on the map as campable wherever the titles layer is incomplete. That is the wrong direction to be wrong in, so it stays unmapped."
   },
   {
     jurisdiction: 'CA-NORTH',

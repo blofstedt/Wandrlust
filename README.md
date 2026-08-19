@@ -55,16 +55,20 @@ dispersed camping is prohibited. That is a filter, not a guarantee.
 | Region | Why |
 | --- | --- |
 | British Columbia, outside the provincial forests | Provincial forest is drawn (Crown land by designation); the rest of a province that is ~95% Crown land has no admissible open layer — ParcelMap BC covers surveyed parcels only and TANTALIS publishes tenures, which are encumbrances |
+| Quebec | The biggest gap in the country: ~92% of the province is public land, and its public land use plan service returns attributes with no geometry in any format we can ask for. See the note in `server/boundaryRoutes.ts` for what to try next |
+| Newfoundland and Labrador | ~95% Crown land, and what the province publishes is Crown *titles* — the land that has been alienated — not the Crown land itself. Drawing the inverse would put private land on the map wherever the titles layer is incomplete |
+| Prince Edward Island | Little public land, and no published general allowance for camping on it |
 | Saskatchewan, south of the provincial forest | What is published there is agricultural leases and cottage subdivisions, not open land |
 | Manitoba, outside the 15 provincial forests | Most of the province; the other Crown land Manitoba publishes is Treaty Land Entitlement and settlement parcels, which are allocations |
-| Quebec | No confirmed open REST layer |
 | Atlantic Canada | Periodic file downloads, not queryable services |
 | Yukon, NWT, Nunavut | Split jurisdiction with major land claim settlement areas — deliberately not modelled |
 | US state lands | Rules vary by state; absent from the federal SMA layer |
 
-Canadian coverage is therefore **Ontario, Alberta, British Columbia, Saskatchewan and
-Manitoba** — and in the last three only the provincial forests, which is a fraction of
-each. Not the whole country, and in most of those provinces not the whole province.
+Canadian coverage is therefore **Ontario, Alberta, British Columbia, Saskatchewan,
+Manitoba, New Brunswick and Nova Scotia**. New Brunswick and Nova Scotia publish the
+extent of their Crown land itself, so a blank there is genuinely private land; in BC,
+Saskatchewan and Manitoba only the provincial forests are drawn, which is a fraction of
+each. Not the whole country, and in several of those provinces not the whole province.
 
 ### Extraction completeness
 

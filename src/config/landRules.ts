@@ -160,6 +160,12 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
   },
 
   /*
+   * KEPT AHEAD OF ITS SOURCE. Quebec has no boundary source yet — its public
+   * land use plan will not serve geometry, see the note in boundaryRoutes.ts —
+   * so nothing on the map carries `quebec_patp` today. The rules are right and
+   * researched, and the day a working service is wired this is one thing that
+   * will not need finding again.
+   *
    * Quebec's 21 days come from the Loi sur les terres du domaine de l'État,
    * and the setback is the part that catches people out — 60 m from water is
    * further than it sounds when the reason you drove there was the lake.

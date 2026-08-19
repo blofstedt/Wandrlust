@@ -660,6 +660,50 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     extent: { minLat: 48.9, minLon: -102.1, maxLat: 60.1, maxLon: -88.9 },
     areaField: 'AREA_HA'
   },
+  /*
+   * ---------------------------------------------------------------------------
+   * QUEBEC, AND WHY IT IS NOT IN THIS LIST
+   * ---------------------------------------------------------------------------
+   *
+   * The biggest gap in the country by area: roughly 92% of Quebec is terres du
+   * domaine de l'État, and this file draws none of it.
+   *
+   * The right layer is not in doubt. It is the PATP — the public land use plan
+   * — whose polygons exist only where the land is public, with a vocation on
+   * each (`Utilisation multiple`, `Protection`, and so on). Its service is
+   *
+   *     servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS
+   *
+   * layer 1, `Affectations surfaciques`, and it ANSWERS: the right features,
+   * the right attributes, the right vocations. It just will not send the
+   * shapes. Asked in GeoJSON it returns `"geometry": null`; asked in Esri JSON
+   * it returns features with no geometry key at all; asked without
+   * `maxAllowableOffset`, the same. The service name ends `_WMS` and that is
+   * exactly what it is — a map service published to draw pictures, whose REST
+   * query hands back the attribute table.
+   *
+   * Its whole `Territoire` folder was listed from production: thirty-odd
+   * services, two of them published `_WFS` (FRONTIERES, Tirage_au_sort) and no
+   * PATP among them. So this server has no vector PATP to give.
+   *
+   * WHAT TO TRY NEXT, in the order worth trying:
+   *   1. IGO / geoegl.msp.gouv.qc.ca — Quebec's other OGC infrastructure,
+   *      which publishes real WFS; look for affectation or tenure there.
+   *   2. Données Québec's PATP dataset resources — if any of them is GeoJSON,
+   *      the seeder can ingest it as a file source today, no new code.
+   *   3. The regional PATP services (PATP_NdQ_EIBJ_WMS, PATP_NdQ_Kativik_WMS),
+   *      in case a regional one was published differently from the provincial.
+   *
+   * The machinery a working service will need is already here and tested:
+   * `format: 'esri'` reads Esri rings, `generaliseLocally` handles a service
+   * that cannot thin its own geometry, and `maxBytes` keeps either from
+   * flooding the function. Wiring one is a source entry, not a project.
+   *
+   * Until then Quebec is a recorded gap rather than a source that draws
+   * nothing — because a source returning zero features says "no public land
+   * here" to every camper in Quebec, and `landDataGap` says the true thing
+   * instead.
+   */
   {
     /**
      * NEW BRUNSWICK — Crown land, as an ownership layer.
@@ -718,75 +762,6 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     name: () => 'Crown Land',
     designation: () => 'Nova Scotia Crown land',
     extent: { minLat: 43.3, minLon: -66.5, maxLat: 47.2, maxLon: -59.6 }
-  },
-  {
-    /**
-     * QUEBEC — public land, via the plan that allocates it.
-     *
-     * The largest prize in the country by area and the one this app has had
-     * nothing to say about: roughly 92% of Quebec is terres du domaine de
-     * l'État. What the province does NOT publish is a plain "here is the
-     * public land" layer — what it publishes is the PATP, the government's
-     * allocation plan for that land, as polygons covering the public territory
-     * with a vocation attached to each.
-     *
-     * That makes it Quebec's CLUPA: the plan only exists where the land is
-     * public, so a polygon here IS public land. The vocation says what the
-     * government intends the land for, not whether anyone may sleep on it —
-     * Quebec's 21-day allowance comes from the Loi sur les terres du domaine
-     * de l'État, so the basis is an inference, as it is for every province
-     * except Ontario.
-     *
-     * WHAT IS NOT SUBTRACTED, and it matters more here than anywhere else in
-     * this file: ZECs, réserves fauniques and pourvoiries sit on top of public
-     * land across much of southern Quebec, each with its own access regime and
-     * its own fees, and none of them are cut out of these polygons. Nor are
-     * the MRC by-laws — Quebec delegates land management to the counties, and
-     * several of them set their own camping rules. The rules card says so.
-     *
-     * Layer 1 is "Affectations surfaciques"; layer 0 is points, which this
-     * pipeline drops anyway. Both the service and the layer id came from the
-     * service's own directory, read from production.
-     */
-    id: 'quebec_patp',
-    label: 'Québec Public Land (PATP)',
-    attribution: "Gouvernement du Québec, Ministère des Ressources naturelles et des Forêts",
-    url: 'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer/1/query',
-    /*
-     * MULTIPLE-USE PUBLIC LAND ONLY, and this is the line that keeps Quebec
-     * honest. Production printed the vocations this layer carries, and they
-     * fall in two families: `Utilisation` — multiple, modulée, prioritaire,
-     * spécifique — which is working public land, and `Protection`, which is
-     * parks, protected areas and réserves écologiques. Camping in those is at
-     * designated sites or not at all, so drawing them as public land a camper
-     * may use would be the same overstatement as mapping Ontario's Enhanced
-     * Management Areas.
-     *
-     * If the values ever change shape, this filter matches nothing and Quebec
-     * draws nothing, which is the direction this app is allowed to fail in.
-     */
-    where: "VOCATION LIKE 'Utilisation%'",
-    outFields: '*',
-    confidence: 'managing_agency',
-    edgeAccuracy: 'administrative',
-    campingBasisKind: 'agency_policy_inference',
-    // NOM_ZONE is the zone's own name — "Secteur archéologique", a lake, a
-    // river basin. The vocation is what the government intends it for.
-    name: (p) => nameLike(p, 'NOM_ZONE', 'NOM_SZONE') ?? 'Terres du domaine de l\'État',
-    designation: (p) => pick(p, 'VOCATION') ?? 'Québec public land',
-    extent: { minLat: 44.9, minLon: -79.9, maxLat: 60.1, maxLon: -57.0 },
-    // A provincial plan layer over a province this size: give it room.
-    timeoutMs: 9000,
-    /*
-     * Production: this service returns null geometry whenever it is asked to
-     * generalise, so it is asked for the shape as it stands and thinned here
-     * — with the same byte budget the WFS reads against, because an
-     * ungeneralised provincial layer is exactly the payload that budget was
-     * written for.
-     */
-    generaliseLocally: true,
-    maxBytes: 20 * 1024 * 1024,
-    format: 'esri'
   },
   {
     // Verified: returns General Use Areas for northern Ontario.
@@ -1923,57 +1898,6 @@ const wfsQueryUrl = (
  */
 const loggedWfsFields = new Set<string>();
 
-/**
- * TEMPORARY — asks candidate services what they hold, once per process.
- *
- * Quebec and Newfoundland both publish through ArcGIS servers whose layer ids
- * and column names cannot be read from a sandbox with no route to them, and
- * guessing is what put a broken Saskatchewan source in this file. So the
- * services are asked directly, from production, and the answer is printed.
- *
- * Delete this the moment those sources are wired.
- */
-const DISCOVERY_ROOTS = [
-  /*
-   * Quebec's PATP service is named `..._WMS` and behaves like it: the REST
-   * query answers with attributes and no geometry, in either format. So ask
-   * that server what else it publishes — a service without the WMS suffix, a
-   * FeatureServer, a tenure layer — before giving up on the province.
-   */
-  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services?f=json',
-  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire?f=json',
-  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer/1?f=json'
-];
-
-let discoveryRun = false;
-
-const discoverCandidates = (): void => {
-  if (discoveryRun) return;
-  discoveryRun = true;
-  for (const root of DISCOVERY_ROOTS) {
-    fetch(root.includes('?') ? root : `${root}?f=json`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' }
-    })
-      .then((r) => r.json())
-      .then((meta: any) => {
-        const layers = Array.isArray(meta?.layers)
-          ? meta.layers.map((l: any) => `${l.id}:${l.name}`).join(' | ')
-          : Array.isArray(meta?.services)
-            ? meta.services.map((sv: any) => `${sv.name}(${sv.type})`).join(' | ')
-            : 'none';
-        const folders = Array.isArray(meta?.folders) ? ` folders: ${meta.folders.join(',')}` : '';
-        const fields = Array.isArray(meta?.fields)
-          ? meta.fields.map((f: any) => String(f.name)).join(',')
-          : '';
-        console.info(
-          `[discover] ${root} -> "${meta?.mapName ?? meta?.name ?? meta?.error?.message ?? '?'}" ` +
-            `layers: ${layers}${folders}${fields ? ` fields: ${fields}` : ''}`
-        );
-      })
-      .catch((err) => console.info(`[discover] ${root} -> unreachable: ${(err as Error).message}`));
-  }
-};
-
 /** Sources whose area column has already had a value printed. */
 const loggedAreaSample = new Set<string>();
 
@@ -2847,8 +2771,6 @@ export const registerBoundaryRoutes = (app: Express): void => {
      * point is to show that there IS public land over there — and pays for it
      * by returning far fewer, far coarser polygons.
      */
-    discoverCandidates();
-
     const isOverview = req.query.detail === 'overview';
     const minAreaSqKm = isOverview
       ? Math.max(0, Number(req.query.minAreaSqKm) || 0)

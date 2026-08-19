@@ -55,13 +55,16 @@ No dataset here is survey-grade. Before launch, either license parcel data
 (Regrid, ~$80K/yr national) or keep the uncertainty band prominent. onX — the
 category benchmark — is only accurate to ~±20 ft with paid county data.
 
-**2. Canadian coverage is five provinces, most of them partial, not a country.**
+**2. Canadian coverage is seven provinces, most of them partial, not a country.**
 Ontario (CLUPA General Use Areas, minus the Far North) and Alberta (the Green
 Area) are the well-covered two. British Columbia, Saskatchewan and Manitoba are
 drawn only where a provincial forest is designated — Crown land by definition,
 and a fraction of what each province actually holds; BC alone is roughly 95%
-Crown land. Quebec, Atlantic Canada and the territories have no usable open
-layer at all. `coverage_gaps` records all of this and `landDataGap` puts the
+Crown land. New Brunswick and Nova Scotia publish the extent of their Crown
+land itself and are the only two provinces where a blank really means private
+land. Quebec, Newfoundland and Labrador, Prince Edward Island and the
+territories have no usable open layer — Quebec and Newfoundland for specific,
+recorded reasons rather than for want of looking. `coverage_gaps` records all of this and `landDataGap` puts the
 caveat on screen — make sure it stays visible before Canadian users assume
 absence means "no public land".
 
