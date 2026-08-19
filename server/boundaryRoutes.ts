@@ -1434,6 +1434,43 @@ interface SourceResult {
  * about to be collapsed into one, so digits below it are bytes for nothing.
  * Floored at 3 (~100 m) and capped at 5 (~1 m).
  */
+/**
+ * THE COARSEST WE WILL EVER ASK A SERVER TO THIN A SHAPE — about 2 km.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY NEW BRUNSWICK DREW AS A TRIANGLE
+ * ---------------------------------------------------------------------------
+ *
+ * The generalisation tolerance tracks the viewport, so a continental view asks
+ * every service to thin its geometry to a quarter of a degree — twenty-four
+ * kilometres. That is right for a shape the size of Alberta's Green Area and
+ * catastrophic for a province whose Crown land is thousands of parcels a few
+ * kilometres across: each one is thinned until it is a sliver, and welding
+ * slivers gives you a sliver. New Brunswick came back as a thin triangle
+ * covering about 2% of its Crown land. Nova Scotia came back as three specks.
+ * The BLM, whose units are the whole point of the western map, came back as
+ * three shards by the Colorado River.
+ *
+ * The pipeline was already careful to weld BEFORE deciding what is too small
+ * to draw — that is the fix that stopped Ontario drawing as confetti. This is
+ * the same lesson one step earlier: the shapes have to survive the journey
+ * intact enough to weld at all.
+ *
+ * So the ask is capped. Two kilometres is still far coarser than anything a
+ * zoomed-out map can show, the parcels arrive as recognisable shapes, and the
+ * union makes blocks out of them — after which `visiblePartDeg2` drops
+ * whatever is genuinely too small to see, which at continental zoom is most of
+ * Nova Scotia and honestly so.
+ *
+ * It costs bytes on the wide view. The tile cache holds the answer for ninety
+ * days, so it costs them once per region.
+ */
+const MAX_ASK_OFFSET_DEGREES = 0.02;
+
+/** The tolerance actually asked for, never coarser than the cap. */
+const askOffsetFor = (simplifyDegrees: number): number =>
+  Math.min(simplifyDegrees, MAX_ASK_OFFSET_DEGREES);
+
 const precisionFor = (simplifyDegrees: number): number =>
   Math.min(5, Math.max(3, Math.ceil(-Math.log10(Math.max(simplifyDegrees, 1e-6))) + 1));
 
@@ -1477,8 +1514,8 @@ const arcgisQueryUrl = (
     ...(source.generaliseLocally
       ? {}
       : {
-          geometryPrecision: String(precisionFor(simplifyDegrees)),
-          maxAllowableOffset: String(simplifyDegrees)
+          geometryPrecision: String(precisionFor(askOffsetFor(simplifyDegrees))),
+          maxAllowableOffset: String(askOffsetFor(simplifyDegrees))
         }),
     resultRecordCount: String(recordLimit),
     f: source.format === 'esri' ? 'json' : 'geojson'
@@ -2228,8 +2265,10 @@ const queryBoundarySourceOnce = async (
     if (thinsItsOwnGeometry) {
       const oriented = orientToLonLat(incoming, source.extent, source.id);
       if (!oriented) return { features: [], ok: false, truncated: false };
-      const tolerance = simplifyDegrees;
-      const precision = precisionFor(simplifyDegrees);
+      // Same ceiling as the ArcGIS ask: thin to the view, but never so far
+      // that a parcel stops being a shape before it can be welded.
+      const tolerance = askOffsetFor(simplifyDegrees);
+      const precision = precisionFor(tolerance);
       incoming = oriented
         .map((f: any) => {
           const geometry = generaliseGeometry(f?.geometry, tolerance, precision);
