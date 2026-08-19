@@ -1107,6 +1107,53 @@ const prunedFeatures = (features: any[], minPartDeg2: number, maxParts: number):
   });
 
 /**
+ * DROP THE HOLES NOBODY CAN SEE, ON THE WAY INTO THE WELD.
+ *
+ * A cadastral Crown land parcel is riddled with them. New Brunswick's ship
+ * five hundred parcels carrying a swarm of interior rings each — a right of
+ * way, a woodlot, a survey artefact so small its four corners round to the
+ * same coordinate — and every one of those rings costs the clipper exactly as
+ * much as a real one. That is how a province with thirty thousand square
+ * kilometres of Crown land blew the ring budget, failed to weld, and fell back
+ * to drawing the three parcels big enough to survive the area filter.
+ *
+ * At overview zoom a hole this size cannot be drawn: the generalisation
+ * tolerance has already moved every edge in the shape further than the hole is
+ * wide. So keeping it buys a camper nothing and costs the province its weld.
+ * The threshold is the same one that decides whether a PIECE is visible, and
+ * this only ever runs on the overview — at the zooms where an edge is read,
+ * every ring survives untouched.
+ */
+const withoutTinyHoles = (geometry: any, minHoleDeg2: number): any => {
+  const type = geometry?.type;
+  if (type !== 'Polygon' && type !== 'MultiPolygon') return geometry;
+
+  let dropped = 0;
+  const prunePoly = (poly: any): any => {
+    if (!Array.isArray(poly) || poly.length < 2) return poly;
+    const kept = [poly[0]];
+    for (let i = 1; i < poly.length; i += 1) {
+      if (partAreaDeg2(poly[i]) >= minHoleDeg2) kept.push(poly[i]);
+      else dropped += 1;
+    }
+    return kept;
+  };
+
+  const coordinates =
+    type === 'Polygon'
+      ? prunePoly(geometry.coordinates)
+      : (geometry.coordinates as any[]).map(prunePoly);
+
+  return dropped === 0 ? geometry : { ...geometry, coordinates };
+};
+
+const withoutTinyHolesIn = (features: any[], minHoleDeg2: number): any[] =>
+  features.map((f) => {
+    const geometry = withoutTinyHoles(f?.geometry, minHoleDeg2);
+    return geometry === f?.geometry ? f : { ...f, geometry };
+  });
+
+/**
  * TAKE THE WATER OUT, AT EVERY ZOOM.
  *
  * A Crown land or BLM polygon includes the lakes inside it, correctly — the
@@ -1245,19 +1292,44 @@ const mergedBySource = (features: any[], simplifyDegrees: number): any[] => {
      * this lowers the floor without raising the ceiling.
      */
     let minPart = (0.25 * simplifyDegrees) ** 2;
+    /*
+     * Invisible holes go before anything else, because they are pure cost:
+     * they cannot be drawn at this zoom and they count against the ring budget
+     * exactly as much as land does. Shedding them first means the budget is
+     * spent on real geometry, and a fragmented province gets to keep its small
+     * parcels instead of trading them away to afford its own punctuation.
+     */
+    const solid = withoutTinyHolesIn(group, visiblePartDeg2(simplifyDegrees));
+    const ringsBefore = ringsInGroup(solid);
+    let attempts = 0;
+    trimmed = solid;
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      trimmed = prunedFeatures(group, minPart, MAX_PARTS_FOR_MERGE);
+      attempts = attempt + 1;
+      trimmed = prunedFeatures(solid, minPart, MAX_PARTS_FOR_MERGE);
       if (ringsInGroup(trimmed) <= MERGE_RING_BUDGET) break;
       minPart *= 4;
     }
 
-    const merged =
-      Date.now() - startedAt < MERGE_BUDGET_MS
-        ? unionParcels(trimmed.map((f) => f.geometry), {
-            snapDegrees: simplifyDegrees * MERGE_SNAP_STEPS,
-            maxRings: MERGE_RING_BUDGET
-          })
-        : null;
+    const ranAt = Date.now();
+    const hadTime = ranAt - startedAt < MERGE_BUDGET_MS;
+    const merged = hadTime
+      ? unionParcels(trimmed.map((f) => f.geometry), {
+          snapDegrees: simplifyDegrees * MERGE_SNAP_STEPS,
+          maxRings: MERGE_RING_BUDGET
+        })
+      : null;
+
+    /*
+     * Say out loud what happened, because a province that fails to weld does
+     * not look broken — it looks empty, and the only way anyone found out was
+     * a camper saying "New Brunswick isn't there". Cheap, one line per source.
+     */
+    console.log(
+      `[boundaries] merge ${String(group[0]?.properties?._source ?? '?')}: ` +
+        `parcels=${group.length} rings=${ringsInGroup(group)}->${ringsBefore}->${ringsInGroup(trimmed)} ` +
+        `trims=${attempts} ${hadTime ? `${Date.now() - ranAt}ms` : 'no-time'} ` +
+        `${merged ? `pieces=${merged.geometry?.type === 'MultiPolygon' ? merged.geometry.coordinates.length : 1}` : 'NOT MERGED'}`
+    );
 
     if (!merged) {
       // Nothing to join, a union we could not trust, or no time left. Either

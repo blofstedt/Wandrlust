@@ -387,8 +387,9 @@ const CACHE_MAX_ENTRIES = 40;
  *
  *   2 → biggest-parcels-first, and Ontario stopped drawing as confetti
  *   3 → New Brunswick and Nova Scotia Crown land
+ *   4 → the Maritimes weld instead of falling back to three big parcels
  */
-const BOUNDARY_DATA_EPOCH = '3';
+const BOUNDARY_DATA_EPOCH = '4';
 
 interface DiskEntry { at: number; collection: BoundaryCollection }
 
