@@ -186,8 +186,14 @@ npm run vapid    # generate push notification keys
   means "no data", never "no public land".
 - **BC is the one source that is not ArcGIS.** DataBC publishes WFS, which
   cannot generalise geometry server-side, so `boundaryRoutes.ts` reads it
-  against a byte budget and simplifies locally. If BC stops drawing, check
-  `meta.sources[]` first — an over-budget response says so in the logs.
+  against a byte budget, simplifies locally, and past 2.5° asks only for the
+  biggest forests in view (sorted server-side on `FEATURE_AREA_SQM`) and
+  reports the answer truncated. Measured in production: a 1° box is nine
+  forests, a 2° box is 16MB, a continental box gets the biggest three. So BC
+  is deliberately partial when zoomed out and complete when zoomed in — that
+  is the design, not a bug. If BC stops drawing, check `meta.sources[]` and
+  the logs: every WFS response prints its size, its timing, and the layer's
+  real field names.
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.
