@@ -1082,12 +1082,23 @@ const MAX_PARTS_FOR_MERGE = 400;
  * kilometres across, on a map of a province with thirty thousand square
  * kilometres of Crown land.
  *
- * A block four pixels across is small. It is not invisible, and on this map it
- * is somewhere a camper could actually go. The count is still bounded — the
- * biggest `MAX_PARTS_MERGED` survive and the rest are dropped — so the cost of
- * being less brutal here is bounded too.
+ * Four pixels was not enough either. Nova Scotia's Crown land is roughly a
+ * third of the province in pieces a kilometre or two across; welded, most of
+ * its blocks are still only two or three pixels at province scale, and the
+ * province drew as ONE triangle. So the floor is now about a pixel.
+ *
+ * That sounds like the confetti this pipeline was tuned to prevent, and it is
+ * not, because the two cases differ in what the specks MEAN. Ontario's specks
+ * were an arbitrary sample of a province carpeted in Crown land — the map
+ * showing a hundredth of the truth and implying it was all there was. Nova
+ * Scotia's specks ARE the truth: the land is scattered, and drawing it
+ * scattered is the only honest picture of it. Provinces with big blocks are
+ * unaffected either way, since their parts clear any of these thresholds.
+ *
+ * The count stays bounded — the biggest `MAX_PARTS_MERGED` survive and the
+ * rest are dropped — so the cost of being less brutal is bounded too.
  */
-const visiblePartDeg2 = (simplifyDegrees: number): number => (1.5 * simplifyDegrees) ** 2;
+const visiblePartDeg2 = (simplifyDegrees: number): number => (0.5 * simplifyDegrees) ** 2;
 
 const prunedFeatures = (features: any[], minPartDeg2: number, maxParts: number): any[] =>
   features.map((f) => {
