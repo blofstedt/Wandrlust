@@ -276,6 +276,17 @@ interface BoundarySource {
    * and `landDataGap` still says what is and is not mapped.
    */
   maxSpanDegrees?: number;
+  /**
+   * WFS only. The layer's own area column, if it has one.
+   *
+   * What it buys is the wide view. Past `maxSpanDegrees` the full ask is
+   * hopeless, but "the biggest N shapes in view" is both affordable and the
+   * right answer at that zoom — a forest too small to see is not what someone
+   * looking at a whole province is asking about. Sorting is done by the
+   * SERVER, so which shapes come back is principled rather than whichever
+   * order the database felt like.
+   */
+  areaField?: string;
   confidence: 'designated_general_use' | 'managing_agency' | 'managed_zone';
   /** How much to trust the polygon's edges. Never survey-grade. */
   edgeAccuracy: 'generalised' | 'administrative' | 'cadastral_derived';
@@ -477,7 +488,10 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * twenty megabytes on a viewport we already know cannot be answered.
      */
     maxBytes: 20 * 1024 * 1024,
-    maxSpanDegrees: 2.5
+    maxSpanDegrees: 2.5,
+    // Confirmed in production from the layer's own field list, which the
+    // first response of every WFS source now prints.
+    areaField: 'FEATURE_AREA_SQM'
   },
   {
     // Verified: GWA_CODE 'GLC_G' is the Green Area — Alberta's Crown land.
@@ -1545,7 +1559,8 @@ const readBodyWithin = async (
 const wfsQueryUrl = (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
-  recordLimit: number
+  recordLimit: number,
+  biggestFirst = false
 ): string => {
   /*
    * CRS84 RATHER THAN EPSG:4326, IN BOTH DIRECTIONS.
@@ -1569,6 +1584,17 @@ const wfsQueryUrl = (
     bbox: `${bbox.minLon},${bbox.minLat},${bbox.maxLon},${bbox.maxLat},${CRS84}`,
     count: String(recordLimit)
   });
+
+  /*
+   * `D` for descending is GeoServer's spelling and a space is the separator,
+   * which URLSearchParams encodes as `+` — the form DataBC's own examples use.
+   *
+   * Only ever sent on the wide ask. If this service turned out to reject the
+   * parameter the request would fail, and it must not be possible for that to
+   * take out the close-in views that are working today.
+   */
+  if (biggestFirst && source.areaField) params.set('sortBy', `${source.areaField} D`);
+
   return `${source.url}?${params.toString()}`;
 };
 
@@ -1592,19 +1618,47 @@ const queryBoundarySourceOnce = async (
 
   const isWfs = source.protocol === 'wfs';
 
-  if (isWfs && source.maxSpanDegrees) {
-    const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon);
-    if (span > source.maxSpanDegrees) {
-      console.info(
-        `[boundaries] ${source.id}: ${span.toFixed(1)}° viewport is past the ` +
-          `${source.maxSpanDegrees}° a WFS can answer — not asking.`
-      );
-      return { features: [], ok: false, truncated: false };
-    }
+  /*
+   * THE WIDE VIEW IS A DIFFERENT QUESTION, SO IT GETS A DIFFERENT ASK.
+   *
+   * Past `maxSpanDegrees` the full ask cannot be paid for: a WFS sends
+   * survey-resolution geometry for every feature the box touches, and two
+   * degrees of British Columbia is already sixteen megabytes. Asking anyway
+   * spends the budget and draws nothing.
+   *
+   * So above that span we ask for the biggest shapes in view instead, sorted
+   * by the layer's own area column, and say the answer is truncated — which
+   * the map already knows how to show. A province drawn as its large forest
+   * blocks is a true, partial answer at a zoom where the small ones would be
+   * a pixel; a blank province is the one thing this file exists to prevent.
+   *
+   * Without an area column there is no principled subset to ask for — the
+   * first N features in database order would be arbitrary — so those sources
+   * still decline the viewport rather than draw an arbitrary sample of it.
+   */
+  const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon);
+  const wideForWfs = isWfs && !!source.maxSpanDegrees && span > (source.maxSpanDegrees as number);
+
+  if (wideForWfs && !source.areaField) {
+    console.info(
+      `[boundaries] ${source.id}: ${span.toFixed(1)}° viewport is past the ` +
+        `${source.maxSpanDegrees}° a WFS can answer, and it has no area column to ` +
+        'rank by — not asking.'
+    );
+    return { features: [], ok: false, truncated: false };
   }
 
+  /*
+   * How many of the biggest to ask for. Fewer the wider you go, for the same
+   * reason `overviewRecordLimit` does it: a wider view has room for fewer
+   * distinguishable shapes, and every extra one here is a megabyte.
+   */
+  const wfsRecordLimit = !wideForWfs
+    ? recordLimit
+    : span > 10 ? 15 : 40;
+
   const requestUrl = isWfs
-    ? wfsQueryUrl(source, bbox, recordLimit)
+    ? wfsQueryUrl(source, bbox, wfsRecordLimit, wideForWfs)
     : arcgisQueryUrl(source, bbox, simplifyDegrees, recordLimit);
 
   const controller = new AbortController();
@@ -1763,7 +1817,10 @@ const queryBoundarySourceOnce = async (
       (typeof data?.numberMatched === 'number' &&
         typeof data?.numberReturned === 'number' &&
         data.numberMatched > data.numberReturned) ||
-      features.length >= recordLimit;
+      features.length >= wfsRecordLimit ||
+      // The wide ask is a deliberate subset — the biggest shapes in view. It
+      // must never present itself as the whole picture.
+      wideForWfs;
 
     // The service answered with shapes and the geometry guard threw all of
     // them away — almost certainly a line layer being read as an area layer.
