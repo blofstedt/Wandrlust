@@ -194,6 +194,20 @@ npm run vapid    # generate push notification keys
   is the design, not a bug. If BC stops drawing, check `meta.sources[]` and
   the logs: every WFS response prints its size, its timing, and the layer's
   real field names.
+- **The zoomed-out map asks for the BIGGEST parcels, not the first ones.**
+  Every source has a hard record cap at wide zoom, and the area filter then
+  drops what is too small to draw — so taking whatever the database offered
+  first is how Ontario came to draw as confetti over a province that is mostly
+  Crown land. `areaField` per source plus `orderByFields` fixes it, between 2.5°
+  and 30° of span. Wider than that the sort is too slow and the ask reverts;
+  what saves the continental view is that each source is clipped to its own
+  extent first, so "the whole continent" becomes "Ontario" (21°) before anyone
+  is asked. Sorted answers get their own tile-cache slot (`|big`) — they are a
+  different answer to the same question.
+- **A change to what the map draws needs `BOUNDARY_DATA_EPOCH` bumped**
+  (`src/services/boundaryService.ts`). Boundaries are cached twelve hours in
+  memory, seven days on disk and six in the browser, so without it a fix is
+  invisible on every phone that has already looked at that ground.
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.
