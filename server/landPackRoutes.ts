@@ -234,8 +234,11 @@ export const registerLandPackRoutes = (app: Express): void => {
         in_max_lat: maxLat,
         in_max_lon: maxLon,
         in_tolerance: PACK_TOLERANCE,
-        in_limit: PACK_CELL_LIMIT + 1,
-        in_min_area_sq_km: 0
+        in_limit: PACK_CELL_LIMIT + 1
+        // No in_min_area_sq_km. A pack wants every parcel in the cell, so
+        // the filter would be 0 — a no-op — and passing an argument the
+        // function does not have is a hard PostgREST error on any database
+        // that has not run migration 07. Omitting it works on both.
       });
 
       if (error) {

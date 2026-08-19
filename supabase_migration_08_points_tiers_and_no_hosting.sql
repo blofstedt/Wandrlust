@@ -422,9 +422,19 @@ set search_path = public, pg_temp
 as $$
 declare reward integer; cap integer; daily integer;
 begin
-  if new.point_count < 10 then
+  -- These two checks are migration 02's, unchanged. This rewrite is only
+  -- about the tokens -> points rename below; the gate itself must keep
+  -- reading columns telemetry_batches actually has. It briefly checked
+  -- `new.point_count`, which is not one of them — see migration 20.
+  if not new.dash_mounted then
     new.accepted := false;
-    new.reject_reason := 'fewer than 10 points';
+    new.reject_reason := 'phone not dash-mounted; movement not attributable to road surface';
+    return new;
+  end if;
+
+  if coalesce(new.mean_speed_kph, 0) < 5 then
+    new.accepted := false;
+    new.reject_reason := 'stationary or near-stationary';
     return new;
   end if;
 
@@ -460,7 +470,9 @@ set search_path = public, pg_temp
 as $$
 declare confirmations integer; reporter uuid;
 begin
-  select count(*), max(h.reporter_id) into confirmations, reporter
+  -- hazard_reports names the reporter `user_id`, not `reporter_id`. It was
+  -- `h.reporter_id` here for a release, which aborted every confirmation.
+  select count(*), max(h.user_id) into confirmations, reporter
   from public.hazard_confirmations hc
   join public.hazard_reports h on h.id = hc.hazard_id
   where hc.hazard_id = new.hazard_id;

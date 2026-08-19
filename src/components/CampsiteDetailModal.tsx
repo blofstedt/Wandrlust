@@ -23,7 +23,6 @@ import {
   Calendar,
   TicketCheck,
   Bookmark,
-  Share2,
   Copy,
   Check,
   ExternalLink,
@@ -31,7 +30,6 @@ import {
   Send,
   Navigation,
   TreePine,
-  Maximize2,
   Camera,
   Layers,
   Flag
@@ -614,4 +612,4 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
     </div>
   );
 };
-
+

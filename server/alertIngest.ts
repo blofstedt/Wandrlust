@@ -31,6 +31,7 @@
  */
 import type { Express, Request, Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { secretMatches } from './secrets.js';
 // `.js` is required under strict ESM on Vercel. See weatherRoutes.ts.
 import {
   fetchNwsActiveAlerts, fetchEcccActiveAlerts, type NormalisedAlert
@@ -241,6 +242,10 @@ export const runIngest = async (baseUrl: string): Promise<IngestReport> => {
   if (running) {
     report.error = 'An ingest cycle is already running.';
     report.finishedAt = new Date().toISOString();
+    // Record it too. Without this, /api/alerts/status keeps showing the
+    // previous run while the caller is told something different, and the
+    // one thing a status endpoint has to be is the same story as the API.
+    lastReport = report;
     return report;
   }
   running = true;
@@ -343,7 +348,7 @@ export const registerAlertRoutes = (app: Express): void => {
       return res.status(503).json({ error: 'PUSH_DISPATCH_SECRET not configured' });
     }
     const supplied = (req.headers.authorization ?? '').replace(/^Bearer /i, '');
-    if (supplied !== DISPATCH_SECRET) {
+    if (!secretMatches(supplied, DISPATCH_SECRET)) {
       return res.status(401).json({ error: 'invalid dispatch secret' });
     }
 
@@ -351,4 +356,4 @@ export const registerAlertRoutes = (app: Express): void => {
     const report = await runIngest(baseUrl);
     return res.json(report);
   });
-};
+};

@@ -66,7 +66,9 @@ interface ToolButton {
   badgeClass?: string;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
+/** Memoised: it sits above every view and does not care about most of what
+ *  changes below it. */
+export const Navbar: React.FC<NavbarProps> = React.memo(({
   activeView, setActiveView, filterState, setFilterState, onSelectLocation,
   onLocateUser, isLocating, isOfflineMode, setIsOfflineMode, onOpenOfflineManager,
   onOpenAddModal, onOpenGuideModal, onOpenFilterDrawer, onOpenAuth, onOpenPresence,
@@ -468,4 +470,6 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
     </header>
   );
-};
+});
+
+Navbar.displayName = 'Navbar';

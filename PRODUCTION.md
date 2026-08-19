@@ -37,7 +37,7 @@ and users silently stop receiving alerts while everything *looks* fine.
 
 | Item | Why |
 | --- | --- |
-| Supabase project + migrations 01–09 | Everything account-bound; 09 adds the map's hazard-report read |
+| Supabase project + migrations 01–20 | Everything account-bound. Apply all of them, in order — an unapplied migration reads as a missing feature, not an error |
 | Google OAuth credentials | See `AUTH_SETUP.md` |
 | `npm run seed` | Boundary data is empty until you run it |
 | `npm run vapid` + `web-push` | Push delivery |
@@ -76,8 +76,8 @@ The documents say what you asked, clearly. Whether a liability waiver holds up
 depends on jurisdiction — consumer protection law limits what disclaimers can
 do in many places. Replace the placeholder contact email and date.
 
-**6. Token economy is unaudited at scale.**
-Caps are tuned for ~60 tokens/day realistic. Nobody has tried to break it.
+**6. Points economy is unaudited at scale.**
+Caps are tuned for ~60 points/day realistic. Nobody has tried to break it.
 Model what a determined farmer can extract before opening signups.
 
 **7. No error reporting sink.**
@@ -91,7 +91,7 @@ Each state DOT has its own endpoint and terms — a per-jurisdiction integration
 ## Pre-launch checklist
 
 ```
-[ ] Migrations 01–05 applied in order
+[ ] Migrations 01–20 applied in order (check pg_proc for the functions each adds)
 [ ] npm run seed completed; data_quality_report() looks sane
 [ ] Google OAuth: production origin + redirect URL added
 [ ] Supabase Site URL off localhost
@@ -124,4 +124,4 @@ Everything should still function, just without travel or overshoot.
 
 Keyboard pass: Tab through the app. Focus rings must always be visible, dialogs
 must trap focus, Escape must close them, and focus must land back on the
-control that opened them.
+control that opened them.

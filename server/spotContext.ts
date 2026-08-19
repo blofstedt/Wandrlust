@@ -28,8 +28,11 @@
  * Nothing here throws. Every export resolves to a result object.
  */
 import { metresBetween } from './beaconSources.js';
+import { USER_AGENT } from './alertSources.js';
 
-const UA = 'Wandrlust/1.0 (dispersed camping map; contact via app)';
+/* One User-Agent for the whole server, with a contact somebody can
+   actually reach. See USER_AGENT in alertSources.ts. */
+const UA = USER_AGENT;
 
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
@@ -39,6 +42,17 @@ const OVERPASS_MIRRORS = [
 
 /** How far out we look for facilities. Mirrored by POI_RADIUS_M on the client. */
 export const POI_RADIUS_M = 5000;
+
+/**
+ * How far out "what am I standing on" reaches.
+ *
+ * One constant for both halves on purpose. The query asked within 150 m
+ * while the classification loop below accepted anything within 200 m, so
+ * the band between the two could only ever be filled by a feature some
+ * other query happened to return — a gap that is invisible until you
+ * wonder why a pullout 180 m away never named anything.
+ */
+const SITE_RADIUS_M = 200;
 
 /** How far out we look for something to name the place after. */
 const NAME_RADIUS_M = 3000;
@@ -150,12 +164,12 @@ const buildQuery = (lat: number, lon: number): string => {
   // What kind of place the coordinate itself sits on. Tight radius — this is
   // "what am I standing on", not "what is in the area".
   const here = [
-    `node["amenity"~"^(parking|parking_space)$"]${at(150)};`,
-    `way["amenity"~"^(parking|parking_space)$"]${at(150)};`,
-    `way["highway"~"^(rest_area|services|track|unclassified|service)$"]${at(150)};`,
-    `node["highway"~"^(passing_place|turning_circle)$"]${at(150)};`,
-    `node["tourism"="camp_site"]${at(150)};`,
-    `way["tourism"="camp_site"]${at(150)};`
+    `node["amenity"~"^(parking|parking_space)$"]${at(SITE_RADIUS_M)};`,
+    `way["amenity"~"^(parking|parking_space)$"]${at(SITE_RADIUS_M)};`,
+    `way["highway"~"^(rest_area|services|track|unclassified|service)$"]${at(SITE_RADIUS_M)};`,
+    `node["highway"~"^(passing_place|turning_circle)$"]${at(SITE_RADIUS_M)};`,
+    `node["tourism"="camp_site"]${at(SITE_RADIUS_M)};`,
+    `way["tourism"="camp_site"]${at(SITE_RADIUS_M)};`
   ].join('');
 
   const towns = `node["place"~"^(city|town|village|hamlet)$"]["name"]${at(TOWN_RADIUS_M)};`;
@@ -307,7 +321,7 @@ export const fetchSpotContext = async (
     const metres = metresBetween(lat, lon, centre[0], centre[1]);
 
     // What we are standing on.
-    if (metres <= 200) {
+    if (metres <= SITE_RADIUS_M) {
       kindHere = kindHere ?? placeKind(tags);
     }
 

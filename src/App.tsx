@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type {
-  Campsite, FilterState, GeocodedLocation, CamperReview, AppView, LegalDocKind,
+  Campsite, FilterState, GeocodedLocation, AppView, LegalDocKind,
   DestinationLand, MapDestination, CellCoverage, BeaconSpot, FacilityKind, MapFacility
 } from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
@@ -370,8 +370,19 @@ export default function App() {
     return () => { cancelled = true; };
   }, [user]);
 
+  /**
+   * Which search is the current one.
+   *
+   * Two searches in quick succession are two independent fetches, and the
+   * first can land second — Overpass is slower for some boxes than others.
+   * Without this the older, slower answer overwrites the newer one and the
+   * list shows results for a place the user has already moved on from.
+   */
+  const searchSeq = useRef(0);
+
   const handleSelectLocation = useCallback(
     async (loc: GeocodedLocation) => {
+      const seq = ++searchSeq.current;
       const label = loc.displayName.split(',')[0];
       setCenter([loc.lat, loc.lon]);
       setZoom(11);
@@ -428,11 +439,15 @@ export default function App() {
          * winning record. And a spot that is only on this phone is not in
          * `shared` at all, so it survives untouched from `prev`.
          */
+        // A newer search started while this one was in flight. Its answer is
+        // the one the user is waiting on; this one is now about somewhere else.
+        if (seq !== searchSeq.current) return;
+
         setCampsites((prev) => mergeCampsites(shared, prev, liveSites));
       } catch (err) {
         console.warn('Campsite lookup failed:', err);
       } finally {
-        setIsSearchingSites(false);
+        if (seq === searchSeq.current) setIsSearchingSites(false);
       }
     },
     [isOfflineMode, filterState.maxDistanceMiles]
@@ -600,13 +615,18 @@ export default function App() {
    * decided to drive to it.
    */
   const handleNavigateToBeaconSpot = useCallback(
-    (latitude: number, longitude: number) => {
+    (latitude: number, longitude: number, label?: string) => {
       setIsBeaconOpen(false);
       setSelectedCampsite(null);
       setSelectedReport(null);
       setDestination({ latitude, longitude });
       setCenter([latitude, longitude]);
       setZoom((current) => Math.max(current, 14));
+      // BeaconPanel passes the spot's name. It used to be dropped on the
+      // floor — TypeScript allows a handler that takes fewer arguments —
+      // which left the header naming wherever the camper searched last
+      // while the map had already flown somewhere else.
+      if (label) setCurrentLocationName(label);
     },
     []
   );

@@ -222,6 +222,8 @@ export class ScoutRecorder {
   private watchId: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  /** When the last batch was cut, so the next one can measure real elapsed time. */
+  private lastFlushAt: number | null = null;
   private readonly opts: Required<Pick<ScoutRecorderOptions, 'batchSeconds'>> &
     ScoutRecorderOptions;
 
@@ -259,7 +261,20 @@ export class ScoutRecorder {
     this.motion = [];
     this.geo = geo.length > 0 ? [geo[geo.length - 1]] : [];
 
-    const elapsedS = this.opts.batchSeconds;
+    /*
+     * Sample rate from the time that actually passed, not the interval we
+     * asked for. A backgrounded tab has its timers throttled hard — the
+     * flush can arrive a minute late — and dividing by the configured
+     * interval then reports a sample rate several times higher than the
+     * sensor ever produced. sample_hz is stored with the batch and is part
+     * of how a batch's plausibility is judged later.
+     */
+    const now = Date.now();
+    const elapsedS = this.lastFlushAt
+      ? Math.max(1, (now - this.lastFlushAt) / 1000)
+      : this.opts.batchSeconds;
+    this.lastFlushAt = now;
+
     const hz = motion.length > 0 ? Math.round(motion.length / elapsedS) : 0;
     const batch = buildBatch(motion, geo, hz || 50);
     if (batch) await this.opts.onBatch(batch);
@@ -304,6 +319,8 @@ export class ScoutRecorder {
     }, this.opts.batchSeconds * 1000);
 
     this.running = true;
+    // The first batch measures from here, not from an earlier session.
+    this.lastFlushAt = Date.now();
     this.emitStatus();
     return { ok: true, message: 'Scout Mode active' };
   }
@@ -317,10 +334,11 @@ export class ScoutRecorder {
     this.timer = null;
     this.running = false;
     await this.flush();
+    this.lastFlushAt = null;
     this.emitStatus();
   }
 
   isRunning(): boolean {
     return this.running;
   }
-}
+}

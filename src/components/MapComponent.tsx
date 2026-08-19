@@ -1535,7 +1535,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   facilityRefreshKey = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   /** The HTML each marker's icon was last given, so a no-op swap is skipped. */
@@ -6180,7 +6179,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         because everything else on this screen is deliberately its SIBLING —
         that is what keeps the chrome out of Leaflet's transform.
       */}
-      <div ref={stageRef} className="map-stage absolute inset-0">
+      <div className="map-stage absolute inset-0">
         <div ref={containerRef} className="w-full h-full" />
       </div>
       {/*

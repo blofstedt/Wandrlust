@@ -891,7 +891,17 @@ export const registerRouteRoutes = (app: Express): void => {
 
     // Five decimal places is about a metre — finer than any of these engines
     // resolves, and enough that nudging a pin re-queries.
-    const cacheKey = `${nums.map((n) => n.toFixed(5)).join(',')}|${JSON.stringify(rig)}`;
+    //
+    // The rig half is built from sorted keys rather than JSON.stringify'd
+    // directly: stringify preserves insertion order, so two identical rigs
+    // built by different code paths would key differently and each pay for
+    // the same route.
+    const rigKey = Object.entries(rig)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join(';');
+    const cacheKey = `${nums.map((n) => n.toFixed(5)).join(',')}|${rigKey}`;
     const hit = cache.get(cacheKey);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return res.json(hit.body);
 
@@ -935,4 +945,4 @@ export const registerRouteRoutes = (app: Express): void => {
 
     return res.json(body);
   });
-};
+};

@@ -13,8 +13,9 @@
  * reading "what country and state is that", in that order.
  */
 import React, { useEffect, useState } from 'react';
-import { MapPin, Flag } from 'lucide-react';
+import { MapPin, Flag, Info } from 'lucide-react';
 import { findAdmin1At, Admin1 } from '../services/admin1Service';
+import { landDataGap } from '../config/coverage';
 
 interface Admin1LineProps {
   latitude: number;
@@ -64,6 +65,21 @@ export const Admin1Line: React.FC<Admin1LineProps> = ({
   // user knows what they're looking at.
   const text = `${admin1.name}, ${admin1.country}`;
 
+  /**
+   * Why the map may be blank around here, when it is blank for a reason
+   * other than "there is nothing".
+   *
+   * `landDataGap` is where this app writes down what it does not know about
+   * a province, and until now nothing called it — the rule was stated in one
+   * file and never reached a camper. Somebody in British Columbia saw an
+   * empty map and no explanation, which reads as "nowhere to camp here"
+   * rather than "we have no Crown land data for this province".
+   *
+   * Null for anywhere fully mapped, which is every US state (BLM and the
+   * Forest Service publish nationally) and Alberta.
+   */
+  const gap = landDataGap(admin1.isoCode);
+
   if (variant === 'badge') {
     return (
       <span className="px-1.5 py-0.5 rounded bg-slate-700/60 border border-slate-600/80 text-[9px] font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1">
@@ -74,9 +90,18 @@ export const Admin1Line: React.FC<Admin1LineProps> = ({
   }
 
   return (
-    <span className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
-      <MapPin className="w-2.5 h-2.5" />
-      {text}
+    <span className="flex flex-col gap-0.5 mt-0.5">
+      <span className="text-[10px] text-slate-400 flex items-center gap-1">
+        <MapPin className="w-2.5 h-2.5" />
+        {text}
+      </span>
+      {gap && (
+        // Amber, not red: this is a limit on what we know, not a hazard.
+        <span className="text-[10px] text-amber-300/80 flex items-start gap-1">
+          <Info className="w-2.5 h-2.5 mt-[3px] shrink-0" />
+          <span>Public land here is partly unmapped — {gap}. A blank map is not an empty one.</span>
+        </span>
+      )}
     </span>
   );
 };

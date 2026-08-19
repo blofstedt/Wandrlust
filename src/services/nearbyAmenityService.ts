@@ -1,6 +1,7 @@
 import { distanceKm, distanceToLineKm } from '../utils/geo';
 import type { FacilityKind, MapFacility, NearbyFacility, NearbyFacilityKind } from '../types';
 import { FACILITY, FACILITY_KINDS } from '../config/facilities';
+import { TtlCache } from '../utils/ttlCache';
 
 export { FACILITY_LABEL, FACILITY_GLYPH, FACILITY_COLOR } from '../config/facilities';
 
@@ -504,6 +505,14 @@ export interface FacilityViewResult {
 
 const EMPTY_VIEW: FacilityViewResult = { ok: false, facilities: [], truncated: false };
 
+/**
+ * Viewport answers, so panning back across ground already covered does not
+ * re-ask Overpass. `fetchFacilitiesInView` runs on every map move that
+ * clears the zoom gate, which on a phone being dragged around is a lot of
+ * identical questions. Only successful answers go in — see TtlCache.
+ */
+const facilityViewCache = new TtlCache<FacilityViewResult>(10 * 60 * 1000, 40);
+
 /** How many we will draw before the map becomes a wall of glyphs. */
 const MAX_IN_VIEW = 250;
 
@@ -532,6 +541,12 @@ export const fetchFacilitiesInView = async (
     (midLat - halfLat).toFixed(5), (midLon - halfLon).toFixed(5),
     (midLat + halfLat).toFixed(5), (midLon + halfLon).toFixed(5)
   ].join(',');
+
+  // The box as asked plus what was asked about: two viewports that round to
+  // the same box want the same answer, and a different set of kinds does not.
+  const cacheKey = `${box}|${[...wanted].sort().join(',')}`;
+  const cached = facilityViewCache.get(cacheKey);
+  if (cached) return cached;
 
   const clauses = selectorsFor(wanted)
     .map((selector) => `  ${selector}(${box});`)
@@ -587,11 +602,13 @@ export const fetchFacilitiesInView = async (
       }
 
       const facilities = [...found.values()];
-      return {
+      const result: FacilityViewResult = {
         ok: true,
         facilities: facilities.slice(0, MAX_IN_VIEW),
         truncated: clamped || facilities.length > MAX_IN_VIEW
       };
+      facilityViewCache.set(cacheKey, result);
+      return result;
     } catch {
       // An abort is the caller changing their mind, not a mirror failing.
       if (signal?.aborted) return EMPTY_VIEW;

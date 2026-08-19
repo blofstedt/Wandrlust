@@ -127,7 +127,7 @@ Then schedule the matcher (pg_cron) and dispatcher — see
 [INTEGRATION.md](./INTEGRATION.md).
 
 **Life-safety alerts ignore quiet hours.** A tornado warning at 3am is exactly
-the notification you want at 3am. Booking updates are not.
+the notification you want at 3am. A new review on a spot is not.
 
 ---
 
@@ -148,12 +148,32 @@ curated dataset.
 Run the migrations **in order** in the Supabase SQL Editor:
 
 ```
-supabase_schema.sql                          -- 01 core
+supabase_schema.sql                          -- 01 core (DESTRUCTIVE: drops and recreates)
 supabase_migration_02_platform.sql           -- social, points, trust
 supabase_migration_03_provenance.sql         -- accuracy metadata
 supabase_migration_04_reviews_and_alerts.sql -- reviews, weather, settings
 supabase_migration_05_push_and_legal.sql     -- push, legal acceptance
+supabase_migration_06_boundaries_from_db.sql -- boundaries_in_bbox
+supabase_migration_07_overview_boundaries.sql-- area filter for zoomed-out views
+supabase_migration_08_points_tiers_and_no_hosting.sql -- tokens -> points, 5 tiers
+supabase_migration_09_hazards_on_map.sql     -- hazard reports the map can read
+supabase_migration_10_one_campsite_universe.sql -- one campsite table, reporting
+supabase_migration_11_security_tightening.sql
+supabase_migration_12_saved_campsites_sync.sql
+supabase_migration_13_beacon.sql             -- beacon spots
+supabase_migration_14_spot_reports.sql       -- the evidence ladder
+supabase_migration_15_pois_on_map.sql
+supabase_migration_16_beacon_top_three.sql
+supabase_migration_17_take_down_my_spot.sql  -- your spot is yours until it isn't
+supabase_migration_18_beacon_refund.sql
+supabase_migration_19_boundary_tile_cache.sql
+supabase_migration_20_fix_broken_triggers.sql -- repairs two triggers 08 broke
 ```
+
+Every one of them, in that order. A migration that has not been applied does
+not announce itself: the RPC it adds simply isn't there, every service turns
+that error into its safe empty value, and the feature looks absent rather than
+broken.
 
 Then `npm run seed`.
 
@@ -223,4 +243,4 @@ list of what is *not* yet production ready.
 ## Licence
 
 Data from OpenStreetMap is © OpenStreetMap contributors, available under the
-Open Database Licence.
+Open Database Licence.

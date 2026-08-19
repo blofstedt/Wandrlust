@@ -371,15 +371,18 @@ const fetchWfigsPerimeters = async (
       type: 'Polygon',
       coordinates: rings as GeoJSON.Polygon['coordinates']
     };
+    // Reported size, whichever of the two fields carries it. Read once into
+    // a variable so the value that is size-checked is the same one that gets
+    // converted — the `!` this replaces was only safe by coincidence.
+    const acres = safeNumber(a.attr_IncidentSize ?? a.poly_GISAcres);
+
     out.push({
       id: `wfigs:${a.OBJECTID ?? a.GlobalID ?? Math.random()}`,
       name: a.attr_IncidentName?.trim() || 'Unnamed fire',
       kind: 'perimeter',
       country: 'US',
-      sizeAcres: safeNumber(a.attr_IncidentSize ?? a.poly_GISAcres),
-      sizeHa: safeNumber(a.attr_IncidentSize ?? a.poly_GISAcres) != null
-        ? acresToHa(a.attr_IncidentSize ?? a.poly_GISAcres!)
-        : null,
+      sizeAcres: acres,
+      sizeHa: acres != null ? acresToHa(acres) : null,
       contained: safeNumber(a.attr_PercentContained),
       region: [a.attr_POOState, a.attr_POOCounty].filter(Boolean).join(' / ') || 'US',
       discovered: dateFromEpochMs(a.attr_FireDiscoveryDateTime),
@@ -469,15 +472,11 @@ const readBbox = (req: Request): [number, number, number, number] | null => {
   if (!bboxIntersectsCoverage({ minLon, minLat, maxLon, maxLat })) return null;
   // Reject inverted / zero-area boxes early.
   if (minLon >= maxLon || minLat >= maxLat) return null;
-  // Cap the requested area: 4 degrees on a side is roughly the size of
-  // California. Beyond that, either the user is looking at the whole
-  // continent (point data is sparse enough to be useful) or the URL
-  // is malformed; either way we serve the whole feed.
-  const SPAN_CAP_DEG = 4;
-  const span = Math.max(maxLon - minLon, maxLat - minLat);
-  if (span > SPAN_CAP_DEG) {
-    return [minLon, minLat, maxLon, maxLat]; // over-cap: still serve, the bboxes overlap
-  }
+  // A box bigger than about California is served in full rather than
+  // clamped: at that zoom the user is looking at the continent, fire point
+  // data is sparse enough to stay cheap, and trimming the box would drop
+  // fires that are on screen. There used to be an `if` here that returned
+  // the same value in both branches, which read as a cap and was not one.
   return [minLon, minLat, maxLon, maxLat];
 };
 

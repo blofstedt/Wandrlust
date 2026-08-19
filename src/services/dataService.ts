@@ -159,10 +159,39 @@ export interface Result<T> {
 const success = <T>(data: T, message = ''): Result<T> => ({ ok: true, data, message });
 const failure = <T>(message: string): Result<T> => ({ ok: false, data: null, message });
 
+/**
+ * The signed-in user's id, resolved once per session rather than per call.
+ *
+ * `auth.getUser()` is a round trip to the auth server, and roughly
+ * twenty-five exported functions in this file open by asking who the caller
+ * is. Opening a spot's sheet used to mean several of those in a row, each
+ * paying that trip, for an answer that does not change while the user is
+ * looking at the screen.
+ *
+ * The cache is invalidated by the auth listener below, not by a timer, so
+ * signing out or a token refresh into a different account is reflected
+ * immediately. Nothing here is a security boundary — Row Level Security
+ * decides what this id can actually read or write, and it reads the JWT,
+ * not this variable.
+ */
+let cachedUserId: string | null = null;
+let userIdResolved = false;
+
+supabase?.auth.onAuthStateChange((_event, session) => {
+  cachedUserId = session?.user?.id ?? null;
+  userIdResolved = true;
+});
+
 const currentUserId = async (): Promise<string | null> => {
   if (!supabase) return null;
-  const { data } = await supabase.auth.getUser();
-  return data?.user?.id ?? null;
+  if (userIdResolved) return cachedUserId;
+
+  // First call of the session. getSession() reads the stored session and
+  // refreshes it if needed, without a round trip per caller.
+  const { data } = await supabase.auth.getSession();
+  cachedUserId = data?.session?.user?.id ?? null;
+  userIdResolved = true;
+  return cachedUserId;
 };
 
 /* ------------------------------------------------------------------ */

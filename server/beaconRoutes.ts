@@ -322,11 +322,17 @@ export const registerBeaconRoutes = (app: Express): void => {
      * `buildCandidates` already knows how to be honest about: no candidate is
      * confirmed to be on public land, and the answer says so.
      */
-    const within = <T>(work: Promise<T>, ms: number, fallback: T): Promise<T> =>
-      Promise.race([
+    const within = <T>(work: Promise<T>, ms: number, fallback: T): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([
         work,
-        new Promise<T>((resolve) => setTimeout(() => resolve(fallback), Math.max(0, ms)))
-      ]);
+        new Promise<T>((resolve) => {
+          timer = setTimeout(() => resolve(fallback), Math.max(0, ms));
+        })
+      // Clear the timer when the work wins, or a serverless invocation is
+      // held open by a pending timeout that can no longer change anything.
+      ]).finally(() => { if (timer) clearTimeout(timer); });
+    };
 
     for (const radiusM of RADIUS_LADDER) {
       const left = remaining();

@@ -73,6 +73,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  /**
+   * State for the manual update check. It lives up here with the other
+   * hooks, above the `if (!isOpen) return null` below, because a hook
+   * called after an early return runs on some renders and not others —
+   * React matches hooks by call order, so closing the panel would shift
+   * every hook after it by one.
+   */
+  const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'up-to-date' | 'error'>('idle');
 
   useEffect(() => {
     if (!isOpen || !user) return;
@@ -109,16 +117,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
    * can get the toast in seconds instead of waiting for the next background
    * refresh window.
    */
-  const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'up-to-date' | 'error'>('idle');
   const handleCheckUpdate = async () => {
     setUpdateState('checking');
     try {
-      const ready = await checkForUpdate();
-      setUpdateState(ready ? 'up-to-date' : 'up-to-date');
-      // Note: 'up-to-date' is the message either way. If a worker is waiting,
-      // the UpdatePrompt toast surfaces it; if not, the user knows they are
+      await checkForUpdate();
+      // 'up-to-date' is the message either way. If a worker is waiting, the
+      // UpdatePrompt toast surfaces it; if not, the user knows they are
       // current. There's no separate "update found" message here because the
       // toast handles it the same way it would for an automatic check.
+      setUpdateState('up-to-date');
     } catch {
       setUpdateState('error');
     }

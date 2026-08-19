@@ -1,0 +1,56 @@
+# Run the checks this repo already has, on every push and pull request.
+#
+# WHY THIS EXISTS
+#
+# There are no automated tests here — that is a deliberate position, and it
+# puts all the weight on three static checks that were only ever run by hand:
+#
+#   npm run lint           tsc --noEmit over src, server, shared, scripts, api
+#   npm run check:imports  every server import carries a .js extension, or the
+#                          Vercel function throws ERR_MODULE_NOT_FOUND at load
+#   npm run check:sql      every column a migration names actually exists
+#
+# check:sql was written specifically to catch a migration referencing a column
+# that is not there. It found one the first time anybody ran it — a broken
+# trigger that had been rejecting every telemetry batch and every hazard
+# confirmation for releases, because a trigger error aborts the write and the
+# client turns any error into its safe empty value, so the feature does not
+# look broken, it looks absent.
+#
+# The checker was not wrong. Nothing ran it. That is what this file fixes.
+#
+# It does not build. `npm run build` needs the client bundle and Vercel already
+# builds every push; duplicating it here would double the wait to learn what
+# these three checks answer in under a minute.
+
+name: CI
+
+# Push only. Every branch here becomes a pull request against main, and
+# running both triggers would just queue the same three checks twice.
+on:
+  push:
+    branches: ['**']
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Ordered cheapest-first so an obvious failure reports in seconds.
+      - name: Server imports carry extensions
+        run: npm run check:imports
+
+      - name: Migration columns exist
+        run: npm run check:sql
+
+      - name: Typecheck
+        run: npm run lint

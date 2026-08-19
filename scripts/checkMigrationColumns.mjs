@@ -19,6 +19,18 @@
  * It is a static check, not a substitute for running the migration. It cannot
  * see a live database, so it will not catch a column that exists in these
  * files but was never applied to the real project.
+ *
+ * TWO BLIND SPOTS IT USED TO HAVE, BOTH OF WHICH COST A FEATURE
+ *
+ * 1. It only read ALIASED references (`h.user_id` after `join ... h`). A
+ *    trigger body reaching straight for `new.<column>` was invisible, and
+ *    that is exactly where migration 08's `new.point_count` sat — on a table
+ *    with no such column — silently rejecting every telemetry batch for
+ *    releases. Trigger bodies are now checked against the table the trigger
+ *    is actually attached to.
+ *
+ * 2. It scanned comments as if they were code, so writing about a bug in a
+ *    comment reported the bug. Comments are stripped first now.
  */
 import fs from 'fs';
 import path from 'path';
@@ -28,6 +40,54 @@ const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 /** Postgres identifiers are case-insensitive unless quoted; we lower-case. */
 const norm = (s) => s.trim().toLowerCase();
+
+/**
+ * Remove `--` and block comments, leaving string literals alone.
+ *
+ * Naively deleting from `--` to end of line would eat the second half of
+ * `reject_reason := 'not dash-mounted -- see above'`, and naively keeping
+ * comments means a note explaining a past bug reads as the bug. So: walk the
+ * text once, tracking whether we are inside a quoted string.
+ *
+ * Replaced with spaces rather than deleted so that nothing which was on
+ * separate lines gets joined into a token that was never written.
+ */
+const stripComments = (sql) => {
+  let out = '';
+  let i = 0;
+  while (i < sql.length) {
+    const two = sql.slice(i, i + 2);
+    if (two === '--') {
+      while (i < sql.length && sql[i] !== '\n') { out += ' '; i += 1; }
+      continue;
+    }
+    if (two === '/*') {
+      let depth = 1;            // Postgres block comments nest.
+      out += '  ';
+      i += 2;
+      while (i < sql.length && depth > 0) {
+        if (sql.slice(i, i + 2) === '/*') { depth += 1; out += '  '; i += 2; continue; }
+        if (sql.slice(i, i + 2) === '*/') { depth -= 1; out += '  '; i += 2; continue; }
+        out += sql[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (sql[i] === "'") {
+      out += sql[i];
+      i += 1;
+      while (i < sql.length) {
+        out += sql[i];
+        if (sql[i] === "'") { i += 1; break; }   // '' escapes handled by re-entry
+        i += 1;
+      }
+      continue;
+    }
+    out += sql[i];
+    i += 1;
+  }
+  return out;
+};
 
 /**
  * Build { tableName -> Set(columns) } from every schema and migration file.
@@ -113,6 +173,96 @@ const readAliases = (sql) => {
   return aliases;
 };
 
+/**
+ * Map trigger-function name -> the tables its triggers are attached to.
+ *
+ * `create trigger x before insert on public.foo for each row execute
+ *  function public.bar()` means every `new.<col>` in bar's body must be a
+ * column of foo. A function can serve several tables, in which case a column
+ * only has to exist on one of them.
+ */
+const readTriggerTargets = (files) => {
+  const targets = new Map();
+  const re =
+    /create\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+\s+([\s\S]*?)\s+execute\s+(?:function|procedure)\s+([\w.]+)\s*\(/gi;
+  for (const file of files) {
+    const sql = stripComments(fs.readFileSync(file, 'utf8'));
+    for (const m of sql.matchAll(re)) {
+      const [, clause, fn] = m;
+      const on = clause.match(/\bon\s+([\w.]+)/i);
+      if (!on) continue;
+      const key = norm(fn).replace(/^public\./, '');
+      if (!targets.has(key)) targets.set(key, new Set());
+      targets.get(key).add(norm(on[1]).replace(/^public\./, ''));
+    }
+  }
+  return targets;
+};
+
+/** Map function name -> body, for `returns trigger` functions only. */
+const readTriggerBodies = (files) => {
+  const bodies = [];
+  const re =
+    /create\s+(?:or\s+replace\s+)?function\s+([\w.]+)\s*\([^)]*\)\s*returns\s+trigger\b([\s\S]*?)\$\$([\s\S]*?)\$\$/gi;
+  for (const file of files) {
+    const sql = stripComments(fs.readFileSync(file, 'utf8'));
+    for (const m of sql.matchAll(re)) {
+      bodies.push({
+        file: path.basename(file),
+        fn: norm(m[1]).replace(/^public\./, ''),
+        body: m[3]
+      });
+    }
+  }
+  return bodies;
+};
+
+/**
+ * Check `new.<col>` / `old.<col>` in every trigger body against the table the
+ * trigger fires on. Returns the number of problems reported.
+ *
+ * Skipped deliberately: `new` and `old` also carry `tg_*`-adjacent record
+ * plumbing in some dialects, and a function attached to no trigger in these
+ * files cannot be resolved — both are left alone rather than guessed at.
+ */
+const checkTriggerBodies = (files, tables) => {
+  const targets = readTriggerTargets(files);
+  let problems = 0;
+  let checked = 0;
+
+  for (const { file, fn, body } of readTriggerBodies(files)) {
+    const onTables = targets.get(fn);
+    if (!onTables || onTables.size === 0) continue;
+
+    const seen = new Set();
+    for (const m of body.matchAll(/\b(new|old)\.([a-z_][a-z0-9_]*)\b/gi)) {
+      const [full, , column] = m;
+      const key = norm(full);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      let known = false;
+      let anyTableKnown = false;
+      for (const table of onTables) {
+        const columns = tables.get(table);
+        if (!columns) continue;
+        anyTableKnown = true;
+        if (columns.has(norm(column))) { known = true; break; }
+      }
+      if (!anyTableKnown) continue;
+
+      checked += 1;
+      if (!known) {
+        const where = [...onTables].join(' / ');
+        console.log(`  ${file}: ${where} has no column "${column}"  (written as ${full} in ${fn}())`);
+        problems += 1;
+      }
+    }
+  }
+
+  return { problems, checked };
+};
+
 const run = () => {
   const schemaFiles = [
     path.join(rootDir, 'supabase_schema.sql'),
@@ -131,7 +281,7 @@ const run = () => {
 
   for (const file of schemaFiles) {
     const name = path.basename(file);
-    const sql = fs.readFileSync(file, 'utf8');
+    const sql = stripComments(fs.readFileSync(file, 'utf8'));
 
     for (const chunk of chunks(sql)) {
       const aliases = readAliases(chunk);
@@ -160,7 +310,11 @@ const run = () => {
     }
   }
 
+  const trigger = checkTriggerBodies(schemaFiles, tables);
+  problems += trigger.problems;
+
   console.log(`${checked} aliased column references checked`);
+  console.log(`${trigger.checked} new./old. references in trigger bodies checked`);
 
   if (problems > 0) {
     console.log(`\n${problems} problem${problems === 1 ? '' : 's'} found.`);

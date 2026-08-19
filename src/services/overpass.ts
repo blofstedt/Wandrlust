@@ -1,4 +1,5 @@
 import { Campsite, LandType, RoadAccess } from '../types';
+import { TtlCache } from '../utils/ttlCache';
 
 /**
  * Live campsite discovery via the OpenStreetMap Overpass API.
@@ -145,6 +146,14 @@ const toCampsite = (element: OverpassElement): Campsite | null => {
   };
 };
 
+/**
+ * Answers from this session, so searching the same place twice — or going
+ * back to a place already searched — does not spend another Overpass query.
+ * Ten minutes: campsites in OSM do not change on a shorter timescale than
+ * that, and it is well within one trip-planning sitting.
+ */
+const campsiteCache = new TtlCache<Campsite[]>(10 * 60 * 1000, 40);
+
 export const fetchOverpassCampsites = async (
   latitude: number,
   longitude: number,
@@ -153,6 +162,13 @@ export const fetchOverpassCampsites = async (
 ): Promise<Campsite[]> => {
   // Overpass struggles with very large radii; clamp to something sane.
   const radiusMetres = Math.min(Math.round(radiusMiles * MILES_TO_METRES), 80000);
+
+  // Rounded to about a hundred metres — finer than the search radius cares
+  // about, and coarse enough that nudging the map reuses the answer.
+  const cacheKey =
+    `${latitude.toFixed(3)},${longitude.toFixed(3)},${radiusMetres},${maxResults}`;
+  const cached = campsiteCache.get(cacheKey);
+  if (cached) return cached;
 
   const query = `[out:json][timeout:20];
 (
@@ -186,16 +202,22 @@ out center ${maxResults};`;
       // De-duplicate by rounded coordinate: OSM often has a node and a way
       // describing the same physical site.
       const seen = new Set<string>();
-      return sites.filter((site) => {
+      const unique = sites.filter((site) => {
         const key = `${site.latitude.toFixed(4)},${site.longitude.toFixed(4)}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
+
+      // Only a real answer is remembered. An empty array here is
+      // indistinguishable from every mirror failing, and caching that would
+      // keep an outage on screen after it ended.
+      if (unique.length > 0) campsiteCache.set(cacheKey, unique);
+      return unique;
     } catch {
       // Try the next mirror.
     }
   }
 
   return [];
-};
+};

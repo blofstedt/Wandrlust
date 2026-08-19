@@ -8,7 +8,6 @@ import { useAuth } from '../contexts/AuthContext';
 // Shared with the map, which draws the same avatars on the navigation layer.
 import { RIG_AVATAR, UNKNOWN_RIG_EMOJI } from '../config/rigs';
 
-export { RIG_AVATAR };
 
 const STATUS_STYLE: Record<PresenceStatus, { label: string; className: string }> = {
   in_transit: { label: 'On the move', className: 'bg-sky-600/20 text-sky-300 border-sky-500/40' },
@@ -228,4 +227,4 @@ export const PresencePanel: React.FC<PresencePanelProps> = ({
       </div>
     </div>
   );
-};
+};
