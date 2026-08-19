@@ -1312,7 +1312,16 @@ const arcgisQueryUrl = (
     geometryType: 'esriGeometryEnvelope',
     inSR: '4326',
     spatialRel: 'esriSpatialRelIntersects',
-    outFields: source.outFields ?? '*',
+    /*
+     * The area column rides along when there is one. It costs a number per
+     * feature and it is the only way to see, from the logs, what units the
+     * layer counts in — which is the difference between filtering for parcels
+     * over a hundred square kilometres and filtering for none at all.
+     */
+    outFields:
+      source.areaField && source.outFields && source.outFields !== '*'
+        ? `${source.outFields},${source.areaField}`
+        : source.outFields ?? '*',
     returnGeometry: 'true',
     outSR: '4326',
     /*
@@ -1694,6 +1703,9 @@ const wfsQueryUrl = (
  */
 const loggedWfsFields = new Set<string>();
 
+/** Sources whose area column has already had a value printed. */
+const loggedAreaSample = new Set<string>();
+
 /** Services that turned out not to honour `orderByFields` after all. */
 const noOrderBy = new Set<string>();
 
@@ -1716,14 +1728,29 @@ const SORTED_ASK_TIMEOUT_MS = 12000;
  * ask would have gone on being served for the ninety days that cache lives,
  * and the fix would have looked like it had not worked.
  */
+const SORT_MIN_SPAN = 2.5;
+/*
+ * And an upper bound, measured: Ontario sorts twenty-two degrees inside twelve
+ * seconds and cannot sort the whole continent at all. Past this the sort is
+ * not a better answer, it is twelve seconds spent before the answer that was
+ * always going to be used — and on the run that found this, those twelve
+ * seconds are what left the unsorted retry too little time to land.
+ */
+const SORT_MAX_SPAN = 30;
+
 const wantsBiggestFirst = (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number }
-): boolean =>
-  source.protocol !== 'wfs' &&
-  !!source.areaField &&
-  !noOrderBy.has(source.id) &&
-  Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon) > 2.5;
+): boolean => {
+  const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon);
+  return (
+    source.protocol !== 'wfs' &&
+    !!source.areaField &&
+    !noOrderBy.has(source.id) &&
+    span > SORT_MIN_SPAN &&
+    span <= SORT_MAX_SPAN
+  );
+};
 
 const queryBoundarySourceOnce = async (
   source: BoundarySource,
@@ -1919,6 +1946,13 @@ const queryBoundarySourceOnce = async (
 
     const returned = data.features.length;
 
+    // Once per source per process: what the layer's area column actually says.
+    if (source.areaField && !loggedAreaSample.has(source.id) && data.features[0]) {
+      loggedAreaSample.add(source.id);
+      const sample = pick(data.features[0].properties ?? {}, source.areaField);
+      console.info(`[boundaries] ${source.id}: ${source.areaField} of first feature = ${sample ?? 'absent'}`);
+    }
+
     /*
      * Everything an ArcGIS source got from the server, done here instead: the
      * coordinates are checked before they are believed, then generalised to
@@ -2088,7 +2122,7 @@ const queryBoundarySource = async (
     `[boundaries] ${source.id}: retrying unsorted at ${OVERVIEW_RETRY_RECORDS} records after timeout`
   );
   return queryBoundarySourceOnce(
-    source, bbox, simplifyDegrees, OVERVIEW_RETRY_RECORDS, 5000, undefined, true
+    source, bbox, simplifyDegrees, OVERVIEW_RETRY_RECORDS, 6000, undefined, true
   );
 };
 
