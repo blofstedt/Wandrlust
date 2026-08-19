@@ -27,7 +27,13 @@ interface CampsiteCardProps {
   distanceMiles?: number;
 }
 
-export const CampsiteCard: React.FC<CampsiteCardProps> = ({
+/**
+ * Memoised. The list can hold a few hundred of these, and every state change
+ * in App — a filter toggle, a search keystroke, the points balance arriving —
+ * re-renders the lot otherwise. The props are primitives and a campsite
+ * object that only changes when the campsite does.
+ */
+export const CampsiteCard: React.FC<CampsiteCardProps> = React.memo(({
   campsite, isSelected, isSaved, onSelect, onToggleSave, onOpenDetail, distanceMiles
 }) => {
   const amenities = campsite.amenities;
@@ -187,4 +193,6 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = ({
       </div>
     </article>
   );
-};
+});
+
+CampsiteCard.displayName = 'CampsiteCard';
