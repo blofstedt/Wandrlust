@@ -1067,7 +1067,27 @@ const MAX_PARTS_FOR_MERGE = 400;
  * so four of them is a blob roughly four pixels across. Below that there is
  * nothing to look at and nothing to tap.
  */
-const visiblePartDeg2 = (simplifyDegrees: number): number => (4 * simplifyDegrees) ** 2;
+/**
+ * How small a piece of a welded shape has to be before it is not worth drawing.
+ *
+ * The tolerance is about a four-hundredth of the viewport, so a screen a
+ * thousand pixels wide renders it as roughly two and a half pixels. The
+ * multiplier is therefore in pixels, near enough, and it used to be FOUR —
+ * which threw away every welded block under about ten pixels across.
+ *
+ * On Ontario and Alberta that changed nothing: their blocks are enormous. On
+ * New Brunswick and Nova Scotia, whose Crown land is thousands of parcels a
+ * few kilometres wide welded into modest blocks, it threw away the province.
+ * Five hundred New Brunswick parcels came back as a single blob twenty-five
+ * kilometres across, on a map of a province with thirty thousand square
+ * kilometres of Crown land.
+ *
+ * A block four pixels across is small. It is not invisible, and on this map it
+ * is somewhere a camper could actually go. The count is still bounded — the
+ * biggest `MAX_PARTS_MERGED` survive and the rest are dropped — so the cost of
+ * being less brutal here is bounded too.
+ */
+const visiblePartDeg2 = (simplifyDegrees: number): number => (1.5 * simplifyDegrees) ** 2;
 
 const prunedFeatures = (features: any[], minPartDeg2: number, maxParts: number): any[] =>
   features.map((f) => {
