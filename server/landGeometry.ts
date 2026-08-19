@@ -321,10 +321,26 @@ export const unionParcels = (
     onFallback?.('fewer than two parts');
     return null;
   }
-  if (snapDegrees > 0) parts = snapMultiPoly(parts, snapDegrees);
-  if (parts.length < 2) {
-    onFallback?.('snapping collapsed everything to one part');
-    return null;
+  /*
+   * SNAPPING IS AN AID TO THE WELD, NOT A CONDITION OF IT.
+   *
+   * The grid is a pixel wide, and a part narrower than one cell collapses on
+   * it — correctly, since it could not be drawn. But a province made ENTIRELY
+   * of such parts then collapses entirely, and Nova Scotia is exactly that:
+   * Crown land in pieces a kilometre or two across, which at anything wider
+   * than province zoom is every piece it has. The union came back with
+   * nothing and the province drew as three specks on a map of a place that is
+   * a third Crown land.
+   *
+   * So when the grid eats everything, the parcels are welded as they arrived
+   * instead. They still join where they genuinely abut — which is the whole
+   * job — and what is then too small to see is decided afterwards, by the
+   * threshold that exists for it, rather than here by accident.
+   */
+  if (snapDegrees > 0) {
+    const snapped = snapMultiPoly(parts, snapDegrees);
+    if (snapped.length >= 2) parts = snapped;
+    else onFallback?.('grid wider than every parcel, welding unsnapped');
   }
   if (ringCount(parts) > maxRings) {
     onFallback?.(`${ringCount(parts)} rings over the ${maxRings} budget`);
