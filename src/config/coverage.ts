@@ -343,21 +343,23 @@ export const overviewMinSpanDegrees = (zoom: number): number => {
  * The provinces whose Crown land this app can actually draw, and how much of
  * each one it draws.
  *
- * Four, at the time of writing: Alberta (the Green Area, plus Public Land Use
+ * Five, at the time of writing: Alberta (the Green Area, plus Public Land Use
  * Zones), Ontario (CLUPA General Use Areas), Saskatchewan (the provincial
- * forest) and Manitoba (the fifteen provincial forests). Those are the only
- * Canadian jurisdictions publishing a queryable open layer that delineates
- * land a camper may actually use — see COVERAGE_GAPS in
+ * forest), Manitoba (the fifteen provincial forests) and British Columbia (the
+ * provincial forests). Those are the only Canadian jurisdictions publishing a
+ * queryable open layer that delineates land a camper may actually use — see
+ * COVERAGE_GAPS in
  * `scripts/landSources.ts` for what each of the others publishes instead and
  * why it doesn't qualify.
  *
  * WHY THE VALUE IS NOT JUST `true`. Saskatchewan is mapped for the forested
  * centre and north and nothing else, because the only Crown land the province
- * publishes further south is leases and cottage lots. Manitoba is thinner
- * still. Filing either alongside Alberta as simply "covered" would make a
- * blank map read as "we looked and there is nothing", which is the exact
- * confusion this whole function exists to prevent — so they carry their own
- * caveats instead of a null.
+ * publishes further south is leases and cottage lots. Manitoba and British
+ * Columbia are thinner still as a share of what is really there. Filing any of
+ * them alongside Alberta as simply "covered" would make a blank map read as
+ * "we looked and there is nothing", which is the exact confusion this whole
+ * function exists to prevent — so they carry their own caveats instead of a
+ * null.
  *
  * The United States is not listed because its coverage is federal and
  * national: BLM and the US Forest Service publish one layer each covering
@@ -376,7 +378,13 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
   // its coverage is the weakest: fifteen provincial forests, about 22,000 km²
   // of a province that is roughly three quarters Crown land. Being listed
   // here at all would otherwise imply the province is done.
-  ['CA-MB', 'only the 15 provincial forests are mapped — most Manitoba Crown land is not']
+  ['CA-MB', 'only the 15 provincial forests are mapped — most Manitoba Crown land is not'],
+  // BC's caveat has to be the loudest of the lot. The provincial forests are
+  // a large area and a small fraction: British Columbia is roughly 95% Crown
+  // land, and everything outside a Forest Act designation is unmapped here.
+  // The province that this whole function was written about must not now be
+  // filed as "covered" on the strength of one layer.
+  ['CA-BC', 'only the provincial forests are mapped — most BC Crown land is not']
 ]);
 
 /**
@@ -390,6 +398,11 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
  * Crown land — was being shown an empty map and a chip reading "No mapped
  * public land in view". That is the app stating, wrongly and confidently, that
  * there is nowhere to camp.
+ *
+ * BC now draws its provincial forests, which is a real answer for part of the
+ * province and no answer at all for the rest of it, so the caveat below stays
+ * exactly as load-bearing as it was: partial coverage is the case this
+ * function is for, not the case it was fixed by.
  *
  * Pass the ISO code of the state or province under the middle of the screen.
  * Null means the usual message is safe to show.

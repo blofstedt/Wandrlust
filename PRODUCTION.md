@@ -55,10 +55,15 @@ No dataset here is survey-grade. Before launch, either license parcel data
 (Regrid, ~$80K/yr national) or keep the uncertainty band prominent. onX — the
 category benchmark — is only accurate to ~±20 ft with paid county data.
 
-**2. Canadian coverage is two provinces, not a country.**
-Ontario and Alberta. BC, Manitoba, Quebec, Atlantic and the territories have
-no usable open layer. `coverage_gaps` records this — make sure it's visible in
-the UI before Canadian users assume absence means "no public land".
+**2. Canadian coverage is five provinces, most of them partial, not a country.**
+Ontario (CLUPA General Use Areas, minus the Far North) and Alberta (the Green
+Area) are the well-covered two. British Columbia, Saskatchewan and Manitoba are
+drawn only where a provincial forest is designated — Crown land by definition,
+and a fraction of what each province actually holds; BC alone is roughly 95%
+Crown land. Quebec, Atlantic Canada and the territories have no usable open
+layer at all. `coverage_gaps` records all of this and `landDataGap` puts the
+caveat on screen — make sure it stays visible before Canadian users assume
+absence means "no public land".
 
 **3. No automated tests.**
 Verification has been targeted scripts (moook curve, hazard classification,

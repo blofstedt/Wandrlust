@@ -142,6 +142,23 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
     basis: "Manitoba's general Crown land rule, not a record for this forest"
   },
 
+  /*
+   * BC's rule is the Land Act permission policy, not the Forest Act
+   * designation the polygon comes from — the map draws provincial forest and
+   * the 14 days apply to Crown land generally. The 72-hour clause is the part
+   * campers get wrong: leaving for a night does not restart the count, and the
+   * province says so explicitly, so it is worth one of the four lines.
+   */
+  bc_provincial_forest: {
+    rules: [
+      '14 consecutive days in one spot',
+      'Away 72 hours before the count restarts',
+      'Free, no permit, on open Crown land',
+      'Tenures, parks and rec sites have their own rules'
+    ],
+    basis: "British Columbia's general Crown land rule, not a record for this forest"
+  },
+
   ontario_clupa_general_use: {
     rules: [
       '21 nights in one spot per calendar year',
