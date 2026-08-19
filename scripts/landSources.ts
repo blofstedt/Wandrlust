@@ -706,7 +706,7 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'CA-QC',
     region: 'Quebec',
     reason:
-      "UNRESOLVED, and the largest gap in the country by area — roughly 92% of Quebec is terres du domaine de l'État. The province's public land use plan (PATP) is the right layer and its ArcGIS service answers queries with attributes and no geometry at all, in either GeoJSON or Esri JSON: it is published for WMS. Until a service that returns polygons is found, Quebec draws nothing, and an empty Quebec means we cannot fetch the shapes — never that the land is not there."
+      "UNRESOLVED, and the largest gap in the country by area — roughly 92% of Quebec is terres du domaine de l'État. Two layers are right and neither can be read: the public land use plan (PATP) answers queries with attributes and no geometry at all, in GeoJSON or Esri JSON, because it is published for WMS; and DOMANIALITE, the ministry's own public-versus-private reference on the fish-and-wildlife server, answers a JSON request with an HTML page. Both are named, with the next steps, in the Quebec note in server/boundaryRoutes.ts. Until one of them serves polygons Quebec draws nothing — and an empty Quebec means we cannot fetch the shapes, never that the land is not there."
   },
   {
     jurisdiction: 'CA-PE',
