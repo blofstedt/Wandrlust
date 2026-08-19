@@ -211,7 +211,11 @@ npm run vapid    # generate push notification keys
 - **A change to what the map draws needs `BOUNDARY_DATA_EPOCH` bumped**
   (`src/services/boundaryService.ts`). Boundaries are cached twelve hours in
   memory, seven days on disk and six in the browser, so without it a fix is
-  invisible on every phone that has already looked at that ground.
+  invisible on every phone that has already looked at that ground. **Adding a
+  source counts.** This rule was written and then broken the same day: New
+  Brunswick and Nova Scotia shipped, drew perfectly in production, and were
+  invisible to the one person watching, because his phone still had a valid
+  answer from an hour before they existed.
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.

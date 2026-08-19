@@ -377,8 +377,18 @@ const CACHE_MAX_ENTRIES = 40;
  * the browser cache; it is part of the query string the disk key is built
  * from, which misses localforage; and the server ignores it entirely, so
  * nothing upstream is fragmented by it.
+ *
+ * ADDING A SOURCE COUNTS. It was written for a change in HOW the API chooses
+ * parcels and then forgotten the same day for a change in WHICH provinces it
+ * has any: New Brunswick and Nova Scotia went live and nobody who had already
+ * opened the map saw either of them, because their phones had a perfectly
+ * valid answer from an hour earlier that predated both. Any change to what the
+ * map can draw — a new source, a new filter, a different subset — is a bump.
+ *
+ *   2 → biggest-parcels-first, and Ontario stopped drawing as confetti
+ *   3 → New Brunswick and Nova Scotia Crown land
  */
-const BOUNDARY_DATA_EPOCH = '2';
+const BOUNDARY_DATA_EPOCH = '3';
 
 interface DiskEntry { at: number; collection: BoundaryCollection }
 
