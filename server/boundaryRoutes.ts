@@ -1244,6 +1244,13 @@ interface SourceResult {
    */
   timedOut?: boolean;
   /**
+   * The WFS answered, and the answer was bigger than we are willing to read.
+   *
+   * Also a question that can be made smaller — by asking for fewer of the
+   * biggest shapes — but only where the layer has an area column to rank by.
+   */
+  overBudget?: boolean;
+  /**
    * Where this answer came from.
    *
    * Reported in `meta` so the tile cache can be checked from outside without
@@ -1612,7 +1619,9 @@ const queryBoundarySourceOnce = async (
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
   recordLimit: number,
-  timeoutOverrideMs?: number
+  timeoutOverrideMs?: number,
+  /** How many of the biggest to ask a WFS for, when the first ask was too big. */
+  wideRecordsOverride?: number
 ): Promise<SourceResult> => {
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
 
@@ -1653,12 +1662,17 @@ const queryBoundarySourceOnce = async (
    * reason `overviewRecordLimit` does it: a wider view has room for fewer
    * distinguishable shapes, and every extra one here is a megabyte.
    */
-  const wfsRecordLimit = !wideForWfs
-    ? recordLimit
-    : span > 10 ? 15 : 40;
+  /*
+   * An override means the first ask came back too big, whatever the span was,
+   * so this one is the biggest-N ask too — a two-degree viewport over dense
+   * country can overflow exactly as a ten-degree one does.
+   */
+  const biggestFirst = wideForWfs || wideRecordsOverride != null;
+  const wfsRecordLimit =
+    wideRecordsOverride ?? (wideForWfs ? (span > 10 ? 10 : 20) : recordLimit);
 
   const requestUrl = isWfs
-    ? wfsQueryUrl(source, bbox, wfsRecordLimit, wideForWfs)
+    ? wfsQueryUrl(source, bbox, wfsRecordLimit, biggestFirst)
     : arcgisQueryUrl(source, bbox, simplifyDegrees, recordLimit);
 
   const controller = new AbortController();
@@ -1708,7 +1722,7 @@ const queryBoundarySourceOnce = async (
           `[boundaries] ${source.id}: response exceeded ${Math.round(budget / 1024 / 1024)}MB — ` +
             'a WFS cannot generalise, so this viewport is too much to ask it for.'
         );
-        return { features: [], ok: false, truncated: false };
+        return { features: [], ok: false, truncated: false, overBudget: true };
       }
       /*
        * SAY HOW BIG AND HOW SLOW, EVERY TIME.
@@ -1818,9 +1832,9 @@ const queryBoundarySourceOnce = async (
         typeof data?.numberReturned === 'number' &&
         data.numberMatched > data.numberReturned) ||
       features.length >= wfsRecordLimit ||
-      // The wide ask is a deliberate subset — the biggest shapes in view. It
-      // must never present itself as the whole picture.
-      wideForWfs;
+      // The biggest-N ask is a deliberate subset. It must never present
+      // itself as the whole picture.
+      biggestFirst;
 
     // The service answered with shapes and the geometry guard threw all of
     // them away — almost certainly a line layer being read as an area layer.
@@ -1871,6 +1885,39 @@ const queryBoundarySource = async (
   recordLimit: number
 ): Promise<SourceResult> => {
   const first = await queryBoundarySourceOnce(source, bbox, simplifyDegrees, recordLimit);
+
+  /*
+   * A WIDE WFS ASK THAT CAME BACK TOO BIG IS ASKED AGAIN, SMALLER.
+   *
+   * How many of the biggest forests fit inside the byte budget is not a number
+   * anyone can know in advance: it depends on how complicated the shapes under
+   * this particular viewport are, and the biggest shapes are the most
+   * complicated ones. Forty was measured to be too many for eight degrees of
+   * British Columbia; three might be too many somewhere else.
+   *
+   * So it converges instead of guessing — each attempt asks for a quarter of
+   * the last, twice — rather than give up and draw a blank province. The
+   * service is fast (sixteen megabytes in 1.2 seconds) and an over-budget read
+   * is abandoned the moment it crosses the line, so the ladder costs a second
+   * or two, not a timeout.
+   */
+  if (!first.ok && first.overBudget && source.protocol === 'wfs' && source.areaField) {
+    const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon);
+    let asked = span > 10 ? 10 : 20;
+    // A narrow viewport that overflowed was asking for everything in it, so
+    // the ladder starts from the biggest-N ask rather than from that.
+
+    let attempt = first;
+    for (let step = 0; step < 2 && attempt.overBudget; step += 1) {
+      asked = Math.max(3, Math.floor(asked / 4));
+      console.info(`[boundaries] ${source.id}: retrying with the ${asked} biggest in view`);
+      attempt = await queryBoundarySourceOnce(
+        source, bbox, simplifyDegrees, recordLimit, 8000, asked
+      );
+    }
+    return attempt;
+  }
+
   if (first.ok || !first.timedOut || recordLimit <= OVERVIEW_RETRY_RECORDS) return first;
 
   console.info(
