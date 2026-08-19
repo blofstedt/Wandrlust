@@ -2290,12 +2290,42 @@ const tileCachePut = async (
   }
 };
 
+/**
+ * ASK EACH SOURCE ABOUT ITS OWN GROUND, NOT ABOUT THE CONTINENT.
+ *
+ * A continental viewport was being sent to every service as a continental
+ * envelope, including to the ones that only hold one province. Ontario cannot
+ * have a General Use Area in Nevada, so the extra ninety degrees bought
+ * nothing — and it cost the thing that matters: the box the server has to
+ * think about, which is what decides whether it can sort at all. Clipped to
+ * Ontario's own extent the continental ask is twenty-one degrees, which that
+ * service sorts inside a couple of seconds, so the zoomed-out map gets the
+ * biggest areas in the province rather than the first eighty it was handed.
+ *
+ * It also tightens the cache: every viewport wider than a source now asks the
+ * same question about it, and hits the same row.
+ */
+const clipToExtent = (
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  extent: { minLat: number; minLon: number; maxLat: number; maxLon: number }
+) => ({
+  minLat: Math.max(bbox.minLat, extent.minLat),
+  minLon: Math.max(bbox.minLon, extent.minLon),
+  maxLat: Math.min(bbox.maxLat, extent.maxLat),
+  maxLon: Math.min(bbox.maxLon, extent.maxLon)
+});
+
 const cachedQuery = async (
   source: BoundarySource,
-  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  requestedBox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
   recordLimit: number
 ): Promise<SourceResult> => {
+  if (!overlaps(requestedBox, source.extent)) {
+    return { features: [], ok: true, truncated: false };
+  }
+  const bbox = clipToExtent(requestedBox, source.extent);
+
   const box = [bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon]
     .map((n) => n.toFixed(4))
     .join(',');
