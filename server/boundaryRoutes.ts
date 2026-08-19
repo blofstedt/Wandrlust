@@ -1898,6 +1898,44 @@ const wfsQueryUrl = (
  */
 const loggedWfsFields = new Set<string>();
 
+/**
+ * TEMPORARY — one more look for Quebec.
+ *
+ * `DOMANIALITE` is the word this whole search needed: Quebec's term for
+ * whether a piece of ground belongs to the public domain or a private one.
+ * The fish-and-wildlife ministry publishes a service by that name on a normal
+ * ArcGIS REST server, which is exactly what the public land use plan's
+ * WMS-only service could not be. Ask it what it holds.
+ *
+ * Out again the moment Quebec is either wired or written off for good.
+ */
+const DISCOVERY_ROOTS = [
+  'https://peche.faune.gouv.qc.ca/arcgis_webadaptor_prodc_10_9_1/rest/services/PRODC-E/DOMANIALITE/MapServer?f=json',
+  'https://peche.faune.gouv.qc.ca/arcgis_webadaptor_prodc_10_9_1/rest/services/PRODC-E?f=json'
+];
+
+let discoveryRun = false;
+
+const discoverCandidates = (): void => {
+  if (discoveryRun) return;
+  discoveryRun = true;
+  for (const root of DISCOVERY_ROOTS) {
+    fetch(root, { headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' } })
+      .then((r) => r.json())
+      .then((meta: any) => {
+        const layers = Array.isArray(meta?.layers)
+          ? meta.layers.map((l: any) => `${l.id}:${l.name}`).join(' | ')
+          : Array.isArray(meta?.services)
+            ? meta.services.map((sv: any) => `${sv.name}(${sv.type})`).join(' | ')
+            : 'none';
+        console.info(
+          `[discover] ${root} -> "${meta?.mapName ?? meta?.name ?? meta?.error?.message ?? '?'}" ${layers}`
+        );
+      })
+      .catch((err) => console.info(`[discover] ${root} -> unreachable: ${(err as Error).message}`));
+  }
+};
+
 /** Sources whose area column has already had a value printed. */
 const loggedAreaSample = new Set<string>();
 
@@ -2771,6 +2809,8 @@ export const registerBoundaryRoutes = (app: Express): void => {
      * point is to show that there IS public land over there — and pays for it
      * by returning far fewer, far coarser polygons.
      */
+    discoverCandidates();
+
     const isOverview = req.query.detail === 'overview';
     const minAreaSqKm = isOverview
       ? Math.max(0, Number(req.query.minAreaSqKm) || 0)
