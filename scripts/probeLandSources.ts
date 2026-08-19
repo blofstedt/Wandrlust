@@ -36,6 +36,10 @@ export interface ProbeResult {
   layerName?: string;
   geometryType?: string;
   serverMaxRecordCount?: number;
+  /** What the layer actually calls its attributes. */
+  fields?: string[];
+  /** How the spec labels the first feature — the guessed name fields, tested. */
+  sample?: string;
   missingFields: string[];
   matched?: number;
   total?: number;
@@ -67,8 +71,121 @@ const countUrl = (spec: LandSourceSpec, where: string): string => {
   return `${spec.url}?${params.toString()}`;
 };
 
+/**
+ * The same four questions, asked of an OGC service instead of an ArcGIS one.
+ *
+ * A WFS has no layer-metadata document to read and no `returnCountOnly`, so
+ * this asks it for ONE feature and reads the answer: `numberMatched` says how
+ * many the layer holds, the geometry says whether they are areas, and the
+ * property names are the thing that matters most — the spec has to guess field
+ * names from a distance, and a name field guessed wrong is the silent failure
+ * that had all fifteen Manitoba forests labelled "Provincial Forest".
+ */
+const probeWfsSource = async (spec: LandSourceSpec): Promise<ProbeResult> => {
+  const result: ProbeResult = { id: spec.id, ok: false, missingFields: [], problems: [] };
+
+  const url = `${spec.url}${spec.url.includes('?') ? '&' : '?'}count=1`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  let body: string;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: 'application/geo+json, application/json' },
+      signal: controller.signal
+    });
+    body = await res.text();
+    if (!res.ok) {
+      result.problems.push(`HTTP ${res.status}: ${body.slice(0, 200).replace(/\s+/g, ' ')}`);
+      return result;
+    }
+  } catch (err) {
+    result.problems.push(`unreachable: ${(err as Error).message}`);
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    // GeoServer reports a bad feature type as an XML ExceptionReport with a
+    // 200, which is exactly the silent-empty shape this file exists to catch.
+    result.problems.push(
+      `answered with something that is not JSON — probably an OGC exception: ` +
+        body.slice(0, 300).replace(/\s+/g, ' ')
+    );
+    return result;
+  }
+
+  if (!Array.isArray(data?.features)) {
+    result.problems.push(
+      `no feature array in the response (keys: ${Object.keys(data ?? {}).join(', ') || 'none'})`
+    );
+    return result;
+  }
+
+  result.layerName = String(data.name ?? spec.url.match(/typeNames?=([^&]+)/i)?.[1] ?? 'unnamed');
+  if (typeof data.numberMatched === 'number') result.total = data.numberMatched;
+  result.matched = result.total;
+
+  const sample = data.features[0];
+  if (!sample) {
+    result.problems.push('the layer answered with zero features — treat it as UNCONFIRMED');
+    return result;
+  }
+
+  result.geometryType = String(sample?.geometry?.type ?? 'none');
+  if (!/^(Multi)?Polygon$/.test(result.geometryType)) {
+    result.problems.push(
+      `geometry is ${result.geometryType}; this pipeline stores MultiPolygon only`
+    );
+  }
+
+  result.fields = Object.keys(sample?.properties ?? {});
+  if (result.fields.length === 0) result.problems.push('features carry no attributes at all');
+
+  // Does the spec's own naming actually find anything, or does every feature
+  // fall through to its bare fallback?
+  const named = spec.name(sample.properties ?? {});
+  const designation = spec.designation(sample.properties ?? {});
+  if (!named) result.problems.push('name() returned nothing for the sample feature');
+
+  // The coordinates say whether the CRS request was honoured. Degrees inside
+  // the spec\'s own bbox, or this is answering in a projection.
+  let node: any = sample?.geometry?.coordinates;
+  while (Array.isArray(node) && Array.isArray(node[0])) node = node[0];
+  if (Array.isArray(node) && typeof node[0] === 'number') {
+    const [x, y] = node;
+    const inBox =
+      x >= spec.bbox[0] - 3 && x <= spec.bbox[2] + 3 && y >= spec.bbox[1] - 3 && y <= spec.bbox[3] + 3;
+    if (!inBox) {
+      result.problems.push(
+        `first vertex is ${x}, ${y} — not longitude/latitude inside this source's bbox`
+      );
+    }
+  }
+
+  result.sample = `${named} · ${designation}`;
+  result.ok = result.problems.length === 0;
+  return result;
+};
+
 export const probeSource = async (spec: LandSourceSpec): Promise<ProbeResult> => {
   const result: ProbeResult = { id: spec.id, ok: false, missingFields: [], problems: [] };
+
+  /*
+   * A file source has no layer metadata to interrogate. When it is a WFS —
+   * which is how British Columbia publishes — the service can still answer all
+   * four questions from a single feature; when it is a plain download or a
+   * path on disk, there is nothing to ask and the seed run itself is the check.
+   */
+  if (spec.kind === 'geojson') {
+    if (/service=wfs/i.test(spec.url)) return probeWfsSource(spec);
+    result.problems.push('file source — not probed here; run the seeder with --dry-run instead');
+    return result;
+  }
 
   // 1. The layer itself.
   const meta = await getJson(`${layerUrl(spec.url)}?f=json`);
@@ -163,6 +280,8 @@ const format = (r: ProbeResult): string => {
     );
   }
   if (r.serverMaxRecordCount) bits.push(`cap ${r.serverMaxRecordCount}`);
+  if (r.sample) bits.push(`first feature reads "${r.sample}"`);
+  if (r.fields?.length) bits.push(`fields ${r.fields.join(', ')}`);
 
   const detail = bits.length ? `\n        ${bits.join(' · ')}` : '';
   const problems = r.problems.map((p) => `\n        ! ${p}`).join('');
@@ -251,4 +370,4 @@ if (process.argv[1] && process.argv[1].includes('probeLandSources')) {
     console.error('Probe failed:', err);
     process.exit(1);
   });
-}
+}

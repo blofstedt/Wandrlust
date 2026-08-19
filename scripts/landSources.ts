@@ -225,6 +225,74 @@ export const LAND_SOURCES: LandSourceSpec[] = [
    * coverage, because national coverage does not currently exist to be had.
    */
   {
+    /**
+     * BRITISH COLUMBIA — provincial forest, read over WFS rather than ArcGIS.
+     *
+     * The province is roughly 95% Crown land and was drawing as an empty map,
+     * which is this app's one forbidden failure. What it publishes openly is
+     * not a campable-land layer and never has been: ParcelMap BC is a cadastral
+     * fabric of TITLED parcels and SURVEYED Crown parcels — most BC Crown land
+     * is in neither category — and TANTALIS publishes Crown TENURES, which are
+     * encumbrances, i.e. exactly the land a camper should not plan on. Both
+     * stay rejected in CANDIDATE_SOURCES.
+     *
+     * FADM_PROV_FOREST is land designated Provincial Forest by Order in Council
+     * under the Forest Act. It is Crown land by definition, so it understates
+     * BC — badly, and knowingly — rather than overstating it. Same claim, same
+     * shape, as the Saskatchewan and Manitoba provincial forests above.
+     *
+     * `kind: 'geojson'` because DataBC serves WFS, not ArcGIS: one GetFeature
+     * returns the whole layer as GeoJSON, which is what the file path already
+     * does. Mirrors `bc_provincial_forest` in server/boundaryRoutes.ts, which
+     * queries the same feature type per viewport. If you change one, change
+     * both.
+     */
+    id: 'bc_provincial_forest',
+    label: 'BC Crown Land (Provincial Forest)',
+    attribution: 'Government of British Columbia, DataBC',
+    licence: 'Open Government Licence – British Columbia',
+    jurisdiction: 'CA-BC',
+    kind: 'geojson',
+    url:
+      'https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&version=2.0.0&request=GetFeature' +
+      '&typeNames=WHSE_ADMIN_BOUNDARIES.FADM_PROV_FOREST&outputFormat=application/json' +
+      '&srsName=urn:ogc:def:crs:OGC:1.3:CRS84',
+    where: '',
+    outFields: '',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 0,
+    bbox: [-139.1, 48.2, -114.0, 60.05],
+    /*
+     * The layer's key field has not been read from here, so this takes the
+     * first id-shaped property and falls back to the values themselves. An
+     * externalId that collided would make the seeder DROP forests as
+     * duplicates, which is why the fallback is the whole property bag rather
+     * than a name that several blocks could share.
+     */
+    externalId: (p) => {
+      const key = Object.keys(p ?? {}).find((k) => /^objectid$|_id$/i.test(k) && p[k] != null);
+      return key ? String(p[key]) : Object.values(p ?? {}).join('|').slice(0, 120);
+    },
+    name: (p) => p.PROV_FOREST_NAME || p.FOREST_NAME || p.NAME || 'Provincial Forest',
+    designation: () => 'British Columbia provincial forest',
+    campingBasis: () =>
+      'Land designated Provincial Forest under the Forest Act, which is provincial Crown land. ' +
+      'British Columbia allows recreational camping on Crown land for up to 14 consecutive days ' +
+      'under Land Act permission policy — that is the province\'s general rule, not anything this ' +
+      'designation states. Tenured land, parks, recreation sites and areas closed by order sit ' +
+      'inside these polygons and are not subtracted from them.',
+    stayLimitDays: () => 14,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'WFS, not ArcGIS: the URL is a whole-layer GetFeature and the response is large — expect a long download, ' +
+      'and if the service will not serve it in one piece, download the dataset from the BC Data Catalogue and point ' +
+      '`url` at the file on disk, which this fetcher also accepts. Provincial forest is a small fraction of BC Crown ' +
+      'land; CA-BC stays in COVERAGE_GAPS for the rest. Endpoint assembled from DataBC WFS conventions and this ' +
+      'dataset\'s object name — run `npm run probe -- --source=bc_provincial_forest` before trusting it.'
+  },
+  {
     id: 'ontario_clupa_general_use',
     label: 'Ontario Crown Land — General Use Area',
     attribution: "Land Information Ontario, King's Printer for Ontario",
@@ -535,16 +603,16 @@ export const CANDIDATE_SOURCES: {
     appearsToBe:
       'BC Geographic Warehouse: ParcelMap BC (cadastral fabric), TANTALIS Crown tenures, protected areas.',
     mustConfirm:
-      'Tenures are encumbrances and ParcelMap disclaims legal-boundary authority. Confirm whether the BCGW publishes Crown land ownership as a queryable layer rather than a download.'
+      'Tenures are encumbrances and ParcelMap disclaims legal-boundary authority — both still rejected. The question is now narrower: BC\'s provincial forests ARE drawn (see bc_provincial_forest in LAND_SOURCES, about a fraction of BC Crown land), so what is still wanted is a queryable layer of Crown land OWNERSHIP outside the Forest Act designations. ParcelMap BC\'s OWNER_TYPE = \'Crown Provincial\' is the obvious next candidate and is a trap in its own right: ParcelMap only covers surveyed parcels, so filtering it would draw scattered surveyed lots and imply the unsurveyed Crown land between them is not Crown land.'
   }
 ];
 
 export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: string }[] = [
   {
     jurisdiction: 'CA-BC',
-    region: 'British Columbia',
+    region: 'British Columbia (outside the provincial forests)',
     reason:
-      'No open layer of campable Crown land. ParcelMap BC is a cadastral fabric (and disclaims legal-boundary authority); TANTALIS publishes Crown TENURES, which are encumbrances — the opposite of freely campable land.'
+      'THINLY COVERED. Land designated Provincial Forest under the Forest Act is now drawn, and it is the only BC layer here: it is Crown land by definition, so it understates the province rather than overstating it. British Columbia is roughly 95% Crown land and provincial forest is a fraction of that, so most of the province still draws blank — including almost everything above the forest designations and along the coast. That blankness is missing data, never missing land. The rest of what BC publishes openly remains inadmissible: ParcelMap BC is a cadastral fabric of titled and surveyed parcels that disclaims legal-boundary authority, and TANTALIS publishes Crown TENURES, which are encumbrances — the opposite of freely campable land.'
   },
   {
     jurisdiction: 'CA-MB',
@@ -593,4 +661,4 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
       'camping rules still vary by state and are in no layer here, so a PAD-US parcel ' +
       'is the weakest kind of lead this app produces.'
   }
-];
+];

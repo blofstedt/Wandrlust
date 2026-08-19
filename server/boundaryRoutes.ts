@@ -232,9 +232,39 @@ interface BoundarySource {
   id: string;
   label: string;
   attribution: string;
+  /**
+   * How this service is asked.
+   *
+   * `arcgis` (the default) is what every source here was: an ArcGIS REST
+   * `/query` endpoint that takes an envelope, a `where` clause and — the part
+   * that matters most — `maxAllowableOffset`, so the SERVER generalises the
+   * geometry before it sends it.
+   *
+   * `wfs` is an OGC Web Feature Service, which is how British Columbia
+   * publishes. It has no equivalent of `maxAllowableOffset`: a WFS sends the
+   * full-resolution shape or nothing. That difference is the reason for
+   * `maxBytes` and for the local generalisation pass below — see the BC source
+   * for what it costs.
+   */
+  protocol?: 'arcgis' | 'wfs';
   url: string;
-  where: string;
-  outFields: string;
+  /** ArcGIS only. The layer filter. */
+  where?: string;
+  /** ArcGIS only. Which attributes to return. */
+  outFields?: string;
+  /** WFS only. The published feature type, e.g. `WHSE_ADMIN_BOUNDARIES.X`. */
+  typeName?: string;
+  /**
+   * WFS only. Give up on a response bigger than this rather than parse it.
+   *
+   * A WFS cannot generalise, and a bbox filter SELECTS features without
+   * CLIPPING them — so one query that happens to touch a province-sized
+   * multipolygon can return tens of megabytes. This function has 30 seconds
+   * and a shared lambda to live in, so past this budget the source reports
+   * itself unavailable, which is honest, instead of stalling the whole
+   * response for every other source too.
+   */
+  maxBytes?: number;
   confidence: 'designated_general_use' | 'managing_agency' | 'managed_zone';
   /** How much to trust the polygon's edges. Never survey-grade. */
   edgeAccuracy: 'generalised' | 'administrative' | 'cadastral_derived';
@@ -333,6 +363,83 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     name: (p) => pick(p, 'forestname', 'FORESTNAME') ?? 'National Forest',
     designation: () => 'US Forest Service',
     extent: CONUS
+  },
+  {
+    /**
+     * BRITISH COLUMBIA — the provincial forest, and the first source here that
+     * is not an ArcGIS service.
+     *
+     * BC was the province this app was worst at. It is roughly 95% Crown land
+     * and it drew as an empty map with a chip reading "No mapped public land in
+     * view" — the app stating, confidently and wrongly, that there is nowhere
+     * to camp in British Columbia. That is the exact failure `landDataGap` in
+     * `src/config/coverage.ts` exists to prevent, and BC is the province it was
+     * written about.
+     *
+     * WHY THIS LAYER AND NOT ANOTHER. The two BC layers people reach for first
+     * are both traps, and both are recorded in CANDIDATE_SOURCES with the
+     * reasons: ParcelMap BC is a cadastral fabric that covers TITLED parcels
+     * and SURVEYED Crown parcels, so most of the province's Crown land is
+     * simply absent from it, and it disclaims legal-boundary authority itself.
+     * TANTALIS publishes Crown TENURES, which are encumbrances — land somebody
+     * else already has rights to, the opposite of what a camper is looking for.
+     *
+     * FADM_PROV_FOREST is forest land designated Provincial Forest by Order in
+     * Council under the Forest Act. Everything inside it is provincial Crown
+     * land, which makes it a CONSERVATIVE answer rather than a complete one:
+     * the polygons understate BC's Crown land badly — most of the province is
+     * Crown land outside a provincial forest — but they do not overstate it,
+     * and understating is the direction this app is allowed to be wrong in.
+     * It is the same claim already made for Saskatchewan and Manitoba, whose
+     * provincial forests are here for the same reason, and CA-BC stays in
+     * COVERAGE_GAPS saying loudly that the rest is unmapped.
+     *
+     * WHAT THE DESIGNATION DOES NOT SAY. Nothing about camping. The 14-day
+     * allowance is BC's general Land Act policy for Crown land, not a property
+     * of this layer — hence `agency_policy_inference` — and a provincial
+     * forest contains tenures, woodlots, recreation sites and areas closed by
+     * order, none of which are subtracted here.
+     *
+     * NOT YET EXERCISED AGAINST THE LIVE SERVICE. The agent sandbox cannot
+     * reach gov.bc.ca, so this endpoint was assembled from DataBC's published
+     * WFS conventions and this dataset's own object name rather than confirmed
+     * by a call. It fails in the safe direction — an unreachable or mis-named
+     * feature type reports the source unavailable instead of drawing an empty
+     * province, the axis-order guard rejects a response it cannot place in BC
+     * rather than drawing it in the wrong hemisphere, and the geometry guard
+     * drops anything that is not a polygon. Before trusting it, run
+     * `npm run probe -- --source=bc_provincial_forest`, and check
+     * `meta.sources[]` on a real BC viewport in production.
+     */
+    id: 'bc_provincial_forest',
+    label: 'BC Crown Land (Provincial Forest)',
+    attribution: 'Government of British Columbia, DataBC — Open Government Licence – British Columbia',
+    protocol: 'wfs',
+    url: 'https://openmaps.gov.bc.ca/geo/pub/ows',
+    typeName: 'WHSE_ADMIN_BOUNDARIES.FADM_PROV_FOREST',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    // The layer's own field names are unread from here, so this asks the
+    // properties what they have rather than guessing — the Manitoba lesson,
+    // where fifteen forests all came back as the bare fallback.
+    name: (p) => nameLike(p, 'PROV_FOREST_NAME', 'FOREST_NAME', 'NAME') ?? 'Provincial Forest',
+    designation: () => 'British Columbia provincial forest',
+    extent: { minLat: 48.2, minLon: -139.1, maxLat: 60.05, maxLon: -114.0 },
+    /**
+     * Longer than the 6s default, and deliberately not much longer.
+     *
+     * A WFS sends full-resolution geometry, so BC's first (uncached) answer is
+     * genuinely more work than an ArcGIS query that generalises before it
+     * replies. But the whole response waits for the slowest source, and
+     * Saskatchewan already taught this file that a source which cannot answer
+     * should fail fast rather than be waited on: at 12s it failed exactly as it
+     * had at 6s, and all the extra time bought was a longer stall. 10s is the
+     * compromise — enough for a cold GeoServer, short enough to leave room
+     * inside the 30s function limit for everything else on screen.
+     */
+    timeoutMs: 10000,
+    maxBytes: 12 * 1024 * 1024
   },
   {
     // Verified: GWA_CODE 'GLC_G' is the Green Area — Alberta's Crown land.
@@ -1103,22 +1210,20 @@ interface SourceResult {
 const precisionFor = (simplifyDegrees: number): number =>
   Math.min(5, Math.max(3, Math.ceil(-Math.log10(Math.max(simplifyDegrees, 1e-6))) + 1));
 
-const queryBoundarySourceOnce = async (
+/** The `/query` call for an ArcGIS source. */
+const arcgisQueryUrl = (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   simplifyDegrees: number,
-  recordLimit: number,
-  timeoutOverrideMs?: number
-): Promise<SourceResult> => {
-  if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
-
+  recordLimit: number
+): string => {
   const params = new URLSearchParams({
-    where: source.where,
+    where: source.where ?? '1=1',
     geometry: `${bbox.minLon},${bbox.minLat},${bbox.maxLon},${bbox.maxLat}`,
     geometryType: 'esriGeometryEnvelope',
     inSR: '4326',
     spatialRel: 'esriSpatialRelIntersects',
-    outFields: source.outFields,
+    outFields: source.outFields ?? '*',
     returnGeometry: 'true',
     outSR: '4326',
     /*
@@ -1137,6 +1242,311 @@ const queryBoundarySourceOnce = async (
     resultRecordCount: String(recordLimit),
     f: 'geojson'
   });
+  return `${source.url}?${params.toString()}`;
+};
+
+/* -------------------------------------------------------------------------- */
+/* Asking a WFS instead of an ArcGIS service                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * EVERY ARCGIS CONVENIENCE THIS FILE LEANS ON IS MISSING FROM A WFS.
+ *
+ * `maxAllowableOffset` generalises server-side; `geometryPrecision` trims the
+ * digits; `resultRecordCount` caps the answer; and an Esri error arrives as a
+ * tidy JSON `error` key. A WFS has one of those four — a feature count — and
+ * for the other three the work moves here:
+ *
+ *   * the response is read against a byte budget, because a bbox filter on a
+ *     WFS SELECTS features without CLIPPING them, so a single query can drag
+ *     back a province-wide multipolygon at full survey resolution;
+ *   * the geometry is generalised locally, to the same tolerance the ArcGIS
+ *     sources are asked to generalise to, before anything downstream — the
+ *     merge, the water cut, the response — has to carry it;
+ *   * the coordinates are checked before they are trusted, because axis order
+ *     is the one thing OGC services genuinely disagree about.
+ *
+ * None of it is BC-specific. It is what any OGC source added later will need.
+ */
+
+/**
+ * Douglas–Peucker on one ring, iteratively.
+ *
+ * Iteratively, not recursively, because these rings arrive ungeneralised: a
+ * provincial forest boundary can be tens of thousands of vertices, and the
+ * recursive form of this algorithm is a stack overflow waiting for the one
+ * input nobody tested with. A crash here would take the whole API down, not
+ * just this source.
+ */
+const simplifyRing = (ring: number[][], tolerance: number): number[][] => {
+  if (!Array.isArray(ring) || ring.length <= 4 || tolerance <= 0) return ring;
+
+  const keep = new Uint8Array(ring.length);
+  keep[0] = 1;
+  keep[ring.length - 1] = 1;
+
+  const stack: [number, number][] = [[0, ring.length - 1]];
+  const toleranceSq = tolerance * tolerance;
+
+  while (stack.length) {
+    const [first, last] = stack.pop() as [number, number];
+    if (last <= first + 1) continue;
+
+    const [ax, ay] = ring[first];
+    const [bx, by] = ring[last];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lengthSq = dx * dx + dy * dy;
+
+    let farthest = -1;
+    let farthestSq = toleranceSq;
+
+    for (let i = first + 1; i < last; i += 1) {
+      const [px, py] = ring[i];
+      let distSq: number;
+      if (lengthSq === 0) {
+        distSq = (px - ax) ** 2 + (py - ay) ** 2;
+      } else {
+        // Perpendicular distance to the segment, squared — no square roots in
+        // the inner loop of something that runs over a million vertices.
+        const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSq));
+        distSq = (px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2;
+      }
+      if (distSq > farthestSq) {
+        farthest = i;
+        farthestSq = distSq;
+      }
+    }
+
+    if (farthest > 0) {
+      keep[farthest] = 1;
+      stack.push([first, farthest], [farthest, last]);
+    }
+  }
+
+  const kept: number[][] = [];
+  for (let i = 0; i < ring.length; i += 1) if (keep[i]) kept.push(ring[i]);
+  return kept;
+};
+
+/**
+ * The ring as its own bounding box.
+ *
+ * The fallback for a shape that the tolerance dissolves entirely. Dropping it
+ * instead would be a parcel silently disappearing, which this file has a rule
+ * against; drawing a box is honest at a zoom where the real outline is smaller
+ * than the generalisation itself.
+ */
+const ringBox = (ring: number[][]): number[][] => {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const point of ring) {
+    if (!Array.isArray(point)) continue;
+    if (point[0] < minX) minX = point[0];
+    if (point[0] > maxX) maxX = point[0];
+    if (point[1] < minY) minY = point[1];
+    if (point[1] > maxY) maxY = point[1];
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return ring;
+  return [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY], [minX, minY]];
+};
+
+/**
+ * What the ArcGIS sources get for free: a shape generalised to the tolerance
+ * this zoom can show, with the digits below it thrown away.
+ */
+const generaliseGeometry = (geometry: any, tolerance: number, precision: number): any => {
+  const factor = 10 ** precision;
+  const round = (v: number): number => Math.round(v * factor) / factor;
+
+  const ring = (input: any): number[][] | null => {
+    if (!Array.isArray(input) || input.length < 4) return null;
+    let simplified = simplifyRing(input as number[][], tolerance);
+    if (simplified.length < 4) simplified = ringBox(input as number[][]);
+
+    const rounded: number[][] = [];
+    for (const point of simplified) {
+      if (!Array.isArray(point) || point.length < 2) continue;
+      const next = [round(point[0]), round(point[1])];
+      const last = rounded[rounded.length - 1];
+      // Rounding lands neighbouring vertices on the same spot. A duplicated
+      // point is a zero-length segment, which some polygon maths treats as a
+      // degenerate ring — cheaper to drop it here than to debug it there.
+      if (!last || last[0] !== next[0] || last[1] !== next[1]) rounded.push(next);
+    }
+    if (rounded.length < 4) return ringBox(input as number[][]);
+
+    // Rounding can also unclose the ring. Close it again.
+    const first = rounded[0];
+    const final = rounded[rounded.length - 1];
+    if (first[0] !== final[0] || first[1] !== final[1]) rounded.push([first[0], first[1]]);
+    return rounded;
+  };
+
+  const polygon = (rings: any): number[][][] | null => {
+    if (!Array.isArray(rings) || rings.length === 0) return null;
+    const outer = ring(rings[0]);
+    if (!outer) return null;
+    const holes = rings.slice(1).map(ring).filter(Boolean) as number[][][];
+    return [outer, ...holes];
+  };
+
+  if (geometry?.type === 'Polygon') {
+    const rings = polygon(geometry.coordinates);
+    return rings ? { type: 'Polygon', coordinates: rings } : null;
+  }
+  if (geometry?.type === 'MultiPolygon') {
+    const parts = (geometry.coordinates ?? []).map(polygon).filter(Boolean) as number[][][][];
+    return parts.length ? { type: 'MultiPolygon', coordinates: parts } : null;
+  }
+  return geometry;
+};
+
+/**
+ * Prove the coordinates are longitude-then-latitude before drawing them.
+ *
+ * THE ONE THING OGC SERVICES DISAGREE ABOUT. WFS 2.0 with `EPSG:4326` means
+ * latitude first to the specification and longitude first to a good deal of
+ * software, and a server that quietly ignores `srsName` answers in its own
+ * projection — for a BC service, metres in BC Albers. The request below asks
+ * in CRS84, which is unambiguous, and this checks that the answer honoured it.
+ *
+ * A swap is corrected. Anything else is REJECTED, not drawn: a polygon in the
+ * wrong hemisphere would paint public land across the Indian Ocean, and metres
+ * read as degrees would paint it nowhere at all. Both are worse than a source
+ * that says it is unavailable.
+ */
+const orientToLonLat = (
+  features: any[],
+  extent: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  sourceId: string
+): any[] | null => {
+  const sample = (() => {
+    for (const feature of features) {
+      let node: any = feature?.geometry?.coordinates;
+      while (Array.isArray(node) && Array.isArray(node[0])) node = node[0];
+      if (Array.isArray(node) && typeof node[0] === 'number' && typeof node[1] === 'number') {
+        return node as number[];
+      }
+    }
+    return null;
+  })();
+  if (!sample) return features;
+
+  // Generous slack: a parcel may legitimately straddle the edge of the extent
+  // we declared for it, and this test only has to tell a hemisphere from a
+  // hemisphere.
+  const inside = (lon: number, lat: number): boolean =>
+    lon >= extent.minLon - 3 && lon <= extent.maxLon + 3 &&
+    lat >= extent.minLat - 3 && lat <= extent.maxLat + 3;
+
+  if (inside(sample[0], sample[1])) return features;
+
+  if (inside(sample[1], sample[0])) {
+    console.info(`[boundaries] ${sourceId}: response was latitude-first — swapping axes.`);
+    const swap = (node: any): any =>
+      Array.isArray(node[0])
+        ? node.map(swap)
+        : [node[1], node[0], ...node.slice(2)];
+    return features.map((feature) => ({
+      ...feature,
+      geometry: feature?.geometry?.coordinates
+        ? { ...feature.geometry, coordinates: swap(feature.geometry.coordinates) }
+        : feature.geometry
+    }));
+  }
+
+  console.warn(
+    `[boundaries] ${sourceId}: coordinates are not degrees in this extent ` +
+      `(first vertex ${sample[0]}, ${sample[1]}) — refusing to draw them.`
+  );
+  return null;
+};
+
+/**
+ * Read a response body, giving up past a byte budget.
+ *
+ * The budget is on the wire, not on the parse: `JSON.parse` of forty megabytes
+ * is a second of blocked event loop and a heap spike in a function shared with
+ * every other request in flight. Stopping while it is still bytes is cheap.
+ */
+// `Response` in this file is Express's, imported at the top — this is the
+// fetch one.
+type FetchResponse = Awaited<ReturnType<typeof fetch>>;
+
+const readBodyWithin = async (
+  response: FetchResponse,
+  maxBytes: number
+): Promise<string | null> => {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const text = await response.text();
+    return text.length > maxBytes ? null : text;
+  }
+
+  const decoder = new TextDecoder();
+  let out = '';
+  let total = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    out += decoder.decode(value, { stream: true });
+  }
+  return out + decoder.decode();
+};
+
+/** The GetFeature call for a WFS source. */
+const wfsQueryUrl = (
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  recordLimit: number
+): string => {
+  /*
+   * CRS84 RATHER THAN EPSG:4326, IN BOTH DIRECTIONS.
+   *
+   * `urn:ogc:def:crs:OGC:1.3:CRS84` is longitude-then-latitude by definition,
+   * where plain `EPSG:4326` is latitude-first to the WFS 2.0 specification and
+   * longitude-first to a lot of the software implementing it. Naming CRS84
+   * takes the argument off the table for the bbox we send AND the coordinates
+   * we get back. `orientToLonLat` still checks, because "should" is not "did".
+   */
+  const CRS84 = 'urn:ogc:def:crs:OGC:1.3:CRS84';
+  const params = new URLSearchParams({
+    service: 'WFS',
+    version: '2.0.0',
+    request: 'GetFeature',
+    // `typeNames` is the 2.0.0 spelling; GeoServer accepts the older
+    // `typeName` too, and DataBC's own examples use it.
+    typeNames: source.typeName ?? '',
+    outputFormat: 'application/json',
+    srsName: CRS84,
+    bbox: `${bbox.minLon},${bbox.minLat},${bbox.maxLon},${bbox.maxLat},${CRS84}`,
+    count: String(recordLimit)
+  });
+  return `${source.url}?${params.toString()}`;
+};
+
+const queryBoundarySourceOnce = async (
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number,
+  recordLimit: number,
+  timeoutOverrideMs?: number
+): Promise<SourceResult> => {
+  if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
+
+  const isWfs = source.protocol === 'wfs';
+  const requestUrl = isWfs
+    ? wfsQueryUrl(source, bbox, recordLimit)
+    : arcgisQueryUrl(source, bbox, simplifyDegrees, recordLimit);
 
   const controller = new AbortController();
   // One unresponsive service used to hold the whole response for nine seconds.
@@ -1149,8 +1559,11 @@ const queryBoundarySourceOnce = async (
   }, timeoutMs);
 
   try {
-    const response = await fetch(`${source.url}?${params.toString()}`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' },
+    const response = await fetch(requestUrl, {
+      headers: {
+        Accept: isWfs ? 'application/geo+json, application/json' : 'application/json',
+        'User-Agent': 'Wandrlust/1.0'
+      },
       signal: controller.signal
     });
 
@@ -1164,7 +1577,36 @@ const queryBoundarySourceOnce = async (
       return { features: [], ok: false, truncated: false };
     }
 
-    const data: any = await response.json();
+    /*
+     * A WFS body is read against a budget and parsed here rather than by
+     * `response.json()`, because a GetFeature answer has no ceiling on its
+     * size — see `readBodyWithin`. A GeoServer failure also arrives as an XML
+     * ExceptionReport rather than as JSON, so a parse error on a 200 is a
+     * failed query, not a bug, and is reported as one.
+     */
+    let data: any;
+    if (isWfs) {
+      const budget = source.maxBytes ?? 8 * 1024 * 1024;
+      const body = await readBodyWithin(response, budget);
+      if (body === null) {
+        console.warn(
+          `[boundaries] ${source.id}: response exceeded ${Math.round(budget / 1024 / 1024)}MB — ` +
+            'a WFS cannot generalise, so this viewport is too much to ask it for.'
+        );
+        return { features: [], ok: false, truncated: false };
+      }
+      try {
+        data = JSON.parse(body);
+      } catch {
+        console.warn(
+          `[boundaries] ${source.id}: answered 200 with something that is not JSON ` +
+            `(starts: ${body.slice(0, 120).replace(/\s+/g, ' ')})`
+        );
+        return { features: [], ok: false, truncated: false };
+      }
+    } else {
+      data = await response.json();
+    }
 
     // ArcGIS reports failures as HTTP 200 with an `error` key. Treating that
     // as an empty result would silently hide land, so it is a hard failure.
@@ -1184,7 +1626,28 @@ const queryBoundarySourceOnce = async (
     }
 
     const returned = data.features.length;
-    const features = data.features
+
+    /*
+     * Everything an ArcGIS source got from the server, done here instead: the
+     * coordinates are checked before they are believed, then generalised to
+     * the tolerance this zoom can show. Rejecting is a hard failure — a shape
+     * we cannot place in the right hemisphere must never reach the map.
+     */
+    let incoming: any[] = data.features;
+    if (isWfs) {
+      const oriented = orientToLonLat(incoming, source.extent, source.id);
+      if (!oriented) return { features: [], ok: false, truncated: false };
+      const tolerance = simplifyDegrees;
+      const precision = precisionFor(simplifyDegrees);
+      incoming = oriented
+        .map((f: any) => {
+          const geometry = generaliseGeometry(f?.geometry, tolerance, precision);
+          return geometry ? { ...f, geometry } : null;
+        })
+        .filter(Boolean) as any[];
+    }
+
+    const features = incoming
       // Polygons only. Several government services publish a boundary as a
       // LINE layer sitting next to the area layer, and a line drawn in the
       // public-land style would read as a sliver of campable land that isn't
@@ -1213,6 +1676,11 @@ const queryBoundarySourceOnce = async (
     const truncated =
       data?.exceededTransferLimit === true ||
       data?.properties?.exceededTransferLimit === true ||
+      // A WFS says so arithmetically: it reports how many features matched
+      // the filter alongside how many it actually sent.
+      (typeof data?.numberMatched === 'number' &&
+        typeof data?.numberReturned === 'number' &&
+        data.numberMatched > data.numberReturned) ||
       features.length >= recordLimit;
 
     // The service answered with shapes and the geometry guard threw all of

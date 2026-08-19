@@ -178,8 +178,16 @@ npm run vapid    # generate push notification keys
   "The boundaries disappeared" is usually this.
 - **Coverage is CONUS + Canada only.** Outside it, the map greys out and queries
   are skipped. That's deliberate.
-- **Canadian boundary data is Ontario and Alberta only.** `coverage_gaps` records
-  the rest. Absence of a polygon means "no data", never "no public land".
+- **Canadian boundary data is five provinces, three of them barely.** Ontario
+  and Alberta are properly covered; British Columbia, Saskatchewan and Manitoba
+  are only their provincial forests, which is a small share of each province's
+  Crown land. `coverage_gaps` records the rest, and `landDataGap` in
+  `src/config/coverage.ts` puts the caveat on screen. Absence of a polygon
+  means "no data", never "no public land".
+- **BC is the one source that is not ArcGIS.** DataBC publishes WFS, which
+  cannot generalise geometry server-side, so `boundaryRoutes.ts` reads it
+  against a byte budget and simplifies locally. If BC stops drawing, check
+  `meta.sources[]` first — an over-budget response says so in the logs.
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.
