@@ -640,6 +640,63 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     areaField: 'AREA_HA'
   },
   {
+    /**
+     * NEW BRUNSWICK — Crown land, as an ownership layer.
+     *
+     * The cleanest source in this file after Alberta's Green Area: the
+     * province publishes the EXTENT OF CROWN LAND itself, as open data, rather
+     * than a designation that has to be read as a proxy for it. About half of
+     * New Brunswick, concentrated in the northern interior.
+     *
+     * New Brunswick calls overnight camping "occasional use" and says plainly
+     * that occasional use needs no authorisation. That is still policy rather
+     * than anything this layer states, so the basis stays an inference — and
+     * the layer includes Crown land that is leased, licensed or otherwise
+     * spoken for, none of which is subtracted here.
+     */
+    id: 'new_brunswick_crown_land',
+    label: 'New Brunswick Crown Land',
+    attribution: 'Government of New Brunswick, Department of Natural Resources and Energy Development',
+    url: 'https://gis-erd-der.gnb.ca/server/rest/services/OpenData/Crown_Lands/MapServer/0/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'cadastral_derived',
+    campingBasisKind: 'agency_policy_inference',
+    name: () => 'Crown Land',
+    designation: () => 'New Brunswick Crown land',
+    extent: { minLat: 44.5, minLon: -69.2, maxLat: 48.2, maxLon: -63.6 }
+  },
+  {
+    /**
+     * NOVA SCOTIA — Crown parcels, and the province where the caveat does the
+     * most work.
+     *
+     * The layer is honest and specific: land under the administration of the
+     * Minister of Natural Resources and Renewables under the Crown Lands Act,
+     * including land the department holds only a partial interest in. It is
+     * also fragmented — Nova Scotia's Crown land is roughly a third of the
+     * province in thousands of pieces, not a solid block like Alberta's.
+     *
+     * TWO THINGS THIS PROVINCE DOES DIFFERENTLY, both in the rules card.
+     * Wilderness areas and wildlife management areas sit inside these parcels
+     * with their own rules, and Nova Scotia closes the woods outright in bad
+     * fire seasons — a restriction no polygon here knows about.
+     */
+    id: 'nova_scotia_crown_land',
+    label: 'Nova Scotia Crown Land',
+    attribution: 'Government of Nova Scotia, Department of Natural Resources and Renewables',
+    url: 'https://nsgiwa.novascotia.ca/arcgis/rest/services/PLAN/PLANCrownLandsWM84V1/MapServer/0/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'cadastral_derived',
+    campingBasisKind: 'agency_policy_inference',
+    name: () => 'Crown Land',
+    designation: () => 'Nova Scotia Crown land',
+    extent: { minLat: 43.3, minLon: -66.5, maxLat: 47.2, maxLon: -59.6 }
+  },
+  {
     // Verified: returns General Use Areas for northern Ontario.
     id: 'ontario_clupa_general_use',
     label: 'Ontario Crown Land — General Use Area',
@@ -1703,6 +1760,51 @@ const wfsQueryUrl = (
  */
 const loggedWfsFields = new Set<string>();
 
+/**
+ * TEMPORARY — asks candidate services what they hold, once per process.
+ *
+ * Quebec and Newfoundland both publish through ArcGIS servers whose layer ids
+ * and column names cannot be read from a sandbox with no route to them, and
+ * guessing is what put a broken Saskatchewan source in this file. So the
+ * services are asked directly, from production, and the answer is printed.
+ *
+ * Delete this the moment those sources are wired.
+ */
+const DISCOVERY_ROOTS = [
+  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer',
+  'https://servicescarto.mern.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer',
+  'https://www.gov.nl.ca/landuseatlasmaps/rest/services/LandUseDetails/MapServer',
+  'https://dnrmaps.gov.nl.ca/arcgis/rest/services/GeoAtlas/Land_Use/MapServer',
+  'https://gis-erd-der.gnb.ca/server/rest/services/OpenData/Crown_Lands/MapServer',
+  'https://nsgiwa.novascotia.ca/arcgis/rest/services/PLAN/PLANCrownLandsWM84V1/MapServer'
+];
+
+let discoveryRun = false;
+
+const discoverCandidates = (): void => {
+  if (discoveryRun) return;
+  discoveryRun = true;
+  for (const root of DISCOVERY_ROOTS) {
+    fetch(`${root}?f=json`, {
+      headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' }
+    })
+      .then((r) => r.json())
+      .then((meta: any) => {
+        const layers = Array.isArray(meta?.layers)
+          ? meta.layers.map((l: any) => `${l.id}:${l.name}`).join(' | ')
+          : 'none';
+        const fields = Array.isArray(meta?.fields)
+          ? meta.fields.map((f: any) => String(f.name)).join(',')
+          : '';
+        console.info(
+          `[discover] ${root} -> "${meta?.mapName ?? meta?.name ?? meta?.error?.message ?? '?'}" ` +
+            `layers: ${layers}${fields ? ` fields: ${fields}` : ''}`
+        );
+      })
+      .catch((err) => console.info(`[discover] ${root} -> unreachable: ${(err as Error).message}`));
+  }
+};
+
 /** Sources whose area column has already had a value printed. */
 const loggedAreaSample = new Set<string>();
 
@@ -1959,15 +2061,22 @@ const queryBoundarySourceOnce = async (
      * the tolerance this zoom can show. Rejecting is a hard failure — a shape
      * we cannot place in the right hemisphere must never reach the map.
      */
+    /*
+     * What the layer really calls its attributes, once per source. Written for
+     * the WFS, kept for everything: every source added since has been wired
+     * from a distance, and a name field guessed wrong is the silent failure
+     * that had fifteen Manitoba forests all reading "Provincial Forest".
+     */
+    if (!loggedWfsFields.has(source.id) && data.features[0]?.properties) {
+      loggedWfsFields.add(source.id);
+      console.info(
+        `[boundaries] ${source.id}: fields are ` +
+          Object.keys(data.features[0].properties).join(', ')
+      );
+    }
+
     let incoming: any[] = data.features;
     if (isWfs) {
-      if (!loggedWfsFields.has(source.id) && incoming[0]?.properties) {
-        loggedWfsFields.add(source.id);
-        console.info(
-          `[boundaries] ${source.id}: fields are ` +
-            Object.keys(incoming[0].properties).join(', ')
-        );
-      }
       const oriented = orientToLonLat(incoming, source.extent, source.id);
       if (!oriented) return { features: [], ok: false, truncated: false };
       const tolerance = simplifyDegrees;
@@ -2525,6 +2634,8 @@ export const registerBoundaryRoutes = (app: Express): void => {
      * point is to show that there IS public land over there — and pays for it
      * by returning far fewer, far coarser polygons.
      */
+    discoverCandidates();
+
     const isOverview = req.query.detail === 'overview';
     const minAreaSqKm = isOverview
       ? Math.max(0, Number(req.query.minAreaSqKm) || 0)
