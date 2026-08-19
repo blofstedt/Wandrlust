@@ -277,6 +277,17 @@ interface BoundarySource {
    */
   maxSpanDegrees?: number;
   /**
+   * Ask for the shape as it is and generalise it here.
+   *
+   * `maxAllowableOffset` is normally the best thing about an ArcGIS source —
+   * the server thins the geometry before it sends it. Quebec's PATP service
+   * answers that ask with forty-five features and NO GEOMETRY AT ALL: correct
+   * attributes, nulls where the polygons should be, which this pipeline then
+   * drops as "not an area". Asking for the plain shape and thinning it here
+   * costs bytes and buys a province.
+   */
+  generaliseLocally?: boolean;
+  /**
    * The layer's own area column, if it has one.
    *
    * ArcGIS: used to ask for the BIGGEST parcels in view once the viewport is
@@ -731,16 +742,40 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     label: 'Québec Public Land (PATP)',
     attribution: "Gouvernement du Québec, Ministère des Ressources naturelles et des Forêts",
     url: 'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer/1/query',
-    where: '1=1',
+    /*
+     * MULTIPLE-USE PUBLIC LAND ONLY, and this is the line that keeps Quebec
+     * honest. Production printed the vocations this layer carries, and they
+     * fall in two families: `Utilisation` — multiple, modulée, prioritaire,
+     * spécifique — which is working public land, and `Protection`, which is
+     * parks, protected areas and réserves écologiques. Camping in those is at
+     * designated sites or not at all, so drawing them as public land a camper
+     * may use would be the same overstatement as mapping Ontario's Enhanced
+     * Management Areas.
+     *
+     * If the values ever change shape, this filter matches nothing and Quebec
+     * draws nothing, which is the direction this app is allowed to fail in.
+     */
+    where: "VOCATION LIKE 'Utilisation%'",
     outFields: '*',
     confidence: 'managing_agency',
     edgeAccuracy: 'administrative',
     campingBasisKind: 'agency_policy_inference',
-    name: () => 'Terres du domaine de l\'État',
-    designation: () => 'Québec public land',
+    // NOM_ZONE is the zone's own name — "Secteur archéologique", a lake, a
+    // river basin. The vocation is what the government intends it for.
+    name: (p) => nameLike(p, 'NOM_ZONE', 'NOM_SZONE') ?? 'Terres du domaine de l\'État',
+    designation: (p) => pick(p, 'VOCATION') ?? 'Québec public land',
     extent: { minLat: 44.9, minLon: -79.9, maxLat: 60.1, maxLon: -57.0 },
     // A provincial plan layer over a province this size: give it room.
-    timeoutMs: 9000
+    timeoutMs: 9000,
+    /*
+     * Production: this service returns null geometry whenever it is asked to
+     * generalise, so it is asked for the shape as it stands and thinned here
+     * — with the same byte budget the WFS reads against, because an
+     * ungeneralised provincial layer is exactly the payload that budget was
+     * written for.
+     */
+    generaliseLocally: true,
+    maxBytes: 20 * 1024 * 1024
   },
   {
     // Verified: returns General Use Areas for northern Ontario.
@@ -1438,8 +1473,12 @@ const arcgisQueryUrl = (
      * the server to generalise to says how fine is useful, so the precision
      * follows it: metres up close, hundreds of metres at province scale.
      */
-    geometryPrecision: String(precisionFor(simplifyDegrees)),
-    maxAllowableOffset: String(simplifyDegrees),
+    ...(source.generaliseLocally
+      ? {}
+      : {
+          geometryPrecision: String(precisionFor(simplifyDegrees)),
+          maxAllowableOffset: String(simplifyDegrees)
+        }),
     resultRecordCount: String(recordLimit),
     f: 'geojson'
   });
@@ -1917,6 +1956,13 @@ const queryBoundarySourceOnce = async (
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
 
   const isWfs = source.protocol === 'wfs';
+  /*
+   * Two things a WFS forced this file to learn, now shared with any source
+   * that has to send its geometry ungeneralised: read the body against a byte
+   * budget, and thin the shapes here instead.
+   */
+  const thinsItsOwnGeometry = isWfs || !!source.generaliseLocally;
+  const readAgainstBudget = thinsItsOwnGeometry;
 
   /*
    * THE WIDE VIEW IS A DIFFERENT QUESTION, SO IT GETS A DIFFERENT ASK.
@@ -2029,7 +2075,7 @@ const queryBoundarySourceOnce = async (
      * failed query, not a bug, and is reported as one.
      */
     let data: any;
-    if (isWfs) {
+    if (readAgainstBudget) {
       const budget = source.maxBytes ?? 8 * 1024 * 1024;
       const body = await readBodyWithin(response, budget);
       if (body === null) {
@@ -2132,7 +2178,7 @@ const queryBoundarySourceOnce = async (
     }
 
     let incoming: any[] = data.features;
-    if (isWfs) {
+    if (thinsItsOwnGeometry) {
       const oriented = orientToLonLat(incoming, source.extent, source.id);
       if (!oriented) return { features: [], ok: false, truncated: false };
       const tolerance = simplifyDegrees;
