@@ -665,7 +665,9 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     campingBasisKind: 'agency_policy_inference',
     name: () => 'Crown Land',
     designation: () => 'New Brunswick Crown land',
-    extent: { minLat: 44.5, minLon: -69.2, maxLat: 48.2, maxLon: -63.6 }
+    extent: { minLat: 44.5, minLon: -69.2, maxLat: 48.2, maxLon: -63.6 },
+    // Printed by the layer itself: SHAPE.AREA, SHAPE.LEN, OBJECTID, HOLDER.
+    areaField: 'SHAPE.AREA'
   },
   {
     /**
@@ -695,6 +697,50 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     name: () => 'Crown Land',
     designation: () => 'Nova Scotia Crown land',
     extent: { minLat: 43.3, minLon: -66.5, maxLat: 47.2, maxLon: -59.6 }
+  },
+  {
+    /**
+     * QUEBEC — public land, via the plan that allocates it.
+     *
+     * The largest prize in the country by area and the one this app has had
+     * nothing to say about: roughly 92% of Quebec is terres du domaine de
+     * l'État. What the province does NOT publish is a plain "here is the
+     * public land" layer — what it publishes is the PATP, the government's
+     * allocation plan for that land, as polygons covering the public territory
+     * with a vocation attached to each.
+     *
+     * That makes it Quebec's CLUPA: the plan only exists where the land is
+     * public, so a polygon here IS public land. The vocation says what the
+     * government intends the land for, not whether anyone may sleep on it —
+     * Quebec's 21-day allowance comes from the Loi sur les terres du domaine
+     * de l'État, so the basis is an inference, as it is for every province
+     * except Ontario.
+     *
+     * WHAT IS NOT SUBTRACTED, and it matters more here than anywhere else in
+     * this file: ZECs, réserves fauniques and pourvoiries sit on top of public
+     * land across much of southern Quebec, each with its own access regime and
+     * its own fees, and none of them are cut out of these polygons. Nor are
+     * the MRC by-laws — Quebec delegates land management to the counties, and
+     * several of them set their own camping rules. The rules card says so.
+     *
+     * Layer 1 is "Affectations surfaciques"; layer 0 is points, which this
+     * pipeline drops anyway. Both the service and the layer id came from the
+     * service's own directory, read from production.
+     */
+    id: 'quebec_patp',
+    label: 'Québec Public Land (PATP)',
+    attribution: "Gouvernement du Québec, Ministère des Ressources naturelles et des Forêts",
+    url: 'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer/1/query',
+    where: '1=1',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    name: () => 'Terres du domaine de l\'État',
+    designation: () => 'Québec public land',
+    extent: { minLat: 44.9, minLon: -79.9, maxLat: 60.1, maxLon: -57.0 },
+    // A provincial plan layer over a province this size: give it room.
+    timeoutMs: 9000
   },
   {
     // Verified: returns General Use Areas for northern Ontario.
@@ -1771,12 +1817,12 @@ const loggedWfsFields = new Set<string>();
  * Delete this the moment those sources are wired.
  */
 const DISCOVERY_ROOTS = [
-  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer',
-  'https://servicescarto.mern.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer',
-  'https://www.gov.nl.ca/landuseatlasmaps/rest/services/LandUseDetails/MapServer',
-  'https://dnrmaps.gov.nl.ca/arcgis/rest/services/GeoAtlas/Land_Use/MapServer',
-  'https://gis-erd-der.gnb.ca/server/rest/services/OpenData/Crown_Lands/MapServer',
-  'https://nsgiwa.novascotia.ca/arcgis/rest/services/PLAN/PLANCrownLandsWM84V1/MapServer'
+  // Newfoundland publishes Crown TITLES — the land that is no longer Crown —
+  // and no layer of the Crown land itself. These are the two service
+  // directories, asked for everything they hold, in case it is in there under
+  // a name nobody would search for.
+  'https://dnrmaps.gov.nl.ca/arcgis/rest/services?f=json',
+  'https://www.gov.nl.ca/landuseatlasmaps/rest/services?f=json'
 ];
 
 let discoveryRun = false;
@@ -1785,20 +1831,23 @@ const discoverCandidates = (): void => {
   if (discoveryRun) return;
   discoveryRun = true;
   for (const root of DISCOVERY_ROOTS) {
-    fetch(`${root}?f=json`, {
+    fetch(root.includes('?') ? root : `${root}?f=json`, {
       headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' }
     })
       .then((r) => r.json())
       .then((meta: any) => {
         const layers = Array.isArray(meta?.layers)
           ? meta.layers.map((l: any) => `${l.id}:${l.name}`).join(' | ')
-          : 'none';
+          : Array.isArray(meta?.services)
+            ? meta.services.map((sv: any) => `${sv.name}(${sv.type})`).join(' | ')
+            : 'none';
+        const folders = Array.isArray(meta?.folders) ? ` folders: ${meta.folders.join(',')}` : '';
         const fields = Array.isArray(meta?.fields)
           ? meta.fields.map((f: any) => String(f.name)).join(',')
           : '';
         console.info(
           `[discover] ${root} -> "${meta?.mapName ?? meta?.name ?? meta?.error?.message ?? '?'}" ` +
-            `layers: ${layers}${fields ? ` fields: ${fields}` : ''}`
+            `layers: ${layers}${folders}${fields ? ` fields: ${fields}` : ''}`
         );
       })
       .catch((err) => console.info(`[discover] ${root} -> unreachable: ${(err as Error).message}`));
@@ -2069,9 +2118,16 @@ const queryBoundarySourceOnce = async (
      */
     if (!loggedWfsFields.has(source.id) && data.features[0]?.properties) {
       loggedWfsFields.add(source.id);
+      // With values, not just names: "the column is called AFFECTATION" does
+      // not say whether it holds "Utilisation multiple" or a numeric code,
+      // and that is the difference between a usable filter and a wrong one.
+      const props = data.features[0].properties as Record<string, unknown>;
       console.info(
         `[boundaries] ${source.id}: fields are ` +
-          Object.keys(data.features[0].properties).join(', ')
+          Object.entries(props)
+            .map(([k, v]) => `${k}=${String(v ?? '').slice(0, 40)}`)
+            .join(' | ')
+            .slice(0, 900)
       );
     }
 
