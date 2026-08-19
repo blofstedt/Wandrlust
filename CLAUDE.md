@@ -208,6 +208,18 @@ npm run vapid    # generate push notification keys
   extent first, so "the whole continent" becomes "Ontario" (21°) before anyone
   is asked. Sorted answers get their own tile-cache slot (`|big`) — they are a
   different answer to the same question.
+- **A province that fails to weld looks empty, not broken.** Three separate
+  steps between the government server and the screen can silently drop land,
+  and all three end the same way: the merged shape is missing, the source
+  falls back to loose parcels, the area filter cuts those to the three
+  biggest, and half a province draws as three shapes. The three are: parcels
+  thinned to slivers before the union (the ask offset is capped for this),
+  polygon-clipping refusing a whole batch over one malformed ring (welded in
+  chunks of 64 now, so one bad parcel costs its neighbourhood and not the
+  province), and the snap grid being wider than every parcel (welds unsnapped
+  instead). Every merge now prints one line — parcels, rings, trims, time,
+  pieces, and why it fell back. **Read it before theorising**; working out
+  which of the three it was by elimination cost three deploys.
 - **A change to what the map draws needs `BOUNDARY_DATA_EPOCH` bumped**
   (`src/services/boundaryService.ts`). Boundaries are cached twelve hours in
   memory, seven days on disk and six in the browser, so without it a fix is
