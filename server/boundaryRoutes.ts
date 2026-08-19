@@ -1934,12 +1934,15 @@ const loggedWfsFields = new Set<string>();
  * Delete this the moment those sources are wired.
  */
 const DISCOVERY_ROOTS = [
-  // Newfoundland publishes Crown TITLES — the land that is no longer Crown —
-  // and no layer of the Crown land itself. These are the two service
-  // directories, asked for everything they hold, in case it is in there under
-  // a name nobody would search for.
-  'https://dnrmaps.gov.nl.ca/arcgis/rest/services?f=json',
-  'https://www.gov.nl.ca/landuseatlasmaps/rest/services?f=json'
+  /*
+   * Quebec's PATP service is named `..._WMS` and behaves like it: the REST
+   * query answers with attributes and no geometry, in either format. So ask
+   * that server what else it publishes — a service without the WMS suffix, a
+   * FeatureServer, a tenure layer — before giving up on the province.
+   */
+  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services?f=json',
+  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire?f=json',
+  'https://servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS/MapServer/1?f=json'
 ];
 
 let discoveryRun = false;
@@ -2225,7 +2228,9 @@ const queryBoundarySourceOnce = async (
      * turned into GeoJSON here, once, and nothing after this line knows the
      * difference.
      */
+    const sentByServer = data.features.length;
     if (source.format === 'esri') {
+      const firstRaw = JSON.stringify(data.features[0] ?? {}).slice(0, 300);
       data.features = data.features
         .map((f: any) => {
           const geometry = esriRingsToGeoJson(f?.geometry?.rings);
@@ -2234,6 +2239,14 @@ const queryBoundarySourceOnce = async (
             : null;
         })
         .filter(Boolean);
+
+      // Converted everything away: the service sent features and no geometry
+      // in its own format either, which is worth saying out loud once.
+      if (sentByServer > 0 && data.features.length === 0) {
+        console.warn(
+          `[boundaries] ${source.id}: ${sentByServer} Esri features, none carried rings — raw: ${firstRaw}`
+        );
+      }
     }
 
     const returned = data.features.length;
