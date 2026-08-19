@@ -9,7 +9,25 @@ import { GeocodedLocation } from '../types';
  */
 
 const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
+/**
+ * Search results, capped.
+ *
+ * This used to grow without limit: every distinct query anyone typed stayed
+ * in memory for the life of the tab, and this app is a PWA that people leave
+ * open for days. A Map iterates in insertion order, so deleting the first
+ * key evicts the oldest entry.
+ */
+const CACHE_MAX_ENTRIES = 100;
 const cache = new Map<string, GeocodedLocation[]>();
+
+const remember = (key: string, value: GeocodedLocation[]): void => {
+  cache.set(key, value);
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+};
 
 interface NominatimResult {
   display_name: string;
@@ -71,7 +89,7 @@ export const geocodeSearch = async (
       return location;
     });
 
-    cache.set(cacheKey, results);
+    remember(cacheKey, results);
     return results;
   } catch {
     // Network failure, abort, or offline: fail soft with no suggestions.
@@ -109,4 +127,4 @@ export const reverseGeocode = async (
   } catch {
     return null;
   }
-};
+};

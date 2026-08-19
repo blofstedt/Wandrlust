@@ -42,6 +42,7 @@
  * caller says so, because "we could not ask" and "there is nothing there" are
  * also two different facts.
  */
+import { USER_AGENT } from './alertSources.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared vocabulary                                                   */
@@ -185,7 +186,17 @@ const OVERPASS_MIRRORS = [
   'https://overpass.osm.ch/api/interpreter'
 ];
 
-const UA = process.env.NWS_USER_AGENT ?? 'wandrlust-app (contact: set NWS_USER_AGENT in .env)';
+/**
+ * The one User-Agent, imported rather than re-declared.
+ *
+ * This file used to default to the literal string
+ * `'wandrlust-app (contact: set NWS_USER_AGENT in .env)'` — a to-do note
+ * where a contact belongs — and NWS_USER_AGENT has never been set on any
+ * deployment, so that is what went out to Overpass on every single cell
+ * lookup. Overpass is volunteer-run and entitled to refuse traffic it
+ * cannot identify. See USER_AGENT in alertSources.ts.
+ */
+const UA = USER_AGENT;
 
 interface OverpassElement {
   type: 'node' | 'way' | 'relation';
@@ -316,8 +327,15 @@ export const fetchOsmMastsNear = async (
     `way${filter}${around};`
   ]).join('');
 
+  // Tell Overpass the same budget we are actually going to wait. Declaring
+  // [timeout:20] while aborting at 12s left the mirror grinding for another
+  // eight seconds on a query whose answer nobody would ever read — rude to a
+  // volunteer service, and it makes the next request more likely to be
+  // rate-limited.
+  const serverTimeoutS = Math.max(5, Math.round(timeoutMs / 1000));
+
   return runOverpass(
-    `[out:json][timeout:20];(${clauses});${outStatement(300)}`,
+    `[out:json][timeout:${serverTimeoutS}];(${clauses});${outStatement(300)}`,
     timeoutMs
   );
 };

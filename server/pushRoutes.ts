@@ -21,10 +21,28 @@
  */
 import type { Express, Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
+import { secretMatches } from './secrets.js';
 
 const VAPID_PUBLIC = process.env.VITE_VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
-const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:alerts@example.com';
+/**
+ * VAPID's subject is the contact a push service uses when something about
+ * this application's traffic needs a human. `mailto:alerts@example.com` —
+ * which this defaulted to — is nobody, on a domain reserved by the IETF for
+ * exactly this kind of placeholder, and a push service is within its rights
+ * to refuse it. Same failure as the NWS User-Agent: a to-do note shipped as
+ * a contact. The default is now the project's public repository, which is a
+ * real place to complain to. Setting VAPID_SUBJECT is still worth doing.
+ */
+const VAPID_SUBJECT =
+  process.env.VAPID_SUBJECT?.trim() || 'https://github.com/blofstedt/Wandrlust';
+
+if (!process.env.VAPID_SUBJECT?.trim() && (VAPID_PUBLIC || VAPID_PRIVATE)) {
+  console.warn(
+    `[push] VAPID_SUBJECT is not set; using ${VAPID_SUBJECT}. ` +
+    'Set it to a mailto: address a push provider can reach.'
+  );
+}
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -243,7 +261,10 @@ export const registerPushRoutes = (app: Express): void => {
     if (!admin) return res.status(503).json({ error: 'database not configured' });
 
     const secret = req.headers['x-dispatch-secret'];
-    if (!process.env.PUSH_DISPATCH_SECRET || secret !== process.env.PUSH_DISPATCH_SECRET) {
+    if (!secretMatches(
+      typeof secret === 'string' ? secret : undefined,
+      process.env.PUSH_DISPATCH_SECRET
+    )) {
       return res.status(403).json({ error: 'forbidden' });
     }
 
@@ -320,4 +341,4 @@ export const registerPushRoutes = (app: Express): void => {
 
     return res.json({ ok: true, processed: queued.length, sent, failed, skipped });
   });
-};
+};

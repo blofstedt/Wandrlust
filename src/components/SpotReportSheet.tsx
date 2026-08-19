@@ -304,6 +304,25 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
 
     setBusy(true);
 
+    try {
+      await submit(position);
+    } catch (err) {
+      // onSubmit is not supposed to throw — every service returns a result
+      // object — but a photo upload or a lost connection can still surface
+      // one, and a thrown error the camper never sees is a report they
+      // believe they filed.
+      console.warn('Spot report failed:', err);
+      haptic('error');
+      toast.warning('Not sent', 'Something went wrong. Your report is still here — try again.');
+    } finally {
+      // Whatever happened, the sheet stops looking busy. Without this a
+      // rejected upload leaves the spinner turning forever and the only way
+      // out is to close the sheet and lose everything typed into it.
+      setBusy(false);
+    }
+  };
+
+  const submit = async (position: GeolocationPosition) => {
     // Client-side spoof tells are a hint for the log and NEVER a verdict —
     // everything that decides anything runs in SQL, because anything checked
     // here is editable by whoever is faking the position in the first place.
@@ -327,8 +346,6 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
         photoAges: photos.map((p) => Math.round((Date.now() - p.file.lastModified) / 60_000))
       }
     });
-
-    setBusy(false);
 
     if (result.ok) {
       haptic('success');

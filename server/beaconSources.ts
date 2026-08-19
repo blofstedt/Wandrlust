@@ -361,7 +361,10 @@ const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof Sou
       tags.natural === 'water' || tags.waterway === 'riverbank' || tags.place
     ) {
       context.push(el);
-    } else if (tags.highway && !['rest_area', 'services', 'passing_place', 'turning_circle'].includes(tags.highway)) {
+    /* `turning_loop` belongs beside `turning_circle`: both are queried above
+       and both are described as camping candidates, but without it here a
+       turning loop lands in `roads` and is never offered as a spot. */
+    } else if (tags.highway && !['rest_area', 'services', 'passing_place', 'turning_circle', 'turning_loop'].includes(tags.highway)) {
       roads.push(el);
     } else if (tags.amenity === 'parking' || tags.amenity === 'parking_space' ||
                tags.tourism === 'camp_site' || tags.highway) {

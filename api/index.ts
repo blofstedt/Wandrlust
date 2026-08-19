@@ -31,6 +31,9 @@ import express from 'express';
 const app = express();
 
 app.disable('x-powered-by');
+// Vercel terminates TLS ahead of this function, so the scheme and the
+// client IP only exist in X-Forwarded-*. Trust one hop — the platform's.
+app.set('trust proxy', 1);
 
 /**
  * Rebuild the real request path from the rewrite's query parameter.
@@ -296,4 +299,4 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 // No app.listen(). Vercel owns the server lifecycle.
-export default app;
+export default app;

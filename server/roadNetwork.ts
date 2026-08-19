@@ -42,8 +42,11 @@
  * which callers treat as "we could not check" — never as "there is no road".
  */
 import { metresBetween } from './beaconSources.js';
+import { USER_AGENT } from './alertSources.js';
 
-const UA = 'Wandrlust/1.0 (dispersed camping map; contact via app)';
+/* One User-Agent for the whole server, with a contact somebody can
+   actually reach. See USER_AGENT in alertSources.ts. */
+const UA = USER_AGENT;
 
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',

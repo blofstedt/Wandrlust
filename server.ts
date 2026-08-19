@@ -33,6 +33,11 @@ const startServer = async (): Promise<void> => {
   const isProduction = process.env.NODE_ENV === 'production';
 
   app.disable('x-powered-by');
+  // Behind a reverse proxy (Vercel, any tunnel used for phone testing) the
+  // real scheme and client IP arrive in X-Forwarded-* headers. Without this,
+  // req.protocol reports 'http' on an https request, and the ingest endpoint
+  // builds its own callback URL from it.
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '256kb' }));
 
   app.get('/api/health', (_req, res) => {
@@ -150,7 +155,9 @@ const startServer = async (): Promise<void> => {
 
   // Last-resort handler: log the detail, tell the client nothing useful.
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error('Unhandled server error:', err.message);
+    // The stack, not just the message: a bare message from a nested async
+    // call names no file and no line, which is the moment you need both.
+    console.error('Unhandled server error:', err?.message, err?.stack);
     res.status(500).json({ error: 'Something went wrong' });
   });
 

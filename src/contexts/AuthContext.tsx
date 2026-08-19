@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { TrustTier } from '../types';
@@ -232,22 +232,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [user, refreshProfile]
   );
 
-  const value: AuthContextValue = {
-    user,
-    session,
-    profile,
-    pointsBalance,
-    isLoading,
-    isConfigured: isSupabaseConfigured,
-    error,
-    signInWithGoogle,
-    signInWithEmail,
-    signInWithPassword,
-    signUpWithPassword,
-    signOut,
-    refreshProfile,
-    updateProfile
-  };
+  /**
+   * Memoised because every consumer of useAuth() re-renders whenever this
+   * object's identity changes, and a fresh object literal on every provider
+   * render means that is every render — the map included, which is the
+   * single most expensive thing in the app to re-render for no reason.
+   */
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      session,
+      profile,
+      pointsBalance,
+      isLoading,
+      isConfigured: isSupabaseConfigured,
+      error,
+      signInWithGoogle,
+      signInWithEmail,
+      signInWithPassword,
+      signUpWithPassword,
+      signOut,
+      refreshProfile,
+      updateProfile
+    }),
+    [
+      user, session, profile, pointsBalance, isLoading, error,
+      signInWithGoogle, signInWithEmail, signInWithPassword,
+      signUpWithPassword, signOut, refreshProfile, updateProfile
+    ]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-};
+};

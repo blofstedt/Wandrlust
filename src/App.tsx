@@ -370,8 +370,19 @@ export default function App() {
     return () => { cancelled = true; };
   }, [user]);
 
+  /**
+   * Which search is the current one.
+   *
+   * Two searches in quick succession are two independent fetches, and the
+   * first can land second — Overpass is slower for some boxes than others.
+   * Without this the older, slower answer overwrites the newer one and the
+   * list shows results for a place the user has already moved on from.
+   */
+  const searchSeq = useRef(0);
+
   const handleSelectLocation = useCallback(
     async (loc: GeocodedLocation) => {
+      const seq = ++searchSeq.current;
       const label = loc.displayName.split(',')[0];
       setCenter([loc.lat, loc.lon]);
       setZoom(11);
@@ -428,11 +439,15 @@ export default function App() {
          * winning record. And a spot that is only on this phone is not in
          * `shared` at all, so it survives untouched from `prev`.
          */
+        // A newer search started while this one was in flight. Its answer is
+        // the one the user is waiting on; this one is now about somewhere else.
+        if (seq !== searchSeq.current) return;
+
         setCampsites((prev) => mergeCampsites(shared, prev, liveSites));
       } catch (err) {
         console.warn('Campsite lookup failed:', err);
       } finally {
-        setIsSearchingSites(false);
+        if (seq === searchSeq.current) setIsSearchingSites(false);
       }
     },
     [isOfflineMode, filterState.maxDistanceMiles]
