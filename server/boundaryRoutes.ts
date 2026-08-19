@@ -1562,6 +1562,25 @@ const readBodyWithin = async (
   return out + decoder.decode();
 };
 
+/**
+ * How many of the biggest shapes to ask a WFS for first, by viewport width.
+ *
+ * SET LOW ON PURPOSE, because the cost of asking for too many is not a slower
+ * map — it is a province that blinks. An over-budget answer is no answer, the
+ * map draws nothing for that source, and panning back to a box that did fit
+ * makes the green reappear. That flicker was the first thing anyone noticed
+ * about British Columbia, and it is worth several small shapes to stop it.
+ *
+ * These are the numbers that came back inside the budget in production: three
+ * biggest at continental width was 14MB, five at eight degrees was 13.9MB.
+ */
+const wideStartingRecords = (span: number): number => {
+  if (span > 20) return 3;
+  if (span > 10) return 4;
+  if (span > 5) return 6;
+  return 10;
+};
+
 /** The GetFeature call for a WFS source. */
 const wfsQueryUrl = (
   source: BoundarySource,
@@ -1613,6 +1632,43 @@ const wfsQueryUrl = (
  * matter.
  */
 const loggedWfsFields = new Set<string>();
+
+/**
+ * TEMPORARY DIAGNOSTIC — asks each ArcGIS layer what it is called and what it
+ * can do, once per process, and prints it.
+ *
+ * The zoomed-out map asks every source for a couple of hundred parcels and
+ * gets whichever ones the database hands over first, which is why Ontario —
+ * carpeted in Crown land — draws as a scatter of flecks next to a solid
+ * Alberta. The fix is to ask for the BIGGEST parcels in view, and that needs
+ * two facts per layer that cannot be read from a sandbox with no route to the
+ * services: the name of its area column, and whether it will sort at all.
+ *
+ * Delete this once `areaField` is filled in below for the sources that have
+ * one. It costs one request per source per cold lambda and never touches the
+ * response — the boundaries are drawn from the query, not from this.
+ */
+const loggedLayerFields = new Set<string>();
+
+const logLayerCapabilities = (source: BoundarySource): void => {
+  if (source.protocol === 'wfs' || source.areaField || loggedLayerFields.has(source.id)) return;
+  loggedLayerFields.add(source.id);
+
+  const metaUrl = `${source.url.replace(/\/query\/?$/, '')}?f=json`;
+  fetch(metaUrl, { headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' } })
+    .then((r) => r.json())
+    .then((meta: any) => {
+      const fields = Array.isArray(meta?.fields)
+        ? meta.fields.map((f: any) => String(f.name)).join(', ')
+        : 'none listed';
+      console.info(
+        `[boundaries] ${source.id}: layer "${meta?.name ?? '?'}" ` +
+          `orderBy=${meta?.advancedQueryCapabilities?.supportsOrderBy ?? 'unknown'} ` +
+          `fields: ${fields}`
+      );
+    })
+    .catch(() => {});
+};
 
 const queryBoundarySourceOnce = async (
   source: BoundarySource,
@@ -1668,8 +1724,9 @@ const queryBoundarySourceOnce = async (
    * country can overflow exactly as a ten-degree one does.
    */
   const biggestFirst = wideForWfs || wideRecordsOverride != null;
-  const wfsRecordLimit =
-    wideRecordsOverride ?? (wideForWfs ? (span > 10 ? 10 : 20) : recordLimit);
+  const wfsRecordLimit = wideRecordsOverride ?? (wideForWfs ? wideStartingRecords(span) : recordLimit);
+
+  if (!isWfs) logLayerCapabilities(source);
 
   const requestUrl = isWfs
     ? wfsQueryUrl(source, bbox, wfsRecordLimit, biggestFirst)
@@ -1903,13 +1960,18 @@ const queryBoundarySource = async (
    */
   if (!first.ok && first.overBudget && source.protocol === 'wfs' && source.areaField) {
     const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon);
-    let asked = span > 10 ? 10 : 20;
     // A narrow viewport that overflowed was asking for everything in it, so
     // the ladder starts from the biggest-N ask rather than from that.
-
+    let asked = wideStartingRecords(span);
     let attempt = first;
-    for (let step = 0; step < 2 && attempt.overBudget; step += 1) {
-      asked = Math.max(3, Math.floor(asked / 4));
+    /*
+     * Halving, and all the way down to one. Giving up at three left the map
+     * blank wherever the three biggest forests in view were themselves too
+     * much geometry — and one big green block is a truthful answer where
+     * nothing at all is not.
+     */
+    for (let step = 0; step < 4 && attempt.overBudget; step += 1) {
+      asked = Math.max(1, Math.floor(asked / 2));
       console.info(`[boundaries] ${source.id}: retrying with the ${asked} biggest in view`);
       attempt = await queryBoundarySourceOnce(
         source, bbox, simplifyDegrees, recordLimit, 8000, asked
