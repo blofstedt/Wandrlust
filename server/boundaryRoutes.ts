@@ -1697,6 +1697,16 @@ const loggedWfsFields = new Set<string>();
 /** Services that turned out not to honour `orderByFields` after all. */
 const noOrderBy = new Set<string>();
 
+/**
+ * The ceiling and the clock for an ask that wants the biggest parcels first.
+ *
+ * 120 rather than the full overview cap: at the zoom this applies to, a
+ * hundred and twenty merged blocks is already more shapes than the eye can
+ * separate, and the smaller ask is what makes the sort affordable at all.
+ */
+const SORTED_ASK_RECORDS = 120;
+const SORTED_ASK_TIMEOUT_MS = 12000;
+
 const queryBoundarySourceOnce = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
@@ -1704,7 +1714,9 @@ const queryBoundarySourceOnce = async (
   recordLimit: number,
   timeoutOverrideMs?: number,
   /** How many of the biggest to ask a WFS for, when the first ask was too big. */
-  wideRecordsOverride?: number
+  wideRecordsOverride?: number,
+  /** Ask the plain way — no biggest-first sort. The retry that always worked. */
+  sortless = false
 ): Promise<SourceResult> => {
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
 
@@ -1753,19 +1765,40 @@ const queryBoundarySourceOnce = async (
   const biggestFirst = wideForWfs || wideRecordsOverride != null;
   const wfsRecordLimit = wideRecordsOverride ?? (wideForWfs ? wideStartingRecords(span) : recordLimit);
 
+  /*
+   * Same threshold as the WFS: past two and a half degrees the record cap is
+   * doing the choosing, so it had better choose well.
+   */
+  const sortWanted =
+    !isWfs && !sortless && span > 2.5 && !!source.areaField && !noOrderBy.has(source.id);
+
   const requestUrl = isWfs
     ? wfsQueryUrl(source, bbox, wfsRecordLimit, biggestFirst)
     : arcgisQueryUrl(
-        source, bbox, simplifyDegrees, recordLimit,
-        // Same threshold as the WFS: past two and a half degrees the record
-        // cap is doing the choosing, so it had better choose well.
-        span > 2.5 && !noOrderBy.has(source.id)
+        source, bbox, simplifyDegrees,
+        // A sorted ask is capped tighter than an unsorted one. The server has
+        // to order the whole result set either way, but it does not have to
+        // fetch and generalise five hundred polygons on top of that — and
+        // these are the services that were already timing out.
+        sortWanted ? Math.min(recordLimit, SORTED_ASK_RECORDS) : recordLimit,
+        sortWanted
       );
 
   const controller = new AbortController();
   // One unresponsive service used to hold the whole response for nine seconds.
   // It is reported as unavailable rather than waited on.
-  const timeoutMs = timeoutOverrideMs ?? source.timeoutMs ?? 6000;
+  /*
+   * A SORTED ASK IS SLOWER, AND WORTH WAITING FOR EXACTLY ONCE.
+   *
+   * Ontario and the Forest Service both time out at six seconds when asked to
+   * order a continental result set — and both answer the unsorted question
+   * fine, which is why the fallback below is the unsorted one. But a sorted
+   * answer, once it arrives, is written to the tile cache and serves that
+   * ground for ninety days, so it is worth a longer clock on the one request
+   * that pays for it.
+   */
+  const timeoutMs =
+    timeoutOverrideMs ?? (sortWanted ? SORTED_ASK_TIMEOUT_MS : source.timeoutMs ?? 6000);
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -1849,7 +1882,7 @@ const queryBoundarySourceOnce = async (
        * nicety would be the empty-province failure all over again. Remember it
        * and let the caller ask again the old way.
        */
-      if (!isWfs && span > 2.5 && source.areaField && !noOrderBy.has(source.id)) {
+      if (sortWanted) {
         console.info(`[boundaries] ${source.id}: dropping the biggest-first sort and retrying`);
         noOrderBy.add(source.id);
         return { features: [], ok: false, truncated: false, orderByRejected: true };
@@ -2022,18 +2055,23 @@ const queryBoundarySource = async (
     return attempt;
   }
 
-  // `noOrderBy` was set by the attempt itself, so this asks the plain way.
   if (first.orderByRejected) {
-    return queryBoundarySourceOnce(source, bbox, simplifyDegrees, recordLimit);
+    return queryBoundarySourceOnce(source, bbox, simplifyDegrees, recordLimit, undefined, undefined, true);
   }
 
   if (first.ok || !first.timedOut || recordLimit <= OVERVIEW_RETRY_RECORDS) return first;
 
+  /*
+   * PLAIN, AND SMALLER. Dropping the sort here is the whole safety net: a
+   * sorted ask that times out must land on the exact question these services
+   * have always answered, or asking for a better-chosen Ontario would end in
+   * no Ontario at all — which is what happened the first time this shipped.
+   */
   console.info(
-    `[boundaries] ${source.id}: retrying at ${OVERVIEW_RETRY_RECORDS} records after timeout`
+    `[boundaries] ${source.id}: retrying unsorted at ${OVERVIEW_RETRY_RECORDS} records after timeout`
   );
   return queryBoundarySourceOnce(
-    source, bbox, simplifyDegrees, OVERVIEW_RETRY_RECORDS, 5000
+    source, bbox, simplifyDegrees, OVERVIEW_RETRY_RECORDS, 5000, undefined, true
   );
 };
 
