@@ -686,12 +686,27 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
    * services, two of them published `_WFS` (FRONTIERES, Tirage_au_sort) and no
    * PATP among them. So this server has no vector PATP to give.
    *
+   * AND THE SECOND DEAD END, so nobody repeats it. Quebec's word for whether
+   * ground belongs to the public domain is `domanialité`, and there is a
+   * service called exactly that:
+   *
+   *     peche.faune.gouv.qc.ca/arcgis_webadaptor_prodc_10_9_1/rest/services/
+   *       PRODC-E/DOMANIALITE/MapServer
+   *
+   * It is the right layer — MRNF's own public-versus-private reference — and
+   * its web adaptor answers `?f=json` with an HTML page rather than JSON, both
+   * for the service and for its folder. It may want `f=pjson`, or a token, or
+   * it may simply not be open. That is a five-second question for anyone with
+   * a browser and unanswerable from here.
+   *
    * WHAT TO TRY NEXT, in the order worth trying:
-   *   1. IGO / geoegl.msp.gouv.qc.ca — Quebec's other OGC infrastructure,
-   *      which publishes real WFS; look for affectation or tenure there.
-   *   2. Données Québec's PATP dataset resources — if any of them is GeoJSON,
+   *   1. Open DOMANIALITE in a browser. If the REST directory renders, the
+   *      layer id and its fields are all that is missing.
+   *   2. IGO / geoegl.msp.gouv.qc.ca — Quebec's other OGC infrastructure,
+   *      which publishes real WFS; look for affectation or domanialité there.
+   *   3. Données Québec's PATP dataset resources — if any of them is GeoJSON,
    *      the seeder can ingest it as a file source today, no new code.
-   *   3. The regional PATP services (PATP_NdQ_EIBJ_WMS, PATP_NdQ_Kativik_WMS),
+   *   4. The regional PATP services (PATP_NdQ_EIBJ_WMS, PATP_NdQ_Kativik_WMS),
    *      in case a regional one was published differently from the provincial.
    *
    * The machinery a working service will need is already here and tested:
@@ -1898,44 +1913,6 @@ const wfsQueryUrl = (
  */
 const loggedWfsFields = new Set<string>();
 
-/**
- * TEMPORARY — one more look for Quebec.
- *
- * `DOMANIALITE` is the word this whole search needed: Quebec's term for
- * whether a piece of ground belongs to the public domain or a private one.
- * The fish-and-wildlife ministry publishes a service by that name on a normal
- * ArcGIS REST server, which is exactly what the public land use plan's
- * WMS-only service could not be. Ask it what it holds.
- *
- * Out again the moment Quebec is either wired or written off for good.
- */
-const DISCOVERY_ROOTS = [
-  'https://peche.faune.gouv.qc.ca/arcgis_webadaptor_prodc_10_9_1/rest/services/PRODC-E/DOMANIALITE/MapServer?f=json',
-  'https://peche.faune.gouv.qc.ca/arcgis_webadaptor_prodc_10_9_1/rest/services/PRODC-E?f=json'
-];
-
-let discoveryRun = false;
-
-const discoverCandidates = (): void => {
-  if (discoveryRun) return;
-  discoveryRun = true;
-  for (const root of DISCOVERY_ROOTS) {
-    fetch(root, { headers: { Accept: 'application/json', 'User-Agent': 'Wandrlust/1.0' } })
-      .then((r) => r.json())
-      .then((meta: any) => {
-        const layers = Array.isArray(meta?.layers)
-          ? meta.layers.map((l: any) => `${l.id}:${l.name}`).join(' | ')
-          : Array.isArray(meta?.services)
-            ? meta.services.map((sv: any) => `${sv.name}(${sv.type})`).join(' | ')
-            : 'none';
-        console.info(
-          `[discover] ${root} -> "${meta?.mapName ?? meta?.name ?? meta?.error?.message ?? '?'}" ${layers}`
-        );
-      })
-      .catch((err) => console.info(`[discover] ${root} -> unreachable: ${(err as Error).message}`));
-  }
-};
-
 /** Sources whose area column has already had a value printed. */
 const loggedAreaSample = new Set<string>();
 
@@ -2809,8 +2786,6 @@ export const registerBoundaryRoutes = (app: Express): void => {
      * point is to show that there IS public land over there — and pays for it
      * by returning far fewer, far coarser polygons.
      */
-    discoverCandidates();
-
     const isOverview = req.query.detail === 'overview';
     const minAreaSqKm = isOverview
       ? Math.max(0, Number(req.query.minAreaSqKm) || 0)
