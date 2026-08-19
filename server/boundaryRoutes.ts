@@ -1218,7 +1218,22 @@ const mergedBySource = (features: any[], simplifyDegrees: number): any[] => {
      * answer is about to sit in a cache for six hours.
      */
     let trimmed = group;
-    let minPart = (0.5 * simplifyDegrees) ** 2;
+    /*
+     * A QUARTER OF THE TOLERANCE, NOT A HALF.
+     *
+     * This is the gate parcels pass through to reach the union, and it was set
+     * to shed the sub-pixel slivers a fragmented Crown land parcel carries.
+     * Nova Scotia is made of nothing else: its Crown land is thousands of
+     * pieces a kilometre or two across, so at province scale the gate was
+     * closing on the whole province before the weld could turn it into
+     * anything. Letting the smaller pieces in is what gives the union
+     * something to join.
+     *
+     * The loop below still protects the clipper — if the geometry that gets
+     * through is too much, the threshold quadruples and it looks again — so
+     * this lowers the floor without raising the ceiling.
+     */
+    let minPart = (0.25 * simplifyDegrees) ** 2;
     for (let attempt = 0; attempt < 4; attempt += 1) {
       trimmed = prunedFeatures(group, minPart, MAX_PARTS_FOR_MERGE);
       if (ringsInGroup(trimmed) <= MERGE_RING_BUDGET) break;
