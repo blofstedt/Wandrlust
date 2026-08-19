@@ -360,6 +360,26 @@ const DISK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const OVERVIEW_TTL_MS = 12 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 40;
 
+/**
+ * BUMP THIS WHENEVER THE SERVER STARTS ANSWERING DIFFERENTLY.
+ *
+ * Boundaries are cached hard on purpose — twelve hours in memory, seven days
+ * on disk, six hours in the browser's own HTTP cache — because a national
+ * forest does not move and re-fetching one is a slow, flickery map.
+ *
+ * The cost of that is a fix nobody can see. The day the API started asking
+ * government services for the BIGGEST areas in view instead of the first ones
+ * it happened to be handed, every phone that had already looked at Ontario
+ * carried on drawing the old scatter of flecks for a week, from its own disk,
+ * and the map looked exactly as broken as before.
+ *
+ * So the epoch rides along in the request. It changes the URL, which misses
+ * the browser cache; it is part of the query string the disk key is built
+ * from, which misses localforage; and the server ignores it entirely, so
+ * nothing upstream is fragmented by it.
+ */
+const BOUNDARY_DATA_EPOCH = '2';
+
 interface DiskEntry { at: number; collection: BoundaryCollection }
 
 const diskKey = (query: string): string => {
@@ -409,6 +429,7 @@ export const fetchBoundaries = async (
      */
     params.set('minAreaSqKm', String(OVERVIEW_MIN_AREA_SQ_KM));
   }
+  params.set('v', BOUNDARY_DATA_EPOCH);
   const query = params.toString();
 
   const ttl = detail === 'overview' ? OVERVIEW_TTL_MS : CACHE_TTL_MS;
