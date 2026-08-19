@@ -388,8 +388,10 @@ const CACHE_MAX_ENTRIES = 40;
  *   2 → biggest-parcels-first, and Ontario stopped drawing as confetti
  *   3 → New Brunswick and Nova Scotia Crown land
  *   4 → the Maritimes weld instead of falling back to three big parcels
+ *   5 → and weld properly: a refused union and a too-wide snap grid were
+ *        each quietly costing a province its shape
  */
-const BOUNDARY_DATA_EPOCH = '4';
+const BOUNDARY_DATA_EPOCH = '5';
 
 interface DiskEntry { at: number; collection: BoundaryCollection }
 
