@@ -265,6 +265,17 @@ interface BoundarySource {
    * response for every other source too.
    */
   maxBytes?: number;
+  /**
+   * WFS only. Do not even ask when the viewport is wider than this, in degrees.
+   *
+   * An ArcGIS source answers a continent by generalising it. A WFS answers a
+   * continent by sending it, so past a certain viewport there is no answer to
+   * be had — only a long wait and a discarded download. Skipping is reported
+   * as unavailable, which is what it is: this source could not answer THIS
+   * question. The zoomed-out map is served by the committed overview instead,
+   * and `landDataGap` still says what is and is not mapped.
+   */
+  maxSpanDegrees?: number;
   confidence: 'designated_general_use' | 'managing_agency' | 'managed_zone';
   /** How much to trust the polygon's edges. Never survey-grade. */
   edgeAccuracy: 'generalised' | 'administrative' | 'cadastral_derived';
@@ -314,10 +325,20 @@ const pick = (props: Record<string, any>, ...keys: string[]): string | undefined
  */
 const nameLike = (props: Record<string, any>, ...preferred: string[]): string | undefined => {
   const exact = pick(props, ...preferred);
-  if (exact) return exact;
+  // Same rule as below: a field called NAME holding "92" is still an id.
+  if (exact && /[a-z]/i.test(exact)) return exact;
 
+  /*
+   * A NUMBER IS AN ID, NOT A NAME. British Columbia's provincial forests came
+   * back labelled "92" — a field whose key looked name-ish holding a bare
+   * number — and a pin on the map reading "92" is worse than one reading
+   * "Provincial Forest", because it looks like it knows something.
+   */
   const usable = (v: unknown): v is string =>
-    typeof v === 'string' && v.trim() !== '' && v.trim().length <= 80;
+    typeof v === 'string' &&
+    v.trim() !== '' &&
+    v.trim().length <= 80 &&
+    /[a-z]/i.test(v);
 
   const keys = Object.keys(props ?? {});
   // A field actually called "name" of some sort, then anything name-ish.
@@ -420,9 +441,14 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     confidence: 'managing_agency',
     edgeAccuracy: 'administrative',
     campingBasisKind: 'agency_policy_inference',
-    // The layer's own field names are unread from here, so this asks the
-    // properties what they have rather than guessing — the Manitoba lesson,
-    // where fifteen forests all came back as the bare fallback.
+    /*
+     * Production says this layer has no usable name field: every forest came
+     * back as "92" — a number out of an id column that happened to look
+     * name-shaped. `nameLike` now refuses a value with no letters in it, so
+     * these read "Provincial Forest", exactly as Saskatchewan's and
+     * Manitoba's constants do. If the field list in the logs ever shows a
+     * real name column, name it here.
+     */
     name: (p) => nameLike(p, 'PROV_FOREST_NAME', 'FOREST_NAME', 'NAME') ?? 'Provincial Forest',
     designation: () => 'British Columbia provincial forest',
     extent: { minLat: 48.2, minLon: -139.1, maxLat: 60.05, maxLon: -114.0 },
@@ -438,8 +464,20 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * compromise — enough for a cold GeoServer, short enough to leave room
      * inside the 30s function limit for everything else on screen.
      */
-    timeoutMs: 10000,
-    maxBytes: 12 * 1024 * 1024
+    timeoutMs: 12000,
+    /*
+     * MEASURED IN PRODUCTION, not guessed. A half-degree box around Prince
+     * George answers with five forests; a one-degree box with nine; a
+     * two-degree box blows a 12MB budget on its own. Full-resolution survey
+     * geometry is simply what a WFS sends, and this layer's boundaries are
+     * dense.
+     *
+     * So the budget goes up to what a serverless function can still parse in
+     * one piece, and the span ceiling stops us spending twelve seconds and
+     * twenty megabytes on a viewport we already know cannot be answered.
+     */
+    maxBytes: 20 * 1024 * 1024,
+    maxSpanDegrees: 2.5
   },
   {
     // Verified: GWA_CODE 'GLC_G' is the Green Area — Alberta's Crown land.
@@ -1534,6 +1572,15 @@ const wfsQueryUrl = (
   return `${source.url}?${params.toString()}`;
 };
 
+/**
+ * Sources whose real attribute names have already been printed.
+ *
+ * Once per process, not once per request: the names are a fact about the
+ * layer, and repeating them on every query would bury the failures that
+ * matter.
+ */
+const loggedWfsFields = new Set<string>();
+
 const queryBoundarySourceOnce = async (
   source: BoundarySource,
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
@@ -1544,6 +1591,18 @@ const queryBoundarySourceOnce = async (
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
 
   const isWfs = source.protocol === 'wfs';
+
+  if (isWfs && source.maxSpanDegrees) {
+    const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLon - bbox.minLon);
+    if (span > source.maxSpanDegrees) {
+      console.info(
+        `[boundaries] ${source.id}: ${span.toFixed(1)}° viewport is past the ` +
+          `${source.maxSpanDegrees}° a WFS can answer — not asking.`
+      );
+      return { features: [], ok: false, truncated: false };
+    }
+  }
+
   const requestUrl = isWfs
     ? wfsQueryUrl(source, bbox, recordLimit)
     : arcgisQueryUrl(source, bbox, simplifyDegrees, recordLimit);
@@ -1557,6 +1616,8 @@ const queryBoundarySourceOnce = async (
     timedOut = true;
     controller.abort();
   }, timeoutMs);
+
+  const startedAt = Date.now();
 
   try {
     const response = await fetch(requestUrl, {
@@ -1595,6 +1656,20 @@ const queryBoundarySourceOnce = async (
         );
         return { features: [], ok: false, truncated: false };
       }
+      /*
+       * SAY HOW BIG AND HOW SLOW, EVERY TIME.
+       *
+       * The field names and the payload size of a WFS layer cannot be read
+       * from a development sandbox that has no route to the province, so
+       * production is the only place these numbers exist. They are one info
+       * line, and they are what the budget and the span ceiling above were
+       * set from.
+       */
+      console.info(
+        `[boundaries] ${source.id}: ${(body.length / 1024 / 1024).toFixed(1)}MB in ` +
+          `${Date.now() - startedAt}ms`
+      );
+
       try {
         data = JSON.parse(body);
       } catch {
@@ -1635,6 +1710,13 @@ const queryBoundarySourceOnce = async (
      */
     let incoming: any[] = data.features;
     if (isWfs) {
+      if (!loggedWfsFields.has(source.id) && incoming[0]?.properties) {
+        loggedWfsFields.add(source.id);
+        console.info(
+          `[boundaries] ${source.id}: fields are ` +
+            Object.keys(incoming[0].properties).join(', ')
+        );
+      }
       const oriented = orientToLonLat(incoming, source.extent, source.id);
       if (!oriented) return { features: [], ok: false, truncated: false };
       const tolerance = simplifyDegrees;
