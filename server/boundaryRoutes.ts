@@ -3099,11 +3099,24 @@ const storeSourceParcels = async (
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   features: any[]
 ): Promise<number | null> => {
-  const storable = features.filter(
+  /*
+   * A feature with geometry is a piece of land. A feature without one is not,
+   * and skipping it costs a camper nothing — so the two are counted apart.
+   *
+   * The distinction matters because of what happens below. `_externalId` comes
+   * off whichever of `id`, `OBJECTID`, `FID` the service happened to send, and
+   * a layer that sends none leaves a real parcel with no stable key to store
+   * it under. Counting only the storable ones would then let a box claim
+   * coverage having quietly dropped land — and coverage means the database
+   * answers for that ground alone, so the dropped parcel would not be missing
+   * from the map, it would be drawn as private. Which is the one thing this
+   * whole path is built not to do.
+   */
+  const land = features.filter((f) => f?.geometry);
+  const storable = land.filter(
     (f) =>
       typeof f?.properties?._externalId === 'string' &&
-      f.properties._externalId.length > 0 &&
-      f?.geometry
+      f.properties._externalId.length > 0
   );
 
   let stored = 0;
@@ -3139,9 +3152,13 @@ const storeSourceParcels = async (
    * parcels. Without it the emptiest ground — most of a continent — would be
    * re-asked of a government server forever.
    */
-  if (stored < storable.length) {
+  if (stored < storable.length || storable.length < land.length) {
     console.warn(
-      `[ingest] ${source.id}: stored ${stored} of ${storable.length} — not claiming coverage`
+      `[ingest] ${source.id}: stored ${stored} of ${land.length}` +
+        (storable.length < land.length
+          ? ` (${land.length - storable.length} with no external id)`
+          : '') +
+        ' — not claiming coverage'
     );
     return null;
   }
