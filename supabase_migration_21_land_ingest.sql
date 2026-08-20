@@ -141,7 +141,13 @@ begin
     end if;
 
     begin
-      g := st_multi(st_makevalid(st_geomfromgeojson(f ->> 'geometry')));
+      -- ST_MakeValid repairs a self-intersecting cadastral parcel by returning
+      -- a COLLECTION: the polygons, plus the stray lines and points it had to
+      -- cut loose. ST_Multi does not flatten that, so such a parcel failed the
+      -- geometry check below and was silently dropped — two of every three New
+      -- Brunswick parcels, measured. Taking the polygonal parts (dimension 3)
+      -- keeps the land and discards only the debris.
+      g := st_multi(st_collectionextract(st_makevalid(st_geomfromgeojson(f ->> 'geometry')), 3));
     exception when others then
       continue;
     end;
