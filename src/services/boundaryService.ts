@@ -390,8 +390,10 @@ const CACHE_MAX_ENTRIES = 40;
  *   4 → the Maritimes weld instead of falling back to three big parcels
  *   5 → and weld properly: a refused union and a too-wide snap grid were
  *        each quietly costing a province its shape
+ *   6 → Quebec drawn province-wide (multi-use zones incl. Nord-du-Québec)
+ *        and Newfoundland and Labrador Crown land (province minus titles)
  */
-const BOUNDARY_DATA_EPOCH = '5';
+const BOUNDARY_DATA_EPOCH = '6';
 
 interface DiskEntry { at: number; collection: BoundaryCollection }
 

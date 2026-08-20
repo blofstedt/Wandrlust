@@ -71,7 +71,23 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
  * though the source is `.ts`: that is the ESM convention, referring to the
  * compiled output. `npm run check:imports` now fails the build over it.
  */
-import { subtractLakes, unionParcels, lakeCount, ringsIn } from './landGeometry.js';
+import { subtractLakes, unionParcels, lakeCount, ringsIn, bboxOf } from './landGeometry.js';
+
+/*
+ * THE FILE-ONLY PROVINCES, AND WHY THEY ARE IMPORTS, NOT READS.
+ *
+ * Quebec's PATP and Newfoundland's Crown land exist as committed GeoJSON in
+ * `data/` (see the Quebec note below and scripts/landSources.ts). They are
+ * imported here as JSON modules — the same mechanism landGeometry.js uses for
+ * the lakes — because this file runs inside Vercel's function bundle, where a
+ * runtime `readFile` of `data/` would not survive the dependency trace and the
+ * source would silently answer nothing. An import is traced, bundled and
+ * versioned with the deploy, so the file source is exactly as available as the
+ * code that serves it.
+ */
+import qcPatpCampable from '../data/qc-patp-campable.json' with { type: 'json' };
+import qcPatpNorthCampable from '../data/qc-patp-north-campable.json' with { type: 'json' };
+import nlCrownLand from '../data/nl-crown-land.json' with { type: 'json' };
 
 const gzipAsync = promisify(gzip);
 
@@ -246,7 +262,7 @@ interface BoundarySource {
    * `maxBytes` and for the local generalisation pass below — see the BC source
    * for what it costs.
    */
-  protocol?: 'arcgis' | 'wfs';
+  protocol?: 'arcgis' | 'wfs' | 'file';
   url: string;
   /** ArcGIS only. The layer filter. */
   where?: string;
@@ -723,7 +739,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
    * WHAT WORKED INSTEAD — the download, not a service. Option 3 below is the
    * path that succeeded: Données Québec publishes the PATP shapefile itself
    * (Affectation_s), and scripts/convertQcPatp.py turns it into
-   * data/qc-patp-campable.geojson — filtering VOCATION == "Utilisation
+   * data/qc-patp-campable.json — filtering VOCATION == "Utilisation
    * multiple", computing area in the native Québec Lambert CRS (EPSG:32198),
    * dropping slivers under 1 km², and reprojecting to WGS84. That file is a
    * `kind: 'geojson'` source in scripts/landSources.ts, the documented
@@ -752,6 +768,71 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
    * says "no public land here" to every camper in Quebec, and the caveat says
    * the true thing instead.
    */
+  {
+    /**
+     * QUEBEC, SOUTH — the multi-use zones of the public land use plan, read
+     * from the committed file (see the Quebec note above). `protocol: 'file'`
+     * means the shapes come from the GeoJSON imported at the top of this
+     * file, filtered to the view and thinned here, exactly as a WFS that
+     * cannot thin itself is handled. The import is what makes this work in
+     * the Vercel bundle: a runtime read of `data/` would not survive the
+     * dependency trace, and this source would answer nothing.
+     */
+    id: 'qc_patp_multi_use',
+    jurisdiction: 'CA-QC',
+    label: 'Quebec Crown Land (Public Land Use Plan — Multi-Use)',
+    attribution: 'Ministère des Ressources naturelles et des Forêts (MRNF), Gouvernement du Québec',
+    protocol: 'file',
+    url: 'data/qc-patp-campable.json',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    name: (p) => String(p?.nom_zone ?? p?.NOM_ZONE ?? 'Multi-use public land'),
+    designation: () => 'Quebec public land — multi-use zone (PATP)',
+    extent: { minLat: 45.3, minLon: -79.6, maxLat: 55.1, maxLon: -61.3 }
+  },
+  {
+    /**
+     * QUEBEC, NORTH — the Nord-du-Québec planning territory (Eeyou Istchee
+     * Baie-James + Kativik), also a file source. Three polygons cover the
+     * whole northern territory the provincial PATP stops short of; same
+     * `Utilisation multiple` filter, same protocol, same caveat.
+     */
+    id: 'qc_patp_north_multi_use',
+    jurisdiction: 'CA-QC',
+    label: 'Quebec Crown Land — Nord-du-Québec (Public Land Use Plan — Multi-Use)',
+    attribution: 'Ministère des Ressources naturelles et des Forêts (MRNF), Gouvernement du Québec',
+    protocol: 'file',
+    url: 'data/qc-patp-north-campable.json',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    name: (p) => String(p?.nom_zone ?? p?.NOM_ZONE ?? 'Multi-use public land (Nord-du-Québec)'),
+    designation: () => 'Quebec public land — multi-use zone, Nord-du-Québec (PATP)',
+    extent: { minLat: 48.8, minLon: -79.6, maxLat: 62.7, maxLon: -63.2 }
+  },
+  {
+    /**
+     * NEWFOUNDLAND AND LABRADOR — Crown land as the province minus its
+     * alienated titles, read from the committed file (see scripts/landSources.ts
+     * and scripts/buildNlCrownLand.py for the subtraction set). The province
+     * publishes no Crown land layer — it publishes the opposite, every parcel
+     * REMOVED from the Crown — so Crown land is the residual. Water is
+     * deliberately left in (lakes on Crown land are Crown land).
+     */
+    id: 'nl_crown_land',
+    jurisdiction: 'CA-NL',
+    label: 'Newfoundland and Labrador Crown Land (province minus alienated titles)',
+    attribution: 'Government of Newfoundland and Labrador, Land Use Atlas',
+    protocol: 'file',
+    url: 'data/nl-crown-land.json',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'cadastral_derived',
+    campingBasisKind: 'agency_policy_inference',
+    name: (p) => String(p?.name ?? 'Newfoundland and Labrador Crown land'),
+    designation: () => 'NL Crown land — province minus alienated titles',
+    extent: { minLat: 46.6, minLon: -67.9, maxLat: 60.4, maxLon: -52.6 }
+  },
   {
     /**
      * NEW BRUNSWICK — Crown land, as an ownership layer.
@@ -2161,8 +2242,10 @@ const wantsBiggestFirst = (
  * A parcel's own id at its source, or null when it does not have one.
  *
  * ArcGIS GeoJSON puts the layer's OBJECTID on `feature.id`; a WFS puts
- * `typename.fid` there. Either way it is the source's own primary key, which
- * is exactly what a stored copy needs to be keyed on.
+ * `typename.fid` there. A file source carries the id the province itself
+ * assigned — Quebec's PATP shapefile has a UUID per zone — so those are read
+ * too. Either way it is the source's own primary key, which is exactly what a
+ * stored copy needs to be keyed on.
  *
  * NULL IS A REAL ANSWER AND MUST NOT BE PAPERED OVER. The obvious fallback —
  * hashing the geometry — is wrong here, because this file asks every service
@@ -2171,10 +2254,135 @@ const wantsBiggestFirst = (
  * no upstream id is left to the live path instead.
  */
 const externalIdOf = (feature: any, props: Record<string, any>): string | null => {
-  const direct = feature?.id ?? props?.OBJECTID ?? props?.objectid ?? props?.FID ?? props?.fid;
+  const direct =
+    feature?.id ??
+    props?.OBJECTID ??
+    props?.objectid ??
+    props?.FID ??
+    props?.fid ??
+    props?.uuid ??
+    props?.UUID;
   if (direct === null || direct === undefined) return null;
   const text = String(direct).trim();
   return text.length > 0 ? text : null;
+};
+
+/**
+ * Turn raw features from ANY source — ArcGIS, WFS or a local file — into the
+ * one shape the map and the store know: a GeoJSON feature stamped with where
+ * it came from and what it is. Shared by the network paths and the file path
+ * so a file source can never drift from how a live source is normalised.
+ */
+const stampFeatures = (source: BoundarySource, incoming: any[]): any[] =>
+  incoming
+    // Polygons only. Several government services publish a boundary as a
+    // LINE layer sitting next to the area layer, and a line drawn in the
+    // public-land style would read as a sliver of campable land that isn't
+    // there. Anything that is not an area is dropped rather than drawn.
+    .filter((f: any) => f?.geometry && /^(Multi)?Polygon$/.test(String(f.geometry.type ?? '')))
+    .map((f: any) => {
+      const props = f.properties ?? {};
+      return {
+        type: 'Feature',
+        geometry: f.geometry,
+        properties: {
+          _source: source.id,
+          _sourceName: source.label,
+          _attribution: source.attribution,
+          _confidence: source.confidence,
+          _edgeAccuracy: source.edgeAccuracy,
+          _campingBasisKind: source.campingBasisKind,
+          _name: source.name(props),
+          _designation: source.designation(props),
+          /*
+           * The parcel's identity, so storing it twice updates one row
+           * rather than making two. ArcGIS and WFS both put the layer's own
+           * object id on the FEATURE rather than in its properties, and it
+           * survives every zoom because it has nothing to do with geometry.
+           * Without an upstream id there is nothing stable to key on — the
+           * shape itself changes with the generalisation asked for — so the
+           * parcel is simply not storable, and `externalIdOf` says so by
+           * returning null rather than inventing one that would duplicate on
+           * the next fetch.
+           */
+          _externalId: externalIdOf(f, props),
+          _jurisdiction: source.jurisdiction
+        }
+      };
+    });
+
+/**
+ * Committed GeoJSON by source id — the imports at the top of this file.
+ *
+ * A `protocol: 'file'` source answers from here: no network ask, no byte
+ * budget, no timeout. It is exactly as available as the code serving it,
+ * which is the whole point of a province whose services cannot be read.
+ */
+const FILE_COLLECTIONS: Record<string, { features: any[] }> = {
+  qc_patp_multi_use: qcPatpCampable,
+  qc_patp_north_multi_use: qcPatpNorthCampable,
+  nl_crown_land: nlCrownLand
+};
+
+/**
+ * Feature envelopes per file source, computed once per process. The files
+ * are bundled with the deploy and never change, so there is no point walking
+ * a six-megabyte multipolygon to find its box on every request.
+ */
+const fileEnvelopes = new Map<string, ([number, number, number, number] | null)[]>();
+
+const queryFileSourceOnce = async (
+  source: BoundarySource,
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  simplifyDegrees: number
+): Promise<SourceResult> => {
+  const collection = FILE_COLLECTIONS[source.id];
+  if (!collection || !Array.isArray(collection?.features) || collection.features.length === 0) {
+    console.warn(`[boundaries] ${source.id}: no committed GeoJSON for this file source`);
+    return { features: [], ok: false, truncated: false };
+  }
+
+  // The committed files are already EPSG:4326, but the hemisphere guard costs
+  // one vertex and turns a silently-misbuilt file into a logged refusal.
+  const oriented = orientToLonLat(collection.features, source.extent, source.id);
+  if (!oriented) return { features: [], ok: false, truncated: false };
+
+  let envelopes = fileEnvelopes.get(source.id);
+  if (!envelopes) {
+    envelopes = oriented.map((f: any) => bboxOf(f?.geometry));
+    fileEnvelopes.set(source.id, envelopes);
+  }
+
+  // Same ceiling as the network asks: thin to the view, never so far that a
+  // parcel stops being a shape. The committed files are full-resolution
+  // exports, so like a WFS they always thin their own geometry.
+  const tolerance = askOffsetFor(simplifyDegrees);
+  const precision = precisionFor(tolerance);
+
+  const view = { minLat: bbox.minLat, minLon: bbox.minLon, maxLat: bbox.maxLat, maxLon: bbox.maxLon };
+  const incoming: any[] = [];
+  for (let i = 0; i < oriented.length; i++) {
+    const envelope = envelopes[i];
+    if (!envelope) continue;
+    const [minLon, minLat, maxLon, maxLat] = envelope;
+    if (
+      view.maxLat < minLat || view.minLat > maxLat ||
+      view.maxLon < minLon || view.minLon > maxLon
+    ) continue;
+    const geometry = generaliseGeometry(oriented[i]?.geometry, tolerance, precision);
+    if (geometry) incoming.push({ ...oriented[i], geometry });
+  }
+
+  const features = stampFeatures(source, incoming);
+
+  if (oriented.length > 0 && features.length === 0) {
+    console.warn(
+      `[boundaries] ${source.id}: ${oriented.length} file features, none were polygons in view`
+    );
+  }
+
+  // A file source answers from disk — it cannot be truncated.
+  return { features, ok: true, truncated: false };
 };
 
 const queryBoundarySourceOnce = async (
@@ -2189,6 +2397,12 @@ const queryBoundarySourceOnce = async (
   sortless = false
 ): Promise<SourceResult> => {
   if (!overlaps(bbox, source.extent)) return { features: [], ok: true, truncated: false };
+
+  // A FILE SOURCE never leaves the box: the committed GeoJSON is filtered to
+  // the view and thinned here, so none of the network machinery below — the
+  // byte budget, the timeout, the biggest-first ask — applies to it. It can
+  // no more fail than the code serving it can.
+  if (source.protocol === 'file') return queryFileSourceOnce(source, bbox, simplifyDegrees);
 
   const isWfs = source.protocol === 'wfs';
   /*
@@ -2474,42 +2688,7 @@ const queryBoundarySourceOnce = async (
         .filter(Boolean) as any[];
     }
 
-    const features = incoming
-      // Polygons only. Several government services publish a boundary as a
-      // LINE layer sitting next to the area layer, and a line drawn in the
-      // public-land style would read as a sliver of campable land that isn't
-      // there. Anything that is not an area is dropped rather than drawn.
-      .filter((f: any) => f?.geometry && /^(Multi)?Polygon$/.test(String(f.geometry.type ?? '')))
-      .map((f: any) => {
-        const props = f.properties ?? {};
-        return {
-          type: 'Feature',
-          geometry: f.geometry,
-          properties: {
-            _source: source.id,
-            _sourceName: source.label,
-            _attribution: source.attribution,
-            _confidence: source.confidence,
-            _edgeAccuracy: source.edgeAccuracy,
-            _campingBasisKind: source.campingBasisKind,
-            _name: source.name(props),
-            _designation: source.designation(props),
-            /*
-             * The parcel's identity, so storing it twice updates one row
-             * rather than making two. ArcGIS and WFS both put the layer's own
-             * object id on the FEATURE rather than in its properties, and it
-             * survives every zoom because it has nothing to do with geometry.
-             * Without an upstream id there is nothing stable to key on — the
-             * shape itself changes with the generalisation asked for — so the
-             * parcel is simply not storable, and `externalIdOf` says so by
-             * returning null rather than inventing one that would duplicate on
-             * the next fetch.
-             */
-            _externalId: externalIdOf(f, props),
-            _jurisdiction: source.jurisdiction
-          }
-        };
-      });
+    const features = stampFeatures(source, incoming);
 
     // Two signals that the server withheld polygons: its own flag, and hitting
     // our requested cap exactly.

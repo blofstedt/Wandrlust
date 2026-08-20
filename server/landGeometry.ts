@@ -66,7 +66,7 @@ const MAX_RINGS_TO_UNION = 4000;
 /** Same idea for the lake subtraction, which is cheaper but not free. */
 const MAX_LAKES_TO_SUBTRACT = 400;
 
-const bboxOf = (geometry: any): [number, number, number, number] | null => {
+export const bboxOf = (geometry: any): [number, number, number, number] | null => {
   let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
   const walk = (node: any): void => {
     if (!Array.isArray(node)) return;

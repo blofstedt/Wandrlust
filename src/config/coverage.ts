@@ -343,16 +343,17 @@ export const overviewMinSpanDegrees = (zoom: number): number => {
  * The provinces whose Crown land this app can actually draw, and how much of
  * each one it draws.
  *
- * Seven, at the time of writing: Alberta (the Green Area, plus Public Land Use
+ * Nine, at the time of writing: Alberta (the Green Area, plus Public Land Use
  * Zones), Ontario (CLUPA General Use Areas), Saskatchewan (the provincial
  * forest), Manitoba (the fifteen provincial forests), British Columbia (the
- * provincial forests), and now New Brunswick and Nova Scotia — the first two
- * that publish the extent of their Crown land itself rather than a designation
- * standing in for it. Those are the Canadian jurisdictions publishing a
- * queryable open layer that delineates land a camper may actually use. Quebec
- * is the glaring absence and not for want of a layer; see COVERAGE_GAPS in
- * `scripts/landSources.ts` for what each of the others publishes instead and
- * why it doesn't qualify.
+ * provincial forests), New Brunswick and Nova Scotia — the first two that
+ * publish the extent of their Crown land itself rather than a designation
+ * standing in for it — then Quebec (the multi-use zones of the public land
+ * use plan, now mapped province-wide) and Newfoundland and Labrador (Crown
+ * land drawn as the province minus every alienated title). Those are the
+ * Canadian jurisdictions with a layer a camper may actually use; see
+ * COVERAGE_GAPS in `scripts/landSources.ts` for what each of the others
+ * publishes instead and why it doesn't qualify.
  *
  * WHY THE VALUE IS NOT JUST `true`. Saskatchewan is mapped for the forested
  * centre and north and nothing else, because the only Crown land the province
@@ -396,44 +397,48 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
   ['CA-NB', null],
   ['CA-NS', null],
   /*
-   * Quebec's caveat has to be one of the loudest. The multi-use zones of the
-   * public land use plan are now mapped — roughly 192,000 km², about a fifth
-   * of the province's public land — and the province itself is over 90%
-   * public land, so this is a large area and a small fraction, exactly like
-   * BC. Everything outside a multi-use zone — protected areas, private land,
-   * priority uses, and the whole Nord-du-Québec planning territory — is
-   * unmapped here.
+   * Quebec's caveat is the quietest it has ever been, and still not a null.
+   * The multi-use zones of the public land use plan (PATP) are now mapped
+   * across the WHOLE province — the southern managed territory from the
+   * provincial shapefile plus the Nord-du-Québec planning territory from the
+   * Eeyou Istchee Baie-James and Kativik regional services — roughly
+   * 730,000 km², close to half of the province. That is a large mapped area
+   * and still not all of it: everything outside a multi-use zone — protected
+   * areas, private land, priority uses — is deliberately excluded, and the
+   * province is over 90% public land, so the fraction is exactly like BC's.
    */
-  ['CA-QC', 'only the multi-use zones of the public land use plan are mapped']
+  ['CA-QC', 'only the multi-use zones of the public land use plan are mapped'],
+  /*
+   * Newfoundland and Labrador is the newest mapped province and the largest
+   * single addition to the map by area. NL does not publish a Crown land
+   * layer — it publishes the OPPOSITE: every alienated title, federal land,
+   * municipal land, park, reserve and Indigenous land holding. The province
+   * is ~95% Crown land and free dispersed camping on it is legal unless
+   * posted otherwise, so Crown land is drawn as the province outline minus
+   * everything that has been removed from the Crown. The residual is real
+   * Crown land, but its edges are cadastral-derived and the caveat below is
+   * what a camper should read before trusting one.
+   */
+  ['CA-NL', 'drawn as Crown land minus alienated titles — edges are approximate']
 ]);
 
 /**
- * The one province where "no data" is the most misleading thing the map
- * could imply, and what to say instead.
+ * Provinces with no Crown land drawn at all, and what to say over them.
  *
- * The default for an unmapped province is "no Crown land data yet", which is
- * accurate and, in this one, badly incomplete: Newfoundland and Labrador is
- * about 95% Crown land, so a camper reading "no data" over the emptiest-
- * looking part of the map is being invited to conclude the wrong thing twice
- * over — first that there is nothing there, then that we simply have not got
- * round to it.
+ * This was once the home of the two biggest gaps in the country. Quebec is
+ * gone — the multi-use zones of the public land use plan are now mapped
+ * across the whole province, see MAPPED_CA_PROVINCES. Newfoundland and
+ * Labrador is gone too, and it deserves its own note because of HOW it was
+ * mapped: NL publishes the OPPOSITE of what this map needs — Crown titles
+ * and applications, the land that has been alienated — so Crown land is
+ * drawn as the province outline minus every removed parcel. The reason, and
+ * the exact layers subtracted, are written out in `scripts/landSources.ts`
+ * and `scripts/buildNlCrownLand.py`.
  *
- * Neither is a to-do. Newfoundland publishes the OPPOSITE of what this map
- * needs — Crown titles and applications, the land that has been alienated —
- * and drawing the province minus those would paint private land as campable
- * wherever the titles layer is thin. The reason, and what to try next, are
- * written out in `server/boundaryRoutes.ts` and `scripts/landSources.ts`.
- * This string is the camper-facing half of that.
- *
- * Quebec has been moved to MAPPED_CA_PROVINCES: the multi-use zones of the
- * public land use plan (PATP) are now mapped, which covers the "territoire
- * public libre" where the province allows free wild camping. The reason it
- * carries a caveat rather than a plain null is the same as British Columbia's
- * — a large mapped area and a small share of what is really there.
+ * What remains here is the honest default for a province the app has never
+ * been asked about.
  */
-const UNMAPPED_CA_PROVINCES = new Map<string, string>([
-  ['CA-NL', 'about 95% of it is Crown land, and none of it is published as a map layer']
-]);
+const UNMAPPED_CA_PROVINCES = new Map<string, string>([]);
 
 /**
  * Why a province is blank, in a camper's words — or null when the blankness
@@ -468,7 +473,7 @@ export const landDataGap = (isoCode: string | null | undefined): string | null =
  * Whether the province publishes a layer this app actually draws.
  *
  * The complement of a data gap. AB, NB and NS are mapped even though their
- * caveat is a clean null; QC, NL and the rest are not mapped at all. The map
+ * caveat is a clean null; QC and NL are mapped with loud caveats. The map
  * uses this to decide whether its request-level chips (truncation,
  * too-far-out) are telling a truth about real data — over a province with no
  * data, "zoom in to see it" is the same lie those chips exist to prevent.

@@ -591,11 +591,14 @@ export const LAND_SOURCES: LandSourceSpec[] = [
    * Protection stricte, Privé, Utilisation prioritaire, villégiature — is
    * excluded: those are parks, ecological reserves, private land and priority
    * uses where free camping is not broadly allowed. The dataset's own
-   * area field (SUPERFICIE, km²) drops slivers below 1 km², and the export
-   * covers only the PATP's mapped territory south of about 55°N — the
-   * Nord-du-Québec planning territory is not in the source, so like BC's
-   * provincial forests this source understates Quebec rather than risking
-   * overstating it. CA-QC stays in COVERAGE_GAPS saying exactly that.
+   * area field (SUPERFICIE, km²) drops slivers below 1 km².
+   *
+   * COVERAGE. This source is the SOUTHERN half of the plan — the managed
+   * territory south of ~55°N, from the provincial MRNF shapefile. The
+   * Nord-du-Québec planning territory (everything from the James Bay coast
+   * up to 62°N) is a separate source, `qc_patp_north_multi_use` below, read
+   * from the regional Eeyou Istchee Baie-James and Kativik WMS services.
+   * Together they cover the whole province.
    *
    * `kind: 'geojson'` + a LOCAL PATH because the PATP is published as a
    * download, not a service: the province's own WMS answers attribute queries
@@ -611,7 +614,7 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     licence: 'Licence Creative Commons 4.0 (attribution) — Données Québec',
     jurisdiction: 'CA-QC',
     kind: 'geojson',
-    url: 'data/qc-patp-campable.geojson',
+    url: 'data/qc-patp-campable.json',
     where: '',
     outFields: '*',
     confidence: 'managing_agency',
@@ -636,8 +639,125 @@ export const LAND_SOURCES: LandSourceSpec[] = [
       'Multi-use (Utilisation multiple) zones of the PATP: 352 polygons, about 192,000 km² of ' +
       'Quebec\'s public land, converted from the official MRNF shapefile by ' +
       'scripts/convertQcPatp.py. Excludes every other vocation (protection, private, ' +
-      'priority-use, villégiature) and everything north of the PATP\'s mapped territory ' +
-      '(~55°N). Absence of a polygon is "no data", not "no public land".'
+      'priority-use, villégiature). Pairs with qc_patp_north_multi_use for the ' +
+      'Nord-du-Québec planning territory. Absence of a polygon is "no data", not "no ' +
+      'public land".'
+  },
+  /**
+   * QUEBEC, NORTH — the Nord-du-Québec planning territory, read from the two
+   * regional PATP services nobody in this pipeline knew existed until 2026.
+   *
+   * WHY TWO FILES. The PATP\'s southern shapefile stops at ~55°N. Everything
+   * above that — Eeyou Istchee Baie-James (49–55.6°N) and Kativik/Nunavik
+   * (55–62°N) — is published by the MRNF as two LIVE ArcGIS MapServers on
+   * servicescarto.mrnf.gouv.qc.ca (`PATP_NdQ_EIBJ_WMS`, `PATP_NdQ_Kativik_WMS`),
+   * under the MERN "Territoire" folder. Those services have the same VOCATION
+   * field and the same "Utilisation multiple" semantics as the south, so the
+   * same filter applies. They were discovered by probing the MERN REST
+   * directory after the southern pipeline shipped — see the Quebec note in
+   * server/boundaryRoutes.ts for the trail.
+   *
+   * THE GEOMETRY QUIRK. EIBJ layer 3 (the big multi-use zones) answers any
+   * geometry query with HTTP 500 unless `maxAllowableOffset` is passed — the
+   * raw geometry is malformed server-side and the generaliser heals it.
+   * scripts/convertQcPatpNorth.py fetches both services with
+   * `maxAllowableOffset=0.01` and writes this file.
+   *
+   * `kind: 'geojson'` + local path, exactly like the south: the regional
+   * services are queryable, but the app\'s server-side fetch pipeline already
+   * has the south as a file and mixing one protocol per province is simpler
+   * than mixing two.
+   */
+  {
+    id: 'qc_patp_north_multi_use',
+    label: 'Quebec Crown Land — Nord-du-Québec (Public Land Use Plan — Multi-Use)',
+    attribution: 'Ministère des Ressources naturelles et des Forêts (MRNF), Gouvernement du Québec',
+    licence: 'Licence Creative Commons 4.0 (attribution) — Données Québec',
+    jurisdiction: 'CA-QC',
+    kind: 'geojson',
+    url: 'data/qc-patp-north-campable.json',
+    where: '',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 2000,
+    bbox: [-81.5, 49.0, -61.0, 62.4],
+    externalId: (p) => String(p.uuid ?? p.UUID ?? p.OBJECTID ?? 'qc-patp-north'),
+    name: (p) => String(p.nom_zone ?? p.NOM_ZONE ?? 'Multi-use public land (Nord-du-Québec)'),
+    designation: () => 'Quebec public land — multi-use zone, Nord-du-Québec (PATP)',
+    campingBasis: () =>
+      'Quebec allows free wild camping (camping sauvage) without a permit on numerous portions ' +
+      'of the territoire public libre — the multi-use zones of the public land use plan. The ' +
+      'official rule (quebec.ca, Activités permises sur le territoire public) requires the stay ' +
+      'to be temporary and the gear to be mobile. This northern territory is planned under the ' +
+      'Convention de la Baie-James et du Nord québécois and local/regional rules can apply, so ' +
+      'the basis is inferred from provincial policy, not from anything in this layer.',
+    stayLimitDays: () => null,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Multi-use (Utilisation multiple) zones of the Nord-du-Québec planning territory: 3 ' +
+      'polygons, about 537,000 km² — Eeyou Istchee Baie-James (2) and Kativik (1) — fetched ' +
+      'from the regional PATP MapServers by scripts/convertQcPatpNorth.py. Together with ' +
+      'qc_patp_multi_use this maps the multi-use zones of the WHOLE province, roughly ' +
+      '730,000 km² of Quebec\'s public land. Absence of a polygon is "no data", not "no ' +
+      'public land".'
+  },
+  /**
+   * NEWFOUNDLAND AND LABRADOR — Crown land as the province minus its titles.
+   *
+   * NL publishes no Crown land layer. It publishes the OPPOSITE: the Land Use
+   * Atlas MapServer (LandUseDetails) carries every alienated parcel — Crown
+   * titles and applications, federal and municipal land, parks, natural
+   * areas, Indigenous land holdings, expropriations, quit claims, hydro
+   * lands. NL is ~95% Crown land and free dispersed camping on it is legal
+   * unless posted otherwise, so Crown land here is drawn as the province
+   * outline minus everything that has been removed from the Crown, computed
+   * by scripts/buildNlCrownLand.py.
+   *
+   * WHY THIS IS ALLOWED WHEN OTHER PROVINCES ARE NOT. The house rule refuses
+   * to draw land as campable on the strength of a layer that does not say so.
+   * This is the inverse and it is allowed for the same reason NB and NS are:
+   * the residual really is Crown land (the province says so — the titles
+   * layer IS the record of what is not), and the province\'s camping policy
+   * broadly permits it. The subtraction is exhaustive and honest; the caveat
+   * in coverage.ts ("edges are approximate") is the camper-facing half.
+   *
+   * WATER IS DELIBERATELY LEFT IN. Lakes and rivers on Crown land are Crown
+   * land; every other mapped province includes its lakes too.
+   */
+  {
+    id: 'nl_crown_land',
+    label: 'Newfoundland and Labrador Crown Land (province minus alienated titles)',
+    attribution: 'Government of Newfoundland and Labrador, Land Use Atlas',
+    licence: 'Open Government Licence — Newfoundland and Labrador',
+    jurisdiction: 'CA-NL',
+    kind: 'geojson',
+    url: 'data/nl-crown-land.json',
+    where: '',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'cadastral_derived',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 2000,
+    bbox: [-67.9, 46.6, -52.6, 60.4],
+    externalId: (p) => String(p.uuid ?? p.UUID ?? p.OBJECTID ?? 'nl-crown-land'),
+    name: (p) => String(p.nom_zone ?? p.name ?? 'Newfoundland and Labrador Crown land'),
+    designation: () => 'NL Crown land — province minus alienated titles',
+    campingBasis: () =>
+      'Newfoundland and Labrador allows free dispersed camping on Crown land unless otherwise ' +
+      'posted — no permit for a temporary stay with mobile gear, same class as BC, AB, SK, MB ' +
+      'and NB. That basis is provincial policy, not anything in this layer: the polygons are ' +
+      'the province minus every alienated title, so a parcel can be drawn Crown land and still ' +
+      'sit next to posted private land that is not.',
+    stayLimitDays: () => null,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Crown land as the province outline minus the LandUseDetails subtraction set (Crown ' +
+      'titles 78,896; applications; federal; municipal; parks; natural/ecological reserves; ' +
+      'Indigenous lands; expropriations; quit claims; hydro). About 385,000 km² — the largest ' +
+      'single mapped province on the map. Computed by scripts/buildNlCrownLand.py. Water is ' +
+      'left in. Absence of a polygon is "no data", not "no Crown land".'
   }
 ];
 

@@ -1741,6 +1741,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showAdmin1, setShowAdmin1] = useState(true);
   const [boundaries, setBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARIES);
   const [zoomTooFar, setZoomTooFar] = useState(false);
+  /** The map's own current zoom, kept live across gestures. The `zoom` prop
+   * only changes when App flies somewhere (search, locate, pin focus), so it
+   * goes stale the moment the user pans or pinches; UI that must react to the
+   * real zoom reads this instead. Synced where the boundary effect reads
+   * `map.getZoom()`. */
+  const [liveZoom, setLiveZoom] = useState(zoom);
   /**
    * The wide view asked for boundaries and did not get an answer it could
    * trust — so the map is showing whatever it had, which may be from the zoom
@@ -2839,6 +2845,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
 
       const currentZoom = map.getZoom();
+      setLiveZoom(currentZoom);
 
       // Below the overview floor the whole hemisphere is on screen and there
       // is nothing legible to draw at any level of generalisation.
@@ -6681,18 +6688,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
         The two chips above are about this request: too far out to draw, or a
         government server that did not answer in time. This one is about the
-        ground. Newfoundland and Labrador is about 95% Crown land and there is
-        no layer of it anywhere — the province publishes Crown TITLES, the land
-        that has been given away, which is the exact inverse of what a camper
-        needs and cannot safely be subtracted from the province to get the
-        rest. Quebec is the same shape of problem for a different reason.
+        ground. Most of Canada's provinces now draw real Crown land — Quebec's
+        multi-use zones and Newfoundland and Labrador's province-minus-titles
+        are the newest — but a mapped province is not mapped to the last acre
+        (QC draws only its multi-use zones; NL's edges are cadastral-derived),
+        and a few provinces and the territories still have no layer at all.
+        Partial and absent are different truths and both deserve a word on the
+        map. Without this, the app renders its most confident possible lie —
+        an empty province — with nothing to read it against.
 
-        So the map over those provinces is blank and will stay blank, and the
-        only honest thing left to do is write the reason on it. Without this,
-        the app renders its most confident possible lie — an empty province —
-        with nothing to read it against. The caveat existed already, on the
-        card behind a pin, which reached everybody except the person who
-        needed it.
+        Shown only at detail zoom: below BOUNDARY_MIN_ZOOM the overview weld
+        is what is on screen, and a province-specific caveat under one
+        crosshair position would be noise against it. Stacked above the tap
+        hint (bottom-16, not bottom-5) so the two never share a corner.
 
         Same amber as the two above, because it is the same kind of statement:
         a missing answer, not a caveat about a good one. Ranked below them
@@ -6700,13 +6708,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         standing fact about the province, and only one chip may hold this
         corner.
       */}
-      {showBoundaries && !wideViewFailed && !zoomTooFar && centreGap && (
-        <div className="absolute bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
+      {showBoundaries && !wideViewFailed && !zoomTooFar && liveZoom >= BOUNDARY_MIN_ZOOM && centreGap && (
+        <div className="absolute bottom-16 left-3 right-3 z-[998] pointer-events-none anim-in-up">
           <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
             <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
             <span className="text-[10px] font-semibold text-amber-200 leading-snug">
-              {centreGap.name} — {centreGap.gap}. A blank map here means we
-              have no data, never that the land isn’t there.
+              {hasMappedCrownLand(centreGap.isoCode)
+                ? `${centreGap.name} — ${centreGap.gap}.`
+                : `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`}
             </span>
           </div>
         </div>
