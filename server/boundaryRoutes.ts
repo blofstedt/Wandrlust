@@ -2331,7 +2331,26 @@ const queryBoundarySourceOnce = async (
     // ArcGIS reports failures as HTTP 200 with an `error` key. Treating that
     // as an empty result would silently hide land, so it is a hard failure.
     if (data?.error) {
-      console.warn(`[boundaries] ${source.id}:`, data.error?.message ?? 'query error');
+      /*
+       * PRINT THE WHOLE ERROR, NOT JUST `message`.
+       *
+       * PAD-US answers with `message: ''` — an empty string, which is not
+       * nullish, so the `?? 'query error'` fallback never fired and the log
+       * line read `[boundaries] padus_open_access:` and stopped. A source
+       * failing in production with a blank reason is the one thing worse
+       * than a source failing, because it looks like the logging worked.
+       *
+       * ArcGIS puts the useful part in `code` and `details` anyway: an
+       * invalid field name, a rejected where clause, a token demand. Those
+       * are the answers, and they were being thrown away.
+       */
+      const err = data.error;
+      const detail =
+        [err?.message, err?.code != null ? `code ${err.code}` : null,
+         Array.isArray(err?.details) && err.details.length ? err.details.join('; ') : null]
+          .filter((part) => typeof part === 'string' && part.length > 0)
+          .join(' | ') || JSON.stringify(err).slice(0, 300);
+      console.warn(`[boundaries] ${source.id}: ${detail}`);
       /*
        * Unless the only new thing we asked for was the sort. Every one of
        * these layers advertises support for it, but an advertised capability
