@@ -234,7 +234,7 @@ export const BOUNDARY_GROUP_STYLES: Record<
       'Local closures, fire bans and permit rules still apply and are not all in this data.'
   },
   access_only: {
-    color: '#60A5FA', fillColor: '#3B82F6', fillOpacity: 0.2,
+    color: '#F59E0B', fillColor: '#D97706', fillOpacity: 0.2,
     label: 'Open to the public — camping not confirmed',
     detail:
       'The source says the public may enter. It does not say anyone may stay overnight, ' +
