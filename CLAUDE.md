@@ -232,17 +232,26 @@ npm run vapid    # generate push notification keys
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.
   `supabase_schema.sql` is destructive — it drops and recreates.
-- **`public_lands` is EMPTY in production, and always has been.** `npm run seed`
-  writes it, `boundaries_in_bbox` reads it, and `boundaryRoutes.ts` prefers it
-  over the live ArcGIS services — a whole path that has never once fired,
-  because nobody ran the seed. Verified: `select count(*) from public_lands`
-  returns 0. Until it is seeded, every boundary request goes to eight
-  government servers, and the only thing between a camper and a slow
-  provincial ArcGIS box is `boundary_tile_cache` (migration 19), which fills
-  itself from real traffic. **Seeding it properly is still the fix**; it needs
-  a machine that can reach the sources, which the agent sandbox cannot.
-  `meta.sources[].servedFrom` on `/api/boundaries` says `memory`, `db` or
-  `live` per source — ask for the same box twice and watch it turn `db`.
+- **`public_lands` fills itself now, from production, and that is the only
+  thing that ever could have filled it.** `npm run seed` needs a machine that
+  can reach eight government services; no such machine has ever run it, and
+  the agent sandbox is refused at the gateway for every government host. So
+  the API stores what it fetches: a detailed request answers from the live
+  services, and those parcels are written to `public_lands` with the exact box
+  they cover before the response goes out (before, not after — Vercel may
+  freeze the function the moment it responds). The next look at that ground is
+  one indexed read. `meta.sources[].servedFrom` says `stored` when a source
+  came from the table, against `live`, `db` (the tile cache) and `memory`.
+  **Two rules keep it honest and must not be relaxed.** Only complete answers
+  are stored — a truncated one is the service saying it withheld parcels, and
+  stored as if whole it becomes the map claiming land is private. Only sharp
+  ones are stored — `INGEST_MAX_TOLERANCE`, about 100 m — because stored
+  geometry is read back at every zoom. And coverage is claimed ONLY when every
+  storable parcel actually stored: the first version recorded coverage after
+  storing nothing, which is the map promising to answer for ground it does not
+  hold. Zero of zero is fine and is how empty country stops being re-asked
+  forever. Because only detailed views qualify, the zoomed-out overview still
+  goes live — it fills in behind you as you use the map, it does not preload.
 - **A merged pull request is not a shipped feature.** Vercel deploys the code
   the moment `main` moves; nothing deploys the SQL. Migration 14 sat unapplied
   for a release and migration 17 for another, and both times the symptom was a
