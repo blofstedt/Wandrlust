@@ -676,15 +676,22 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
   },
   /*
    * ---------------------------------------------------------------------------
-   * QUEBEC, AND WHY IT IS NOT IN THIS LIST
+   * QUEBEC, AND WHY IT IS A FILE SOURCE HERE
    * ---------------------------------------------------------------------------
    *
-   * The biggest gap in the country by area: roughly 92% of Quebec is terres du
-   * domaine de l'État, and this file draws none of it.
+   * The biggest gap in the country by area is now a mapped one: the multi-use
+   * zones of the public land use plan are drawn from the official MRNF
+   * shapefile — `qc_patp_multi_use` in scripts/landSources.ts — rather than
+   * from this list, because the province's services still cannot be read.
+   * Roughly 92% of Quebec is terres du domaine de l'État; the PATP covers the
+   * managed territory south of ~55°N, and of that the `Utilisation multiple`
+   * vocations are the closest published proxy for the territoire public libre
+   * on which free wild camping is allowed.
    *
-   * The right layer is not in doubt. It is the PATP — the public land use plan
-   * — whose polygons exist only where the land is public, with a vocation on
-   * each (`Utilisation multiple`, `Protection`, and so on). Its service is
+   * THE RIGHT LAYER WAS NEVER IN DOUBT. It is the PATP — the public land use
+   * plan — whose polygons exist only where the land is public, with a
+   * vocation on each (`Utilisation multiple`, `Protection`, and so on). Its
+   * service is
    *
    *     servicescarto.mrnf.gouv.qc.ca/pes/rest/services/Territoire/PATP_prov_WMS
    *
@@ -713,25 +720,37 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
    * it may simply not be open. That is a five-second question for anyone with
    * a browser and unanswerable from here.
    *
-   * WHAT TO TRY NEXT, in the order worth trying:
+   * WHAT WORKED INSTEAD — the download, not a service. Option 3 below is the
+   * path that succeeded: Données Québec publishes the PATP shapefile itself
+   * (Affectation_s), and scripts/convertQcPatp.py turns it into
+   * data/qc-patp-campable.geojson — filtering VOCATION == "Utilisation
+   * multiple", computing area in the native Québec Lambert CRS (EPSG:32198),
+   * dropping slivers under 1 km², and reprojecting to WGS84. That file is a
+   * `kind: 'geojson'` source in scripts/landSources.ts, the documented
+   * pattern for file-only provinces, and it flows into the bundled overview
+   * (`npm run map:land`) and any seeding.
+   *
+   * REMAINING DEAD ENDS AND NEXT STEPS, for anyone who wants the rest of
+   * Quebec's 92%:
    *   1. Open DOMANIALITE in a browser. If the REST directory renders, the
    *      layer id and its fields are all that is missing.
    *   2. IGO / geoegl.msp.gouv.qc.ca — Quebec's other OGC infrastructure,
    *      which publishes real WFS; look for affectation or domanialité there.
-   *   3. Données Québec's PATP dataset resources — if any of them is GeoJSON,
-   *      the seeder can ingest it as a file source today, no new code.
+   *   3. DONE — the Données Québec PATP shapefile, ingested as a file source.
    *   4. The regional PATP services (PATP_NdQ_EIBJ_WMS, PATP_NdQ_Kativik_WMS),
-   *      in case a regional one was published differently from the provincial.
+   *      in case a regional one was published differently from the provincial
+   *      — and the Nord-du-Québec planning territory itself, which the
+   *      provincial PATP does not cover.
    *
    * The machinery a working service will need is already here and tested:
    * `format: 'esri'` reads Esri rings, `generaliseLocally` handles a service
    * that cannot thin its own geometry, and `maxBytes` keeps either from
    * flooding the function. Wiring one is a source entry, not a project.
    *
-   * Until then Quebec is a recorded gap rather than a source that draws
-   * nothing — because a source returning zero features says "no public land
-   * here" to every camper in Quebec, and `landDataGap` says the true thing
-   * instead.
+   * Until then Quebec is a file source with an honest caveat rather than a
+   * live source that draws nothing — because a source returning zero features
+   * says "no public land here" to every camper in Quebec, and the caveat says
+   * the true thing instead.
    */
   {
     /**

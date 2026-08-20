@@ -571,6 +571,73 @@ export const LAND_SOURCES: LandSourceSpec[] = [
       'concentrated in the south and centre. Hosted on ArcGIS Online, the same platform as ' +
       'the BLM and PAD-US sources. Absence of a polygon anywhere in Manitoba is "no data", ' +
       'and across most of the province that is emphatically not "no public land".'
+  },
+  /**
+   * QUEBEC — multi-use zones of the public land use plan (PATP), read from a
+   * local file because the province publishes no queryable geometry service.
+   *
+   * WHY THIS IS THE RIGHT LAYER. The PATP (Plan d'affectation du territoire
+   * public) is the MRNF's official zoning of the terres du domaine de l'État —
+   * roughly 92% of Quebec is public land. Its VOCATION field is the land-use
+   * class, and "Utilisation multiple" is the class that means the land is held
+   * open for general uses including recreation. It is the closest published
+   * proxy for the "territoire public libre" on which the province allows free
+   * wild camping: the official rule, quoted in this entry's campingBasis,
+   * says camping sauvage is permitted without authorization on numerous
+   * portions of the territoire public libre, for temporary stays with mobile
+   * gear.
+   *
+   * WHAT IS DELIBERATELY NOT INCLUDED. Every other VOCATION — Protection,
+   * Protection stricte, Privé, Utilisation prioritaire, villégiature — is
+   * excluded: those are parks, ecological reserves, private land and priority
+   * uses where free camping is not broadly allowed. The dataset's own
+   * area field (SUPERFICIE, km²) drops slivers below 1 km², and the export
+   * covers only the PATP's mapped territory south of about 55°N — the
+   * Nord-du-Québec planning territory is not in the source, so like BC's
+   * provincial forests this source understates Quebec rather than risking
+   * overstating it. CA-QC stays in COVERAGE_GAPS saying exactly that.
+   *
+   * `kind: 'geojson'` + a LOCAL PATH because the PATP is published as a
+   * download, not a service: the province's own WMS answers attribute queries
+   * with no geometry at all, and no REST layer of the land itself is exposed
+   * (see server/boundaryRoutes.ts, Quebec note). The file is produced from
+   * the official MRNF shapefile by scripts/convertQcPatp.py, so the source
+   * is the province's own data, only pre-filtered.
+   */
+  {
+    id: 'qc_patp_multi_use',
+    label: 'Quebec Crown Land (Public Land Use Plan — Multi-Use)',
+    attribution: 'Ministère des Ressources naturelles et des Forêts (MRNF), Gouvernement du Québec',
+    licence: 'Licence Creative Commons 4.0 (attribution) — Données Québec',
+    jurisdiction: 'CA-QC',
+    kind: 'geojson',
+    url: 'data/qc-patp-campable.geojson',
+    where: '',
+    outFields: '*',
+    confidence: 'managing_agency',
+    edgeAccuracy: 'administrative',
+    campingBasisKind: 'agency_policy_inference',
+    maxRecordCount: 2000,
+    bbox: [-79.518, 45.379, -61.394, 55.0],
+    externalId: (p) => String(p.uuid ?? p.UUID ?? p.OBJECTID ?? 'qc-patm-multi-use'),
+    name: (p) => String(p.nom_zone ?? p.NOM_ZONE ?? 'Multi-use public land'),
+    designation: () => 'Quebec public land — multi-use zone (PATP)',
+    campingBasis: () =>
+      'Quebec allows free wild camping (camping sauvage) without a permit on numerous portions ' +
+      'of the territoire public libre — the multi-use zones of the public land use plan. The ' +
+      'official rule (quebec.ca, Activités permises sur le territoire public) requires the stay ' +
+      'to be temporary and the gear to be mobile, and lets municipal regional counties (MRCs) ' +
+      'impose their own rules. That basis is inferred from provincial policy, not from anything ' +
+      'in this layer — protected zones, private land and priority uses are excluded, but ' +
+      'specific closures and local bylaws are not subtracted here.',
+    stayLimitDays: () => null,
+    permit: () => ({ required: false, name: null }),
+    notes:
+      'Multi-use (Utilisation multiple) zones of the PATP: 352 polygons, about 192,000 km² of ' +
+      'Quebec\'s public land, converted from the official MRNF shapefile by ' +
+      'scripts/convertQcPatp.py. Excludes every other vocation (protection, private, ' +
+      'priority-use, villégiature) and everything north of the PATP\'s mapped territory ' +
+      '(~55°N). Absence of a polygon is "no data", not "no public land".'
   }
 ];
 
@@ -664,7 +731,14 @@ export const CANDIDATE_SOURCES: {
     appearsToBe:
       "Terres du domaine de l'État — roughly 92% of Quebec is public land, administered by MRNF.",
     mustConfirm:
-      'The largest prize in the country by area. No open queryable REST layer of the land itself was found; what is published is land-occupancy raster classification and villégiature planning guidance. Confirm whether Données Québec exposes a vector service.'
+      'RESOLVED, via the download rather than a service: the multi-use (Utilisation multiple) ' +
+      'zones of the public land use plan (PATP) are now in LAND_SOURCES as qc_patp_multi_use, ' +
+      'converted from the official MRNF shapefile by scripts/convertQcPatp.py. The province ' +
+      'still publishes no queryable geometry service — its WMS answers attribute queries with ' +
+      'no geometry at all, and no REST layer of the land itself is exposed — so the file path ' +
+      'is the one that worked, exactly as fetchGeoJsonFile documents for file-only provinces. ' +
+      'What remains unmapped (protected vocations, private land, Nord-du-Québec) is recorded in ' +
+      'COVERAGE_GAPS rather than here.'
   },
   {
     jurisdiction: 'CA-BC',
@@ -704,9 +778,16 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
   },
   {
     jurisdiction: 'CA-QC',
-    region: 'Quebec',
+    region: 'Quebec (outside the multi-use zones)',
     reason:
-      "UNRESOLVED, and the largest gap in the country by area — roughly 92% of Quebec is terres du domaine de l'État. Two layers are right and neither can be read: the public land use plan (PATP) answers queries with attributes and no geometry at all, in GeoJSON or Esri JSON, because it is published for WMS; and DOMANIALITE, the ministry's own public-versus-private reference on the fish-and-wildlife server, answers a JSON request with an HTML page. Both are named, with the next steps, in the Quebec note in server/boundaryRoutes.ts. Until one of them serves polygons Quebec draws nothing — and an empty Quebec means we cannot fetch the shapes, never that the land is not there."
+      'PARTIAL COVERAGE. The multi-use zones of the public land use plan (PATP) are now drawn ' +
+      'from the official MRNF shapefile (scripts/convertQcPatp.py) — 352 polygons, roughly ' +
+      '192,000 km², the closest published proxy for the territoire public libre where Quebec ' +
+      'allows free wild camping. Quebec is over 90% public land, so this is a large area and ' +
+      'a fraction of what is really there: every other vocation (Protection, Protection ' +
+      'stricte, Privé, Utilisation prioritaire, villégiature) is excluded by design, and the ' +
+      'PATP itself stops around 55°N, so the whole Nord-du-Québec planning territory draws ' +
+      'blank. That blankness is missing data, never missing land.'
   },
   {
     jurisdiction: 'CA-PE',

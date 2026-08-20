@@ -394,31 +394,45 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
    * imply. They get a plain null, like Alberta.
    */
   ['CA-NB', null],
-  ['CA-NS', null]
+  ['CA-NS', null],
+  /*
+   * Quebec's caveat has to be one of the loudest. The multi-use zones of the
+   * public land use plan are now mapped — roughly 192,000 km², about a fifth
+   * of the province's public land — and the province itself is over 90%
+   * public land, so this is a large area and a small fraction, exactly like
+   * BC. Everything outside a multi-use zone — protected areas, private land,
+   * priority uses, and the whole Nord-du-Québec planning territory — is
+   * unmapped here.
+   */
+  ['CA-QC', 'only the multi-use zones of the public land use plan are mapped']
 ]);
 
 /**
- * The two provinces where "no data" is the most misleading thing the map
+ * The one province where "no data" is the most misleading thing the map
  * could imply, and what to say instead.
  *
  * The default for an unmapped province is "no Crown land data yet", which is
- * accurate and, in these two, badly incomplete: Newfoundland and Labrador is
- * about 95% Crown land and Quebec about 92% public, so a camper reading
- * "no data" over the emptiest-looking map in the country is being invited to
- * conclude the wrong thing twice over — first that there is nothing there,
- * then that we simply have not got round to it.
+ * accurate and, in this one, badly incomplete: Newfoundland and Labrador is
+ * about 95% Crown land, so a camper reading "no data" over the emptiest-
+ * looking part of the map is being invited to conclude the wrong thing twice
+ * over — first that there is nothing there, then that we simply have not got
+ * round to it.
  *
  * Neither is a to-do. Newfoundland publishes the OPPOSITE of what this map
  * needs — Crown titles and applications, the land that has been alienated —
  * and drawing the province minus those would paint private land as campable
- * wherever the titles layer is thin. Quebec's own land-use layer answers
- * queries with attributes and no geometry. Both reasons, and what to try
- * next, are written out in `server/boundaryRoutes.ts` and
- * `scripts/landSources.ts`. These strings are the camper-facing half of that.
+ * wherever the titles layer is thin. The reason, and what to try next, are
+ * written out in `server/boundaryRoutes.ts` and `scripts/landSources.ts`.
+ * This string is the camper-facing half of that.
+ *
+ * Quebec has been moved to MAPPED_CA_PROVINCES: the multi-use zones of the
+ * public land use plan (PATP) are now mapped, which covers the "territoire
+ * public libre" where the province allows free wild camping. The reason it
+ * carries a caveat rather than a plain null is the same as British Columbia's
+ * — a large mapped area and a small share of what is really there.
  */
 const UNMAPPED_CA_PROVINCES = new Map<string, string>([
-  ['CA-NL', 'about 95% of it is Crown land, and none of it is published as a map layer'],
-  ['CA-QC', 'about 92% of it is public land, and the province publishes no shapes we can read']
+  ['CA-NL', 'about 95% of it is Crown land, and none of it is published as a map layer']
 ]);
 
 /**
