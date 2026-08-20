@@ -36,7 +36,7 @@ import {
 import {
   fetchActiveFires, findFiresNear, boxAround, isUnderControl, FIRE_ALERT_RADIUS_KM, ActiveFire
 } from '../services/fireService';
-import { fetchAdmin1, Admin1, primeAdmin1 } from '../services/admin1Service';
+import { fetchAdmin1, findAdmin1At, Admin1, primeAdmin1 } from '../services/admin1Service';
 import { isOnLand, primeLandMask } from '../services/landService';
 import {
   buildFuzzRings, ringBudget, edgeBlurPx, UNCERTAINTY_LABEL, shouldSimplify
@@ -62,7 +62,7 @@ import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, OVERVIEW_BOX,
   overviewMinSpanDegrees, clampToCoverage,
-  COVERAGE_LABEL, isWithinCoverage
+  COVERAGE_LABEL, isWithinCoverage, landDataGap
 } from '../config/coverage';
 import {
   fetchAreaAlerts, alertGapNote, HazardAlert, sortAlerts,
@@ -1749,6 +1749,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * empty map is "there is no public land here".
    */
   const [wideViewFailed, setWideViewFailed] = useState(false);
+  /**
+   * The province under the middle of the screen is one this app cannot draw
+   * the Crown land of — its name, and why, in a camper's words.
+   *
+   * Until now this caveat existed only on a pin's card, which means it was
+   * shown to somebody who had already found a spot and never to the person
+   * staring at an empty province wondering where the camping went. That is
+   * backwards: Newfoundland and Labrador is about 95% Crown land and draws
+   * completely blank, and a blank map with nothing written on it is the app
+   * saying "there is nowhere to camp here" — the one sentence this codebase
+   * is not allowed to say. Now the map says it out loud, unprompted, over
+   * the ground it applies to.
+   *
+   * Null for a fully mapped region, which is every US state and Alberta,
+   * New Brunswick and Nova Scotia.
+   */
+  const [centreGap, setCentreGap] = useState<{ name: string; gap: string } | null>(null);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
   /** The same alerts, for the chip tours, which run outside React's render. */
   const hazardsRef = useRef<HazardAlert[]>([]);
@@ -4453,6 +4470,58 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
   }, [isMapReady, isOfflineMode, showAdmin1]);
 
+  /**
+   * WHICH PROVINCE AM I LOOKING AT, AND DO WE KNOW ANYTHING ABOUT IT.
+   *
+   * A point-in-polygon test against the bundled outlines — no request, no key,
+   * works offline — run on the centre of the viewport and debounced like every
+   * other pan handler here.
+   *
+   * The centre rather than the whole viewport on purpose. A box straddling the
+   * Quebec–Ontario line would otherwise have to choose between two answers or
+   * show both, and a chip that flickers between provinces as you drag is worse
+   * than no chip. What you are looking at is what is in the middle.
+   *
+   * Runs regardless of `showBoundaries` — the state is cheap and the chip that
+   * reads it does the gating — and independently of the boundary fetch, so a
+   * province with no source still gets its say. That independence is the whole
+   * point: the sources that answer are exactly the ones this is not about.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let requestId = 0;
+
+    const run = async (): Promise<void> => {
+      const myId = ++requestId;
+      const centre = map.getCenter();
+      const hit = await findAdmin1At(centre.lat, centre.lng);
+      if (cancelled || myId !== requestId) return;
+
+      const gap = landDataGap(hit?.isoCode);
+      // No region under the centre is not the same as a region with no gap,
+      // but both end the same way here: nothing to say, so say nothing.
+      setCentreGap(hit && gap ? { name: hit.name, gap } : null);
+    };
+
+    const schedule = (): void => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => { run().catch(() => undefined); }, 250);
+    };
+
+    map.on('moveend zoomend', schedule);
+    schedule();
+
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend zoomend', schedule);
+    };
+  }, [isMapReady]);
+
   /* ------------------------------------------------------------------ */
   /* Markers                                                             */
   /* ------------------------------------------------------------------ */
@@ -6556,7 +6625,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         looking for the small parcels that are, in fact, already on the screen
         inside the block.
       */}
-      {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && (
+      {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && !centreGap && (
         <div className="absolute bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
             <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
@@ -6591,6 +6660,42 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               {zoomTooFar
                 ? 'Too far out to draw public land — zoom in to see it'
                 : 'Couldn’t load public land for this wide view. What’s drawn may be incomplete — zoom in for the real picture.'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/*
+        THE PROVINCE ITSELF IS THE MISSING ANSWER.
+
+        The two chips above are about this request: too far out to draw, or a
+        government server that did not answer in time. This one is about the
+        ground. Newfoundland and Labrador is about 95% Crown land and there is
+        no layer of it anywhere — the province publishes Crown TITLES, the land
+        that has been given away, which is the exact inverse of what a camper
+        needs and cannot safely be subtracted from the province to get the
+        rest. Quebec is the same shape of problem for a different reason.
+
+        So the map over those provinces is blank and will stay blank, and the
+        only honest thing left to do is write the reason on it. Without this,
+        the app renders its most confident possible lie — an empty province —
+        with nothing to read it against. The caveat existed already, on the
+        card behind a pin, which reached everybody except the person who
+        needed it.
+
+        Same amber as the two above, because it is the same kind of statement:
+        a missing answer, not a caveat about a good one. Ranked below them
+        because they are about the map failing right now and this is a
+        standing fact about the province, and only one chip may hold this
+        corner.
+      */}
+      {showBoundaries && !wideViewFailed && !zoomTooFar && centreGap && (
+        <div className="absolute bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
+          <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
+            <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
+            <span className="text-[10px] font-semibold text-amber-200 leading-snug">
+              {centreGap.name} — {centreGap.gap}. A blank map here means we
+              have no data, never that the land isn’t there.
             </span>
           </div>
         </div>

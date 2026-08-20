@@ -398,6 +398,30 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
 ]);
 
 /**
+ * The two provinces where "no data" is the most misleading thing the map
+ * could imply, and what to say instead.
+ *
+ * The default for an unmapped province is "no Crown land data yet", which is
+ * accurate and, in these two, badly incomplete: Newfoundland and Labrador is
+ * about 95% Crown land and Quebec about 92% public, so a camper reading
+ * "no data" over the emptiest-looking map in the country is being invited to
+ * conclude the wrong thing twice over — first that there is nothing there,
+ * then that we simply have not got round to it.
+ *
+ * Neither is a to-do. Newfoundland publishes the OPPOSITE of what this map
+ * needs — Crown titles and applications, the land that has been alienated —
+ * and drawing the province minus those would paint private land as campable
+ * wherever the titles layer is thin. Quebec's own land-use layer answers
+ * queries with attributes and no geometry. Both reasons, and what to try
+ * next, are written out in `server/boundaryRoutes.ts` and
+ * `scripts/landSources.ts`. These strings are the camper-facing half of that.
+ */
+const UNMAPPED_CA_PROVINCES = new Map<string, string>([
+  ['CA-NL', 'about 95% of it is Crown land, and none of it is published as a map layer'],
+  ['CA-QC', 'about 92% of it is public land, and the province publishes no shapes we can read']
+]);
+
+/**
  * Why a province is blank, in a camper's words — or null when the blankness
  * genuinely means "we looked and there is nothing here".
  *
@@ -423,5 +447,5 @@ export const landDataGap = (isoCode: string | null | undefined): string | null =
   // A mapped province may still carry a caveat — partial coverage is its own
   // answer, and it is not the same as full coverage OR as no data at all.
   if (MAPPED_CA_PROVINCES.has(isoCode)) return MAPPED_CA_PROVINCES.get(isoCode) ?? null;
-  return 'no Crown land data yet';
+  return UNMAPPED_CA_PROVINCES.get(isoCode) ?? 'no Crown land data yet';
 };

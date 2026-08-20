@@ -99,7 +99,7 @@ export const Admin1Line: React.FC<Admin1LineProps> = ({
         // Amber, not red: this is a limit on what we know, not a hazard.
         <span className="text-[10px] text-amber-300/80 flex items-start gap-1">
           <Info className="w-2.5 h-2.5 mt-[3px] shrink-0" />
-          <span>Public land here is partly unmapped — {gap}. A blank map is not an empty one.</span>
+          <span>What’s drawn here is incomplete — {gap}. A blank map is not an empty one.</span>
         </span>
       )}
     </span>
