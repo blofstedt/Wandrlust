@@ -64,6 +64,7 @@ import { writeFile, mkdir, stat } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { LAND_SOURCES, LandSourceSpec } from './landSources';
 import { fetchAllTiled, fetchGeoJsonFile } from './arcgisTiledFetch';
+import { subtractLakes } from '../server/landGeometry';
 
 /* -------------------------------------------------------------------------- */
 /* Options                                                                     */
@@ -263,7 +264,15 @@ const buildSource = async (
        */
       if (group === 'campable' && source.campingBasis(properties) === null) continue;
 
-      const simplified = simplifyGeometry(feature?.geometry);
+      /*
+       * Water first: the same lake cut the live boundary API applies per
+       * request (Natural Earth 1:10m big lakes, see subtractLakes in
+       * server/landGeometry.ts). Without it the static overview paints
+       * campable green over open water — a province-scale layer like NL's
+       * would put a tent on Smallwood Reservoir. File sources that already
+       * carry water holes (NL, QC north) pass through unchanged.
+       */
+      const simplified = simplifyGeometry(subtractLakes(feature?.geometry));
       if (!simplified) continue;
 
       const name = (() => {

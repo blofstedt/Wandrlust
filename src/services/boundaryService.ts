@@ -392,8 +392,11 @@ const CACHE_MAX_ENTRIES = 40;
  *        each quietly costing a province its shape
  *   6 → Quebec drawn province-wide (multi-use zones incl. Nord-du-Québec)
  *        and Newfoundland and Labrador Crown land (province minus titles)
+ *   7 → water is cut out of the green: NL carries OSM water holes, QC
+ *        north carries Natural Earth reservoir holes, and the static
+ *        overview cuts lakes for every source
  */
-const BOUNDARY_DATA_EPOCH = '6';
+const BOUNDARY_DATA_EPOCH = '7';
 
 interface DiskEntry { at: number; collection: BoundaryCollection }
 

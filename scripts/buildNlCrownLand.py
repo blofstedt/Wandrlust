@@ -208,6 +208,34 @@ def main() -> int:
               f"merged area {area:,.0f} km² (geodesic)")
         subtract_parts.append(geom)
 
+    # Also subtract OSM water polygons (lakes, reservoirs, riverbank
+    # polygons) so water becomes holes in the green rather than campable
+    # land. data/nl-water.geojson is derived from the GeoFabrik
+    # newfoundland-and-labrador PBF (see scripts/extractNlWater.py +
+    # scripts/filterNlWater.py); the live boundary API additionally cuts
+    # Natural Earth 1:10m lakes per request. Water is folded into the same
+    # subtrahend as the alienated titles so the outline gets ONE difference
+    # pass (A - water - titles == A - (water ∪ titles)); a second overlay
+    # against an already-holed polygon is what made this build crawl.
+    water_file = os.path.join(REPO_ROOT, "data/nl-water.geojson")
+    if os.path.exists(water_file):
+        wgdf = gpd.read_file(water_file)
+        wgdf = wgdf[wgdf.geometry.apply(area_km2) >= 1.0]
+        # grid_size (~1e-4 deg ≈ 10 m) keeps overlapping OSM water holes
+        # from tripping GEOS noding errors; invisible at map scale.
+        water = shapely.set_operations.union_all(
+            list(wgdf.geometry), grid_size=1e-4)
+        # Thin the water to ~100 m before the overlay: OSM carries ~10 m
+        # vertices, which makes the difference pathologically slow for
+        # zero visible gain at map scale.
+        water = water.simplify(1e-3, preserve_topology=True)
+        area_w = area_km2(water)
+        print(f"  water: {len(wgdf)} polys, "
+              f"merged area {area_w:,.0f} km² (geodesic)")
+        subtract_parts.append(water)
+    else:
+        print("  (no data/nl-water.geojson — skipping water cut)")
+
     print("Unioning subtraction layers...")
     if subtract_parts:
         sub = shapely.ops.unary_union(subtract_parts)
@@ -229,6 +257,20 @@ def main() -> int:
     gdf["_area_km2"] = gdf.geometry.apply(area_km2)
     gdf = gdf[gdf["_area_km2"] >= MIN_AREA_SQ_KM]
     print(f"  after {MIN_AREA_SQ_KM} km² filter: {len(gdf)} polygons")
+
+    # Re-cut water AFTER simplification: the 0.002° simplify above nudges
+    # hole edges, re-exposing a ~200 m green fringe around every lake.
+    # Both sides are thinned now (water simplified to 1e-3, crown to
+    # SIMPLIFY_DEGREES), so this second difference is cheap — the earlier
+    # crawl was OSM's full ~10 m vertex detail.
+    if os.path.exists(water_file):
+        print("  re-cutting water against simplified crown...")
+        gdf["geometry"] = gdf.geometry.difference(water)
+        gdf = gdf.explode(index_parts=False).reset_index(drop=True)
+        gdf["_area_km2"] = gdf.geometry.apply(area_km2)
+        gdf = gdf[gdf["_area_km2"] >= MIN_AREA_SQ_KM]
+        print(f"  after water re-cut: {len(gdf)} polygons, "
+              f"{area_km2(gdf.geometry.union_all()):,.0f} km² (geodesic)")
 
     result = gpd.GeoDataFrame(
         {
