@@ -96,8 +96,9 @@ create policy land_ingest_coverage_readable
  * honest row to write for either case.
  */
 create or replace function public.ingest_land_parcels(
-  in_source_id  text,
-  in_features   jsonb
+  in_source_id     text,
+  in_features      jsonb,
+  in_jurisdiction  text default null
 ) returns integer
 language plpgsql
 security definer
@@ -126,7 +127,12 @@ begin
     desig  := nullif(btrim(coalesce(props ->> '_designation', '')), '');
     nm     := coalesce(nullif(btrim(coalesce(props ->> '_name', '')), ''), desig);
     basis  := coalesce(nullif(btrim(coalesce(props ->> '_basis', '')), ''), desig);
-    juris  := nullif(btrim(coalesce(props ->> '_jurisdiction', '')), '');
+    -- The caller knows the source, and therefore whose land it is. Taking it
+    -- as an argument means a feature that predates the property still stores.
+    juris  := coalesce(
+      nullif(btrim(coalesce(in_jurisdiction, '')), ''),
+      nullif(btrim(coalesce(props ->> '_jurisdiction', '')), '')
+    );
 
     -- Every one of these is NOT NULL in public_lands. A feature missing any of
     -- them has no honest row, and is skipped rather than filled in with a guess.
@@ -197,7 +203,7 @@ begin
 end;
 $$;
 
-revoke all on function public.ingest_land_parcels(text, jsonb) from public, anon, authenticated;
+revoke all on function public.ingest_land_parcels(text, jsonb, text) from public, anon, authenticated;
 
 /* ---------------------------------------------------------------- */
 /* 4. Record, and read back, what is covered                          */

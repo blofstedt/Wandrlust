@@ -3110,7 +3110,10 @@ const storeSourceParcels = async (
   for (let i = 0; i < storable.length; i += INGEST_CHUNK) {
     const { data, error } = await client.rpc('ingest_land_parcels', {
       in_source_id: source.id,
-      in_features: storable.slice(i, i + INGEST_CHUNK)
+      in_features: storable.slice(i, i + INGEST_CHUNK),
+      // Passed rather than read off each feature, so a parcel that came out of
+      // the tile cache before this property existed still stores.
+      in_jurisdiction: source.jurisdiction
     });
     if (error) {
       console.warn(`[ingest] ${source.id}: ${error.message}`);
@@ -3120,14 +3123,28 @@ const storeSourceParcels = async (
   }
 
   /*
-   * The box is claimed only now, once its parcels are in.
+   * THE BOX IS CLAIMED ONLY IF EVERY PARCEL IN IT WAS ACTUALLY STORED.
    *
-   * Claimed EVEN WHEN NOTHING WAS STORED, and that is deliberate: a complete,
-   * sharp answer of zero features is the source saying there is no public land
-   * in this box, which is knowledge worth keeping and exactly as true as a
-   * hundred parcels would have been. Without it the emptiest ground — most of
-   * a continent — would be re-asked of a government server forever.
+   * Coverage is a promise that the database can answer for this ground on its
+   * own. Recording it after storing thirteen of thirteen parcels keeps that
+   * promise; recording it after storing none of thirteen — which is precisely
+   * what happened the first time this ran, when a required column was missing
+   * and every insert was skipped — turns the promise into the map drawing a
+   * forest as private land. The cost of being strict is only that the next
+   * visit tries again.
+   *
+   * Zero of zero is fine, and is the common case: a complete, sharp answer of
+   * no features is the source saying there is no public land in this box,
+   * which is knowledge worth keeping and every bit as true as a hundred
+   * parcels. Without it the emptiest ground — most of a continent — would be
+   * re-asked of a government server forever.
    */
+  if (stored < storable.length) {
+    console.warn(
+      `[ingest] ${source.id}: stored ${stored} of ${storable.length} — not claiming coverage`
+    );
+    return null;
+  }
   const clipped = clipToExtent(bbox, source.extent);
   const { error } = await client.rpc('record_land_coverage', {
     in_source_id: source.id,
