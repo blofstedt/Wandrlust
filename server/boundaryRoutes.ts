@@ -318,6 +318,13 @@ interface BoundarySource {
    */
   areaField?: string;
   confidence: 'designated_general_use' | 'managing_agency' | 'managed_zone';
+  /**
+   * Which government's land this is, as the ISO code the database keys rules
+   * and coverage gaps on. Required rather than optional: `public_lands` will
+   * not accept a parcel without one, and guessing it from a bounding box gets
+   * the border provinces wrong.
+   */
+  jurisdiction: string;
   /** How much to trust the polygon's edges. Never survey-grade. */
   edgeAccuracy: 'generalised' | 'administrative' | 'cadastral_derived';
   /** On what basis camping is claimed to be permitted. */
@@ -397,6 +404,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     // Verified: 71,046 features nationally; returns results for Moab.
     // Replaces the 7-feature clipped sample this app shipped with.
     id: 'blm_lands',
+    jurisdiction: 'US',
     label: 'BLM public land',
     attribution: 'Bureau of Land Management, Geospatial Business Platform',
     url: 'https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/BLM_Lands/FeatureServer/0/query',
@@ -416,6 +424,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     // The previous config tried to get these from the BLM layer using an
     // agency code that does not exist in that field.
     id: 'usfs_national_forest',
+    jurisdiction: 'US',
     label: 'National Forest',
     attribution: 'USDA Forest Service, Enterprise Data Warehouse',
     url: 'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_ForestSystemBoundaries_01/MapServer/1/query',
@@ -479,6 +488,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * `meta.sources[]` on a real BC viewport in production.
      */
     id: 'bc_provincial_forest',
+    jurisdiction: 'CA-BC',
     label: 'BC Crown Land (Provincial Forest)',
     attribution: 'Government of British Columbia, DataBC — Open Government Licence – British Columbia',
     protocol: 'wfs',
@@ -533,6 +543,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     // Deliberately excludes the White Area, which is the settled southern
     // portion of the province and largely private freehold.
     id: 'alberta_green_area',
+    jurisdiction: 'CA-AB',
     label: 'Alberta Crown Land (Green Area)',
     attribution: 'Government of Alberta, Open Government Licence – Alberta',
     url: 'https://geospatial.alberta.ca/titan/rest/services/boundary/asrd_administrative_area/MapServer/1/query',
@@ -552,6 +563,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
     // Kept: PLUZ are specific managed zones layered ON TOP of Crown land,
     // each with its own rules, so they are genuinely separate information.
     id: 'alberta_pluz',
+    jurisdiction: 'CA-AB',
     label: 'Alberta Public Land Use Zones',
     attribution: 'Government of Alberta, Open Government Licence – Alberta',
     url: 'https://geospatial.alberta.ca/titan/rest/services/base/land_use_management_10tm_nad83_aep/MapServer/1/query',
@@ -583,6 +595,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * polygon.
      */
     id: 'saskatchewan_provincial_forest',
+    jurisdiction: 'CA-SK',
     label: 'Saskatchewan Crown Land (Provincial Forest)',
     attribution: 'Government of Saskatchewan, Ministry of Environment',
     url: 'https://gis.saskatchewan.ca/arcgis/rest/services/Forestry/MapServer/0/query',
@@ -639,6 +652,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * today, so the worst case is that it continues to draw nothing.
      */
     id: 'manitoba_provincial_forest',
+    jurisdiction: 'CA-MB',
     label: 'Manitoba Crown Land (Provincial Forest)',
     attribution: 'Government of Manitoba, Open Government Licence – Manitoba',
     url: 'https://services.arcgis.com/mMUesHYPkXjaFGfS/arcgis/rest/services/Manitoba_Provincial_Forests___Version_6/FeatureServer/1/query',
@@ -735,6 +749,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * spoken for, none of which is subtracted here.
      */
     id: 'new_brunswick_crown_land',
+    jurisdiction: 'CA-NB',
     label: 'New Brunswick Crown Land',
     attribution: 'Government of New Brunswick, Department of Natural Resources and Energy Development',
     url: 'https://gis-erd-der.gnb.ca/server/rest/services/OpenData/Crown_Lands/MapServer/0/query',
@@ -766,6 +781,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * fire seasons — a restriction no polygon here knows about.
      */
     id: 'nova_scotia_crown_land',
+    jurisdiction: 'CA-NS',
     label: 'Nova Scotia Crown Land',
     attribution: 'Government of Nova Scotia, Department of Natural Resources and Renewables',
     url: 'https://nsgiwa.novascotia.ca/arcgis/rest/services/PLAN/PLANCrownLandsWM84V1/MapServer/0/query',
@@ -781,6 +797,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
   {
     // Verified: returns General Use Areas for northern Ontario.
     id: 'ontario_clupa_general_use',
+    jurisdiction: 'CA-ON',
     label: 'Ontario Crown Land — General Use Area',
     attribution: "Land Information Ontario, King's Printer for Ontario",
     url: 'https://ws.lioservices.lrc.gov.on.ca/arcgis2/rest/services/LIO_OPEN_DATA/LIO_Open06/MapServer/5/query',
@@ -825,6 +842,7 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * were already worked out for the seeder.
      */
     id: 'padus_open_access',
+    jurisdiction: 'US',
     label: 'Public land (PAD-US open access)',
     attribution: 'USGS Gap Analysis Project, Protected Areas Database of the US',
     url: 'https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/PADUS_Public_Access/FeatureServer/0/query',
@@ -2449,7 +2467,8 @@ const queryBoundarySourceOnce = async (
              * returning null rather than inventing one that would duplicate on
              * the next fetch.
              */
-            _externalId: externalIdOf(f, props)
+            _externalId: externalIdOf(f, props),
+            _jurisdiction: source.jurisdiction
           }
         };
       });
@@ -3044,6 +3063,13 @@ const ensureLandSources = (client: SupabaseClient): Promise<boolean> => {
         id: s.id,
         label: s.label,
         attribution: s.attribution,
+        // NOT NULL, all four of them. Leaving any out is how the first attempt
+        // at this stored precisely nothing: the upsert was rejected, every
+        // parcel then failed its foreign key, and both failures were warnings
+        // in a log nobody was reading.
+        service_url: s.url,
+        confidence: s.confidence,
+        jurisdiction: s.jurisdiction,
         edge_accuracy: s.edgeAccuracy,
         camping_basis_kind: s.campingBasisKind
       })),

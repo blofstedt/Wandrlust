@@ -104,12 +104,15 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  f      jsonb;
-  props  jsonb;
-  g      geometry;
-  ext_id text;
-  basis  text;
-  stored integer := 0;
+  f       jsonb;
+  props   jsonb;
+  g       geometry;
+  ext_id  text;
+  basis   text;
+  nm      text;
+  desig   text;
+  juris   text;
+  stored  integer := 0;
 begin
   if in_features is null or jsonb_typeof(in_features) <> 'array' then
     return 0;
@@ -119,9 +122,15 @@ begin
   loop
     props := coalesce(f -> 'properties', '{}'::jsonb);
 
-    basis  := nullif(btrim(coalesce(props ->> '_basis', props ->> '_designation', '')), '');
     ext_id := nullif(btrim(coalesce(props ->> '_externalId', '')), '');
-    if basis is null or ext_id is null then
+    desig  := nullif(btrim(coalesce(props ->> '_designation', '')), '');
+    nm     := coalesce(nullif(btrim(coalesce(props ->> '_name', '')), ''), desig);
+    basis  := coalesce(nullif(btrim(coalesce(props ->> '_basis', '')), ''), desig);
+    juris  := nullif(btrim(coalesce(props ->> '_jurisdiction', '')), '');
+
+    -- Every one of these is NOT NULL in public_lands. A feature missing any of
+    -- them has no honest row, and is skipped rather than filled in with a guess.
+    if ext_id is null or desig is null or nm is null or basis is null or juris is null then
       continue;
     end if;
 
@@ -137,46 +146,51 @@ begin
 
     g := st_setsrid(g, 4326);
 
-    insert into public.public_lands (
-      source_id, external_id, name, designation, confidence,
-      edge_accuracy, camping_basis_kind, jurisdiction,
-      camping_allowed, general_use_basis, stay_limit_days,
-      permit_required, permit_name,
-      geom, area_sq_km, synced_at
-    )
-    values (
-      in_source_id,
-      ext_id,
-      nullif(props ->> '_name', ''),
-      nullif(props ->> '_designation', ''),
-      (props ->> '_confidence')::public.boundary_confidence,
-      nullif(props ->> '_edgeAccuracy', '')::public.edge_accuracy,
-      nullif(props ->> '_campingBasisKind', '')::public.camping_basis_kind,
-      nullif(props ->> '_jurisdiction', ''),
-      true,
-      basis,
-      nullif(props ->> '_stayLimitDays', '')::integer,
-      nullif(props ->> '_permitRequired', '')::boolean,
-      nullif(props ->> '_permitName', ''),
-      g,
-      st_area(g::geography) / 1000000.0,
-      now()
-    )
-    on conflict (source_id, external_id) do update set
-      name               = excluded.name,
-      designation        = excluded.designation,
-      confidence         = excluded.confidence,
-      edge_accuracy      = excluded.edge_accuracy,
-      camping_basis_kind = excluded.camping_basis_kind,
-      general_use_basis  = excluded.general_use_basis,
-      stay_limit_days    = excluded.stay_limit_days,
-      permit_required    = excluded.permit_required,
-      permit_name        = excluded.permit_name,
-      geom               = excluded.geom,
-      area_sq_km         = excluded.area_sq_km,
-      synced_at          = now();
-
-    stored := stored + 1;
+    -- One malformed parcel must cost its own row and nothing else. Without
+    -- this the whole batch aborts and a viewport stores zero.
+    begin
+      insert into public.public_lands (
+        source_id, external_id, name, designation, confidence,
+        edge_accuracy, camping_basis_kind, jurisdiction,
+        camping_allowed, general_use_basis, stay_limit_days,
+        permit_required, permit_name,
+        geom, area_sq_km, synced_at
+      )
+      values (
+        in_source_id,
+        ext_id,
+        nm,
+        desig,
+        (props ->> '_confidence')::public.boundary_confidence,
+        nullif(props ->> '_edgeAccuracy', '')::public.edge_accuracy,
+        nullif(props ->> '_campingBasisKind', '')::public.camping_basis_kind,
+        juris,
+        true,
+        basis,
+        nullif(props ->> '_stayLimitDays', '')::integer,
+        coalesce(nullif(props ->> '_permitRequired', '')::boolean, false),
+        nullif(props ->> '_permitName', ''),
+        g,
+        st_area(g::geography) / 1000000.0,
+        now()
+      )
+      on conflict (source_id, external_id) do update set
+        name               = excluded.name,
+        designation        = excluded.designation,
+        confidence         = excluded.confidence,
+        edge_accuracy      = excluded.edge_accuracy,
+        camping_basis_kind = excluded.camping_basis_kind,
+        general_use_basis  = excluded.general_use_basis,
+        stay_limit_days    = excluded.stay_limit_days,
+        permit_required    = excluded.permit_required,
+        permit_name        = excluded.permit_name,
+        geom               = excluded.geom,
+        area_sq_km         = excluded.area_sq_km,
+        synced_at          = now();
+      stored := stored + 1;
+    exception when others then
+      continue;
+    end;
   end loop;
 
   return stored;
