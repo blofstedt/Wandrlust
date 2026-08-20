@@ -90,31 +90,45 @@ revoke all on function
 --  3. Beacon internals. `beacon_persist_spots` writes the scan results;
 --     the rest are the learning passes and the nightly decay.
 -- ---------------------------------------------------------------------
+--     `beacon_scan_is_fresh` is read-only and asked with the anon key by
+--     `beaconRoutes`; `claim_beacon_token` and `refund_beacon_token` act
+--     on `auth.uid()` and are called with the SIGNED-IN CAMPER'S token
+--     (`getCallerClient`), which is the entire point of them — a token
+--     claim has to know whose token it is. All three keep their grants,
+--     for the same reason as the boundary reads above.
 revoke all on function
   public.beacon_persist_spots(jsonb, double precision, double precision, integer, jsonb),
   public.beacon_refresh_spot_stats(uuid),
-  public.beacon_scan_is_fresh(double precision, double precision, integer),
   public.beacon_decay(),
   public.beacon_relearn(),
-  public.beacon_maintenance(),
-  public.claim_beacon_token(),
-  public.refund_beacon_token()
+  public.beacon_maintenance()
   from public, anon, authenticated;
 
 -- ---------------------------------------------------------------------
---  4. Boundary reads. The API asks these with the service key and hands
---     the answer to the browser over /api/boundaries; nothing in `src/`
---     calls them directly.
+--  4. Boundary reads.
+--
+--     ONLY THE LEGACY OVERLOAD AND THE UNUSED CAMPSITE SEARCH.
+--
+--     `boundaries_in_bbox` looks server-side — it is called from
+--     `server/`, never from `src/` — and the first draft of this migration
+--     revoked it on that basis, which would have taken the stored
+--     boundaries and the whole offline land pack off the map.
+--
+--     The lesson, worth more than the fix: "called from `server/`" does
+--     not mean "called with the service key". `boundaryRoutes`
+--     (`getSeededClient`) and `landPackRoutes` both build their client on
+--     VITE_SUPABASE_ANON_KEY and read these as `anon`, because what they
+--     are reading — `public_lands` — is world-readable by RLS anyway and
+--     the anon key is the right key for a public read. Revoking from
+--     `anon` therefore breaks the server, not the browser.
+--
+--     So the check that matters is which KEY each call site uses, not
+--     which directory it lives in. These stay open; they read nothing a
+--     camper could not already select from `public_lands` directly.
 -- ---------------------------------------------------------------------
 revoke all on function
   public.boundaries_in_bbox(double precision, double precision, double precision,
-                            double precision, double precision, integer, double precision),
-  public.boundaries_in_bbox(double precision, double precision, double precision,
                             double precision, integer),
-  public.boundaries_in_bbox_sources(double precision, double precision, double precision,
-                                    double precision, double precision, integer,
-                                    double precision, text[]),
-  public.land_sources_covering(double precision, double precision, double precision, double precision),
   public.campsites_near(double precision, double precision, double precision,
                         public.land_type[], integer)
   from public, anon, authenticated;

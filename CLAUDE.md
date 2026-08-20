@@ -252,6 +252,48 @@ npm run vapid    # generate push notification keys
   hold. Zero of zero is fine and is how empty country stops being re-asked
   forever. Because only detailed views qualify, the zoomed-out overview still
   goes live — it fills in behind you as you use the map, it does not preload.
+- **`revoke ... from anon, authenticated` does nothing on its own.** A new
+  function carries an implicit `grant execute to PUBLIC`, and both roles are
+  members of PUBLIC, so revoking the privilege they were never separately
+  granted leaves the inherited one in place. Six migrations "locked down"
+  their private functions this way and none of them did — including
+  `grant_points`, which meant anyone holding the anon key that ships in the
+  JavaScript bundle could POST to `/rest/v1/rpc/grant_points` and mint any
+  account any balance. **Always name all three: `from public, anon,
+  authenticated`.** The ACL is the proof, not the migration file — a leading
+  `=X/postgres` in `proacl` IS the PUBLIC grant, still sitting there after the
+  revoke ran:
+
+  ```sql
+  select proname, proacl from pg_proc  -- {=X/…} means PUBLIC can still call it
+   where pronamespace = 'public'::regnamespace and proname = 'grant_points';
+  ```
+
+  A `create or replace` hands the function a fresh default ACL, so re-creating
+  one silently reopens the hole. Re-revoke in the same migration.
+- **Which KEY a call uses, not which folder it lives in, decides its role.**
+  The obvious rule — "`src/` is the browser, `server/` is the service key" —
+  is wrong often enough to break things. `boundaryRoutes` (`getSeededClient`)
+  and `landPackRoutes` read boundaries with the ANON key, because
+  `public_lands` is world-readable and anon is the honest key for a public
+  read; `beaconRoutes` calls the token functions with the SIGNED-IN CAMPER'S
+  JWT (`getCallerClient`), because they act on `auth.uid()`. Revoking those
+  from `anon` takes down the stored boundaries and the whole offline land
+  pack while the browser carries on fine. Grep the call site for which client
+  it builds before changing a grant.
+- **A function nobody calls is a function nobody knows is broken.** Two were
+  found by the simple act of running them: `release_stale_reviews` updated a
+  table hosting took with it when it left, and `reverify_campsites` could
+  never execute at all (an UPDATE whose lateral subquery referenced its own
+  target). Both had sat in POST-INSTALL comments for their whole lives. If a
+  migration ends with "now run this", run it, in that session.
+- **Absence of a parcel is not evidence of private land — in SQL too.**
+  `reverify_campsites` marked a campsite "outside public land" whenever no
+  row in `public_lands` contained it. That table fills itself from what
+  campers happen to look at and is sparse by design, so the honest third
+  answer is `unverified`, and `outside` is claimed only where
+  `land_ingest_coverage` says the database actually holds an answer for that
+  ground. The map rule applies everywhere, not just to what draws.
 - **A merged pull request is not a shipped feature.** Vercel deploys the code
   the moment `main` moves; nothing deploys the SQL. Migration 14 sat unapplied
   for a release and migration 17 for another, and both times the symptom was a
