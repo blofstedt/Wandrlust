@@ -62,7 +62,7 @@ import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, OVERVIEW_BOX,
   overviewMinSpanDegrees, clampToCoverage,
-  COVERAGE_LABEL, isWithinCoverage, landDataGap
+  COVERAGE_LABEL, isWithinCoverage, landDataGap, hasMappedCrownLand
 } from '../config/coverage';
 import {
   fetchAreaAlerts, alertGapNote, HazardAlert, sortAlerts,
@@ -1765,7 +1765,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * Null for a fully mapped region, which is every US state and Alberta,
    * New Brunswick and Nova Scotia.
    */
-  const [centreGap, setCentreGap] = useState<{ name: string; gap: string } | null>(null);
+  const [centreGap, setCentreGap] = useState<{ name: string; gap: string; isoCode: string } | null>(null);
   const [hazards, setHazards] = useState<HazardAlert[]>([]);
   /** The same alerts, for the chip tours, which run outside React's render. */
   const hazardsRef = useRef<HazardAlert[]>([]);
@@ -4504,7 +4504,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       const gap = landDataGap(hit?.isoCode);
       // No region under the centre is not the same as a region with no gap,
       // but both end the same way here: nothing to say, so say nothing.
-      setCentreGap(hit && gap ? { name: hit.name, gap } : null);
+      setCentreGap(hit && gap ? { name: hit.name, gap, isoCode: hit.isoCode } : null);
     };
 
     const schedule = (): void => {
@@ -6651,15 +6651,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         this says why, in words a camper can act on. Amber rather than violet:
         the truncation chip above is a caveat about a good answer, this is a
         missing answer, and they must not read the same.
+
+        Over a province the map has NO data for, both excuses are the same
+        lie the gap chip below exists to stop: telling a camper to zoom in
+        when there is nothing to find. A mapped province carrying a caveat
+        (Ontario's Far North) is different — zooming in there does reveal
+        real land, so it keeps the request-level message. When the province
+        under the crosshair has no mapped data at all, this chip says that
+        instead — the standing fact beats the request-level excuse, and the
+        two amber chips never share the corner.
       */}
       {showBoundaries && (wideViewFailed || zoomTooFar) && (
         <div className="absolute bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
           <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
             <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
             <span className="text-[10px] font-semibold text-amber-200 leading-snug">
-              {zoomTooFar
-                ? 'Too far out to draw public land — zoom in to see it'
-                : 'Couldn’t load public land for this wide view. What’s drawn may be incomplete — zoom in for the real picture.'}
+              {centreGap && !hasMappedCrownLand(centreGap.isoCode)
+                ? `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`
+                : zoomTooFar
+                  ? 'Too far out to draw public land — zoom in to see it'
+                  : 'Couldn’t load public land for this wide view. What’s drawn may be incomplete — zoom in for the real picture.'}
             </span>
           </div>
         </div>

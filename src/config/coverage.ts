@@ -449,3 +449,15 @@ export const landDataGap = (isoCode: string | null | undefined): string | null =
   if (MAPPED_CA_PROVINCES.has(isoCode)) return MAPPED_CA_PROVINCES.get(isoCode) ?? null;
   return UNMAPPED_CA_PROVINCES.get(isoCode) ?? 'no Crown land data yet';
 };
+
+/**
+ * Whether the province publishes a layer this app actually draws.
+ *
+ * The complement of a data gap. AB, NB and NS are mapped even though their
+ * caveat is a clean null; QC, NL and the rest are not mapped at all. The map
+ * uses this to decide whether its request-level chips (truncation,
+ * too-far-out) are telling a truth about real data — over a province with no
+ * data, "zoom in to see it" is the same lie those chips exist to prevent.
+ */
+export const hasMappedCrownLand = (isoCode: string | null | undefined): boolean =>
+  !!isoCode && MAPPED_CA_PROVINCES.has(isoCode);
