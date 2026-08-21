@@ -299,7 +299,7 @@ as $$
       p.stay_limit_days, p.permit_required, p.permit_name,
       s.label as source_label, s.attribution as attribution,
       st_simplifypreservetopology(
-        st_intersection(p.geom, (select g from box)),
+        st_intersection(st_makevalid(p.geom), (select g from box)),
         greatest(in_tolerance, 0.00001)
       ) as geom,
       p.area_sq_km
@@ -313,7 +313,7 @@ as $$
         or p.area_sq_km is null
         or p.area_sq_km >= in_min_area_sq_km
       )
-      and st_intersects(p.geom, (select g from box))
+      and st_intersects(st_makevalid(p.geom), (select g from box))
     order by p.area_sq_km desc nulls last
     limit greatest(in_limit, 1)
   )

@@ -185,7 +185,38 @@ const seedSource = async (spec: LandSourceSpec) => {
 
   let stored = 0;
   let rejected = 0;
+  let campable = 0;
   const seenExternal = new Set<string>();
+  // Bounding box of every campable feature actually stored this run. The
+  // coverage claim must reflect where the data REALLY is — a nominal spec
+  // bbox can include ocean or unmapped fringe, and the server treats a
+  // covered viewport as "this source is answered from storage, do not
+  // consult the live service at all".
+  const extent = {
+    minLat: Infinity,
+    minLon: Infinity,
+    maxLat: -Infinity,
+    maxLon: -Infinity
+  };
+  const extendExtent = (geom: any) => {
+    if (!geom || !Array.isArray(geom?.coordinates)) return;
+    const polys =
+      geom.type === 'Polygon'
+        ? [geom.coordinates]
+        : geom.type === 'MultiPolygon'
+          ? geom.coordinates
+          : [];
+    for (const poly of polys) {
+      for (const ring of poly) {
+        for (const [lon, lat] of ring) {
+          if (lon < extent.minLon) extent.minLon = lon;
+          if (lon > extent.maxLon) extent.maxLon = lon;
+          if (lat < extent.minLat) extent.minLat = lat;
+          if (lat > extent.maxLat) extent.maxLat = lat;
+        }
+      }
+    }
+  };
 
   const handleFeatures = async (features: any[]) => {
     const rows = features
@@ -202,6 +233,11 @@ const seedSource = async (spec: LandSourceSpec) => {
         const externalId = spec.externalId(props);
         if (seenExternal.has(externalId)) return null;
         seenExternal.add(externalId);
+
+        // Gate passed and this feature is new: it counts toward the coverage
+        // claim, and its geometry bounds the claim.
+        campable += 1;
+        extendExtent(f.geometry);
 
         const permit = spec.permit(props);
         return {
@@ -300,6 +336,50 @@ const seedSource = async (spec: LandSourceSpec) => {
     await supabase.from('land_sources')
       .update({ last_synced: new Date().toISOString() })
       .eq('id', spec.id);
+  }
+
+  /*
+   * THE COVERAGE CLAIM — the part that makes the stored path real for users.
+   *
+   * The server only answers a viewport from `public_lands` when
+   * `land_sources_covering` says this source's stored coverage CONTAINS the
+   * whole viewport. Without a claim, every request still goes live to the
+   * government service — which is exactly the slowness this seeding exists
+   * to kill. So after a verified-complete run, claim the full extent of the
+   * campable data actually stored this run. Three gates, mirroring the
+   * server's own `storeSourceParcels` rule (never claim coverage over land
+   * that was dropped or not verified):
+   *
+   *   1. complete          — no tile hit the record cap, no fetch errors
+   *   2. stored === campable — every gate-passing feature was upserted
+   *      without error (upsert warnings skip the chunk, so a mismatch here
+   *      means data was silently dropped)
+   *   3. campable > 0      — a claim over an empty extent would be nonsense
+   */
+  if (!DRY_RUN && complete && stored === campable && campable > 0) {
+    const { error } = await supabase.rpc('record_land_coverage', {
+      in_source_id: spec.id,
+      in_min_lat: extent.minLat,
+      in_min_lon: extent.minLon,
+      in_max_lat: extent.maxLat,
+      in_max_lon: extent.maxLon
+    });
+    if (error) {
+      console.warn(`    coverage NOT recorded: ${error.message}`);
+    } else {
+      console.log(
+        `    coverage recorded   : ${spec.id} ` +
+          `(${extent.minLon.toFixed(2)}, ${extent.minLat.toFixed(2)}) → ` +
+          `(${extent.maxLon.toFixed(2)}, ${extent.maxLat.toFixed(2)})`
+      );
+    }
+  } else if (!DRY_RUN) {
+    const why = !complete
+      ? 'extract not verified complete'
+      : stored !== campable
+        ? `stored ${stored} ≠ campable ${campable} — some parcels were dropped`
+        : 'no campable features — nothing to claim';
+    console.warn(`    coverage SKIPPED     : ${why}`);
   }
 };
 
