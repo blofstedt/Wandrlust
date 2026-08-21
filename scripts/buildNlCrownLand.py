@@ -125,47 +125,66 @@ def fetch_layer(layer_id: int):
     """Page through a queryable MapServer layer, returning raw features.
 
     The gov.nl.ca server throws occasional transient HTTP 500s under load, so
-    each page retries with backoff before giving up.
+    each page retries with backoff. Paging is stabilised with an explicit
+    OBJECTID sort, and the whole fetch is verified against returnCountOnly:
+    the server has been observed truncating a paged run mid-way (L2 came
+    back 2,596/2,601 one run), which silently drops parcels from the
+    subtraction. Short fetches retry the entire layer.
     """
-    features = []
-    offset = 0
-    while True:
-        params = {
-            "where": "1=1",
-            "returnGeometry": "true",
-            "outSR": "4326",
-            "f": "geojson",
-            # Request every attribute. The L20 "Natural Areas" filter keys on
-            # RESTRICTION, and the server omits it (and most other columns)
-            # unless explicitly asked, defaulting to NAME only.
-            "outFields": "*",
-            "maxAllowableOffset": MAX_ALLOWABLE_OFFSET,
-            "resultOffset": str(offset),
-            "resultRecordCount": str(PAGE),
-        }
+
+    def get_json(params: dict) -> dict:
         url = f"{BASE}/{layer_id}/query?{urllib.parse.urlencode(params)}"
         last_err = None
         for attempt in range(4):
             try:
-                # gov.nl.ca 500s the default Python-urllib UA but serves a
-                # browser-like one fine — the one header this server insists on.
                 req = urllib.request.Request(
                     url, headers={"User-Agent": "Wandrlust/1.0"}
                 )
                 with urllib.request.urlopen(req, timeout=180) as resp:
-                    data = json.load(resp)
-                break
+                    return json.load(resp)
             except Exception as err:  # HTTPError, URLError, timeout, json
                 last_err = err
                 time.sleep(5 * (attempt + 1))
-        else:
-            raise RuntimeError(f"layer {layer_id} offset {offset}: {last_err}")
-        batch = data.get("features", [])
-        features.extend(batch)
-        if len(batch) < PAGE:
-            break
-        offset += PAGE
-    return features
+        raise RuntimeError(f"layer {layer_id}: {last_err}")
+
+    expected = get_json(
+        {"where": "1=1", "returnCountOnly": "true", "f": "json"}
+    ).get("count", -1)
+
+    for attempt in range(3):
+        features, offset, seen = [], 0, set()
+        while True:
+            params = {
+                "where": "1=1",
+                "returnGeometry": "true",
+                "outSR": "4326",
+                "f": "geojson",
+                "outFields": "*",
+                "maxAllowableOffset": MAX_ALLOWABLE_OFFSET,
+                "resultOffset": str(offset),
+                "resultRecordCount": str(PAGE),
+                "orderByFields": "OBJECTID",
+            }
+            batch = get_json(params).get("features", [])
+            for feat in batch:
+                oid = (feat.get("properties") or {}).get("OBJECTID")
+                if oid is not None:
+                    if oid in seen:
+                        continue
+                    seen.add(oid)
+                features.append(feat)
+            if len(batch) < PAGE:
+                break
+            offset += PAGE
+        if expected < 0 or len(features) >= expected:
+            return features
+        print(f"    layer {layer_id}: got {len(features)}/{expected} "
+              f"features — retrying fetch")
+        time.sleep(3 * (attempt + 1))
+    raise RuntimeError(
+        f"layer {layer_id}: only {len(features)}/{expected} features "
+        f"after 3 fetch attempts"
+    )
 
 
 def area_km2(geom: "shapely.Geometry") -> float:
@@ -173,6 +192,36 @@ def area_km2(geom: "shapely.Geometry") -> float:
     if geom is None or geom.is_empty:
         return 0.0
     return abs(GEOD.geometry_area_perimeter(geom)[0]) * 1e-6
+
+
+# ---- Build-6 diagnostics: dump crown stages + live L3 overlap ----
+import pickle as _pkl
+
+_DBG_L3 = None  # loaded lazily in main()
+
+
+def _dbg_load_l3():
+    global _DBG_L3
+    if _DBG_L3 is None:
+        _DBG_L3 = _pkl.load(open("/opt/data/tmp_l3_union.pkl", "rb"))
+    return _DBG_L3
+
+
+def _dbg_l3_overlap(crown):
+    """km² of L3 union inside the current crown (should trend to ~0)."""
+    try:
+        l3 = _dbg_load_l3()
+        ov = shapely.intersection(crown, l3, grid_size=1e-4)
+        return round(area_km2(ov), 2)
+    except Exception as err:  # never break the build for diagnostics
+        return f"ERR {err}"
+
+
+def _dbg_dump(crown, tag):
+    _pkl.dump(crown, open(f"/opt/data/tmp_dbg_{tag}.pkl", "wb"))
+    print(f"  [dbg {tag}] crown {crown.geom_type} "
+          f"{area_km2(crown):,.0f} km², L3 overlap {_dbg_l3_overlap(crown)} km²",
+          flush=True)
 
 
 def dissolve(features: list, layer_id: int) -> "shapely.Geometry | None":
@@ -193,6 +242,10 @@ def dissolve(features: list, layer_id: int) -> "shapely.Geometry | None":
     # Repair invalid geometries before union.
     gdf["geometry"] = gdf.geometry.buffer(0)
     merged = gdf.geometry.union_all()
+    # buffer(0) repairs most, but some layers (e.g. multi-part invalid
+    # features) still emit invalid unions that corrupt the final sub union
+    # and make the crown difference silently miss parcels. Repair here.
+    merged = shapely.make_valid(merged)
     return merged
 
 
@@ -213,6 +266,7 @@ def main() -> int:
           f"area {area_km2(nl_geom):,.0f} km² (geodesic)")
 
     subtract_parts = []
+    l3_geom = None
     for layer_id in SUBTRACT_LAYERS:
         print(f"  fetching layer {layer_id}...", flush=True)
         feats = fetch_layer(layer_id)
@@ -223,7 +277,12 @@ def main() -> int:
         area = area_km2(geom)
         print(f"    layer {layer_id}: {len(feats)} feats, "
               f"merged area {area:,.0f} km² (geodesic)")
-        subtract_parts.append(geom)
+        if layer_id == 3:
+            # Crown Titles stay in their own subtraction pass (proven
+            # clean); the other layers union together for pass 2.
+            l3_geom = geom
+        else:
+            subtract_parts.append(geom)
 
     # Also subtract OSM water polygons (lakes, reservoirs, riverbank
     # polygons) so water becomes holes in the green rather than campable
@@ -249,20 +308,37 @@ def main() -> int:
         area_w = area_km2(water)
         print(f"  water: {len(wgdf)} polys, "
               f"merged area {area_w:,.0f} km² (geodesic)")
-        subtract_parts.append(water)
+        # Water is NOT folded into the multi-layer sub: the final re-cut
+        # (below) cuts it as holes against the simplified crown instead.
+        # Keeping it out of the union is part of the proven-clean path
+        # (outline − L3-only passes leave ~0 km² over-draw).
     else:
         print("  (no data/nl-water.geojson — skipping water cut)")
 
-    print("Unioning subtraction layers...")
-    if subtract_parts:
-        sub = shapely.ops.unary_union(subtract_parts)
-    else:
-        sub = None
-    del subtract_parts
-
     print("Erasing subtractions from outline...")
-    crown = nl_geom.difference(sub) if sub is not None else nl_geom
-    crown = shapely.ops.unary_union([crown])  # drop any leftover slivers overlap
+    # PASS 1 — every non-Crown-Title layer (2/6/7/8/13/19/20/25) in one
+    # PLAIN union. grid_size on the union/difference of ~83k mixed-source
+    # parcels is what silently corrupted the crown in Builds 3–5 (L3 holes
+    # re-covered, 300+ km² over-draw); plain differences are the proven-clean
+    # path (isolated tests: 0.00–3.62 km²).
+    if subtract_parts:
+        sub = shapely.set_operations.union_all(subtract_parts)
+        sub = shapely.make_valid(sub)
+        crown = nl_geom.difference(sub)
+        crown = shapely.make_valid(crown)
+    else:
+        crown = nl_geom
+    _dbg_dump(crown, "pass1")
+
+    # PASS 2 — Crown Titles (layer 3) LAST, PLAIN difference. L3's ~78,900
+    # parcel holes are the poison; never run another overlay against a crown
+    # that already carries them. Subtracting L3 last keeps it a single clean
+    # cut on the final crown.
+    if l3_geom is not None:
+        crown = crown.difference(l3_geom)
+        crown = shapely.make_valid(crown)
+    _dbg_dump(crown, "pass2")
+    del subtract_parts, l3_geom
 
     print(f"  crown before filter: {crown.geom_type}, "
           f"{area_km2(crown):,.0f} km² (geodesic)")
@@ -274,6 +350,7 @@ def main() -> int:
     gdf["_area_km2"] = gdf.geometry.apply(area_km2)
     gdf = gdf[gdf["_area_km2"] >= MIN_AREA_SQ_KM]
     print(f"  after {MIN_AREA_SQ_KM} km² filter: {len(gdf)} polygons")
+    _dbg_dump(gdf.geometry.union_all(), "filtered")
 
     # Re-cut water AFTER simplification: the 0.002° simplify above nudges
     # hole edges, re-exposing a ~200 m green fringe around every lake.
@@ -282,7 +359,16 @@ def main() -> int:
     # crawl was OSM's full ~10 m vertex detail.
     if os.path.exists(water_file):
         print("  re-cutting water against simplified crown...")
-        gdf["geometry"] = gdf.geometry.difference(water)
+        # grid_size snaps crown (simplified 0.002°) and water (simplified
+        # 1e-3°) edges onto a shared ~10 m grid; without it the two
+        # independently-simplified nearly-coincident edge sets trigger GEOS
+        # "found non-noded intersection" TopologyExceptions (observed crash).
+        # NB: GeoSeries.difference() does not forward grid_size (geopandas
+        # drops unknown kwargs) — call shapely directly per geometry.
+        gdf["geometry"] = gdf.geometry.apply(
+            lambda g: shapely.difference(g, water, grid_size=1e-4)
+        )
+        gdf["geometry"] = gdf.geometry.apply(shapely.make_valid)
         gdf = gdf.explode(index_parts=False).reset_index(drop=True)
         gdf["_area_km2"] = gdf.geometry.apply(area_km2)
         gdf = gdf[gdf["_area_km2"] >= MIN_AREA_SQ_KM]
