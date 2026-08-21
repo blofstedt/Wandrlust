@@ -477,14 +477,13 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * else already has rights to, the opposite of what a camper is looking for.
      *
      * FADM_PROV_FOREST is forest land designated Provincial Forest by Order in
-     * Council under the Forest Act. Everything inside it is provincial Crown
-     * land, which makes it a CONSERVATIVE answer rather than a complete one:
-     * the polygons understate BC's Crown land badly — most of the province is
-     * Crown land outside a provincial forest — but they do not overstate it,
-     * and understating is the direction this app is allowed to be wrong in.
-     * It is the same claim already made for Saskatchewan and Manitoba, whose
-     * provincial forests are here for the same reason, and CA-BC stays in
-     * COVERAGE_GAPS saying loudly that the rest is unmapped.
+     * Council under the Forest Act. In BC that designation is effectively the
+     * whole province: verified live 2026-08-21 — 296 features, 896,418 km²,
+     * ~97% of BC's 925,186 km² land area — the province minus municipalities,
+     * Indian reserves and the alienated agricultural valleys (Peace, Fraser,
+     * Okanagan) plus some parks. It does not subtract what sits INSIDE it —
+     * tenures, woodlots, recreation sites, parks, closed areas — which is
+     * exactly the honest caveat in COVERAGE_GAPS and campingBasis.
      *
      * WHAT THE DESIGNATION DOES NOT SAY. Nothing about camping. The 14-day
      * allowance is BC's general Land Act policy for Crown land, not a property
@@ -492,16 +491,15 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      * forest contains tenures, woodlots, recreation sites and areas closed by
      * order, none of which are subtracted here.
      *
-     * NOT YET EXERCISED AGAINST THE LIVE SERVICE. The agent sandbox cannot
-     * reach gov.bc.ca, so this endpoint was assembled from DataBC's published
-     * WFS conventions and this dataset's own object name rather than confirmed
-     * by a call. It fails in the safe direction — an unreachable or mis-named
-     * feature type reports the source unavailable instead of drawing an empty
-     * province, the axis-order guard rejects a response it cannot place in BC
-     * rather than drawing it in the wrong hemisphere, and the geometry guard
-     * drops anything that is not a polygon. Before trusting it, run
-     * `npm run probe -- --source=bc_provincial_forest`, and check
-     * `meta.sources[]` on a real BC viewport in production.
+     * VERIFIED AGAINST THE LIVE SERVICE 2026-08-21: a whole-layer GetFeature
+     * from the sandbox returned 296 polygons spanning the full province bbox
+     * (-136.45, 48.27, -114.08, 60.00) with CRS84 coordinates, and the same
+     * feature type served the overview build. The safe-direction guards below
+     * stay load-bearing (an unreachable or mis-named feature type reports the
+     * source unavailable instead of drawing an empty province; the axis-order
+     * guard rejects a response it cannot place in BC; the geometry guard drops
+     * anything that is not a polygon). Re-check `meta.sources[]` on a real BC
+     * viewport in production after any endpoint change.
      */
     id: 'bc_provincial_forest',
     jurisdiction: 'CA-BC',

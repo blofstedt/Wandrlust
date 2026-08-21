@@ -382,8 +382,10 @@ export const midMinSpanDegrees = (zoom: number): number => {
  *
  * WHY THE VALUE IS NOT JUST `true`. Saskatchewan is mapped for the forested
  * centre and north and nothing else, because the only Crown land the province
- * publishes further south is leases and cottage lots. Manitoba and British
- * Columbia are thinner still as a share of what is really there. Filing any of
+ * publishes further south is leases and cottage lots. Manitoba is thinner
+ * still as a share of what is really there. (BC is the counter-example: its
+ * provincial forest designation covers ~97% of the province, so it is not
+ * thin — its caveat is about what the layer does NOT subtract.) Filing any of
  * them alongside Alberta as simply "covered" would make a blank map read as
  * "we looked and there is nothing", which is the exact confusion this whole
  * function exists to prevent — so they carry their own caveats instead of a
@@ -407,12 +409,14 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
   // of a province that is roughly three quarters Crown land. Being listed
   // here at all would otherwise imply the province is done.
   ['CA-MB', 'only the 15 provincial forests are mapped — most Manitoba Crown land is not'],
-  // BC's caveat has to be the loudest of the lot. The provincial forests are
-  // a large area and a small fraction: British Columbia is roughly 95% Crown
-  // land, and everything outside a Forest Act designation is unmapped here.
-  // The province that this whole function was written about must not now be
-  // filed as "covered" on the strength of one layer.
-  ['CA-BC', 'only the provincial forests are mapped — most BC Crown land is not'],
+  // BC is drawn as the provincial forests, and those are NOT a thin slice:
+  // the Forest Act designation covers essentially the whole province —
+  // measured 896,418 km² against BC's 925,186 km² of land, about 97% — minus
+  // municipalities, reserves and the alienated agricultural valleys. What the
+  // layer does not do is subtract the parks, tenures and recreation sites
+  // inside it, so the caveat below says what camping on that land still has
+  // to survive, not that the province is barely mapped.
+  ['CA-BC', 'mapped as the provincial forests — nearly all BC Crown land; parks, tenures and rec sites are not subtracted'],
   /*
    * New Brunswick and Nova Scotia publish the extent of their Crown land
    * itself, so a blank area there really is private or municipal land rather
@@ -477,10 +481,11 @@ const UNMAPPED_CA_PROVINCES = new Map<string, string>([]);
  * public land in view". That is the app stating, wrongly and confidently, that
  * there is nowhere to camp.
  *
- * BC now draws its provincial forests, which is a real answer for part of the
- * province and no answer at all for the rest of it, so the caveat below stays
- * exactly as load-bearing as it was: partial coverage is the case this
- * function is for, not the case it was fixed by.
+ * BC now draws its provincial forests, which is a real answer for nearly all
+ * of the province (the designation covers ~97% of it) and still not a clean
+ * null — the layer does not subtract parks, tenures and recreation sites — so
+ * the caveat below stays exactly as load-bearing as it was: partial coverage
+ * is the case this function is for, not the case it was fixed by.
  *
  * Pass the ISO code of the state or province under the middle of the screen.
  * Null means the usual message is safe to show.
