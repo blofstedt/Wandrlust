@@ -239,6 +239,17 @@ export const COVERAGE_LABEL = 'the lower 48 & the Canadian provinces';
 export const BOUNDARY_MIN_ZOOM = 7;
 
 /**
+ * Minimum zoom at which the MIDDLE tier begins.
+ *
+ * Between BOUNDARY_MID_ZOOM and BOUNDARY_MIN_ZOOM the map draws the overview
+ * data at a finer window than the zoomed-out blocks — more parcels, still
+ * local, still instant. Below it the coarse blocks; at or above
+ * BOUNDARY_MIN_ZOOM the real per-viewport geometry. Three steps, not one
+ * hard cutover.
+ */
+export const BOUNDARY_MID_ZOOM = 5;
+
+/**
  * Below BOUNDARY_MIN_ZOOM the map draws an OVERVIEW instead of nothing.
  *
  * Zooming out used to blank every boundary, so the answer to "where is there
@@ -331,6 +342,20 @@ export const overviewMinSpanDegrees = (zoom: number): number => {
   if (zoom <= 3) return 0.6;   // ~65 km — the continental blocks
   if (zoom <= 4) return 0.3;   // ~33 km
   if (zoom <= 5) return 0.12;  // ~13 km
+  return 0;                    // zoom 6: everything the file holds
+};
+
+/**
+ * The MIDDLE tier's window, applied to the same bundled overview data.
+ *
+ * Finer than the coarse bands above — the whole point of the step between
+ * the blocks and the real geometry is that it shows more of what the file
+ * actually holds. Zoom 6 shows nearly everything; zoom 5 keeps only the
+ * truly tiny shapes out.
+ */
+export const midMinSpanDegrees = (zoom: number): number => {
+  if (zoom <= 5) return 0.05;  // ~5.5 km — finer than the 13 km the old
+                               // overview showed at this zoom
   return 0;                    // zoom 6: everything the file holds
 };
 

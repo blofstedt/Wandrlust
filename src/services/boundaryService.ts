@@ -294,11 +294,15 @@ export const boxContains = (outer: BoundingBox, inner: BoundingBox): boolean =>
  * How much boundary data to ask for.
  *
  *  - `full`     — everything intersecting the viewport, at viewport detail.
+ *  - `mid`      — the step between: the overview data windowed much finer
+ *                 than the coarse blocks. Rendered locally from the bundled
+ *                 overview file (or the held remote overview), so it never
+ *                 makes its own request.
  *  - `overview` — only the large parcels, heavily generalised, on a very coarse
- *                 grid. Used below BOUNDARY_MIN_ZOOM, where the point is "there
+ *                 grid. Used below BOUNDARY_MID_ZOOM, where the point is "there
  *                 is public land over there", not "the edge is exactly here".
  */
-export type BoundaryDetail = 'full' | 'overview';
+export type BoundaryDetail = 'full' | 'mid' | 'overview';
 
 /**
  * THE OVERVIEW NO LONGER HAS A BOX FUNCTION, AND THAT IS THE POINT.

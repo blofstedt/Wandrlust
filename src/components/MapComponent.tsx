@@ -60,8 +60,8 @@ import { calculateRoute, RouteResult } from '../services/routingService';
 import { directionsAppName, openDirections } from '../utils/handoff';
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
-  BOUNDARY_MIN_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, OVERVIEW_BOX,
-  overviewMinSpanDegrees, clampToCoverage,
+  BOUNDARY_MIN_ZOOM, BOUNDARY_MID_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, OVERVIEW_BOX,
+  overviewMinSpanDegrees, midMinSpanDegrees, clampToCoverage,
   COVERAGE_LABEL, isWithinCoverage, landDataGap, hasMappedCrownLand
 } from '../config/coverage';
 import {
@@ -2387,6 +2387,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let controller: AbortController | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
     let requestId = 0;
+    // The tier ('overview' | 'mid' | 'full') currently on the canvas. A change
+    // in this value is a STEP on the zoom ladder, and steps get the fade.
+    let lastTier: BoundaryDetail | null = null;
+    // Monotonic token so a newer fade supersedes an older one mid-flight
+    // (rapid tier flipping never double-blooms).
+    let fadeSeq = 0;
 
     /**
      * Boundaries draw to a canvas, not to SVG.
@@ -2602,6 +2608,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // Loaded but not painted: everything below this line is drawing.
       if (!showBoundaries) { clearLayer(); return; }
       const pane = boundaryPane();
+      // The mid tier is the overview data windowed finer, so it draws with
+      // the same light styling family as the overview — hairline edges, no
+      // uncertainty halo, no pixel culling (the server has already filtered).
+      const light = detail !== 'full';
       const overview = detail === 'overview';
       const currentZoom = map.getZoom();
       const centreLat = map.getCenter().lat;
@@ -2715,10 +2725,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * property of the land rather than of the current zoom. That is the right
        * test and it has already been applied by the time these features arrive.
        */
-      const sliverCutoff = overview ? 0 : SLIVER_PX;
+      const sliverCutoff = light ? 0 : SLIVER_PX;
 
       /* -- Zoom-only change: rebuild the halo, keep the parcels ---------- */
-      if (sameData && fillLayerRef.current && boundaryLayerRef.current && !overview) {
+      if (sameData && fillLayerRef.current && boundaryLayerRef.current && !light) {
         const group = boundaryLayerRef.current;
         if (haloLayerRef.current) {
           try { group.removeLayer(haloLayerRef.current); } catch { /* gone */ }
@@ -2734,13 +2744,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         return;
       }
 
+      /* -- Tier change: fade through to the next step -------------------- */
+      const stepChanged = detail !== lastTier && !!boundaryLayerRef.current;
+      lastTier = detail;
+
+      const rebuild = () => {
       /* -- New data: full rebuild --------------------------------------- */
       const renderer = boundaryRenderer();
 
       // No uncertainty band in the overview. At zoom 4 a ±200 m band is a
       // fraction of a pixel, so it would draw as a slightly thicker line that
       // says nothing — while costing one extra pass over every polygon.
-      const halo = overview ? null : buildHalo(collection, centreLat, currentZoom, minDim, mergeSnap);
+      const halo = light ? null : buildHalo(collection, centreLat, currentZoom, minDim, mergeSnap);
 
       /**
        * DISSOLVED FILL. Same-org, same-rule parcels are merged into a single
@@ -2811,7 +2826,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           // Razor-thin slivers are filtered out here too, so the fill never draws
           // a hairline splinter the halo already refused to outline.
           filter: (feature: any) => minDim(feature.geometry) >= sliverCutoff,
-          style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, overview)
+          style: (feature: any) => parcelStyle(feature, centreLat, currentZoom, light)
         } as RenderedGeoJSONOptions
       );
 
@@ -2833,6 +2848,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       renderSignatureRef.current = signature;
       renderedCollectionRef.current = collection;
       renderedFingerprintRef.current = fingerprint;
+      };
+
+      /* -- Tier change: fade through ------------------------------------ */
+      if (stepChanged && !prefersReducedMotion()) {
+        const paneEl = boundaryPane();
+        if (paneEl) {
+          paneEl.style.transition = 'opacity 140ms ease';
+          paneEl.style.opacity = '0.15';
+          // The old tier is still on the pane right now. Dim it, swap in the
+          // new tier at its darkest frame, then bloom back — a step, not a
+          // cut. A newer fade supersedes this one (`fadeSeq`), and a render
+          // that cleared the transition skips the bloom entirely.
+          const myFade = ++fadeSeq;
+          window.setTimeout(() => {
+            if (myFade !== fadeSeq) return;
+            if (!paneEl.style.transition.includes('opacity')) return;
+            rebuild();
+            paneEl.style.transition = 'opacity 320ms ease-out';
+            paneEl.style.opacity = '1';
+            window.setTimeout(() => {
+              if (paneEl) paneEl.style.transition = '';
+            }, 600);
+          }, 150);
+          return;
+        }
+      }
+      rebuild();
     };
 
     const run = async () => {
@@ -2863,11 +2905,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       /**
        * Which tier to draw.
        *
-       * Below BOUNDARY_MIN_ZOOM: one answer for the whole coverage area, held
-       * for as long as the app is open. Above it: real geometry for the
-       * viewport, refetched as you move, drawn over the top.
+       * Three steps on the way in, instead of one hard cutover:
+       *   - below BOUNDARY_MID_ZOOM:      'overview' — the coarse blocks,
+       *                                    one answer for the whole coverage
+       *                                    area, held for the session.
+       *   - BOUNDARY_MID_ZOOM .. MIN-1:   'mid'      — the same local data,
+       *                                    windowed much finer. The step
+       *                                    between "is there public land over
+       *                                    there" and "where exactly".
+       *   - at or above BOUNDARY_MIN_ZOOM: 'full'    — real geometry for the
+       *                                    viewport, refetched as you move,
+       *                                    drawn over the top.
+       * Crossing any step fades through rather than snapping.
        */
-      const detail: BoundaryDetail = currentZoom < BOUNDARY_MIN_ZOOM ? 'overview' : 'full';
+      const detail: BoundaryDetail =
+        currentZoom < BOUNDARY_MID_ZOOM ? 'overview'
+        : currentZoom < BOUNDARY_MIN_ZOOM ? 'mid'
+        : 'full';
       setZoomTooFar(false);
 
       const b = map.getBounds();
@@ -2901,7 +2955,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * Nothing can pop, because there is no second answer to disagree with
        * the first.
        */
-      if (detail === 'overview') {
+      if (detail !== 'full') {
         /* -----------------------------------------------------------------
          * THE COPY ON THE DEVICE WINS, WHENEVER THERE IS ONE.
          * -----------------------------------------------------------------
@@ -2927,7 +2981,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
          */
         const overlay = landOverlayRef.current;
         if (overlay) {
-          const minSpan = overviewMinSpanDegrees(currentZoom);
+          const minSpan = detail === 'mid'
+            ? midMinSpanDegrees(currentZoom)
+            : overviewMinSpanDegrees(currentZoom);
           const held = overviewWindowRef.current;
 
           // Rebuild only when the view leaves the window we selected for, or
@@ -2950,10 +3006,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
           const local = overviewWindowRef.current!.collection;
           setWideViewFailed(false);
-          loadedDetailRef.current = 'overview';
+          loadedDetailRef.current = detail;
           collectionRef.current = local;
           setBoundaries(local);
-          render(local, 'overview');
+          render(local, detail);
           return;
         }
 
@@ -2962,10 +3018,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         const held = overviewCollectionRef.current;
         if (held) {
           setWideViewFailed(false);
-          loadedDetailRef.current = 'overview';
+          loadedDetailRef.current = detail;
           collectionRef.current = held;
           setBoundaries(held);
-          render(held, 'overview');
+          render(held, detail);
           return;
         }
 
@@ -2983,7 +3039,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         loadedDetailRef.current = 'overview';
         collectionRef.current = fetched;
         setBoundaries(fetched);
-        render(fetched, 'overview');
+        render(fetched, detail);
         return;
       }
 
