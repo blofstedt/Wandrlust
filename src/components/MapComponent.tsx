@@ -2858,17 +2858,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           paneEl.style.opacity = '0.15';
           // The old tier is still on the pane right now. Dim it, swap in the
           // new tier at its darkest frame, then bloom back — a step, not a
-          // cut. A newer fade supersedes this one (`fadeSeq`), and a render
-          // that cleared the transition skips the bloom entirely.
+          // cut. A newer fade supersedes this one (`fadeSeq`) and owns the
+          // pane from then on; the older fade's cleanup must not touch the
+          // transition once it does, or the pane can be left stuck at
+          // partial opacity (layers look gone after a fast zoom).
           const myFade = ++fadeSeq;
           window.setTimeout(() => {
-            if (myFade !== fadeSeq) return;
-            if (!paneEl.style.transition.includes('opacity')) return;
-            rebuild();
+            if (myFade !== fadeSeq) return; // a newer fade owns the pane
+            try {
+              rebuild();
+            } catch (err) {
+              // Never strand the pane dimmed: bloom back even if the swap
+              // failed so the previous tier stays visible.
+              console.error('boundary tier swap failed', err);
+            }
             paneEl.style.transition = 'opacity 320ms ease-out';
             paneEl.style.opacity = '1';
             window.setTimeout(() => {
-              if (paneEl) paneEl.style.transition = '';
+              if (myFade === fadeSeq) paneEl.style.transition = '';
             }, 600);
           }, 150);
           return;
