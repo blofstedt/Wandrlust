@@ -916,46 +916,6 @@ const BOUNDARY_SOURCES: BoundarySource[] = [
      */
     areaField: 'SYS_AREA'
   },
-  {
-    /**
-     * PAD-US — THE NATIONAL INVENTORY, AND THE ONLY SOURCE HERE THAT KNOWS
-     * ABOUT STATE LAND.
-     *
-     * BLM and the Forest Service between them cover federal land and nothing
-     * else, so every state forest, state trust parcel, national grassland and
-     * county holding in the country was invisible to this app — which is
-     * exactly the gap `COVERAGE_GAPS` records as "US state trust and state
-     * forest lands". PAD-US is USGS's national roll-up of all of it.
-     *
-     * `Pub_Access = 'OA'` is the filter that makes it usable: PAD-US grades
-     * every polygon Open / Restricted / Closed, and only OA means the public
-     * may walk in. Restricted and Closed are excluded rather than shown with a
-     * caveat, because a polygon a camper cannot enter is not a lead.
-     *
-     * WHAT OA STILL DOES NOT MEAN. Open access is a statement about entry, not
-     * about sleeping — a state park is usually OA and usually forbids
-     * overnight parking. So this source's `campingBasisKind` is the weakest of
-     * the three, and Beacon leans on the agency-specific sources above it
-     * before this one.
-     *
-     * Definition lifted from `scripts/landSources.ts`, where the field names
-     * were already worked out for the seeder.
-     */
-    id: 'padus_open_access',
-    jurisdiction: 'US',
-    label: 'Public land (PAD-US open access)',
-    attribution: 'USGS Gap Analysis Project, Protected Areas Database of the US',
-    url: 'https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/PADUS_Public_Access/FeatureServer/0/query',
-    where: "Pub_Access = 'OA'",
-    outFields: 'BndryName,Unit_Nm,Des_Tp,Mang_Name,Pub_Access',
-    confidence: 'managing_agency',
-    edgeAccuracy: 'administrative',
-    campingBasisKind: 'open_access_flag',
-    name: (p) => pick(p, 'BndryName', 'Unit_Nm') ?? 'Public land',
-    designation: (p) => pick(p, 'Des_Tp', 'Mang_Name') ?? 'Open access public land',
-    extent: CONUS,
-    areaField: 'GIS_Acres'
-  }
 ];
 
 /**
@@ -3613,7 +3573,12 @@ export const registerBoundaryRoutes = (app: Express): void => {
     // Stored parcels and freshly fetched ones are the same shape and carry the
     // same properties, so everything downstream — the weld, the water, the
     // area filter — treats them identically and cannot tell them apart.
-    const allLive = [...(storedFeatures ?? []), ...results.flatMap((r) => r.features)];
+    const allLive = [...(storedFeatures ?? []), ...results.flatMap((r) => r.features)]
+      // Defensive drop: PAD-US "open access" parcels were removed from the
+      // source registry (state trust/state forest land where the OA flag means
+      // "may enter", not "may camp"). Any stale copy — an old seed, a hot
+      // cache — must never draw again.
+      .filter((f: any) => f?.properties?._source !== 'padus_open_access');
     /*
      * The overview merges before it filters — see `overviewShapes`, which is
      * where the whole "why does Ontario draw as flecks and Alberta as a block"

@@ -173,38 +173,6 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     notes:
       'Administrative forest boundaries. A national forest boundary encloses private inholdings and wilderness alike; neither is depicted here, so a point inside one of these polygons is not by itself campable ground.'
   },
-  {
-    id: 'padus_open_access',
-    label: 'PAD-US — Open Access lands',
-    attribution: 'USGS Gap Analysis Project, Protected Areas Database of the US',
-    licence: 'Public domain (US Government work)',
-    jurisdiction: 'US',
-    url: 'https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/PADUS_Public_Access/FeatureServer/0/query',
-    // OA = Open Access. Excludes RA (Restricted) and XA (Closed).
-    where: "Pub_Access = 'OA'",
-    outFields: '*',
-    confidence: 'managing_agency',
-    edgeAccuracy: 'administrative',
-    campingBasisKind: 'open_access_flag',
-    maxRecordCount: 2000,
-    bbox: [-125.0, 24.5, -66.9, 49.5],
-    externalId: (p) => String(p.OBJECTID ?? p.objectid ?? p.BndryName),
-    name: (p) => p.BndryName || p.Unit_Nm || 'Public land',
-    designation: (p) => p.Des_Tp || p.Mang_Name || 'Open access public land',
-    campingBasis: (p) => {
-      if (p.Pub_Access !== 'OA') return null;
-      const label = `${p.BndryName ?? ''} ${p.Des_Tp ?? ''} ${p.Unit_Nm ?? ''}`;
-      if (EXCLUDED_DESIGNATIONS.test(label)) return null;
-      return `PAD-US classifies this area as Open Access (Pub_Access = OA) with no excluded designation. Managed by ${
-        p.Mang_Name ?? 'a public agency'
-      }. Open access means the public may enter; it does not by itself authorise overnight camping.`;
-    },
-    stayLimitDays: () => 14,
-    permit: () => ({ required: false, name: null }),
-    notes:
-      'PAD-US is the national inventory of protected areas. Pub_Access OA/RA/XA is the only national-scale public-access flag available. Camping still requires local confirmation.'
-  },
-
   /* ================= CANADA =================
    * There is no national Crown land layer. Each province publishes
    * separately, and several publish nothing usable. See COVERAGE_GAPS.
@@ -754,8 +722,8 @@ export const LAND_SOURCES: LandSourceSpec[] = [
     permit: () => ({ required: false, name: null }),
     notes:
       'Crown land as the province outline minus the LandUseDetails subtraction set (Crown ' +
-      'titles 78,896; applications; federal; municipal; parks; natural/ecological reserves; ' +
-      'Indigenous lands; expropriations; quit claims; hydro). About 385,000 km² — the largest ' +
+      'titles 78,896; applications; federal; municipal; parks; ecological/wilderness/wildlife ' +
+      'reserves; Indigenous lands; expropriations; quit claims; hydro). About 385,000 km² — the largest ' +
       'single mapped province on the map. Computed by scripts/buildNlCrownLand.py. Water is ' +
       'left in. Absence of a polygon is "no data", not "no Crown land".'
   }
@@ -919,7 +887,7 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'CA-NL',
     region: 'Newfoundland and Labrador',
     reason:
-      "MOST CROWN LAND IN THE COUNTRY, AND NO LAYER OF IT. About 95% of the province is Crown land. What Newfoundland publishes through its Land Use Atlas is the opposite: Crown TITLES and applications for them — the land that has been alienated — alongside protected areas, Indigenous lands and municipal plans. Both of its ArcGIS directories were listed and hold nothing else. Drawing the Crown land would mean drawing the province minus everything published, which would put private land on the map as campable wherever the titles layer is incomplete. That is the wrong direction to be wrong in, so it stays unmapped."
+      'MAPPED. Crown land is drawn as the province outline minus the Land Use Atlas subtraction set (Crown titles, applications, quit claims, parks, ecological/wilderness/wildlife reserves, Indigenous fee-simple lands, federal lands, hydro) — the residual is campable Crown extent, which is most of the province. The remaining gaps are genuine subtractions (water is left in; private towns and the largest townsites sit under the title layers). Computed by scripts/buildNlCrownLand.py.'
   },
   {
     jurisdiction: 'CA-NORTH',
@@ -931,11 +899,6 @@ export const COVERAGE_GAPS: { jurisdiction: string; region: string; reason: stri
     jurisdiction: 'US-STATE',
     region: 'US state trust and state forest lands',
     reason:
-      'PAD-US is now queried live as well as seeded, so state forests, state trust ' +
-      'parcels, national grasslands and county holdings appear wherever USGS has ' +
-      'populated Pub_Access = OA. That is most of the country and not all of it, and ' +
-      'the flag means the public may ENTER — not that anyone may sleep there. State ' +
-      'camping rules still vary by state and are in no layer here, so a PAD-US parcel ' +
-      'is the weakest kind of lead this app produces.'
+      'NOT MAPPED. PAD-US state trust and state forest parcels were removed. The Pub_Access = OA flag means the public may ENTER — not that anyone may sleep there — and state camping rules vary by state and are in no layer here, so those parcels read as "camp here" when the data said nothing of the kind. Only federal land with a confirmed camping basis (BLM, US Forest Service) is drawn. State lands are out of coverage until a state-by-state camping rule set is modelled.'
   }
 ];

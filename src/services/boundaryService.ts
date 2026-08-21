@@ -196,16 +196,14 @@ const unavailableBoundaries = (): BoundaryCollection => ({
  * and was therefore being labelled as American federal land.
  *
  * So there is one group for land you may camp on, whoever administers it and
- * however we came to know, and a separate, deliberately quieter treatment for
- * the one kind of land that does NOT say that.
- *
- * THE LINE THAT MUST NOT MOVE. PAD-US `open_access_flag` means the public may
- * ENTER — a state park is usually open access and usually forbids sleeping.
- * Folding that in with BLM under one "camp here" colour would be the app
- * claiming something no dataset says, so it keeps its own group and its own
- * words. Everything else here has camping permitted either by explicit
- * designation or by the managing agency's own general policy, which is the
- * same standard the seeder applies in `scripts/landSources.ts`.
+ * however we came to know. There used to be a second, deliberately quieter
+ * tier — `access_only` — for PAD-US parcels flagged "open to the public but
+ * camping not confirmed". Those parcels were REMOVED from the registry (see
+ * `scripts/landSources.ts` / `server/boundaryRoutes.ts`): the OA flag means
+ * the public may ENTER, not that anyone may sleep there, and it was being
+ * drawn as campable-looking land. The group is kept as a dead branch so an
+ * old cached feature degrades to amber rather than reading as confirmed
+ * campable.
  */
 export type BoundaryGroup = 'campable' | 'access_only';
 
@@ -213,8 +211,11 @@ export type BoundaryGroup = 'campable' | 'access_only';
  * Which group a parcel belongs to.
  *
  * A missing `_campingBasisKind` reads as campable, because every source wired
- * into this app asserts camping except PAD-US, which always sets the flag. The
- * fallback is therefore the common case, not a guess about unknown land.
+ * into this app asserts camping. The `access_only` branch is defensive only:
+ * PAD-US "open access" parcels (the one source that set
+ * `open_access_flag`) were removed, and the server drops any stale copy of
+ * them, so this never fires in practice — kept so an old cached feature
+ * degrades to amber instead of reading as confirmed campable.
  */
 export const boundaryGroupOf = (
   properties: { _campingBasisKind?: CampingBasisKind } | undefined | null

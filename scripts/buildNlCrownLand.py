@@ -31,7 +31,12 @@ SUBTRACTION LAYERS (LandUseDetails / MapServer)
                        harvesting-RIGHTS zone over Crown land, not alienation),
                        "TORNGATS"/"WATERZONE"/"SPECMAT" management overlays.
   L19 Parks                             (71)  provincial parks (own rules)
-  L20 Natural Areas                    (160)  protected, no camping
+  L20 Natural Areas                    (160)  filtered to RESTRICTION=Full only:
+                       genuine ecological/wilderness/wildlife reserves (107,
+                       17,708 km²). DROPPED: the RESTRICTION=Information
+                       referral overlays (53, 21,526 km²) — e.g. "Lac Joseph -
+                       Atikonak" (17,079 km²) is a woodland-caribou habitat
+                       where only hunting is restricted, not camping.
   L25 Federal Lands — DROPPED from this layer: "DND low-level flying area"
                        (89,218 km² — an AIRSPACE designation over Crown land;
                        the land below is still Crown and campable). Kept:
@@ -101,6 +106,14 @@ LAYER_FEATURE_FILTERS = {
         "Water Monitoring Area",
         "PLACENTIA BAY - Harbour",
     ),
+    # L20 "Natural Areas" mixes genuine reserves (RESTRICTION=Full — "no
+    # development permitted": ecological/wilderness/wildlife reserves) with
+    # pure referral overlays (RESTRICTION=Information — "no restriction,
+    # information provided for referral and planning purposes"). The latter
+    # sit over Crown land that stays campable — e.g. "Lac Joseph - Atikonak"
+    # (17,079 km²), a woodland-caribou habitat where only HUNTING is
+    # restricted. Keep only the Full-restriction reserves.
+    20: lambda p: (p.get("RESTRICTION") or "").strip() == "Full",
 }
 
 SIMPLIFY_DEGREES = float(os.environ.get("SIMPLIFY_DEGREES", "0.002"))
@@ -122,6 +135,10 @@ def fetch_layer(layer_id: int):
             "returnGeometry": "true",
             "outSR": "4326",
             "f": "geojson",
+            # Request every attribute. The L20 "Natural Areas" filter keys on
+            # RESTRICTION, and the server omits it (and most other columns)
+            # unless explicitly asked, defaulting to NAME only.
+            "outFields": "*",
             "maxAllowableOffset": MAX_ALLOWABLE_OFFSET,
             "resultOffset": str(offset),
             "resultRecordCount": str(PAGE),
