@@ -538,7 +538,16 @@ export const fetchSpotContext = async (
     // Nothing named anywhere near. Rather than invent something evocative,
     // say what it is and let the coordinates do the identifying.
     name = kind;
-    nameBasis = 'Nothing named nearby on OpenStreetMap, so this is just what it is.';
+    /*
+     * "Nothing named nearby" is a CLAIM, and it is only ours to make when the
+     * naming lookup actually ran. It regularly does not — the request is the
+     * one deliberately allowed to fail — and asserting an empty result from a
+     * query that timed out is the same mistake the Switzerland-only mirror was
+     * making across this whole app: a failure wearing the clothes of a fact.
+     */
+    nameBasis = namingFailed
+      ? 'Could not check OpenStreetMap for a name just now, so this is only what it is.'
+      : 'Nothing named nearby on OpenStreetMap, so this is just what it is.';
   }
 
   if (name.length > MAX_NAME) name = `${name.slice(0, MAX_NAME - 1).trimEnd()}…`;
