@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { OfflineRegion, Campsite } from '../types';
+import { distanceMiles } from '../utils/geo';
 import {
   getDownloadedRegions,
   downloadOfflineRegion,
@@ -102,6 +103,27 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
     await loadLandState();
   };
 
+  /** Half-width of the downloaded box, in degrees, each way from centre. */
+  const REGION_HALF_SPAN_DEG = 0.3;
+
+  /**
+   * How far the pack actually reaches, in miles.
+   *
+   * The box is a fixed span in DEGREES, and a degree of longitude shrinks as
+   * you go north — 0.3° is about 21 miles north-south everywhere, but only
+   * ~13 east-west at Calgary and less again further up. Quoting one round
+   * number for "around this point" would overstate the narrow direction by
+   * half, so both are measured from the real bounds and shown.
+   */
+  const reachMiles = useMemo(() => ({
+    northSouth: Math.round(
+      distanceMiles(center[0], center[1], center[0] + REGION_HALF_SPAN_DEG, center[1])
+    ),
+    eastWest: Math.round(
+      distanceMiles(center[0], center[1], center[0], center[1] + REGION_HALF_SPAN_DEG)
+    )
+  }), [center]);
+
   const handleDownloadCurrentRegion = async () => {
     setIsDownloading(true);
     setProgress(0);
@@ -109,10 +131,10 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
 
     const regionName = `${currentLocationName || 'Dispersed Area'} Sector`;
     const bounds = {
-      north: center[0] + 0.3,
-      south: center[0] - 0.3,
-      east: center[1] + 0.3,
-      west: center[1] - 0.3
+      north: center[0] + REGION_HALF_SPAN_DEG,
+      south: center[0] - REGION_HALF_SPAN_DEG,
+      east: center[1] + REGION_HALF_SPAN_DEG,
+      west: center[1] - REGION_HALF_SPAN_DEG
     };
 
     const result = await downloadOfflineRegion(
@@ -320,8 +342,9 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
               <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Current Search Viewport</span>
               <h3 className="font-bold text-base text-slate-100 mt-0.5">{currentLocationName || 'Selected Public Land Zone'}</h3>
               <p className="text-xs text-slate-300">
-                {campsitesInView.length} free campsites, plus topo tiles for about
-                20 miles around this point, down to street level.
+                {campsitesInView.length} free campsites, plus topo tiles reaching about{' '}
+                {reachMiles.eastWest} miles east and west and {reachMiles.northSouth} north
+                and south of here.
               </p>
             </div>
             <HardDrive className="w-5 h-5 text-emerald-400 shrink-0" />
