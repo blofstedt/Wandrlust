@@ -143,7 +143,23 @@ export const titleCase = (input: string): string => {
 /* The query                                                           */
 /* ------------------------------------------------------------------ */
 
-const buildQuery = (lat: number, lon: number): string => {
+/**
+ * TEMPORARY. Sends one clause group at a time so the failing one can be
+ * named instead of guessed at. Remove once this query is understood.
+ */
+export const buildProbeQueries = (lat: number, lon: number): Record<string, string> => {
+  const g = queryGroups(lat, lon);
+  const wrap = (body: string) => `[out:json][timeout:10];(${body});out center 500;`;
+  return {
+    pois: wrap(g.pois),
+    named: wrap(g.named),
+    here: wrap(g.here),
+    towns: wrap(g.towns),
+    all: buildQuery(lat, lon)
+  };
+};
+
+const queryGroups = (lat: number, lon: number) => {
   const at = (r: number) => `(around:${r},${lat.toFixed(5)},${lon.toFixed(5)})`;
 
   // Facilities. `amenity=shower` is rare in the wild, so campgrounds and
@@ -237,6 +253,11 @@ const buildQuery = (lat: number, lon: number): string => {
    * count for radii this tight — it caps a pathological answer, it does not
    * trim a normal one.
    */
+  return { pois, named, here, towns };
+};
+
+const buildQuery = (lat: number, lon: number): string => {
+  const { pois, named, here, towns } = queryGroups(lat, lon);
   return `[out:json][timeout:10];(${pois}${named}${here}${towns});out center 500;`;
 };
 
@@ -295,6 +316,47 @@ const agencyShort = (tags: Record<string, string>): string | null => {
 const MAX_NAME = 46;
 
 /* ------------------------------------------------------------------ */
+
+/** TEMPORARY diagnostic: ask each group separately and report what happened. */
+export const probeSpotContext = async (lat: number, lon: number): Promise<string[]> => {
+  const out: string[] = [];
+  for (const [name, query] of Object.entries(buildProbeQueries(lat, lon))) {
+    for (const mirror of OVERPASS_MIRRORS) {
+      const host = new URL(mirror).host;
+      const startedAt = Date.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
+      try {
+        const res = await fetch(mirror, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': UA
+          },
+          body: `data=${encodeURIComponent(query)}`,
+          signal: controller.signal
+        });
+        const ms = Date.now() - startedAt;
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          out.push(`${name}/${host}: HTTP ${res.status} in ${ms}ms ${body.slice(0, 90).replace(/\s+/g, ' ')}`);
+          continue;
+        }
+        const data = (await res.json()) as { elements?: unknown[]; remark?: unknown };
+        const remark = overpassFailureRemark(data);
+        out.push(
+          `${name}/${host}: ${remark ? `200-but-failed ${remark.slice(0, 70)}` : `${data.elements?.length ?? 0} elements`} in ${ms}ms`
+        );
+        break;
+      } catch {
+        out.push(`${name}/${host}: ${controller.signal.aborted ? 'timeout' : 'unreachable'} in ${Date.now() - startedAt}ms`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+  return out;
+};
 
 export const fetchSpotContext = async (
   lat: number,

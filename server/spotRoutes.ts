@@ -16,7 +16,7 @@
  */
 import type { Express, Request, Response } from 'express';
 // `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
-import { fetchSpotContext, type SpotContextResult } from './spotContext.js';
+import { fetchSpotContext, probeSpotContext, type SpotContextResult } from './spotContext.js';
 
 /**
  * A small warm-instance cache.
@@ -85,6 +85,13 @@ export const registerSpotRoutes = (app: Express): void => {
         poiLookupFailed: true,
         note: 'Outside the area Wandrlust covers, so nothing could be looked up.'
       });
+    }
+
+    // TEMPORARY diagnostic, see probeSpotContext. Remove with it.
+    if (req.query.probe === '1') {
+      const lines = await probeSpotContext(lat, lon);
+      for (const line of lines) console.info(`[spot-probe] ${line}`);
+      return res.json({ probe: lines });
     }
 
     const key = cacheKey(lat, lon);
