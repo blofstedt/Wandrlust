@@ -241,8 +241,18 @@ export const fetchSpotContext = async (
   const query = buildQuery(lat, lon);
 
   let elements: OverpassElement[] | null = null;
+  /*
+   * One line per lookup, like `[beacon] Overpass answered` on the other
+   * client. Added because this endpoint reports "nothing named nearby" and
+   * "no facilities" identically whether Overpass returned nothing or returned
+   * plenty that nothing downstream recognised — and with no logging at all,
+   * telling those two apart in production was guesswork.
+   */
+  const tried: string[] = [];
 
   for (const mirror of OVERPASS_MIRRORS) {
+    const host = new URL(mirror).host;
+    const startedAt = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -255,10 +265,16 @@ export const fetchSpotContext = async (
         body: `data=${encodeURIComponent(query)}`,
         signal: controller.signal
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        tried.push(`${host}: HTTP ${res.status}`);
+        continue;
+      }
 
       const data = (await res.json()) as { elements?: unknown; remark?: unknown };
-      if (!Array.isArray(data?.elements)) continue;
+      if (!Array.isArray(data?.elements)) {
+        tried.push(`${host}: answered without an element list`);
+        continue;
+      }
 
       /*
        * Overpass answers a timed-out query with 200 and an empty list, putting
@@ -267,16 +283,26 @@ export const fetchSpotContext = async (
        * "there is no toilet here" apart from "we could not check".
        * See `overpassFailureRemark`.
        */
-      if (overpassFailureRemark(data)) continue;
+      const remark = overpassFailureRemark(data);
+      if (remark) {
+        tried.push(`${host}: 200 but failed — ${remark}`);
+        continue;
+      }
 
       elements = data.elements as OverpassElement[];
+      tried.push(`${host}: ${elements.length} elements in ${Date.now() - startedAt} ms`);
       break;
     } catch {
-      // Next mirror. Only every mirror failing is an outage.
+      tried.push(
+        `${host}: ${controller.signal.aborted ? 'timed out' : 'unreachable'}` +
+        ` after ${Date.now() - startedAt} ms`
+      );
     } finally {
       clearTimeout(timer);
     }
   }
+
+  console.info(`[spot-context] ${lat.toFixed(4)},${lon.toFixed(4)} — ${tried.join(' | ')}`);
 
   if (!elements) {
     /**
