@@ -185,7 +185,29 @@ const buildQuery = (lat: number, lon: number): string => {
    * seconds declared against a fifteen-second wait lets a slow-but-working
    * mirror finish, and lets a genuinely overrun one tell us so.
    */
-  return `[out:json][timeout:10];(${pois}${named}${here}${towns});out center tags;`;
+  /*
+   * `out center 500;`, NOT `out center tags;`, which is what this asked for
+   * until measured against production.
+   *
+   * `tags` is a VERBOSITY in Overpass QL — it means "tags only, and no
+   * geometry" — so pairing it with `center` asks for a centre point and then
+   * suppresses it. It is also out of the documented parameter order
+   * (verbosity, then geometry), which stricter builds reject outright: both
+   * kumi.systems and private.coffee answered this query HTTP 500 while
+   * overpass-api.de sat on it until the caller gave up.
+   *
+   * So this was broken twice over, and either fault alone produces the same
+   * silent symptom — a server that accepted it would return elements with no
+   * coordinates, and `centreOf` drops every one of those, leaving no
+   * facilities and no name. Which is exactly what this endpoint reported.
+   *
+   * `out center` already includes tags: the default body verbosity carries
+   * them. Every other Overpass query in this repo says `out center <limit>`;
+   * this one is now the same shape. The limit is far above any realistic
+   * count for radii this tight — it caps a pathological answer, it does not
+   * trim a normal one.
+   */
+  return `[out:json][timeout:10];(${pois}${named}${here}${towns});out center 500;`;
 };
 
 /* ------------------------------------------------------------------ */
