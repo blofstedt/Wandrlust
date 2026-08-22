@@ -24,11 +24,28 @@ export interface SheetProps {
   footer?: React.ReactNode;
   variant?: 'sheet' | 'dialog';
   maxWidthClass?: string;
+  /**
+   * Leave the app behind this panel working.
+   *
+   * A modal takes the whole screen hostage: everything behind it is dimmed,
+   * inert, and hidden from a screen reader, which is right for a form you
+   * must finish or abandon. It is wrong for a panel the app can keep
+   * running underneath — the Tools card sits above the tab bar and the bar
+   * is still visibly there, so a thumb landing on Map has every reason to
+   * expect Map.
+   *
+   * Set this and the panel stops trapping Tab, stops claiming `aria-modal`,
+   * and lets whatever the app raises above the backdrop stay live. Escape
+   * and the backdrop press still close it. It is the CALLER's job to lift
+   * the still-usable part above the backdrop's z-index; this flag only
+   * stops the panel from fighting it.
+   */
+  interactiveBehind?: boolean;
 }
 
 export const Sheet: React.FC<SheetProps> = ({
   isOpen, onClose, title, subtitle, icon, children, footer,
-  variant = 'sheet', maxWidthClass = 'sm:max-w-md'
+  variant = 'sheet', maxWidthClass = 'sm:max-w-md', interactiveBehind = false
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -65,6 +82,10 @@ export const Sheet: React.FC<SheetProps> = ({
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') { e.stopPropagation(); onClose(); return; }
     if (e.key !== 'Tab' || !panelRef.current) return;
+    /* Non-modal: Tab is allowed to walk out of the panel and into the app,
+       because the app behind it is genuinely usable. Trapping here would
+       leave a keyboard on a different set of controls than a thumb. */
+    if (interactiveBehind) return;
 
     const nodes = Array.from(panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE))
       .filter((el) => el.offsetParent !== null);
@@ -75,7 +96,7 @@ export const Sheet: React.FC<SheetProps> = ({
 
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-  }, [onClose]);
+  }, [onClose, interactiveBehind]);
 
   if (!isOpen) return null;
   const isSheet = variant === 'sheet';
@@ -90,7 +111,7 @@ export const Sheet: React.FC<SheetProps> = ({
       <div
         ref={panelRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={interactiveBehind ? undefined : true}
         aria-labelledby={titleId.current}
         tabIndex={-1}
         onKeyDown={handleKeyDown}
@@ -100,8 +121,10 @@ export const Sheet: React.FC<SheetProps> = ({
             /* A dialog is a card floating in the middle of the screen, so it
                stops short of the edges the sheet is allowed to reach — the
                tab bar and the header stay visible around it, which is what
-               tells you it is a layer and not a new screen. */
-            : 'max-h-[82vh] border rounded-2xl anim-expand'
+               tells you it is a layer and not a new screen. The 78 is
+               measured, not chosen: the phone tab bar is about 9vh, and a
+               centred card any taller than this reaches under it. */
+            : 'max-h-[78vh] border rounded-2xl anim-expand'
         }`}
       >
         {isSheet && (

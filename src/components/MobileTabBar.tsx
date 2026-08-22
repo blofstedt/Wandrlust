@@ -147,11 +147,20 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
     { id: 'tools', label: 'Tools', icon: LayoutGrid, badge: toolBadgeTotal }
   ];
 
+  /* The bar keeps working while Tools is open, so every tab has to say what
+     it does to a panel that is already up. Tools toggles; the other three
+     put it away and go where they say they go. */
   const select = (id: AppView | 'tools') => {
     haptic('tap');
-    if (id === 'tools') { setShowTools(true); return; }
+    if (id === 'tools') { setShowTools((open) => !open); return; }
+    setShowTools(false);
     setActiveView(id);
   };
+
+  /* Tools has no view of its own, so it borrows the lit state from whether
+     its panel is up — otherwise the tab you just pressed is the one thing
+     on the bar that looks untouched. */
+  const lit = (id: AppView | 'tools') => (id === 'tools' ? showTools : activeView === id);
 
   return (
     <>
@@ -162,14 +171,21 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
         Padding it here instead lets the bar's own background run to the
         bottom edge of the glass, the way a native tab bar does.
 
-        The z-index is load-bearing. Leaflet gives its own panes z-indices in
-        the hundreds, and this bar is a plain flex sibling of the map, so
-        without a number of its own anything of ours that reaches upward gets
-        painted over by the tiles. That is what sliced the top off the add
-        button on the map view.
+        The z-index is load-bearing, twice over. Leaflet gives its own panes
+        z-indices in the hundreds, and this bar is a plain flex sibling of
+        the map, so without a number of its own anything of ours that
+        reaches upward gets painted over by the tiles — that is what sliced
+        the top off the add button.
+
+        And while Tools is open it goes ABOVE that panel's backdrop (1800),
+        which is the whole point: the bar stays lit, undimmed and pressable
+        under a card that is only covering the map. A bar you can still see
+        and cannot press is worse than one that got covered up.
       */}
       <nav
-        className="md:hidden relative z-[1200] shrink-0 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(2,6,23,0.5)]"
+        className={`md:hidden relative shrink-0 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(2,6,23,0.5)] ${
+          showTools ? 'z-[1900]' : 'z-[1200]'
+        }`}
         aria-label="Main"
       >
         <div className="flex items-center">
@@ -190,7 +206,7 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
                 <div className="w-[74px] shrink-0 flex items-center justify-center">
                   <button
                     type="button"
-                    onClick={() => { haptic('tap'); onOpenAddModal(); }}
+                    onClick={() => { haptic('tap'); setShowTools(false); onOpenAddModal(); }}
                     className="w-[50px] h-[50px] rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 text-white shadow-lg shadow-emerald-950/70 ring-1 ring-emerald-300/30 flex items-center justify-center anim-pop"
                     aria-label="Submit the spot you are standing in"
                   >
@@ -203,15 +219,13 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
                 type="button"
                 onClick={() => select(id)}
                 aria-current={id !== 'tools' && activeView === id ? 'page' : undefined}
+                aria-expanded={id === 'tools' ? showTools : undefined}
                 className={`relative flex-1 flex flex-col items-center justify-center gap-0.5 pt-2.5 pb-2 min-h-[62px] no-press ${
-                  id !== 'tools' && activeView === id ? 'text-emerald-400' : 'text-slate-400'
+                  lit(id) ? 'text-emerald-400' : 'text-slate-400'
                 }`}
               >
                 <span className="relative">
-                  <Icon
-                    className="w-[22px] h-[22px]"
-                    strokeWidth={id !== 'tools' && activeView === id ? 2.4 : 2}
-                  />
+                  <Icon className="w-[22px] h-[22px]" strokeWidth={lit(id) ? 2.4 : 2} />
                   {badge != null && badge > 0 && (
                     <span className="absolute -top-1.5 -right-2.5 min-w-[17px] h-[17px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center">
                       {badge > 99 ? '99+' : badge}
@@ -219,7 +233,7 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
                   )}
                 </span>
                 <span className="text-[11px] font-bold leading-none">{label}</span>
-                {id !== 'tools' && activeView === id && (
+                {lit(id) && (
                   <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-emerald-400" />
                 )}
               </button>
@@ -237,11 +251,17 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
         was still going. A centred card sits clear of both edges: the bar
         stays visible underneath it, and the list scrolls inside the card
         where a scroll obviously belongs.
+
+        And it is `interactiveBehind`, so the bar underneath is not just
+        visible — it works. Tools toggles the card shut again, and Map, List
+        and Saved put it away and go. Showing somebody a control and then
+        refusing the press is the one outcome worse than covering it up.
       */}
       <Sheet
         isOpen={showTools}
         onClose={() => setShowTools(false)}
         variant="dialog"
+        interactiveBehind
         title="Tools"
         subtitle="Everything that is not the map itself"
       >
