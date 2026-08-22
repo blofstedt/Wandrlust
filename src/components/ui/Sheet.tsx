@@ -41,11 +41,64 @@ export interface SheetProps {
    * stops the panel from fighting it.
    */
   interactiveBehind?: boolean;
+  /**
+   * Sit the panel on top of the on-screen keyboard instead of underneath it.
+   *
+   * A bottom sheet with a text field in it has a problem on a phone: the
+   * keyboard covers the bottom of the screen, which is exactly where the
+   * sheet is. `100dvh` does not shrink for the keyboard on iOS, so nothing
+   * in CSS notices. The visual viewport does, so we measure it and hold the
+   * panel's bottom edge at the top of the keyboard.
+   *
+   * Degrades to a normal bottom sheet anywhere `visualViewport` is missing.
+   */
+  liftAboveKeyboard?: boolean;
+  /**
+   * Let the caller decide what gets focus.
+   *
+   * By default the panel focuses its first control, which is the close
+   * button. For a search sheet that is the wrong thing: the caller focuses
+   * the input inside the tap that opened the panel — the only way iOS will
+   * raise the keyboard — and this stops the panel taking it straight back.
+   */
+  autoFocus?: boolean;
 }
+
+/**
+ * How much of the screen the on-screen keyboard is covering, in pixels.
+ *
+ * `visualViewport` is the only thing that knows. Zero when it is missing,
+ * when the keyboard is down, or when this is switched off.
+ */
+const useKeyboardInset = (active: boolean): number => {
+  const [inset, setInset] = React.useState(0);
+
+  useEffect(() => {
+    if (!active) { setInset(0); return; }
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const update = () => {
+      // Anything under 80px is browser chrome moving, not a keyboard.
+      const covered = window.innerHeight - vv.height - vv.offsetTop;
+      setInset(covered > 80 ? covered : 0);
+    };
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, [active]);
+
+  return inset;
+};
 
 export const Sheet: React.FC<SheetProps> = ({
   isOpen, onClose, title, subtitle, icon, children, footer,
-  variant = 'sheet', maxWidthClass = 'sm:max-w-md', interactiveBehind = false
+  variant = 'sheet', maxWidthClass = 'sm:max-w-md', interactiveBehind = false,
+  liftAboveKeyboard = false, autoFocus = true
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -68,11 +121,11 @@ export const Sheet: React.FC<SheetProps> = ({
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen || !panelRef.current) return;
+    if (!isOpen || !autoFocus || !panelRef.current) return;
     const first = panelRef.current.querySelector<HTMLElement>(FOCUSABLE);
     const t = setTimeout(() => (first ?? panelRef.current)?.focus(), 40);
     return () => clearTimeout(t);
-  }, [isOpen]);
+  }, [isOpen, autoFocus]);
 
   useEffect(() => {
     if (isOpen) return;
@@ -98,6 +151,8 @@ export const Sheet: React.FC<SheetProps> = ({
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }, [onClose, interactiveBehind]);
 
+  const keyboardInset = useKeyboardInset(isOpen && liftAboveKeyboard);
+
   if (!isOpen) return null;
   const isSheet = variant === 'sheet';
 
@@ -107,9 +162,15 @@ export const Sheet: React.FC<SheetProps> = ({
         isSheet ? 'items-end sm:items-center p-0 sm:p-4' : 'items-center p-4'
       }`}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={keyboardInset ? { paddingBottom: keyboardInset } : undefined}
     >
       <div
         ref={panelRef}
+        style={
+          keyboardInset
+            ? { maxHeight: `calc(100dvh - ${keyboardInset}px - 1rem)` }
+            : undefined
+        }
         role="dialog"
         aria-modal={interactiveBehind ? undefined : true}
         aria-labelledby={titleId.current}
