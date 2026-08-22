@@ -6795,20 +6795,36 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         </div>
       )}
 
-      {/* Layer controls */}
-      <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-2">
-        <button
-          type="button"
-          onClick={() => setShowLayerMenu((open) => !open)}
-          className="p-2 tap-safe rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white shadow-xl"
-          aria-label="Map layers"
-          aria-expanded={showLayerMenu}
-        >
-          <Layers className="w-4 h-4" />
-        </button>
+      {/*
+        THE MAP CONTROLS, ALL IN ONE CORNER A THUMB CAN REACH.
 
+        Layers and locate used to live at the top right. On a desktop that
+        is fine; on a phone it is the one part of the screen the hand
+        holding it cannot get to without shifting its grip, and the two
+        controls a camper reaches for while moving were both up there. They
+        sit with the zoom buttons now, in the bottom third of the screen.
+
+        The shapes carry the grouping: round for the two buttons that each
+        do one thing, one pill for the pair that share an axis. Same glass,
+        same border, same size — one set of chrome rather than three
+        floating oddments.
+
+        The stack rides above whatever card is open (`overlayPx`) instead of
+        being buried by it. A control you can see under a sheet and cannot
+        press is worse than one that moved out of the way.
+      */}
+      <div
+        className="absolute right-3 z-[1000] flex flex-col items-end gap-2 transition-[bottom] duration-200"
+        style={{ bottom: `calc(1.5rem + ${overlayPx}px)` }}
+      >
+        {/*
+          The menu opens UPWARD from its button now, capped and scrollable:
+          it is a long list, and anchored to the bottom of the screen an
+          uncapped one would run off the top edge with the base map choices
+          — the part everybody wants — the first thing gone.
+        */}
         {showLayerMenu && (
-          <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-xl p-2 shadow-2xl w-48 anim-in-down">
+          <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl p-2 shadow-2xl w-52 max-h-[55vh] overflow-y-auto overscroll-contain scroll-soft anim-in-up">
             <p className="text-[12px] uppercase tracking-wider text-slate-400 font-bold px-1 pb-1">Base map</p>
             {(Object.keys(TILE_URLS) as MapTileLayer[]).map((id) => (
               <button
@@ -6952,45 +6968,56 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         )}
 
+        <button
+          type="button"
+          onClick={() => setShowLayerMenu((open) => !open)}
+          className={`tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center ${showLayerMenu ? 'text-white ring-1 ring-emerald-500/50' : ''}`}
+          aria-label="Map layers"
+          aria-expanded={showLayerMenu}
+        >
+          <Layers className="w-[18px] h-[18px]" />
+        </button>
+
         {onLocateUser && (
           <button
             type="button"
             onClick={onLocateUser}
             disabled={isLocating}
-            className="p-2 tap-safe rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white shadow-xl disabled:opacity-50"
+            className="tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center disabled:opacity-50"
             aria-label="Centre on my location"
           >
             {isLocating
-              ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
-              : <Crosshair className="w-4 h-4" />}
+              ? <Loader2 className="w-[18px] h-[18px] animate-spin text-emerald-400" />
+              : <Crosshair className="w-[18px] h-[18px]" />}
           </button>
         )}
-      </div>
 
-      {/*
-        Zoom, in React rather than Leaflet.
+        {/*
+          Zoom, in React rather than Leaflet.
 
-        Leaflet's own control would live inside the stage element and inherit
-        anything ever done to it; these sit outside as siblings of the map, next
-        to the rest of the chrome.
-      */}
-      <div className="absolute bottom-6 right-3 z-[1000] flex flex-col rounded-xl overflow-hidden border border-slate-700/80 shadow-xl">
-        <button
-          type="button"
-          onClick={() => mapRef.current?.zoomIn()}
-          className="tap-safe w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none"
-          aria-label="Zoom in"
-        >
-          +
-        </button>
-        <button
-          type="button"
-          onClick={() => mapRef.current?.zoomOut()}
-          className="tap-safe w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none border-t border-slate-700/80"
-          aria-label="Zoom out"
-        >
-          −
-        </button>
+          Leaflet's own control would live inside the stage element and
+          inherit anything ever done to it; these sit outside as siblings of
+          the map, with the rest of the chrome. One pill rather than two
+          separate circles, because they are one control with two ends.
+        */}
+        <div className="flex flex-col rounded-full overflow-hidden border border-slate-700/80 shadow-xl">
+          <button
+            type="button"
+            onClick={() => mapRef.current?.zoomIn()}
+            className="tap-safe w-11 h-11 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none"
+            aria-label="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={() => mapRef.current?.zoomOut()}
+            className="tap-safe w-11 h-11 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none border-t border-slate-700/80"
+            aria-label="Zoom out"
+          >
+            −
+          </button>
+        </div>
       </div>
 
       {/*
@@ -7036,13 +7063,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         Shown only until the user has picked somewhere. A tap target that
         covers the entire screen is invisible until somebody tells you it's
         there — but once you know, the hint is clutter, so it removes itself.
+
+        Five words, on one line, deliberately. "Tap anywhere to pick a spot"
+        wrapped to two lines on a narrow phone and the pill grew into a
+        paragraph sitting over the map. The tap target is still the whole
+        screen; the sentence does not have to say so to prove it.
       */}
       {!destination && !pointCardOpen && (
         <div className="absolute bottom-13 md:bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
           <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl">
             <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span className="text-xs font-semibold text-slate-200">
-              Tap anywhere to pick a spot
+            <span className="text-xs font-semibold text-slate-200 whitespace-nowrap">
+              Tap to pick a spot
             </span>
           </div>
         </div>

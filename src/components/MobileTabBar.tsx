@@ -149,18 +149,36 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
 
   /* The bar keeps working while Tools is open, so every tab has to say what
      it does to a panel that is already up. Tools toggles; the other three
-     put it away and go where they say they go. */
+     put it away and go where they say they go.
+
+     OPENING TOOLS ALSO GOES TO THE MAP. Every tool in the card acts on the
+     map — filters change which pins are drawn, Add drops one, Scout records
+     the road you are on — and opening it from the Saved list left a card of
+     map controls floating over a list of saved cards, then dropped you back
+     on that list when it closed. The map is the thing these tools are for,
+     so that is what they open over. */
   const select = (id: AppView | 'tools') => {
     haptic('tap');
-    if (id === 'tools') { setShowTools((open) => !open); return; }
+    if (id === 'tools') {
+      const opening = !showTools;
+      if (opening) setActiveView('map');
+      setShowTools(opening);
+      return;
+    }
     setShowTools(false);
     setActiveView(id);
   };
 
   /* Tools has no view of its own, so it borrows the lit state from whether
      its panel is up — otherwise the tab you just pressed is the one thing
-     on the bar that looks untouched. */
-  const lit = (id: AppView | 'tools') => (id === 'tools' ? showTools : activeView === id);
+     on the bar that looks untouched.
+
+     And while it is up it is the ONLY thing lit. Two green tabs — the one
+     you pressed and the one you were on — read as two things being open at
+     once, when only one is. The view underneath is still where it was; it
+     just stops claiming the highlight until the card is closed. */
+  const lit = (id: AppView | 'tools') =>
+    showTools ? id === 'tools' : activeView === id;
 
   return (
     <>

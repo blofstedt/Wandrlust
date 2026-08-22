@@ -114,17 +114,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
    * On an installed mobile PWA, the automatic background check is heavily
    * throttled by the OS and may not surface an update for hours. This
    * button bypasses the throttle, so a user who suspects a fix has shipped
-   * can get the toast in seconds instead of waiting for the next background
-   * refresh window.
+   * can get the update pill in seconds instead of waiting for the next
+   * background refresh window.
    */
   const handleCheckUpdate = async () => {
     setUpdateState('checking');
     try {
       await checkForUpdate();
       // 'up-to-date' is the message either way. If a worker is waiting, the
-      // UpdatePrompt toast surfaces it; if not, the user knows they are
-      // current. There's no separate "update found" message here because the
-      // toast handles it the same way it would for an automatic check.
+      // UpdatePrompt pill at the bottom of the screen surfaces it; if not,
+      // the user knows they are current. There's no separate "update found"
+      // message here because the pill handles it the same way it would for an
+      // automatic check.
       setUpdateState('up-to-date');
     } catch {
       setUpdateState('error');

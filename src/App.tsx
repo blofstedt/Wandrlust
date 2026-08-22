@@ -42,6 +42,7 @@ import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
 import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
 import { MobileTabBar } from './components/MobileTabBar';
+import { UpdatePrompt } from './components/UpdatePrompt';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
 import {
   createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
@@ -1273,6 +1274,16 @@ export default function App() {
         />
 
         <main id="main" className="flex-1 relative flex flex-col overflow-hidden min-h-0">
+          {/*
+            "A new version is ready", as a pill just above the map's tap hint.
+
+            In here rather than at the root so it sits inside the same box the
+            map does — clear of the phone's tab bar without anybody hard-coding
+            that bar's height — and on every view, because an update is not a
+            map-only concern. Production only: in dev there is no service
+            worker, and waiting on one that never arrives shows nothing.
+          */}
+          {import.meta.env.PROD && <UpdatePrompt />}
           {/* ---------------------------------------------------------- MAP */}
           {activeView === 'map' && (
             <div className="relative w-full h-full flex flex-col overflow-hidden">
