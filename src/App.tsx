@@ -209,6 +209,17 @@ export default function App() {
    * map shows nothing until they pan far enough to trip a reload.
    */
   const [facilityKinds, setFacilityKinds] = useState<FacilityKind[]>([]);
+
+  /**
+   * The search sheet, hoisted out of the Navbar.
+   *
+   * It is opened from two places now — the header chip on the list and saved
+   * views, and the magnifier in the map's own bottom-right control stack on
+   * a phone — and the sheet itself has to stay in the Navbar, which owns the
+   * geocoder and its request-ticket logic. So the flag lives up here where
+   * both triggers can reach it.
+   */
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [facilityState, setFacilityState] = useState<FacilityLookupState>({ status: 'idle' });
   const [facilityRefreshKey, setFacilityRefreshKey] = useState(0);
   const [isAddFacilityOpen, setIsAddFacilityOpen] = useState(false);
@@ -1271,6 +1282,8 @@ export default function App() {
           onToggleFacilityKind={handleToggleFacilityKind}
           onClearFacilityKinds={handleClearFacilityKinds}
           facilityState={facilityState}
+          searchOpen={isSearchOpen}
+          setSearchOpen={setIsSearchOpen}
         />
 
         <main id="main" className="flex-1 relative flex flex-col overflow-hidden min-h-0">
@@ -1320,6 +1333,8 @@ export default function App() {
                     onSelectFacility={setSelectedFacility}
                     facilityRefreshKey={facilityRefreshKey}
                     bottomSheetPx={sheetSite ? sheetPx : 0}
+                    onOpenSearch={() => setIsSearchOpen(true)}
+                    onOpenAuth={() => setIsAuthOpen(true)}
                   />
                 </ErrorBoundary>
 

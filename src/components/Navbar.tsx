@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import {
-  Compass, Search, MapPin, Map as MapIcon, List, Bookmark, Plug, Unplug,
+  Search, MapPin, Map as MapIcon, List, Bookmark, Plug, Unplug,
   Download, PlusCircle, BookOpen, X, Crosshair,
   Users, Activity, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
 } from 'lucide-react';
@@ -10,6 +10,7 @@ import { geocodeSearch } from '../services/nominatim';
 import { UserMenu } from './UserMenu';
 import { FacilityChips, type FacilityLookupState } from './FacilityChips';
 import { Sheet } from './ui/Sheet';
+import { BrandMark } from './ui/BrandMark';
 
 interface NavbarProps {
   activeView: AppView;
@@ -47,6 +48,19 @@ interface NavbarProps {
   onToggleFacilityKind: (kind: FacilityKind) => void;
   onClearFacilityKinds: () => void;
   facilityState: FacilityLookupState;
+
+  /**
+   * The search sheet is opened from OUTSIDE this component now.
+   *
+   * On the map its trigger is the magnifier in the map's own bottom-right
+   * control stack, beside layers and locate, because that is where a thumb
+   * is. The sheet itself still lives here — it owns the geocoder, the
+   * debounce and the request-ticket logic, and splitting those from the
+   * desktop input that shares them would mean two copies of the same
+   * race-condition fix. So App holds the flag and this holds the machinery.
+   */
+  searchOpen: boolean;
+  setSearchOpen: (open: boolean) => void;
 }
 
 /**
@@ -76,7 +90,8 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
   onOpenAddModal, onOpenGuideModal, onOpenFilterDrawer, onOpenAuth, onOpenPresence,
   onOpenScout, onOpenSettings, onOpenReport, nearbyCount = 0,
   activeFilterCount = 0, savedCount,
-  facilityKinds, onToggleFacilityKind, onClearFacilityKinds, facilityState
+  facilityKinds, onToggleFacilityKind, onClearFacilityKinds, facilityState,
+  searchOpen, setSearchOpen
 }) => {
   const [query, setQuery] = useState(filterState.searchQuery ?? '');
   const [suggestions, setSuggestions] = useState<GeocodedLocation[]>([]);
@@ -112,7 +127,6 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
    * keyboard: field, suggestions and thumb all in the same half of the
    * screen. The desktop box is untouched.
    */
-  const [searchSheetOpen, setSearchSheetOpen] = useState(false);
   const sheetInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setQuery(filterState.searchQuery); }, [filterState.searchQuery]);
@@ -209,7 +223,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     setShowDropdown(false);
     setHighlighted(-1);
     setFilterState((prev) => ({ ...prev, searchQuery: label }));
-    setSearchSheetOpen(false);
+    setSearchOpen(false);
     onSelectLocation(loc);
   }, [cancelPendingSearch, setFilterState, onSelectLocation]);
 
@@ -276,7 +290,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
    * the render makes the input exist while the gesture is still running.
    */
   const openSearchSheet = () => {
-    flushSync(() => setSearchSheetOpen(true));
+    flushSync(() => setSearchOpen(true));
     // `select` rather than `focus`: the box opens holding the last place
     // searched, and somebody opening it again is almost always going
     // somewhere else. Typing replaces it instead of appending to it.
@@ -352,9 +366,12 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
             onClick={() => setActiveView('map')}
             className="flex items-center gap-2.5 no-press text-left"
           >
-            <div className="w-9 h-9 md:w-10 md:h-10 shrink-0 rounded-xl bg-gradient-to-br from-emerald-500 via-teal-600 to-amber-600 flex items-center justify-center shadow-lg shadow-emerald-900/40 border border-emerald-400/30">
-              <Compass className="w-5 h-5 text-white shrink-0" />
-            </div>
+            {/* The app's own icon, not an approximation of it. Same geometry
+                the home-screen tile is baked from — see ui/BrandMark.tsx. */}
+            <BrandMark
+              size={38}
+              className="shrink-0 rounded-xl shadow-lg shadow-emerald-900/40 md:w-[42px] md:h-[42px]"
+            />
             <div>
               <span className="font-['Outfit'] font-extrabold text-lg md:text-xl tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-amber-300 bg-clip-text text-transparent">
                 Wandrlust
@@ -368,11 +385,17 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           {/*
             Mobile controls.
 
-            Down to two. The view switcher and the eight tools that used to
-            crowd in here now live in the bottom tab bar (MobileTabBar.tsx),
-            where a thumb can reach them and each one has room for a label
-            that says what it is. What stays is what belongs beside the
-            brand: whether you are online, and who you are.
+            Down to one on the map. Online/offline is a rarely-flipped state
+            switch and can live up here; everything you TOUCH while camping
+            has left the header. The view switcher and the tools went to the
+            bottom tab bar; search, the facility layers and the account
+            button now ride in the map's own control stack at bottom right,
+            beside layers and locate, where a thumb already is.
+
+            The account button comes BACK to the header on the list and the
+            saved views, because there is no map down there to hold it and a
+            control you cannot reach at all is worse than one you have to
+            stretch for.
           */}
           <div className="flex items-center gap-1.5 md:hidden">
             <button
@@ -387,7 +410,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
               {isOfflineMode ? <Unplug className="w-4 h-4" /> : <Plug className="w-4 h-4" />}
             </button>
 
-            <UserMenu onOpenAuth={onOpenAuth} />
+            {activeView !== 'map' && <UserMenu onOpenAuth={onOpenAuth} />}
           </div>
         </div>
 
@@ -397,13 +420,22 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           They share a wrapper so the chips sit at exactly the width of the
           input on every breakpoint — the geocode dropdown below is absolutely
           positioned, so nothing else has ever occupied this space.
+
+          ON THE PHONE'S MAP VIEW THIS WHOLE BLOCK IS GONE. Search moved into
+          the map's bottom-right stack as a magnifier, and the facility chips
+          went with it into the sheet it opens — they are two halves of one
+          question ("what is around here?") and were two separate rows of
+          header eating the top of the map. A desktop keeps both exactly
+          where they were.
         */}
-        <div className="w-full md:flex-1 md:min-w-[16rem] md:max-w-md space-y-1.5">
+        <div className={`${
+          activeView === 'map' ? 'hidden md:block' : 'w-full'
+        } md:flex-1 md:min-w-[16rem] md:max-w-md space-y-1.5`}>
         {/*
-          The phone's search: a chip that says where the map is looking, and
-          opens the real thing down at thumb level. It is deliberately a
-          label rather than a field — a field here invites a tap that raises
-          the keyboard over the results.
+          The list and saved views keep a chip that says where the map is
+          looking, and opens the real thing down at thumb level. It is
+          deliberately a label rather than a field — a field here invites a
+          tap that raises the keyboard over the results.
         */}
         <div className="md:hidden flex items-center gap-1.5">
           <button
@@ -529,13 +561,16 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           a pin to land on, so a row of buttons that quietly does nothing would
           be worse than no row at all.
         */}
+        {/* Desktop only — the phone's copy lives in the search sheet. */}
         {activeView === 'map' && (
-          <FacilityChips
-            active={facilityKinds}
-            onToggle={onToggleFacilityKind}
-            onClearAll={onClearFacilityKinds}
-            state={facilityState}
-          />
+          <div className="hidden md:block">
+            <FacilityChips
+              active={facilityKinds}
+              onToggle={onToggleFacilityKind}
+              onClearAll={onClearFacilityKinds}
+              state={facilityState}
+            />
+          </div>
         )}
         </div>
 
@@ -623,12 +658,12 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
       keyboard eating the screen and a mouse does not care how far it travels.
     */}
     <Sheet
-      isOpen={searchSheetOpen}
-      onClose={() => setSearchSheetOpen(false)}
+      isOpen={searchOpen}
+      onClose={() => setSearchOpen(false)}
       liftAboveKeyboard
       autoFocus={false}
       title="Search"
-      subtitle="A city, a state or a province — the map goes there"
+      subtitle="Go somewhere, or show what is around you"
     >
       <div className="p-3 space-y-2.5">
         <div className="relative flex items-center">
@@ -670,7 +705,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
         */}
         <button
           type="button"
-          onClick={() => { setSearchSheetOpen(false); onLocateUser(); }}
+          onClick={() => { setSearchOpen(false); onLocateUser(); }}
           disabled={isLocating}
           className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-emerald-950/60 border border-emerald-600/40 text-emerald-200 text-sm font-bold disabled:opacity-50"
         >
@@ -714,6 +749,36 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
             that name, or the lookup could not be reached just now. You can also
             close this and tap the spot on the map.
           </p>
+        )}
+
+        {/*
+          THE FACILITY LAYERS, IN THE SAME SHEET AS THE SEARCH.
+
+          Phones only — the desktop keeps them under the header's box. They
+          were a second row of chips at the top of a phone screen, scrolling
+          sideways over the map, and half of them were off the right edge in
+          the screenshot that started this. Down here they get full width, a
+          thumb can reach them, and they sit under the one control a camper
+          opens to ask "what is near me" — which is the same question the
+          search box is for, aimed at a thing instead of a town.
+
+          The sheet stays open when one is tapped. Turning on toilets and
+          water is two taps, and a sheet that shut after the first would make
+          it four.
+        */}
+        {activeView === 'map' && (
+          <div className="md:hidden pt-1 pb-1 border-t border-slate-800">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 pt-2 pb-1.5">
+              Show on the map
+            </p>
+            <FacilityChips
+              active={facilityKinds}
+              onToggle={onToggleFacilityKind}
+              onClearAll={onClearFacilityKinds}
+              state={facilityState}
+              layout="wrap"
+            />
+          </div>
         )}
       </div>
     </Sheet>

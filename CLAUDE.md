@@ -62,6 +62,7 @@ question shouldn't rewrite components.
 | Anything reading or writing the database | `src/services/dataService.ts` **first** — it is the only door into Supabase | components |
 | Offline maps / saved sites | `src/services/offlineStorage.ts`, `src/components/OfflineManagerModal.tsx` | server |
 | Animation, look and feel | `src/utils/animation.ts`, `src/index.css`, `src/components/ui/Sheet.tsx`, `src/components/ui/Feedback.tsx` | services |
+| The logo — app icon, favicon, header badge | `shared/brandMark.mjs` (the geometry, drawn once), `src/components/ui/BrandMark.tsx`, `scripts/generateIcons.mjs`, then `npm run icons` | components |
 | Camper presence, reporting | `src/components/PresencePanel.tsx`, `ReportPanel.tsx`, `ScoutModePanel.tsx` + `dataService.ts` | map |
 | Database schema, tables, policies | `supabase_schema.sql` then `supabase_migration_02…09` **in order** | all of `src/` |
 | Loading boundary data | `scripts/seedSupabase.ts`, `scripts/landSources.ts`, `scripts/arcgisTiledFetch.ts` | all of `src/` |
@@ -94,6 +95,8 @@ src/
   data/curatedCampsites.ts The bundled dataset the app falls back to
 public/
   sw.js                    Service worker — push only, no asset caching
+  icons/                   App icons, GENERATED. `npm run icons` after any
+                           edit to shared/brandMark.mjs; never hand-edited.
   legal/*.md               Privacy, terms, safety disclaimer (live copies)
   map/                     Prebuilt map data, COMMITTED. Regenerate with
                            `npm run map:assets`, never fetched at runtime.

@@ -1,8 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 
 // Shared steps for the map smokes: load, get past the offline-choice screen,
-// and switch the Public land boundaries layer on. Tile basemaps are NOT
-// asserted anywhere — Esri/OSM serve flaky placeholder tiles in this sandbox.
+// and switch the Public land layer on. Tile basemaps are NOT asserted
+// anywhere — Esri/OSM serve flaky placeholder tiles in this sandbox.
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function loadApp(page: Page) {
@@ -20,13 +20,19 @@ export async function enableBoundaries(page: Page) {
   const layerBtn = page.locator('button[aria-label="Map layers"]');
   await layerBtn.click({ force: true });
   await sleep(800);
+  /*
+    `Public land`, not `Public land boundaries` — the layer menu's labels were
+    shortened so the whole menu fits a phone without scrolling. `hasText` is a
+    substring match, so the old string matched NOTHING and the `if` below
+    quietly skipped the toggle: every boundary smoke then ran with the layer
+    off and failed on an empty map for a reason the failure never mentioned.
+  */
   const toggle = page
-    .locator('label', { hasText: 'Public land boundaries' })
+    .locator('label', { hasText: 'Public land' })
     .locator('input[type="checkbox"]');
-  if (await toggle.count()) {
-    if (!(await toggle.isChecked().catch(() => false))) {
-      await toggle.check({ force: true });
-    }
+  await expect(toggle).toHaveCount(1);
+  if (!(await toggle.isChecked().catch(() => false))) {
+    await toggle.check({ force: true });
   }
   await sleep(1200);
   await layerBtn.click({ force: true }); // close; it swallows wheel events
