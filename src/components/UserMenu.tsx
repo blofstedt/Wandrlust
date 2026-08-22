@@ -20,12 +20,23 @@ interface UserMenuProps {
    * edge of the phone.
    */
   placement?: 'down' | 'up';
+  /**
+   * Hand the opening over to somebody else.
+   *
+   * The map's control stack does this: its account panel is the same docked
+   * card that layers and search open, held by one piece of state so only one
+   * of the three can be up at a time. When this is set the button renders and
+   * nothing else — no dropdown of its own to collide with that card.
+   */
+  onOpenPanel?: () => void;
+  /** Whether that external panel is currently showing, for the button's ring. */
+  panelOpen?: boolean;
 }
 
 export const UserMenu: React.FC<UserMenuProps> = ({
-  onOpenAuth, variant = 'bar', placement = 'down'
+  onOpenAuth, variant = 'bar', placement = 'down', onOpenPanel, panelOpen = false
 }) => {
-  const { user, profile, pointsBalance, isLoading, isConfigured, signOut } = useAuth();
+  const { user, profile, pointsBalance, isLoading, isConfigured } = useAuth();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -34,6 +45,10 @@ export const UserMenu: React.FC<UserMenuProps> = ({
   const fabShell =
     'tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border ' +
     'border-slate-700/80 shadow-xl flex items-center justify-center overflow-hidden';
+  /* The same ring every control in the stack wears while its panel is open. */
+  const fabRing = panelOpen ? ' ring-2 ring-emerald-400/70' : '';
+  const showPanel = onOpenPanel ? false : open;
+  const toggle = () => (onOpenPanel ? onOpenPanel() : setOpen((v) => !v));
 
   /*
    * `touchstart` as well as `mousedown`. iOS only synthesises mouse events for
@@ -69,7 +84,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({
     return fab ? (
       <button
         onClick={onOpenAuth}
-        className={`${fabShell} text-slate-200 hover:text-white hover:bg-slate-800`}
+        className={`${fabShell}${fabRing} text-slate-200 hover:text-white hover:bg-slate-800`}
         aria-label={isConfigured ? 'Sign in' : 'Authentication not configured'}
       >
         <UserIcon className="w-[18px] h-[18px]" />
@@ -88,9 +103,6 @@ export const UserMenu: React.FC<UserMenuProps> = ({
 
   const tier = profile?.trust_tier ?? DEFAULT_TIER;
   const tierDef = TIER_BY_ID[tier] ?? TIER_BY_ID[DEFAULT_TIER];
-  const next = nextTier(tier);
-  const score = profile?.trust_score ?? 0;
-  const progress = tierProgress(tier, score);
 
   const initial = (profile?.display_name ?? profile?.handle ?? user.email ?? '?')
     .charAt(0).toUpperCase();
@@ -103,11 +115,11 @@ export const UserMenu: React.FC<UserMenuProps> = ({
            there is room for at this size — the points, the ladder and the
            name are all one tap away inside. */
         <button
-          onClick={() => setOpen((v) => !v)}
-          className={fabShell}
+          onClick={toggle}
+          className={`${fabShell}${fabRing}`}
           style={{ borderColor: tierDef.colorSoft }}
           aria-label={`Your account — ${tierDef.label}, ${pointsBalance} points`}
-          aria-expanded={open}
+          aria-expanded={onOpenPanel ? panelOpen : open}
         >
           {profile?.avatar_url ? (
             <img src={profile.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -119,7 +131,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({
         </button>
       ) : (
         <button
-          onClick={() => setOpen((v) => !v)}
+          onClick={toggle}
           className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700"
         >
           {profile?.avatar_url ? (
@@ -141,103 +153,129 @@ export const UserMenu: React.FC<UserMenuProps> = ({
         </button>
       )}
 
-      {open && (
+      {showPanel && (
         <div
           className={`absolute right-0 w-72 max-h-[70vh] overflow-y-auto overscroll-contain scroll-soft bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-[1200] ${
             placement === 'up' ? 'bottom-full mb-2 anim-in-up' : 'mt-2 anim-in-down'
           }`}
         >
-          <div className="p-3 border-b border-slate-800">
-            <p className="text-sm font-bold text-slate-100 truncate">
-              {profile?.display_name ?? profile?.handle ?? 'Camper'}
-            </p>
-            <p className="text-xs text-slate-400 truncate">{user.email}</p>
-
-            <div className="flex items-center gap-2 mt-2">
-              <TierBadge tier={tier} />
-              <span className="text-[12px] font-bold text-slate-300 flex items-center gap-1">
-                <Sparkles className="w-3 h-3 text-amber-300" />
-                {pointsBalance} points
-              </span>
-            </div>
-          </div>
-
-          {/* The big trophy, and how far it is to the next one. */}
-          <div className="p-3 border-b border-slate-800">
-            <div className="flex items-center gap-3">
-              <Trophy tier={tier} size={44} className="shrink-0" />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold" style={{ color: tierDef.colorSoft }}>
-                  {tierDef.label}
-                </p>
-                <p className="text-[12px] text-slate-400 leading-snug">{tierDef.blurb}</p>
-              </div>
-            </div>
-
-            <div className="flex justify-between text-[12px] text-slate-400 mt-2.5 mb-1">
-              <span>Trust score {score}</span>
-              {next ? (
-                <span>
-                  <strong className="text-slate-300">{Math.max(0, next.minScore - score)}</strong> to{' '}
-                  {next.label}
-                </span>
-              ) : (
-                <span className="text-emerald-300 font-bold">Top tier</span>
-              )}
-            </div>
-            <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className="h-full rounded-full transition-moook"
-                style={{
-                  width: `${progress}%`,
-                  background: tierDef.isAurora
-                    ? `linear-gradient(90deg, ${tierDef.color}, ${tierDef.colorSoft})`
-                    : tierDef.color
-                }}
-              />
-            </div>
-          </div>
-
-          {/* The whole ladder, so there is something to climb toward. */}
-          <div className="p-3 border-b border-slate-800">
-            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-              The ladder
-            </p>
-            <div className="flex items-end justify-between gap-1">
-              {TIERS.map((t) => {
-                const reached = t.rank <= tierDef.rank;
-                return (
-                  <div
-                    key={t.id}
-                    className={`flex flex-col items-center gap-1 flex-1 ${reached ? '' : 'opacity-35 grayscale'}`}
-                    title={`${t.label} — ${t.minScore} points`}
-                  >
-                    <Trophy tier={t.id} size={reached && t.rank === tierDef.rank ? 22 : 16} animate={false} />
-                    <span
-                      className="text-[10px] font-bold leading-none text-center"
-                      style={{ color: reached ? t.colorSoft : '#64748b' }}
-                    >
-                      {t.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="text-[11px] text-slate-500 mt-2 leading-tight">
-              Points come from checking in, scouting new sites, and verifying amenities.
-              They are earned only — never sold.
-            </p>
-          </div>
-
-          <button
-            onClick={async () => { setOpen(false); await signOut(); }}
-            className="w-full px-3 py-2.5 text-left text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-rose-300 flex items-center gap-2"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Sign out
-          </button>
+          <AccountPanelBody onDone={() => setOpen(false)} />
         </div>
       )}
     </div>
+  );
+};
+
+/**
+ * WHAT AN ACCOUNT IS — the name, the trophy, the ladder, the way out.
+ *
+ * Lifted out of the header dropdown because the map now opens the same thing
+ * as a card docked at the bottom right, beside layers and search. It is one
+ * panel shown in two containers rather than two panels that drifted apart:
+ * the dropdown a mouse reaches from the header, and the card a thumb reaches
+ * from the map.
+ */
+export const AccountPanelBody: React.FC<{ onDone?: () => void }> = ({ onDone }) => {
+  const { user, profile, pointsBalance, signOut } = useAuth();
+  if (!user) return null;
+
+  const tier = profile?.trust_tier ?? DEFAULT_TIER;
+  const tierDef = TIER_BY_ID[tier] ?? TIER_BY_ID[DEFAULT_TIER];
+  const next = nextTier(tier);
+  const score = profile?.trust_score ?? 0;
+  const progress = tierProgress(tier, score);
+
+  return (
+    <>
+      <div className="p-3 border-b border-slate-800">
+        <p className="text-sm font-bold text-slate-100 truncate">
+          {profile?.display_name ?? profile?.handle ?? 'Camper'}
+        </p>
+        <p className="text-xs text-slate-400 truncate">{user.email}</p>
+
+        <div className="flex items-center gap-2 mt-2">
+          <TierBadge tier={tier} />
+          <span className="text-[12px] font-bold text-slate-300 flex items-center gap-1">
+            <Sparkles className="w-3 h-3 text-amber-300" />
+            {pointsBalance} points
+          </span>
+        </div>
+      </div>
+
+      {/* The big trophy, and how far it is to the next one. */}
+      <div className="p-3 border-b border-slate-800">
+        <div className="flex items-center gap-3">
+          <Trophy tier={tier} size={44} className="shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold" style={{ color: tierDef.colorSoft }}>
+              {tierDef.label}
+            </p>
+            <p className="text-[12px] text-slate-400 leading-snug">{tierDef.blurb}</p>
+          </div>
+        </div>
+
+        <div className="flex justify-between text-[12px] text-slate-400 mt-2.5 mb-1">
+          <span>Trust score {score}</span>
+          {next ? (
+            <span>
+              <strong className="text-slate-300">{Math.max(0, next.minScore - score)}</strong> to{' '}
+              {next.label}
+            </span>
+          ) : (
+            <span className="text-emerald-300 font-bold">Top tier</span>
+          )}
+        </div>
+        <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+          <div
+            className="h-full rounded-full transition-moook"
+            style={{
+              width: `${progress}%`,
+              background: tierDef.isAurora
+                ? `linear-gradient(90deg, ${tierDef.color}, ${tierDef.colorSoft})`
+                : tierDef.color
+            }}
+          />
+        </div>
+      </div>
+
+      {/* The whole ladder, so there is something to climb toward. */}
+      <div className="p-3 border-b border-slate-800">
+        <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+          The ladder
+        </p>
+        <div className="flex items-end justify-between gap-1">
+          {TIERS.map((t) => {
+            const reached = t.rank <= tierDef.rank;
+            return (
+              <div
+                key={t.id}
+                className={`flex flex-col items-center gap-1 flex-1 ${reached ? '' : 'opacity-35 grayscale'}`}
+                title={`${t.label} — ${t.minScore} points`}
+              >
+                <Trophy tier={t.id} size={reached && t.rank === tierDef.rank ? 22 : 16} animate={false} />
+                <span
+                  className="text-[10px] font-bold leading-none text-center"
+                  style={{ color: reached ? t.colorSoft : '#64748b' }}
+                >
+                  {t.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-slate-500 mt-2 leading-tight">
+          Points come from checking in, scouting new sites, and verifying amenities.
+          They are earned only — never sold.
+        </p>
+      </div>
+
+      <button
+        onClick={async () => { onDone?.(); await signOut(); }}
+        className="w-full px-3 py-2.5 text-left text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-rose-300 flex items-center gap-2"
+      >
+        <LogOut className="w-3.5 h-3.5" />
+        Sign out
+      </button>
+    </>
   );
 };

@@ -186,6 +186,35 @@
   100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
 }
 
+/*
+ * THE RING THAT SAYS "THIS CONTROL IS WORKING ON IT".
+ *
+ * The map's control stack marks the live control with a 2px emerald ring —
+ * the layers button wears it while its panel is open. Locate wears the same
+ * ring while it is taking a fix, and pulses it, because a fix takes seconds
+ * and a still ring cannot tell you whether anything is happening.
+ *
+ * The ring is drawn INSIDE the keyframes rather than by Tailwind's `ring-2`,
+ * because both are `box-shadow` and an animated one wins outright — a ring
+ * class and this class on the same element would leave no ring at all between
+ * pulses. The last layer is the button's own drop shadow, kept for the same
+ * reason: it would otherwise be animated away and the button would go flat.
+ */
+@keyframes pulse-ring-live {
+  0% {
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.7), 0 0 0 0 rgba(52, 211, 153, 0.45),
+                0 12px 20px -6px rgba(2, 6, 23, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.7), 0 0 0 11px rgba(52, 211, 153, 0),
+                0 12px 20px -6px rgba(2, 6, 23, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.7), 0 0 0 0 rgba(52, 211, 153, 0),
+                0 12px 20px -6px rgba(2, 6, 23, 0.55);
+  }
+}
+
 @keyframes shimmer {
   0%   { background-position: -420px 0; }
   100% { background-position: 420px 0; }
@@ -256,6 +285,7 @@
   .anim-toast-out  { animation: toast-out var(--dur-tap) var(--ease-exit) both; }
   .anim-pulse      { animation: pulse-ring 2s var(--ease-standard) infinite; }
   .anim-pulse-danger { animation: pulse-ring-danger 1.6s var(--ease-standard) infinite; }
+  .anim-pulse-ring { animation: pulse-ring-live 1.6s var(--ease-standard) infinite; }
 
   /* Stagger helpers, applied as data-stagger on list children. */
   [data-stagger="0"] { animation-delay: 0ms; }
@@ -713,6 +743,20 @@
   margin-top: 6px;
   display: flex;
   align-items: center;
+  justify-content: center;
+  /*
+   * IT WRAPS NOW, because the buttons carry their names.
+   *
+   * Five unlabelled glyphs fitted on one line and told you nothing; the three
+   * that create something say what they create, which is wider than a phone in
+   * portrait. A second line under the pin is a far smaller cost than a row of
+   * buttons nobody can tell apart. `max-content` first so the absolutely
+   * positioned box does not size itself to the 32px pin above it and come out
+   * one button wide.
+   */
+  flex-wrap: wrap;
+  width: max-content;
+  max-width: min(19rem, calc(100vw - 3rem));
   gap: 4px;
   pointer-events: auto;
   /* After the stack above the pin has finished popping in. */
@@ -736,6 +780,15 @@
 }
 .wl-pin-action:hover { background: rgba(30, 41, 59, 0.98); }
 .wl-pin-action-close { padding: 4px 6px; color: #cbd5e1; }
+/* The one button in the row that goes off and searches rather than recording
+   something the camper is looking at. Blue, like the beacon everywhere else. */
+.wl-pin-action-beacon {
+  color: #bae6fd;
+  border-color: rgba(56, 189, 248, 0.55);
+}
+.wl-pin-action-beacon:hover { background: rgba(8, 47, 73, 0.98); }
+/* The glyph must not squash when the label beside it is the long one. */
+.wl-pin-action > svg { flex: none; }
 
 /* ---------------------------------------------------------------------------
    Tours: tap a chip and the camera goes out to look at what it stands for.
@@ -998,6 +1051,13 @@
 
   .skeleton { animation: none; background: rgb(30 41 59); }
   .anim-pulse, .anim-pulse-danger, .wl-dot-urgent { animation: none; }
+  /* The ring is the STATE, not the decoration — losing the animation must not
+     lose the mark that says which control is working. */
+  .anim-pulse-ring {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.7),
+                0 12px 20px -6px rgba(2, 6, 23, 0.55);
+  }
   /* The tracker still appears and still glows — it just stops breathing.
      `orbit` separately skips the lap, so it holds still at the top of the
      ring instead of travelling. */

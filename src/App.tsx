@@ -641,6 +641,12 @@ export default function App() {
 
   const handleClearFacilityKinds = useCallback(() => setFacilityKinds([]), []);
 
+  /** The place a search settled on, recorded so every search box agrees. */
+  const handleSearchQueryChange = useCallback(
+    (label: string) => setFilterState((prev) => ({ ...prev, searchQuery: label })),
+    []
+  );
+
   /** Open the facility form on a specific coordinate. */
   const handleAddFacilityAt = useCallback((latitude: number, longitude: number) => {
     setAddFacilityAt([latitude, longitude]);
@@ -694,8 +700,32 @@ export default function App() {
    * pill would be a button that could only fail. The amber "Offline — saved
    * maps and spots" banner is already sitting where it was, saying why.
    */
-  const showBeaconPill =
-    isOnline && !destination?.campsite && !isBeaconOpen && !isSearchingSites;
+  /**
+   * Whether a beacon could run at all.
+   *
+   * A beacon is a live search of public map data, so with no connection there
+   * is nothing to search — and it is never offered on a submitted campsite,
+   * because asking "what might be around here?" while standing on a known
+   * campsite answers a question the camper did not ask.
+   */
+  const canBeacon = isOnline && !destination?.campsite && !isBeaconOpen;
+
+  /**
+   * THE PILL IS THE FALLBACK NOW, NOT THE FRONT DOOR.
+   *
+   * The beacon lives on the pin: tap a place and "Beacon" is right there under
+   * it, next to the two buttons that record something about that same place.
+   * That is where the question belongs — you have just pointed at the ground
+   * you are asking about, and reaching to the top corner of the screen to ask
+   * about it was the app not listening.
+   *
+   * The pill survives for the case where there is no pin, because otherwise
+   * the whole feature would be invisible to anybody who has not happened to
+   * tap the map — which is exactly the hole it was added to fill. With a pin
+   * down it stands aside: the top of the screen never holds a second copy of
+   * a button already sitting under the camper's thumb.
+   */
+  const showBeaconPill = canBeacon && !destination && !isSearchingSites;
   const mapTopInsetPx = beaconPicking ? 62 : (showBeaconPill || isSearchingSites) ? 44 : 0;
 
   /** Open the beacon on one exact point, whichever way it was chosen. */
@@ -1487,7 +1517,14 @@ export default function App() {
                     facilityRefreshKey={facilityRefreshKey}
                     bottomSheetPx={sheetSite ? sheetPx : 0}
                     topInsetPx={mapTopInsetPx}
-                    onOpenSearch={() => setIsSearchOpen(true)}
+                    searchQuery={filterState.searchQuery}
+                    onSearchQueryChange={handleSearchQueryChange}
+                    onSelectLocation={handleSelectLocation}
+                    onToggleFacilityKind={handleToggleFacilityKind}
+                    onClearFacilityKinds={handleClearFacilityKinds}
+                    facilityState={facilityState}
+                    onSendBeaconAt={openBeaconAt}
+                    canBeacon={canBeacon}
                     onOpenAuth={() => setIsAuthOpen(true)}
                   />
                 </ErrorBoundary>
