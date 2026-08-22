@@ -416,8 +416,40 @@ export const registerBeaconRoutes = (app: Express): void => {
       if (found.filter((c) => c.ruleScore >= SURFACE_SCORE).length >= WANTED) break;
     }
 
+    /**
+     * A thin answer has to say WHY it is thin. "Nothing here", "we ran out of
+     * time" and "we could not ask" are three different facts, and a camper
+     * deciding where to sleep needs to know which one they are looking at.
+     */
+    const ranOutOfTime = rungsRun === 0;
+    const couldNotAsk = !ranOutOfTime && sources.openstreetmap !== 'ok';
+    /** Ground was actually swept, whether or not anything was standing on it. */
+    const sweptGround = !ranOutOfTime && !couldNotAsk;
+
     /* ---- Persist. Scores are recomputed with the learned model in SQL. ---- */
-    if (service && found.length > 0) {
+    /*
+     * Recorded whenever a scan RAN, not only when it found something.
+     *
+     * "Nothing here" is an answer, and an expensive one — it is the whole
+     * radius ladder against Overpass. Gated on `found.length > 0`, that answer
+     * was thrown away the moment it was given: no `beacon_scans` row meant
+     * `beacon_scan_is_fresh` could never say yes for empty ground, so the next
+     * camper to beacon the same pullout paid another token to rediscover the
+     * same nothing, and so did the one after that. Forever, for every patch of
+     * empty country — which is most of them.
+     *
+     * The SQL was always ready for this: `beacon_persist_spots` loops over an
+     * empty array zero times and still writes the scan row, and `beacon_scans`
+     * declares `found_count integer not null default 0`. Only the caller
+     * disagreed. This is the cache the migration means when it says the cache
+     * "is the difference between Beacon being free to run and Beacon hammering
+     * Overpass on every pin drop".
+     *
+     * Still skipped when nothing was swept — a scan that never ran has no
+     * result to remember, and recording one would suppress the real scan for
+     * the next two days.
+     */
+    if (service && sweptGround) {
       const { error } = await service.rpc('beacon_persist_spots', {
         in_spots: found.map((c) => ({
           lat: c.lat, lon: c.lon, generator: c.generator,
@@ -433,14 +465,6 @@ export const registerBeaconRoutes = (app: Express): void => {
     }
 
     const spots = await readSpots(scannedRadius);
-
-    /**
-     * A thin answer has to say WHY it is thin. "Nothing here", "we ran out of
-     * time" and "we could not ask" are three different facts, and a camper
-     * deciding where to sleep needs to know which one they are looking at.
-     */
-    const ranOutOfTime = rungsRun === 0;
-    const couldNotAsk = !ranOutOfTime && sources.openstreetmap !== 'ok';
 
     /**
      * NOTHING WAS SCANNED, SO THE BEACON GOES BACK.
