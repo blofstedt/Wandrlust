@@ -143,30 +143,6 @@ export const titleCase = (input: string): string => {
 /* The query                                                           */
 /* ------------------------------------------------------------------ */
 
-/**
- * TEMPORARY. Sends one clause group at a time so the failing one can be
- * named instead of guessed at. Remove once this query is understood.
- */
-export const buildProbeQueries = (lat: number, lon: number): Record<string, string> => {
-  const g = queryGroups(lat, lon);
-  const wrap = (body: string) => `[out:json][timeout:10];(${body});out center 500;`;
-  const at = (r: number) => `(around:${r},${lat.toFixed(5)},${lon.toFixed(5)})`;
-  return {
-    pois: wrap(g.pois),
-    named: wrap(g.named),
-    here: wrap(g.here),
-    towns: wrap(g.towns),
-    all: buildQuery(lat, lon),
-    // `named` broken into its individual clauses, to find the expensive one.
-    n_protected: wrap(`way["boundary"="protected_area"]["name"]${at(NAME_RADIUS_M)};`),
-    n_leisure: wrap(`way["leisure"~"^(park|nature_reserve)$"]["name"]${at(NAME_RADIUS_M)};`),
-    n_natural: wrap(`node["natural"~"^(peak|ridge|spring|water)$"]["name"]${at(NAME_RADIUS_M)};`),
-    n_water: wrap(`way["waterway"~"^(river|stream)$"]["name"]${at(NAME_RADIUS_M)};`),
-    n_rest: wrap(`way["highway"="rest_area"]["name"]${at(NAME_RADIUS_M)};`),
-    n_camp: wrap(`node["tourism"="camp_site"]["name"]${at(NAME_RADIUS_M)};`)
-  };
-};
-
 const queryGroups = (lat: number, lon: number) => {
   const at = (r: number) => `(around:${r},${lat.toFixed(5)},${lon.toFixed(5)})`;
 
@@ -325,85 +301,23 @@ const MAX_NAME = 46;
 
 /* ------------------------------------------------------------------ */
 
-/** TEMPORARY diagnostic: ask each group separately and report what happened. */
-export const probeSpotContext = async (
-  lat: number,
-  lon: number,
-  opts: { mirror?: string; groups?: string[]; budgetMs?: number } = {}
-): Promise<string[]> => {
-  const out: string[] = [];
-  // One mirror, short budget. The full sweep blew the 30 s function cap
-  // because overpass-api.de spends 15 s on every group. kumi rejects the
-  // combined query in ~320 ms, so it answers the question fastest.
-  const byKey: Record<string, string> = {
-    de: 'https://overpass-api.de/api/interpreter',
-    kumi: 'https://overpass.kumi.systems/api/interpreter',
-    coffee: 'https://overpass.private.coffee/api/interpreter'
-  };
-  const probeMirrors = [byKey[opts.mirror ?? 'kumi'] ?? byKey.kumi];
-  const wanted = opts.groups;
-  const entries = Object.entries(buildProbeQueries(lat, lon))
-    .filter(([name]) => !wanted || wanted.includes(name));
-  for (const [name, query] of entries) {
-    for (const mirror of probeMirrors) {
-      const host = new URL(mirror).host;
-      const startedAt = Date.now();
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), opts.budgetMs ?? 5_000);
-      try {
-        const res = await fetch(mirror, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': UA
-          },
-          body: `data=${encodeURIComponent(query)}`,
-          signal: controller.signal
-        });
-        const ms = Date.now() - startedAt;
-        if (!res.ok) {
-          const body = await res.text().catch(() => '');
-          out.push(`${name}/${host}: HTTP ${res.status} in ${ms}ms ${body.slice(0, 90).replace(/\s+/g, ' ')}`);
-          continue;
-        }
-        const data = (await res.json()) as { elements?: unknown[]; remark?: unknown };
-        const remark = overpassFailureRemark(data);
-        out.push(
-          `${name}/${host}: ${remark ? `200-but-failed ${remark.slice(0, 70)}` : `${data.elements?.length ?? 0} elements`} in ${ms}ms`
-        );
-        break;
-      } catch {
-        out.push(`${name}/${host}: ${controller.signal.aborted ? 'timeout' : 'unreachable'} in ${Date.now() - startedAt}ms`);
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-  }
-  return out;
-};
-
-export const fetchSpotContext = async (
-  lat: number,
-  lon: number,
-  timeoutMs = 15_000
-): Promise<SpotContextResult> => {
-  const query = buildQuery(lat, lon);
-
-  let elements: OverpassElement[] | null = null;
-  /*
-   * One line per lookup, like `[beacon] Overpass answered` on the other
-   * client. Added because this endpoint reports "nothing named nearby" and
-   * "no facilities" identically whether Overpass returned nothing or returned
-   * plenty that nothing downstream recognised — and with no logging at all,
-   * telling those two apart in production was guesswork.
-   */
-  const tried: string[] = [];
-
+/**
+ * Ask one Overpass question, trying each mirror in turn.
+ *
+ * Returns null only when every mirror failed — which the caller must treat as
+ * "could not check", never as "nothing there".
+ */
+const askOverpass = async (
+  query: string,
+  budgetMs: number,
+  label: string,
+  tried: string[]
+): Promise<OverpassElement[] | null> => {
   for (const mirror of OVERPASS_MIRRORS) {
     const host = new URL(mirror).host;
     const startedAt = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), budgetMs);
     try {
       const res = await fetch(mirror, {
         method: 'POST',
@@ -418,19 +332,16 @@ export const fetchSpotContext = async (
         // Overpass explains itself in the body — a rejected query, a demand for
         // a token, a rationed client. Logging the status alone threw that away.
         const body = await res.text().catch(() => '');
-        // Timing separates a rejected query (instant) from one the server
-        // accepted and then died on (near the declared budget). Different
-        // faults, opposite fixes — worth the extra field.
         tried.push(
-          `${host}: HTTP ${res.status} after ${Date.now() - startedAt} ms` +
-          (body ? ` — ${body.slice(0, 200).replace(/\s+/g, ' ').trim()}` : '')
+          `${label}/${host}: HTTP ${res.status} after ${Date.now() - startedAt} ms` +
+          (body ? ` — ${body.slice(0, 120).replace(/\s+/g, ' ').trim()}` : '')
         );
         continue;
       }
 
       const data = (await res.json()) as { elements?: unknown; remark?: unknown };
       if (!Array.isArray(data?.elements)) {
-        tried.push(`${host}: answered without an element list`);
+        tried.push(`${label}/${host}: answered without an element list`);
         continue;
       }
 
@@ -439,30 +350,83 @@ export const fetchSpotContext = async (
        * the reason in `remark`. Untreated, that is indistinguishable from
        * genuinely empty ground — and this endpoint's whole job is telling
        * "there is no toilet here" apart from "we could not check".
-       * See `overpassFailureRemark`.
        */
       const remark = overpassFailureRemark(data);
       if (remark) {
-        tried.push(`${host}: 200 but failed — ${remark}`);
+        tried.push(`${label}/${host}: 200 but failed — ${remark}`);
         continue;
       }
 
-      elements = data.elements as OverpassElement[];
-      tried.push(`${host}: ${elements.length} elements in ${Date.now() - startedAt} ms`);
-      break;
+      const elements = data.elements as OverpassElement[];
+      tried.push(`${label}/${host}: ${elements.length} in ${Date.now() - startedAt} ms`);
+      return elements;
     } catch {
       tried.push(
-        `${host}: ${controller.signal.aborted ? 'timed out' : 'unreachable'}` +
+        `${label}/${host}: ${controller.signal.aborted ? 'timed out' : 'unreachable'}` +
         ` after ${Date.now() - startedAt} ms`
       );
     } finally {
       clearTimeout(timer);
     }
   }
+  return null;
+};
+
+/**
+ * TWO REQUESTS, NOT ONE, AND WHY.
+ *
+ * This asked for everything in a single Overpass query, so all four jobs
+ * shared one budget and the slowest decided whether ANY of them came back.
+ * Measured on overpass-api.de at Banff, the facilities and the ground
+ * underfoot answer in about a second and a half between them — 76 features
+ * and 44 — while the naming clauses regularly do not answer at all. The whole
+ * lookup was being thrown away for the garnish.
+ *
+ * Worth being precise about why the naming half is slow, because the obvious
+ * reading is wrong: it is NOT one expensive clause. A bare
+ * `node["tourism"="camp_site"]["name"]` inside 3 km — about as cheap as a
+ * query gets — timed out here too, and the same query measured 7.3 s once and
+ * over 6 s the next time. That is a QUEUE, not a cost. overpass-api.de rations
+ * by client IP and a serverless function shares its address with every other
+ * tenant on the machine, so this app arrives already near the limit. The same
+ * lesson is written down at OVERPASS_MIRRORS in beaconSources.ts.
+ *
+ * Splitting is the fix that survives that. Facilities and site kind are what a
+ * camper acts on, so they go first with the larger share of the budget; the
+ * name is decoration and gets what is left. A rationed naming request now
+ * costs a plainer name instead of the entire answer.
+ */
+export const fetchSpotContext = async (
+  lat: number,
+  lon: number,
+  timeoutMs = 15_000
+): Promise<SpotContextResult> => {
+  const g = queryGroups(lat, lon);
+  const tried: string[] = [];
+  const startedAt = Date.now();
+  const left = () => timeoutMs - (Date.now() - startedAt);
+
+  /* What the camper acts on. Measured fast, and asked for first. */
+  const essential = await askOverpass(
+    `[out:json][timeout:8];(${g.pois}${g.here});out center 500;`,
+    Math.min(9_000, Math.max(1_000, left())),
+    'essential',
+    tried
+  );
+
+  /* The name. Nice to have, and never allowed to cost the answer above. */
+  const naming = left() > 2_500
+    ? await askOverpass(
+        `[out:json][timeout:5];(${g.named}${g.towns});out center 500;`,
+        Math.min(6_000, Math.max(1_000, left() - 500)),
+        'naming',
+        tried
+      )
+    : null;
 
   console.info(`[spot-context] ${lat.toFixed(4)},${lon.toFixed(4)} — ${tried.join(' | ')}`);
 
-  if (!elements) {
+  if (!essential) {
     /**
      * The honest failure. `poiLookupFailed` is what stops the report sheet
      * from telling a camper "no restroom nearby" when the truth is "we could
@@ -476,6 +440,10 @@ export const fetchSpotContext = async (
       note: 'Could not reach OpenStreetMap, so nothing could be looked up here.'
     };
   }
+
+  /** Naming may have failed on its own; that costs the name, nothing else. */
+  const namingFailed = naming === null;
+  const elements: OverpassElement[] = namingFailed ? essential : [...essential, ...naming];
 
   /* ---- Facilities: nearest of each kind ---- */
   const bestPoi = new Map<PoiKind, NearbyPoi>();
