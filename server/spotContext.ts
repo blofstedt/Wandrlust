@@ -150,12 +150,20 @@ export const titleCase = (input: string): string => {
 export const buildProbeQueries = (lat: number, lon: number): Record<string, string> => {
   const g = queryGroups(lat, lon);
   const wrap = (body: string) => `[out:json][timeout:10];(${body});out center 500;`;
+  const at = (r: number) => `(around:${r},${lat.toFixed(5)},${lon.toFixed(5)})`;
   return {
     pois: wrap(g.pois),
     named: wrap(g.named),
     here: wrap(g.here),
     towns: wrap(g.towns),
-    all: buildQuery(lat, lon)
+    all: buildQuery(lat, lon),
+    // `named` broken into its individual clauses, to find the expensive one.
+    n_protected: wrap(`way["boundary"="protected_area"]["name"]${at(NAME_RADIUS_M)};`),
+    n_leisure: wrap(`way["leisure"~"^(park|nature_reserve)$"]["name"]${at(NAME_RADIUS_M)};`),
+    n_natural: wrap(`node["natural"~"^(peak|ridge|spring|water)$"]["name"]${at(NAME_RADIUS_M)};`),
+    n_water: wrap(`way["waterway"~"^(river|stream)$"]["name"]${at(NAME_RADIUS_M)};`),
+    n_rest: wrap(`way["highway"="rest_area"]["name"]${at(NAME_RADIUS_M)};`),
+    n_camp: wrap(`node["tourism"="camp_site"]["name"]${at(NAME_RADIUS_M)};`)
   };
 };
 
