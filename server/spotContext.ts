@@ -277,7 +277,13 @@ export const fetchSpotContext = async (
         signal: controller.signal
       });
       if (!res.ok) {
-        tried.push(`${host}: HTTP ${res.status}`);
+        // Overpass explains itself in the body — a rejected query, a demand for
+        // a token, a rationed client. Logging the status alone threw that away.
+        const body = await res.text().catch(() => '');
+        tried.push(
+          `${host}: HTTP ${res.status}` +
+          (body ? ` ${body.slice(0, 200).replace(/\s+/g, ' ').trim()}` : '')
+        );
         continue;
       }
 
