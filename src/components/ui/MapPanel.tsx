@@ -22,9 +22,13 @@ import { useKeyboardInset } from './Sheet';
  * control visible while you use it. Nothing you might want to press next
  * disappears behind the thing you are pressing now.
  *
- * `maxHeight` stops it reaching the top of the map: the beacon pill and any
- * notice up there stay readable, and a list longer than the gap scrolls inside
- * the card instead of running off the screen.
+ * `maxHeight` stops it reaching the far edge of the map: whatever notice is
+ * showing up there stays readable, and a list longer than the gap scrolls
+ * inside the card instead of running off the screen.
+ *
+ * ONE OF THEM IS PINNED TO THE TOP INSTEAD — the search, because it has a
+ * keyboard in it and a card at the bottom of the screen spends its life
+ * dodging one. See `anchor`.
  */
 interface MapPanelProps {
   isOpen: boolean;
@@ -38,9 +42,29 @@ interface MapPanelProps {
    */
   overlayPx?: number;
   /**
-   * Hold the card's bottom edge at the top of the on-screen keyboard, so a
-   * field inside it and everything under that field stay visible while typing.
-   * Only the search panel needs this.
+   * WHICH EDGE OF THE MAP THE CARD IS PINNED TO.
+   *
+   * `bottom` is the default and is right for the layer menu and the account:
+   * they open from a button at the bottom of the screen, they are read with a
+   * thumb, and nothing else moves while they are open.
+   *
+   * `top` exists for the ONE panel that has a keyboard in it. A card pinned to
+   * the bottom edge has to get out of the keyboard's way, which means the
+   * whole thing — field, buttons and results — leaps up the screen and shrinks
+   * the instant the keys appear, and drops back down when they go. That is the
+   * jank: the card is chasing the keyboard. Pinned to the top it simply does
+   * not move, because the keyboard never reaches it. The field ends up where
+   * every browser puts a search field anyway, and results grow downwards from
+   * it into the space that is left.
+   */
+  anchor?: 'bottom' | 'top';
+  /**
+   * There is a keyboard in this panel.
+   *
+   * At the bottom that means holding the card's edge above the keys. At the
+   * top it costs no movement at all — only the height the list may use, so a
+   * long list of results stops at the top of the keyboard instead of running
+   * underneath it.
    */
   liftAboveKeyboard?: boolean;
   /**
@@ -53,7 +77,7 @@ interface MapPanelProps {
 }
 
 export const MapPanel: React.FC<MapPanelProps> = ({
-  isOpen, onClose, title, icon: Icon, overlayPx = 0,
+  isOpen, onClose, title, icon: Icon, overlayPx = 0, anchor = 'bottom',
   liftAboveKeyboard = false, autoFocus = true, children
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -79,9 +103,22 @@ export const MapPanel: React.FC<MapPanelProps> = ({
 
   if (!isOpen) return null;
 
+  const atTop = anchor === 'top';
+
   /* The gap between the bottom of the map and the card. It clears whatever
      card is already open down there, and the keyboard on top of that. */
   const lift = `calc(1.5rem + ${overlayPx}px + ${keyboardPx}px)`;
+
+  /*
+    A top-pinned card is wider, because there is nothing up there to leave
+    room for. `100vw - 8rem` is the bottom card keeping the control stack on
+    the right-hand side visible past its own edge; those controls sit at the
+    BOTTOM of that column, so a card at the top can use nearly the whole
+    width — which is what lets ten facility buttons sit on one line.
+  */
+  const position: React.CSSProperties = atTop
+    ? { top: '0.75rem', maxHeight: `calc(100% - 1.5rem - ${keyboardPx}px)` }
+    : { bottom: lift, maxHeight: `calc(100% - 4rem - ${overlayPx}px - ${keyboardPx}px)` };
 
   return (
     <>
@@ -100,11 +137,12 @@ export const MapPanel: React.FC<MapPanelProps> = ({
         ref={panelRef}
         role="dialog"
         aria-label={title}
-        className="absolute left-1/2 -translate-x-1/2 z-[1000] flex flex-col w-[min(21rem,calc(100vw-8rem))] bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden anim-in-up transition-[bottom] duration-200"
-        style={{
-          bottom: lift,
-          maxHeight: `calc(100% - 4rem - ${overlayPx}px - ${keyboardPx}px)`
-        }}
+        className={`absolute left-1/2 -translate-x-1/2 z-[1000] flex flex-col bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden ${
+          atTop
+            ? 'w-[min(24rem,calc(100vw-1.5rem))] anim-in-down transition-[max-height] duration-200'
+            : 'w-[min(21rem,calc(100vw-8rem))] anim-in-up transition-[bottom] duration-200'
+        }`}
+        style={position}
       >
         <header className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800 shrink-0">
           <span className="text-xs font-bold text-slate-200 flex items-center gap-2 min-w-0">

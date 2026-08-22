@@ -51,14 +51,14 @@ interface FacilityChipsProps {
   onClearAll: () => void;
   state: FacilityLookupState;
   /**
-   * `scroll` is the header row: one line, slid sideways, because a wrapped
-   * row up there grows to three lines and shoves the map off the screen.
+   * `fill` is the phone's search card: ten equal buttons sharing the width,
+   * so every kind is on screen at once and none of them is off the right-hand
+   * edge.
    *
-   * `wrap` is the phone's search sheet, where there is full width and no map
-   * underneath to protect — and where a chip parked off the right-hand edge
-   * would be exactly the thing this whole change is about.
+   * `fixed` is the desktop header, where the row is one item among many and
+   * must not stretch to fill a 1280px bar.
    */
-  layout?: 'scroll' | 'wrap';
+  layout?: 'fixed' | 'fill';
 }
 
 /** The sentence under the row, for whatever the layer is currently doing. */
@@ -106,7 +106,7 @@ const statusLine = (
 };
 
 export const FacilityChips: React.FC<FacilityChipsProps> = ({
-  active, onToggle, onClearAll, state, layout = 'scroll'
+  active, onToggle, onClearAll, state, layout = 'fixed'
 }) => {
   const activeSet = new Set(active);
   const status = statusLine(state, active);
@@ -114,44 +114,69 @@ export const FacilityChips: React.FC<FacilityChipsProps> = ({
   return (
     <div className="w-full">
       {/*
-        Horizontally scrollable rather than wrapped. A wrapped row grows to
-        three lines on a phone and shoves the map off the screen, and the map
-        is the thing the camper came for.
+        SYMBOLS, NOT WORDS, AND ALL OF THEM ON ONE LINE.
+
+        With the name beside each icon the row was three lines deep in a card
+        the width of a phone, or one line with six of the ten kinds parked off
+        the right-hand edge behind a sideways scroll nobody discovers. A
+        toilet, a shower and a fuel pump do not need to be captioned; what the
+        row DOES need is for every kind to be visible at once, because the
+        thing a camper is hunting is whichever one they are short of, and it
+        was as likely to be the one out of sight as any other.
+
+        Ten equal buttons is a keyboard's worth of targets across the same
+        width, which is a proven size for a thumb.
+
+        Monochrome on purpose. Ten emoji is ten art styles at ten weights
+        arguing with each other and with the map behind them; one stroke
+        weight in one colour reads as one control. Colour still means
+        something in this app — it is how one pin is told from another — so it
+        stays on the pins and out of the chrome.
       */}
       <div
-        className={`flex items-center gap-1.5 pb-1 -mx-1 px-1 ${
-          layout === 'wrap' ? 'flex-wrap' : 'overflow-x-auto scroll-soft'
-        }`}
+        className={`flex items-stretch gap-1 ${layout === 'fill' ? '' : 'flex-wrap'}`}
         role="group"
         aria-label="Find facilities on the map"
       >
         {SEARCHABLE_FACILITY_KINDS.map((kind) => {
           const spec = FACILITY[kind];
+          const Icon = spec.icon;
           const on = activeSet.has(kind);
           return (
             <button
               key={kind}
               type="button"
               aria-pressed={on}
+              aria-label={spec.label}
+              title={spec.label}
               onClick={() => { haptic('tap'); onToggle(kind); }}
-              className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-xs font-bold whitespace-nowrap ${
+              className={`${
+                layout === 'fill' ? 'flex-1 min-w-0' : 'w-10 shrink-0'
+              } h-10 rounded-xl border flex items-center justify-center transition-colors duration-150 ${
                 on
-                  ? 'text-slate-950 border-transparent shadow-md'
-                  : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:text-slate-100 hover:border-slate-600'
+                  ? 'bg-slate-100 border-slate-100 text-slate-900 shadow-md'
+                  : 'bg-slate-950/70 border-slate-700/70 text-slate-400 hover:text-slate-100 hover:border-slate-500'
               }`}
-              /* The chip wears the kind's own colour when it is on, so the
-                 button and the pins it just turned on are the same thing. */
-              style={on ? { backgroundColor: spec.color } : undefined}
             >
-              <span aria-hidden="true">{spec.glyph}</span>
-              {spec.plural}
+              <Icon className="w-[18px] h-[18px]" strokeWidth={on ? 2.25 : 2} />
             </button>
           );
         })}
       </div>
 
+      {/*
+        The row has no captions now, so the line under it does that job: it
+        names what is switched on, and when nothing is it says what the row is
+        for rather than sitting there as ten unexplained symbols.
+      */}
+      {!status && (
+        <p className="text-[12px] leading-snug text-slate-500 mt-1.5 px-0.5">
+          Tap a symbol to put those on the map.
+        </p>
+      )}
+
       {status && (
-        <div className="flex items-start gap-2 mt-1 px-0.5">
+        <div className="flex items-start gap-2 mt-1.5 px-0.5">
           {state.status === 'loading' && (
             <Loader2 className="w-3 h-3 text-slate-400 animate-spin shrink-0 mt-0.5" />
           )}
