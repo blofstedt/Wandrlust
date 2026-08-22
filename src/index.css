@@ -232,6 +232,17 @@
    ==================================================================== */
 
 @layer utilities {
+  /*
+    A CENTRED ELEMENT CAN USE THESE TWO AS THEY ARE — but only if it is
+    centred with TAILWIND's `-translate-x-1/2`, which compiles to the
+    `translate` property and therefore COMPOSES with an animation's
+    `transform`. Anything centred with hand-written
+    `transform: translateX(-50%)` must not: the animation replaces that
+    outright and the element lands half its own width to the right. Those use
+    `moook-in-up-centred`, further down, which carries the centring through
+    every keyframe. Getting this backwards throws the element a FULL width
+    sideways, which is how it announces itself.
+  */
   .anim-in-up      { animation: moook-in-up var(--dur-base) var(--ease-moook) both; }
   .anim-in-down    { animation: moook-in-down var(--dur-base) var(--ease-moook) both; }
   .anim-in-right   { animation: moook-in-right var(--dur-base) var(--ease-moook) both; }
@@ -492,6 +503,7 @@
   75%  { transform: translateX(-50%) translateY(1px); }
   100% { transform: translateX(-50%) translateY(0); }
 }
+
 /* Tapped: the dots become the facts. */
 .wl-chips {
   position: absolute;

@@ -274,11 +274,16 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
         visible — it works. Tools toggles the card shut again, and Map, List
         and Saved put it away and go. Showing somebody a control and then
         refusing the press is the one outcome worse than covering it up.
+
+        `dock` rather than a centred dialog, so it lands in the same place as
+        the map's layer card and its search — every panel opened from down
+        here appears in the same patch of screen, just above the bar that
+        opened it, instead of each one arriving somewhere else.
       */}
       <Sheet
         isOpen={showTools}
         onClose={() => setShowTools(false)}
-        variant="dialog"
+        variant="dock"
         interactiveBehind
         title="Tools"
         subtitle="Everything that is not the map itself"
