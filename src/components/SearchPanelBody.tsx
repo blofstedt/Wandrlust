@@ -155,7 +155,7 @@ export const SearchPanelBody: React.FC<SearchPanelBodyProps> = ({
       */}
       {showFacilities && onToggleFacilityKind && onClearFacilityKinds && facilityState && (
         <div className="pt-1 pb-1 border-t border-slate-800">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 pt-2 pb-1.5">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 pt-2 pb-2">
             Show on the map
           </p>
           <FacilityChips
@@ -163,7 +163,7 @@ export const SearchPanelBody: React.FC<SearchPanelBodyProps> = ({
             onToggle={onToggleFacilityKind}
             onClearAll={onClearFacilityKinds}
             state={facilityState}
-            layout="wrap"
+            layout="fill"
           />
         </div>
       )}

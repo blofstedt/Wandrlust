@@ -35,6 +35,12 @@
  * Every screen that draws these says so — see `nearbyAmenityService.ts` for
  * the long version of that rule.
  */
+import type { LucideIcon } from 'lucide-react';
+import {
+  Toilet, GlassWater, ShowerHead, ArrowDownToLine, Fuel, Flame,
+  WashingMachine, ShoppingCart, Trash2, Wind, Footprints, Fish, Sailboat,
+  Route
+} from 'lucide-react';
 import type { FacilityKind } from '../types';
 
 /**
@@ -55,7 +61,22 @@ export interface FacilitySpec {
   label: string;
   /** Plural, for the chip row: "Toilets" reads as a search, "Toilet" as a fact. */
   plural: string;
+  /**
+   * The EMOJI, for a pin on the map. Colour is doing the work of telling one
+   * pin from another at a glance over satellite imagery, and an emoji carries
+   * its own.
+   */
   glyph: string;
+  /**
+   * The LINE ICON, for the row of buttons under the search.
+   *
+   * Not the emoji. Ten emoji in a row is ten different art styles, ten
+   * different weights and ten different palettes fighting each other and the
+   * map behind them; drawn as one stroke weight in one colour they read as one
+   * control. The colour a facility owns stays where it means something — on
+   * its pins — rather than being sprayed across the chrome as well.
+   */
+  icon: LucideIcon;
   color: string;
   /** Overpass selectors that mean this kind. Empty = not in OpenStreetMap. */
   osm: string[];
@@ -76,12 +97,12 @@ export interface FacilitySpec {
  */
 export const FACILITY: Record<FacilityKind, FacilitySpec> = {
   toilet: {
-    label: 'Toilet', plural: 'Toilets', glyph: '🚻', color: '#C084FC',
+    label: 'Toilet', plural: 'Toilets', glyph: '🚻', icon: Toilet, color: '#C084FC',
     osm: ['node["amenity"="toilets"]', 'way["amenity"="toilets"]'],
     dbKind: 'toilet', searchable: true, addable: true
   },
   water: {
-    label: 'Drinking water', plural: 'Water', glyph: '🚰', color: '#38BDF8',
+    label: 'Drinking water', plural: 'Water', glyph: '🚰', icon: GlassWater, color: '#38BDF8',
     osm: [
       'node["amenity"="drinking_water"]',
       'node["man_made"="water_tap"]["drinking_water"="yes"]'
@@ -89,12 +110,12 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: 'potable_water', searchable: true, addable: true
   },
   shower: {
-    label: 'Shower', plural: 'Showers', glyph: '🚿', color: '#60A5FA',
+    label: 'Shower', plural: 'Showers', glyph: '🚿', icon: ShowerHead, color: '#60A5FA',
     osm: ['node["amenity"="shower"]', 'way["amenity"="shower"]'],
     dbKind: 'shower', searchable: true, addable: true
   },
   dump: {
-    label: 'Dump station', plural: 'Dump', glyph: '🚽', color: '#A3E635',
+    label: 'Dump station', plural: 'Dump', glyph: '🚽', icon: ArrowDownToLine, color: '#A3E635',
     osm: [
       'node["amenity"="sanitary_dump_station"]',
       'way["amenity"="sanitary_dump_station"]'
@@ -102,12 +123,12 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: 'dump_station', searchable: true, addable: true
   },
   fuel: {
-    label: 'Fuel', plural: 'Fuel', glyph: '⛽', color: '#FB7185',
+    label: 'Fuel', plural: 'Fuel', glyph: '⛽', icon: Fuel, color: '#FB7185',
     osm: ['node["amenity"="fuel"]', 'way["amenity"="fuel"]'],
     dbKind: 'fuel', searchable: true, addable: true
   },
   propane: {
-    label: 'Propane', plural: 'Propane', glyph: '🔥', color: '#FDBA74',
+    label: 'Propane', plural: 'Propane', glyph: '🔥', icon: Flame, color: '#FDBA74',
     /* `fuel:lpg` is on ordinary fuel stations that also sell it; the shop tag
        is the dedicated bottle exchange. Both are somewhere you refill. */
     osm: [
@@ -117,12 +138,12 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: 'propane', searchable: true, addable: true
   },
   laundry: {
-    label: 'Laundry', plural: 'Laundry', glyph: '🧺', color: '#F9A8D4',
+    label: 'Laundry', plural: 'Laundry', glyph: '🧺', icon: WashingMachine, color: '#F9A8D4',
     osm: ['node["shop"="laundry"]', 'node["amenity"="laundry"]'],
     dbKind: 'laundry', searchable: true, addable: true
   },
   groceries: {
-    label: 'Groceries', plural: 'Groceries', glyph: '🛒', color: '#F0ABFC',
+    label: 'Groceries', plural: 'Groceries', glyph: '🛒', icon: ShoppingCart, color: '#F0ABFC',
     osm: [
       'node["shop"="supermarket"]', 'way["shop"="supermarket"]',
       'node["shop"="convenience"]', 'way["shop"="convenience"]'
@@ -133,7 +154,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: null, searchable: true, addable: false
   },
   waste: {
-    label: 'Rubbish disposal', plural: 'Rubbish', glyph: '🗑️', color: '#FCD34D',
+    label: 'Rubbish disposal', plural: 'Rubbish', glyph: '🗑️', icon: Trash2, color: '#FCD34D',
     osm: [
       'node["amenity"="waste_disposal"]', 'way["amenity"="waste_disposal"]',
       'node["amenity"="recycling"]["recycling_type"="centre"]'
@@ -141,7 +162,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: 'trash', searchable: true, addable: true
   },
   air: {
-    label: 'Air compressor', plural: 'Air', glyph: '💨', color: '#93C5FD',
+    label: 'Air compressor', plural: 'Air', glyph: '💨', icon: Wind, color: '#93C5FD',
     osm: ['node["amenity"="compressed_air"]'],
     dbKind: 'air_compressor', searchable: true, addable: true
   },
@@ -149,7 +170,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
    * Below here: found, never submitted, and never given a chip.
    * ---------------------------------------------------------------- */
   trail: {
-    label: 'Trailhead', plural: 'Trailheads', glyph: '🥾', color: '#86EFAC',
+    label: 'Trailhead', plural: 'Trailheads', glyph: '🥾', icon: Footprints, color: '#86EFAC',
     /* Where a walk STARTS, rather than the path itself. A hiking route is a
        line hundreds of km long whose nearest point to a campsite is
        meaningless; the head is a place you drive to and park. */
@@ -160,12 +181,12 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: null, searchable: false, addable: false
   },
   fishing: {
-    label: 'Fishing spot', plural: 'Fishing', glyph: '🎣', color: '#67E8F9',
+    label: 'Fishing spot', plural: 'Fishing', glyph: '🎣', icon: Fish, color: '#67E8F9',
     osm: ['node["leisure"="fishing"]', 'way["leisure"="fishing"]'],
     dbKind: null, searchable: false, addable: false
   },
   boat: {
-    label: 'Boat ramp', plural: 'Boat ramps', glyph: '🛶', color: '#7DD3FC',
+    label: 'Boat ramp', plural: 'Boat ramps', glyph: '🛶', icon: Sailboat, color: '#7DD3FC',
     /* A slipway is the ramp itself. Marinas are excluded on purpose: a marina
        is a business with a gate, not somewhere to put a canoe in. */
     osm: ['node["leisure"="slipway"]', 'way["leisure"="slipway"]'],
@@ -182,7 +203,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
    * neither searchable nor addable.
    */
   road: {
-    label: 'Driveable road', plural: 'Roads', glyph: '🛣️', color: '#FDE047',
+    label: 'Driveable road', plural: 'Roads', glyph: '🛣️', icon: Route, color: '#FDE047',
     osm: [], dbKind: null, searchable: false, addable: false
   }
 };

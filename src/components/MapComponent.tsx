@@ -1374,7 +1374,6 @@ const featureMinDimPx = (map: L.Map, geometry: unknown): number => {
   return Math.min(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
 };
 
-
 /**
  * A cheap content fingerprint for a boundary collection.
  *
@@ -1490,7 +1489,6 @@ const landSubtitle = (land: DestinationLand): string | undefined =>
     ? land.designation
     : undefined;
 
-
 interface MapComponentProps {
   campsites: Campsite[];
   selectedCampsite: Campsite | null;
@@ -1549,16 +1547,22 @@ interface MapComponentProps {
    */
   bottomSheetPx?: number;
   /**
-   * Room to leave clear at the TOP of the map, in pixels.
+   * THE APP'S OWN NOTICES, RENDERED INSIDE THE MAP'S NOTICE COLUMN.
    *
-   * App floats its own pill up there — "Send a Beacon", or the instruction
-   * while it waits for a tap — and this map floats its notices at the top
-   * left. Neither knows the other's height, and centred-versus-left is no
-   * protection on a phone: a three-line warning is two thirds of the screen
-   * wide and ran straight under the pill. So the app says how much it is
-   * using and the notices start below it.
+   * A slot rather than a number. The app has passing things to say over the
+   * map — a pin refused for landing in water, a search running, a place
+   * outside coverage — and the map has standing ones: running offline, a
+   * layer that could not be reached. They used to be laid out in two places
+   * that could not see each other, so the app told the map how many pixels to
+   * keep clear and the map took its word for it. Every time either side
+   * changed height the two drifted apart and something ended up underneath
+   * something else.
+   *
+   * Now there is ONE column, owned here, and the app hands its notices in.
+   * They stack in the order a camper needs them: the instruction first,
+   * then whatever just happened, then the standing state of the app.
    */
-  topInsetPx?: number;
+  topNotice?: React.ReactNode;
   /** Fired when a camper's hazard report is tapped. */
   onSelectHazardReport?: (record: HazardRecord) => void;
   /** Fired when a Beacon spot is tapped. */
@@ -1677,7 +1681,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   isOfflineMode, onOpenDetailModal, onLocateUser,
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport,
-  onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0, topInsetPx = 0,
+  onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0, topNotice = null,
   searchQuery = '', onSearchQueryChange, onSelectLocation, onOpenAuth,
   onSendBeaconAt, canBeacon = false,
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
@@ -1858,7 +1862,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   );
   const conditionsRef = useRef(conditions);
   conditionsRef.current = conditions;
-
 
   const [activeTileLayer, setActiveTileLayer] = useState<MapTileLayer>('satellite');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -3707,7 +3710,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     };
   }, [isMapReady, showBackroads, isOfflineMode]);
-
 
   /* ------------------------------------------------------------------ */
   /* Tap anywhere to pick a destination                                  */
@@ -6821,7 +6823,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [center, zoom, isMapReady]);
 
-
   return (
     <div className="relative w-full h-full bg-slate-950 overflow-hidden">
       {/*
@@ -6873,10 +6874,50 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         its own hit-testing, so once boundaries moved to canvas it swallowed
         every tap meant for these buttons.
       */}
-      <div
-        className="absolute left-3 z-[1000] flex flex-col gap-1 max-w-[min(16rem,calc(100%-5rem))] transition-[top] duration-200"
-        style={{ top: `calc(0.75rem + ${topInsetPx}px)` }}
-      >
+      {/*
+        ONE COLUMN, AT THE TOP, IN THE MIDDLE.
+
+        Everything the map has to say about itself now says it here, one under
+        the other, in the middle of the screen where a camper is already
+        looking. It used to be scattered: the instruction sat at the bottom
+        edge, the offline and backroad notices were pinned to the top LEFT
+        under a pill the app floated in the top centre, and the "there's more
+        here" chip had a corner of its own. Four messages, four places, and no
+        way for any of them to know how tall the others were.
+
+        Reading order is the order they matter in: what to do next, then what
+        just happened, then the standing state of the app.
+
+        `pointer-events-none` on the whole column. None of this is a control —
+        it is the map talking — and an invisible box across the top of the
+        screen eating taps meant for the ground under it is exactly the bug
+        this app has fixed twice already.
+      */}
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[998] w-[min(22rem,calc(100%-1.5rem))] flex flex-col items-center gap-1.5 pointer-events-none">
+        {/*
+          THE ONE INSTRUCTION ON THE MAP.
+
+          Shown only until the user has picked somewhere. A tap target that
+          covers the entire screen is invisible until somebody tells you it's
+          there — but once you know, the hint is clutter, so it removes itself.
+
+          Five words, on one line, deliberately. "Tap anywhere to pick a spot"
+          wrapped to two lines on a narrow phone and the pill grew into a
+          paragraph sitting over the map. The tap target is still the whole
+          screen; the sentence does not have to say so to prove it.
+        */}
+        {!destination && !pointCardOpen && (
+          <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl anim-in-down">
+            <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="text-xs font-semibold text-slate-200 whitespace-nowrap">
+              Tap to pick a spot
+            </span>
+          </div>
+        )}
+
+        {/* The app's own passing notices — see `topNotice`. */}
+        {topNotice}
+
         {isOfflineMode && (
           <div className="bg-amber-500 text-slate-950 px-3 py-1.5 rounded-xl font-bold text-xs shadow-xl flex items-center gap-2 border border-amber-300">
             <span className="w-2 h-2 rounded-full bg-slate-950 animate-ping" />
@@ -6939,6 +6980,116 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 />
               )}
             <span className="leading-snug">{backroadNotice.text}</span>
+          </div>
+        )}
+
+        {/*
+          A ZOOMED-OUT MAP IS A SAMPLE, AND IT HAS TO SAY SO.
+
+          At these zooms the map shows the biggest parcels a source will hand
+          over, not all of them — and a camper reading a sparsely-painted Ontario
+          concludes there is little Crown land in Ontario, then zooms in and
+          watches it fill. That is the same forbidden sentence the app refuses to
+          say in words, said instead by a rendering budget. It is only ever true
+          that MORE exists than is drawn, never less, so the map says which way
+          it is wrong.
+
+          Only when a source actually withheld something: a view whose parcels
+          all fit is a complete answer and does not need apologising for. Said at
+          any zoom, not just the overview — the detailed tier has a cap of its
+          own, and a sample is a sample wherever it happens.
+
+          IT NO LONGER SAYS "LARGEST AREAS ONLY". That was true when the overview
+          kept the big parcels and deleted the small ones; it now welds abutting
+          parcels into blocks BEFORE judging what is too small to draw, so what is
+          missing here is whatever a source withheld at its record cap, which has
+          nothing to do with size. Saying "largest only" would send a camper
+          looking for the small parcels that are, in fact, already on the screen
+          inside the block.
+        */}
+        {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && !centreGap && (
+          <div className="max-w-full anim-in-down">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
+              <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
+              <span className="text-[12px] font-semibold text-violet-200">
+                There's more here — zoom in to see it all
+              </span>
+            </div>
+          </div>
+        )}
+        {/*
+          THE MAP SAYS WHEN IT DOESN'T KNOW, RATHER THAN GOING QUIET.
+
+          Two different silences used to look identical, and both looked like
+          "there is no public land out here":
+
+            - zoomed past the point where any boundary is legible at all, and
+            - the wide view asked and got an answer it could not stand behind,
+              which happens when one of eight government servers is slow.
+
+          The second is the one that stings, because the boundaries were there a
+          second ago at the zoom above. So the map keeps drawing what it had and
+          this says why, in words a camper can act on. Amber rather than violet:
+          the truncation chip above is a caveat about a good answer, this is a
+          missing answer, and they must not read the same.
+
+          Over a province the map has NO data for, both excuses are the same
+          lie the gap chip below exists to stop: telling a camper to zoom in
+          when there is nothing to find. A mapped province carrying a caveat
+          (Ontario's Far North) is different — zooming in there does reveal
+          real land, so it keeps the request-level message. When the province
+          under the crosshair has no mapped data at all, this chip says that
+          instead — the standing fact beats the request-level excuse, and the
+          two amber chips are never on screen together.
+        */}
+        {showBoundaries && (wideViewFailed || zoomTooFar) && (
+          <div className="max-w-full anim-in-down">
+            <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
+              <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
+              <span className="text-[12px] font-semibold text-amber-200 leading-snug">
+                {centreGap && !hasMappedCrownLand(centreGap.isoCode)
+                  ? `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`
+                  : zoomTooFar
+                    ? 'Too far out to draw public land — zoom in to see it'
+                    : 'Couldn’t load public land for this wide view. What’s drawn may be incomplete — zoom in for the real picture.'}
+              </span>
+            </div>
+          </div>
+        )}
+        {/*
+          THE PROVINCE ITSELF IS THE MISSING ANSWER.
+
+          The two chips above are about this request: too far out to draw, or a
+          government server that did not answer in time. This one is about the
+          ground. Most of Canada's provinces now draw real Crown land — Quebec's
+          multi-use zones and Newfoundland and Labrador's province-minus-titles
+          are the newest — but a mapped province is not mapped to the last acre
+          (QC draws only its multi-use zones; NL's edges are cadastral-derived),
+          and a few provinces and the territories still have no layer at all.
+          Partial and absent are different truths and both deserve a word on the
+          map. Without this, the app renders its most confident possible lie —
+          an empty province — with nothing to read it against.
+
+          Shown only at detail zoom: below BOUNDARY_MIN_ZOOM the overview weld
+          is what is on screen, and a province-specific caveat under one
+          crosshair position would be noise against it.
+
+          Same amber as the two above, because it is the same kind of statement:
+          a missing answer, not a caveat about a good one. Ranked below them
+          because they are about the map failing right now and this is a
+          standing fact about the province, and only one of them is ever on
+          screen at a time.
+        */}
+        {showBoundaries && !wideViewFailed && !zoomTooFar && liveZoom >= BOUNDARY_MIN_ZOOM && centreGap && (
+          <div className="max-w-full anim-in-down">
+            <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
+              <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
+              <span className="text-[12px] font-semibold text-amber-200 leading-snug">
+                {hasMappedCrownLand(centreGap.isoCode)
+                  ? `${centreGap.name} — ${centreGap.gap}.`
+                  : `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`}
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -7230,14 +7381,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       </MapPanel>
 
       {/*
-        SEARCH, in the card rather than in a drawer of its own.
+        SEARCH, in the card rather than in a drawer of its own — and pinned to
+        the TOP of the map, unlike every other card in this stack.
 
-        `liftAboveKeyboard` holds the card's bottom edge at the top of the
-        keyboard, so the field and every suggestion stay visible while typing
-        instead of the results being buried under the keys. `autoFocus={false}`
-        is the other half of that: the card would otherwise grab focus for its
-        close button and shut the keyboard the opening tap just raised — the
-        field is focused by `openSearchPanel`, inside the gesture.
+        It is the only one with a keyboard in it. Docked at the bottom it had
+        to hold itself above the keys, so the whole card — field, results and
+        all — jumped up the screen and shrank the moment the keyboard opened,
+        then fell back when it closed, and it did the same little dance again
+        every time the suggestions list grew or emptied. Pinned to the top
+        nothing moves: the keyboard never reaches it, the field sits where a
+        search field sits in every browser on the phone, and the results grow
+        downwards into whatever room is left.
+
+        `liftAboveKeyboard` now only caps how tall the card may grow, so a long
+        list of results stops at the top of the keys rather than running under
+        them. `autoFocus={false}` stays: the card would otherwise grab focus
+        for its close button and shut the keyboard the opening tap just raised
+        — the field is focused by `openSearchPanel`, inside the gesture.
       */}
       <MapPanel
         isOpen={mapPanel === 'search'}
@@ -7245,6 +7405,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         title="Search"
         icon={Search}
         overlayPx={overlayPx}
+        anchor="top"
         liftAboveKeyboard
         autoFocus={false}
       >
@@ -7454,141 +7615,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
       </div>
 
-      {/*
-        The one instruction on the map.
 
-        Shown only until the user has picked somewhere. A tap target that
-        covers the entire screen is invisible until somebody tells you it's
-        there — but once you know, the hint is clutter, so it removes itself.
-
-        Five words, on one line, deliberately. "Tap anywhere to pick a spot"
-        wrapped to two lines on a narrow phone and the pill grew into a
-        paragraph sitting over the map. The tap target is still the whole
-        screen; the sentence does not have to say so to prove it.
-      */}
-      {!destination && !pointCardOpen && (
-        <div className="absolute bottom-13 md:bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
-          <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl">
-            <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span className="text-xs font-semibold text-slate-200 whitespace-nowrap">
-              Tap to pick a spot
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/*
-        A ZOOMED-OUT MAP IS A SAMPLE, AND IT HAS TO SAY SO.
-
-        At these zooms the map shows the biggest parcels a source will hand
-        over, not all of them — and a camper reading a sparsely-painted Ontario
-        concludes there is little Crown land in Ontario, then zooms in and
-        watches it fill. That is the same forbidden sentence the app refuses to
-        say in words, said instead by a rendering budget. It is only ever true
-        that MORE exists than is drawn, never less, so the map says which way
-        it is wrong.
-
-        Only when a source actually withheld something: a view whose parcels
-        all fit is a complete answer and does not need apologising for. Said at
-        any zoom, not just the overview — the detailed tier has a cap of its
-        own, and a sample is a sample wherever it happens.
-
-        IT NO LONGER SAYS "LARGEST AREAS ONLY". That was true when the overview
-        kept the big parcels and deleted the small ones; it now welds abutting
-        parcels into blocks BEFORE judging what is too small to draw, so what is
-        missing here is whatever a source withheld at its record cap, which has
-        nothing to do with size. Saying "largest only" would send a camper
-        looking for the small parcels that are, in fact, already on the screen
-        inside the block.
-      */}
-      {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && !centreGap && (
-        <div className="absolute bottom-13 md:bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
-            <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
-            <span className="text-[12px] font-semibold text-violet-200">
-              There's more here — zoom in to see it all
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/*
-        THE MAP SAYS WHEN IT DOESN'T KNOW, RATHER THAN GOING QUIET.
-
-        Two different silences used to look identical, and both looked like
-        "there is no public land out here":
-
-          - zoomed past the point where any boundary is legible at all, and
-          - the wide view asked and got an answer it could not stand behind,
-            which happens when one of eight government servers is slow.
-
-        The second is the one that stings, because the boundaries were there a
-        second ago at the zoom above. So the map keeps drawing what it had and
-        this says why, in words a camper can act on. Amber rather than violet:
-        the truncation chip above is a caveat about a good answer, this is a
-        missing answer, and they must not read the same.
-
-        Over a province the map has NO data for, both excuses are the same
-        lie the gap chip below exists to stop: telling a camper to zoom in
-        when there is nothing to find. A mapped province carrying a caveat
-        (Ontario's Far North) is different — zooming in there does reveal
-        real land, so it keeps the request-level message. When the province
-        under the crosshair has no mapped data at all, this chip says that
-        instead — the standing fact beats the request-level excuse, and the
-        two amber chips never share the corner.
-      */}
-      {showBoundaries && (wideViewFailed || zoomTooFar) && (
-        <div className="absolute bottom-13 md:bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
-          <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
-            <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
-            <span className="text-[12px] font-semibold text-amber-200 leading-snug">
-              {centreGap && !hasMappedCrownLand(centreGap.isoCode)
-                ? `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`
-                : zoomTooFar
-                  ? 'Too far out to draw public land — zoom in to see it'
-                  : 'Couldn’t load public land for this wide view. What’s drawn may be incomplete — zoom in for the real picture.'}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/*
-        THE PROVINCE ITSELF IS THE MISSING ANSWER.
-
-        The two chips above are about this request: too far out to draw, or a
-        government server that did not answer in time. This one is about the
-        ground. Most of Canada's provinces now draw real Crown land — Quebec's
-        multi-use zones and Newfoundland and Labrador's province-minus-titles
-        are the newest — but a mapped province is not mapped to the last acre
-        (QC draws only its multi-use zones; NL's edges are cadastral-derived),
-        and a few provinces and the territories still have no layer at all.
-        Partial and absent are different truths and both deserve a word on the
-        map. Without this, the app renders its most confident possible lie —
-        an empty province — with nothing to read it against.
-
-        Shown only at detail zoom: below BOUNDARY_MIN_ZOOM the overview weld
-        is what is on screen, and a province-specific caveat under one
-        crosshair position would be noise against it. Stacked above the tap
-        hint (bottom-16, not bottom-5) so the two never share a corner.
-
-        Same amber as the two above, because it is the same kind of statement:
-        a missing answer, not a caveat about a good one. Ranked below them
-        because they are about the map failing right now and this is a
-        standing fact about the province, and only one chip may hold this
-        corner.
-      */}
-      {showBoundaries && !wideViewFailed && !zoomTooFar && liveZoom >= BOUNDARY_MIN_ZOOM && centreGap && (
-        <div className="absolute bottom-24 md:bottom-16 left-3 right-3 z-[998] pointer-events-none anim-in-up">
-          <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
-            <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
-            <span className="text-[12px] font-semibold text-amber-200 leading-snug">
-              {hasMappedCrownLand(centreGap.isoCode)
-                ? `${centreGap.name} — ${centreGap.gap}.`
-                : `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`}
-            </span>
-          </div>
-        </div>
-      )}
 
       {/*
         Everything known about a dropped pin, as a card rather than as a stack
