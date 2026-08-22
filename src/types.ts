@@ -800,3 +800,50 @@ export interface BeaconModelSummary {
   trusts_most: string[];
   trusts_least: string[];
 }
+
+/* ------------------------------------------------------------------ *
+ * Backroads
+ *
+ * The unpaved and minor roads drawn as an overlay on the map. Sourced from
+ * OpenStreetMap, which means a line here is a road SOMEBODY RECORDED — not a
+ * road that is passable, maintained, ungated or legal to drive.
+ *
+ * `surface` has three states on purpose. OSM leaves the surface tag off far
+ * more often than it fills it in, so "nobody wrote it down" is the common
+ * case and it must never be rendered as either paved or unpaved.
+ * ------------------------------------------------------------------ */
+
+export type BackroadSurface = 'unpaved' | 'paved' | 'unrecorded';
+
+/** What OSM says about driving it. `open` means nothing says otherwise. */
+export type BackroadAccess = 'open' | 'permit' | 'private';
+
+export interface BackroadWay {
+  /** OSM way id. */
+  id: number;
+  /** Name or road number. Most tracks have neither, and that is normal. */
+  name: string | null;
+  /** The raw `highway` value — `track`, `service`, `unclassified`… */
+  kind: string;
+  surface: BackroadSurface;
+  /** The raw OSM tag behind `surface`, for the line of text on screen. */
+  surfaceTag: string | null;
+  access: BackroadAccess;
+  /** A gate, bollard or barrier is recorded on the way. */
+  gated: boolean;
+  /** Seasonal access, or explicitly not ploughed. */
+  seasonal: boolean;
+  fourWheelDrive: boolean;
+  /** [lat, lon] pairs, simplified for drawing. */
+  line: [number, number][];
+}
+
+export interface BackroadScan {
+  /** False means we could not check — never "there are no roads here". */
+  ok: boolean;
+  /** The box asked about was too big to answer. */
+  tooWide: boolean;
+  /** Roads were dropped to keep the answer drawable. */
+  truncated: boolean;
+  roads: BackroadWay[];
+}

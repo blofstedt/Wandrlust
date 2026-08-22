@@ -9,6 +9,7 @@ import { registerWeatherRoutes } from './server/weatherRoutes';
 import { registerPushRoutes } from './server/pushRoutes';
 import { registerCellRoutes } from './server/cellRoutes';
 import { registerRouteRoutes } from './server/routeRoutes';
+import { registerBackroadRoutes } from './server/backroadRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
 import { registerBeaconRoutes } from './server/beaconRoutes';
@@ -63,6 +64,10 @@ const startServer = async (): Promise<void> => {
 
   // Routing. Tries engines that can drive a forest road before ones that can't.
   registerRouteRoutes(app);
+
+  // The backroads overlay: unpaved, gravel, dirt and two-track roads from
+  // OpenStreetMap, for the viewport. No keys.
+  registerBackroadRoutes(app);
 
   // Beacon: scans public map data for places you might legally sleep, and
   // ranks them with a model trained on what campers report back. Works with

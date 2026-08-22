@@ -48,6 +48,7 @@ question shouldn't rewrite components.
 | The map, pins, boundaries, layers | `src/components/MapComponent.tsx`, `src/services/boundaryService.ts`, `src/utils/fuzzyBoundary.ts`, `src/config/coverage.ts` | everything server-side |
 | State/province lines, land-vs-water pin check | `src/services/admin1Service.ts`, `src/services/landService.ts`, `scripts/buildMapAssets.ts` | server routes — there aren't any |
 | Picking a destination, navigation mode | `src/components/DestinationSheet.tsx`, `NavigationPanel.tsx`, `TripConditions.tsx`, `src/services/routingService.ts`, `server/routeRoutes.ts` | boundaries |
+| The backroads overlay (gravel, dirt, two-track) | `server/backroadRoutes.ts`, `src/services/backroadService.ts`, `src/config/backroads.ts`, the backroads effect in `src/components/MapComponent.tsx` | boundaries, weather |
 | Cell signal by carrier | `src/services/cellCoverageService.ts`, `server/cellRoutes.ts` | everything else |
 | Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
 | Search, filters, view switching | `src/App.tsx`, `src/components/Navbar.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
@@ -78,6 +79,7 @@ server/
   openMeteo.ts             Hourly forecast for Canada and NWS gaps
   routeRoutes.ts           /api/route — ORS, then Valhalla, then OSRM
   cellRoutes.ts            /api/cell-coverage — tower-distance estimate
+  backroadRoutes.ts        /api/backroads — unpaved + minor roads from OSM, per viewport
   pushRoutes.ts            /api/push/* — Web Push delivery and queue dispatch
 src/
   App.tsx                  State, filtering, which view is showing
@@ -325,8 +327,21 @@ npm run vapid    # generate push notification keys
   dataset on first request and cache it on disk" silently fails and re-downloads
   on every cold start. Big static datasets get prebuilt into `public/map/` and
   committed instead — see `scripts/buildMapAssets.ts`.
-- **There are no automated tests.** Verify changes by reasoning through them and
-  by running `npm run lint`. Be careful.
+- **A blank backroads layer has five possible meanings** and only one of them
+  is "there are no roads here" — and even that one is really "nobody has
+  mapped one". Zoomed out past `BACKROAD_MIN_ZOOM`, still loading, Overpass
+  unreachable, more roads than the map will draw, and genuinely nothing
+  recorded all render as an empty screen, so each one says which it is
+  (`backroadNotice` in `MapComponent.tsx`). The four line styles are making
+  four different claims too: solid means OSM recorded an unpaved surface,
+  dashed means it is a purpose-built track, DOTTED MEANS NOBODY WROTE THE
+  SURFACE DOWN, and faint means access is restricted. Never collapse the
+  dotted case into either of the others.
+- **There are no automated unit tests.** Verify changes by reasoning through
+  them and by running `npm run lint`. Be careful. The `e2e/` specs are
+  Playwright smokes run by hand with `npm run test:e2e`; most of them hit the
+  real services, and `e2e/backroads.spec.ts` deliberately does not — it stubs
+  `/api/backroads` because what it is checking is our half.
 
 ## Deliberately not here
 

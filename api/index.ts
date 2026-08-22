@@ -209,6 +209,19 @@ await safeRegister(
   'registerRouteRoutes'
 );
 
+/**
+ * Backroads: the unpaved and minor roads drawn as a map overlay.
+ *
+ * Registered here as well as in `server.ts` — see the note on fires above for
+ * what happens when it is only in one of them. A pure Overpass proxy with an
+ * in-memory cache and a CDN cache header; no keys, nothing to configure.
+ */
+await safeRegister(
+  'backroads',
+  () => import('../server/backroadRoutes.js'),
+  'registerBackroadRoutes'
+);
+
 // Push: needs VAPID keys and the Supabase service role key. Most likely to
 // fail on a fresh deploy, least important to the map working.
 await safeRegister(
@@ -266,6 +279,7 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/push/, 'push'],
   [/^\/api\/alerts/, 'alerts'],
   [/^\/api\/fires/, 'fires'],
+  [/^\/api\/backroads/, 'backroads'],
   [/^\/api\/beacon/, 'beacon'],
   [/^\/api\/spot/, 'spot']
 ];

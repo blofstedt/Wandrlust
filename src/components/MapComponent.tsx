@@ -12,12 +12,15 @@ import {
 
 import type {
   Campsite, CellCoverage, DestinationLand, FacilityKind, MapDestination, MapFacility,
-  MapTileLayer, NearbyFacility, BeaconSpot
+  MapTileLayer, NearbyFacility, BeaconSpot, BackroadScan
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
 import { hazardReportStyle, reportStanding } from '../config/hazardReports';
 import { beaconTierStyle } from '../config/beacon';
+import {
+  BACKROAD_STYLES, BACKROAD_CLASS_ORDER, BACKROAD_CASING, backroadClassOf
+} from '../config/backroads';
 import { facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
 import { landRules } from '../config/landRules';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
@@ -33,6 +36,9 @@ import {
 import {
   loadLandOverlay, overviewCollection, packCollection, LandOverlay
 } from '../services/landOverlayService';
+import {
+  fetchBackroads, backroadRequestBox, backroadBoxCovers
+} from '../services/backroadService';
 import {
   fetchActiveFires, findFiresNear, boxAround, isUnderControl, FIRE_ALERT_RADIUS_KM, ActiveFire
 } from '../services/fireService';
@@ -61,6 +67,7 @@ import { directionsAppName, openDirections } from '../utils/handoff';
 import {
   BoundingBox, MAP_VIEW_BBOX, COVERAGE_OUTLINE, WORLD_RING, VIEW_RING,
   BOUNDARY_MIN_ZOOM, BOUNDARY_MID_ZOOM, BOUNDARY_OVERVIEW_MIN_ZOOM, OVERVIEW_BOX,
+  BACKROAD_MIN_ZOOM,
   overviewMinSpanDegrees, midMinSpanDegrees, clampToCoverage,
   COVERAGE_LABEL, isWithinCoverage, landDataGap, hasMappedCrownLand
 } from '../config/coverage';
@@ -1546,6 +1553,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const underlayLayerRef = useRef<L.TileLayer | null>(null);
   const boundaryLayerRef = useRef<L.LayerGroup | null>(null);
+  const backroadLayerRef = useRef<L.LayerGroup | null>(null);
+  const backroadRendererRef = useRef<L.Canvas | null>(null);
+  /** The padded, grid-snapped box the drawn roads were fetched for. */
+  const backroadBoxRef = useRef<BoundingBox | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   /** Alert badges affecting each pinned campsite, keyed by id. */
   const badgesByIdRef = useRef<Map<string, PointWarning[]>>(new Map());
@@ -1720,6 +1731,78 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * whether the fills are drawn or not.
    */
   const [showBoundaries, setShowBoundaries] = useState(false);
+  /**
+   * The backroads overlay. OFF by default.
+   *
+   * It is the densest thing the map can draw — a forest at zoom 13 is
+   * hundreds of lines — and it is only meaningful once you are already
+   * looking at somewhere in particular. Off is also the honest default for a
+   * layer whose lines are volunteer-recorded rather than surveyed: it is
+   * something a camper turns on knowing what it is, having just read the
+   * caveat sitting under the switch.
+   */
+  const [showBackroads, setShowBackroads] = useState(false);
+  /**
+   * What the backroads layer is currently able to say. `scan` is the last
+   * answer, `tooFar` means the map is zoomed out past where it asks at all,
+   * and `loading` is a request in flight — three different silences that must
+   * not all render as an empty map.
+   */
+  const [backroadState, setBackroadState] = useState<{
+    loading: boolean; tooFar: boolean; scan: BackroadScan | null;
+  }>({ loading: false, tooFar: false, scan: null });
+
+  /**
+   * THE ONE SENTENCE THE BACKROADS LAYER OWES THE CAMPER.
+   *
+   * Five different states all look identical on the map — an empty screen —
+   * and four of them are NOT "there are no roads here":
+   *
+   *   zoomed out past where we ask · still asking · asked and could not
+   *   reach OpenStreetMap · asked and got more than we can draw · asked and
+   *   OSM genuinely has nothing recorded.
+   *
+   * The last one is still not "there are no roads out there". It is "nobody
+   * has mapped one", which is the commonest state of all in the backcountry
+   * and the single easiest thing for a map to lie about by staying quiet.
+   */
+  const backroadNotice = useMemo((): {
+    tone: 'quiet' | 'amber' | 'violet'; text: string; spinner?: boolean;
+  } | null => {
+    if (!showBackroads) return null;
+
+    if (backroadState.tooFar) {
+      return { tone: 'quiet', text: 'Backroads draw once you zoom in closer.' };
+    }
+    // Only while there is nothing on screen yet — a pan that is refreshing
+    // roads already drawn should not flash a spinner over them.
+    if (backroadState.loading && !backroadState.scan) {
+      return { tone: 'quiet', text: 'Looking for the little roads…', spinner: true };
+    }
+
+    const scan = backroadState.scan;
+    if (!scan) return null;
+
+    if (!scan.ok) {
+      return {
+        tone: 'amber',
+        text: 'Couldn’t load the backroads here — which is not the same as there being none.'
+      };
+    }
+    if (scan.truncated) {
+      return {
+        tone: 'violet',
+        text: 'More little roads here than the map can draw — zoom in for the rest.'
+      };
+    }
+    if (!scan.roads.length) {
+      return {
+        tone: 'amber',
+        text: 'No backroads mapped here. Nobody has recorded one, which is not the same as there not being one.'
+      };
+    }
+    return null;
+  }, [showBackroads, backroadState]);
   /**
    * Weather warning overlay (merged areas + event pins). ON by default because
    * warnings are the safety feature, and a camper who has the layer off
@@ -3204,6 +3287,213 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     };
   }, [isMapReady, showBoundaries, isOfflineMode]);
+
+  /* ------------------------------------------------------------------ */
+  /* Backroads: the little unpaved roads nothing else draws              */
+  /* ------------------------------------------------------------------ */
+  /**
+   * WHY THE MAP NEEDED THIS.
+   *
+   * The default basemap is satellite imagery, which has no roads on it at
+   * all. You can see a two-track scratched across a mesa; nothing tells you
+   * it is a road or where it goes. The street and topo basemaps do draw
+   * roads, but their cartography is built for towns — most tracks are dropped
+   * entirely and the survivors are hairlines under everything else.
+   *
+   * So the roads that matter most for dispersed camping — the forest service
+   * spur, the gravel section road, the grass line through a cutblock — were
+   * the ones the map was least likely to show. This layer asks OpenStreetMap
+   * for them directly and draws them over whichever basemap is on.
+   *
+   * WHAT A LINE MEANS is in `src/config/backroads.ts`, and it is narrow: a
+   * volunteer recorded a road here. Not maintained, not ungated, not
+   * passable, not legal to drive. The four line styles exist to keep the
+   * three different facts apart — surface known unpaved, purpose-built
+   * track, surface NOT RECORDED, and access restricted — because collapsing
+   * "nobody wrote it down" into either of the others is the exact
+   * overstatement this app does not make.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    const clear = () => {
+      if (!backroadLayerRef.current) return;
+      try { map.removeLayer(backroadLayerRef.current); } catch { /* detached */ }
+      backroadLayerRef.current = null;
+    };
+
+    /**
+     * Offline means the roads cannot be fetched, and there is no local copy
+     * of them the way there is for boundaries — so the layer goes quiet
+     * rather than pretending. Turning it off does the same.
+     */
+    if (!showBackroads || isOfflineMode) {
+      clear();
+      backroadBoxRef.current = null;
+      setBackroadState({ loading: false, tooFar: false, scan: null });
+      return;
+    }
+
+    let cancelled = false;
+    let controller: AbortController | null = null;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let requestId = 0;
+
+    /**
+     * Above the parcels (390) and the optional Crown Land tiles (400), below
+     * the coverage mask (645), the markers and every popup. Pointer events
+     * off, so a tap on a road still drops a destination pin — the same reason
+     * the boundary parcels are not interactive.
+     */
+    const backroadPane = (): HTMLElement | undefined => {
+      if (!map.getPane('backroadsPane')) {
+        map.createPane('backroadsPane');
+        const created = map.getPane('backroadsPane');
+        if (created) {
+          created.style.zIndex = '410';
+          created.style.pointerEvents = 'none';
+        }
+      }
+      return map.getPane('backroadsPane');
+    };
+
+    // One canvas for the life of the effect, for the same reason the
+    // boundaries have one: Leaflet registers a renderer as a map layer the
+    // first time a path uses it, so minting one per redraw orphans a canvas
+    // on the map every time it moves. Canvas and not SVG because a forest at
+    // zoom 13 is well over a thousand paths.
+    const backroadRenderer = (): L.Canvas => {
+      if (!backroadRendererRef.current) {
+        backroadPane();
+        backroadRendererRef.current = L.canvas({ pane: 'backroadsPane', padding: 0.3 });
+      }
+      return backroadRendererRef.current;
+    };
+
+    const draw = (scan: BackroadScan) => {
+      clear();
+      if (!scan.roads.length) return;
+
+      const canvas = backroadRenderer();
+      const group = L.layerGroup([], { pane: 'backroadsPane' });
+
+      /**
+       * Every casing first, then every line.
+       *
+       * Drawn road-by-road instead, a junction of two tracks would have one
+       * road's dark outline painted over the other road's colour, and a
+       * network of them looks chewed. Two passes costs nothing on canvas and
+       * the joins come out clean.
+       */
+      for (const road of scan.roads) {
+        const style = BACKROAD_STYLES[backroadClassOf(road)];
+        group.addLayer(L.polyline(road.line, {
+          renderer: canvas,
+          pane: 'backroadsPane',
+          interactive: false,
+          color: BACKROAD_CASING.color,
+          opacity: BACKROAD_CASING.opacity,
+          weight: style.weight + BACKROAD_CASING.extraWeight,
+          lineCap: 'round',
+          lineJoin: 'round'
+        }));
+      }
+
+      for (const road of scan.roads) {
+        const style = BACKROAD_STYLES[backroadClassOf(road)];
+        group.addLayer(L.polyline(road.line, {
+          renderer: canvas,
+          pane: 'backroadsPane',
+          interactive: false,
+          color: style.color,
+          opacity: style.opacity,
+          weight: style.weight,
+          dashArray: style.dash,
+          lineCap: 'round',
+          lineJoin: 'round'
+        }));
+      }
+
+      group.addTo(map);
+      backroadLayerRef.current = group;
+    };
+
+    const run = async () => {
+      if (cancelled) return;
+
+      /**
+       * Too far out to ask. The layer clears rather than leaving the last
+       * close-up view's roads floating over a county — and says which of the
+       * silences this is, so an empty map never reads as "no roads here".
+       */
+      if (map.getZoom() < BACKROAD_MIN_ZOOM) {
+        clear();
+        backroadBoxRef.current = null;
+        setBackroadState({ loading: false, tooFar: true, scan: null });
+        return;
+      }
+
+      const b = map.getBounds();
+      const view: BoundingBox = {
+        minLat: b.getSouth(), minLon: b.getWest(),
+        maxLat: b.getNorth(), maxLon: b.getEast()
+      };
+
+      // A pan that stays inside the padded box already on screen is free —
+      // no request, no redraw.
+      if (backroadBoxCovers(backroadBoxRef.current, view)) {
+        setBackroadState((prev) => (prev.tooFar ? { ...prev, tooFar: false } : prev));
+        return;
+      }
+
+      const box = backroadRequestBox(view);
+      controller?.abort();
+      controller = new AbortController();
+      const myId = ++requestId;
+
+      setBackroadState((prev) => ({ ...prev, loading: true, tooFar: false }));
+
+      const scan = await fetchBackroads(box, controller.signal);
+      if (cancelled || myId !== requestId) return;
+
+      // `null` is the request being superseded by a newer viewport. Keep what
+      // is drawn rather than blanking the layer between one pan and the next.
+      if (!scan) return;
+
+      setBackroadState({ loading: false, tooFar: false, scan });
+
+      /**
+       * A failed answer holds no box, so the next gesture asks again. Keeping
+       * it would let one bad moment on a car-park connection decide there are
+       * no roads out here for the rest of the pan.
+       */
+      if (!scan.ok) return;
+
+      backroadBoxRef.current = box;
+      draw(scan);
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 260);
+    };
+
+    load();
+    map.on('moveend zoomend', load);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend zoomend', load);
+      clear();
+      if (backroadRendererRef.current) {
+        try { map.removeLayer(backroadRendererRef.current); } catch { /* detached */ }
+        backroadRendererRef.current = null;
+      }
+    };
+  }, [isMapReady, showBackroads, isOfflineMode]);
 
 
   /* ------------------------------------------------------------------ */
@@ -6383,6 +6673,41 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             <span className="leading-snug">{alertGap}</span>
           </div>
         )}
+
+        {/*
+          The backroads layer saying which of its silences this one is. It
+          joins the same stack as the offline and coverage chips rather than
+          taking a corner of its own, so the map never ends up with notes in
+          three places at once. Quiet slate for "still working on it", amber
+          for a missing answer, violet for a good answer with more behind it —
+          the same three tones the boundary layer uses for the same three
+          kinds of statement.
+        */}
+        {backroadNotice && (
+          <div
+            className={`backdrop-blur-md px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up ${
+              backroadNotice.tone === 'amber'
+                ? 'bg-amber-950/90 border border-amber-700/70 text-amber-100'
+                : backroadNotice.tone === 'violet'
+                  ? 'bg-slate-900/90 border border-violet-800/70 text-violet-200'
+                  : 'bg-slate-800/95 border border-slate-600 text-slate-300'
+            }`}
+          >
+            {backroadNotice.spinner
+              ? <Loader2 className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5 animate-spin" />
+              : (
+                <span
+                  className={`w-1.5 h-1.5 mt-1.5 rounded-full shrink-0 ${
+                    backroadNotice.tone === 'amber'
+                      ? 'bg-amber-400'
+                      : backroadNotice.tone === 'violet' ? 'bg-violet-400' : 'bg-slate-400'
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
+            <span className="leading-snug">{backroadNotice.text}</span>
+          </div>
+        )}
       </div>
 
       {/*
@@ -6534,6 +6859,58 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 Off by default — the map stays readable and tapping any point
                 still tells you which public land it is in.
               </p>
+            )}
+            {/*
+              THE LITTLE ROADS.
+
+              The switch a camper flips when the question is "how do I even
+              get in there". Under it, a legend and one sentence — because
+              the four line styles are making four DIFFERENT claims, and a
+              dotted line that reads as "gravel" would be this app telling
+              somebody a surface nobody has ever recorded.
+            */}
+            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+              <span>Backroads &amp; tracks</span>
+              <input
+                type="checkbox"
+                checked={showBackroads}
+                onChange={(e) => setShowBackroads(e.target.checked)}
+                className="accent-emerald-500 w-3.5 h-3.5"
+              />
+            </label>
+            {showBackroads && (
+              <div className="px-2 pb-1.5">
+                <ul className="space-y-1 pt-0.5">
+                  {BACKROAD_CLASS_ORDER.map((id) => {
+                    const style = BACKROAD_STYLES[id];
+                    return (
+                      <li key={id} className="flex items-center gap-1.5">
+                        <svg
+                          width="20" height="6" viewBox="0 0 20 6"
+                          aria-hidden="true" className="shrink-0 overflow-visible"
+                        >
+                          <line
+                            x1="0" y1="3" x2="20" y2="3"
+                            stroke={style.color}
+                            strokeWidth={Math.max(2, style.weight)}
+                            strokeDasharray={style.dash}
+                            strokeLinecap="round"
+                            opacity={style.opacity}
+                          />
+                        </svg>
+                        <span className="text-[9px] text-slate-400 leading-tight">
+                          {style.label}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="text-[9px] text-slate-500 leading-tight pt-1.5">
+                  Mapped by OpenStreetMap volunteers, and only drawn once you
+                  zoom in. A line is a road somebody recorded — not one that is
+                  maintained, ungated, passable today, or legal to drive.
+                </p>
+              </div>
             )}
             {/* Only listed when the optional vector tileset is actually
                 configured. A toggle that explains why it can't work is a

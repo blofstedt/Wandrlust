@@ -259,6 +259,18 @@ export const BOUNDARY_MID_ZOOM = 5;
 export const BOUNDARY_OVERVIEW_MIN_ZOOM = 2;
 
 /**
+ * Minimum zoom at which the backroads layer asks for anything.
+ *
+ * Below this the answer would be both unaskable and unreadable. A degree of
+ * forest holds tens of thousands of tracks, and drawn at a zoom where a
+ * county fits on the screen they are a grey wash, not a road network. Twelve
+ * is where an individual spur is a line you could follow with your eye — and
+ * it is also where the viewport is small enough that Overpass answers in a
+ * second or two rather than timing out.
+ */
+export const BACKROAD_MIN_ZOOM = 12;
+
+/**
  * -----------------------------------------------------------------------------
  * THE ZOOMED-OUT MAP ASKS FOR THE WHOLE COVERAGE AREA, ONCE, AND THEN NEVER
  * ASKS AGAIN.
