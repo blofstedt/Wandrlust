@@ -50,6 +50,15 @@ interface FacilityChipsProps {
   /** Clears every kind at once. Only rendered when something is on. */
   onClearAll: () => void;
   state: FacilityLookupState;
+  /**
+   * `scroll` is the header row: one line, slid sideways, because a wrapped
+   * row up there grows to three lines and shoves the map off the screen.
+   *
+   * `wrap` is the phone's search sheet, where there is full width and no map
+   * underneath to protect — and where a chip parked off the right-hand edge
+   * would be exactly the thing this whole change is about.
+   */
+  layout?: 'scroll' | 'wrap';
 }
 
 /** The sentence under the row, for whatever the layer is currently doing. */
@@ -97,7 +106,7 @@ const statusLine = (
 };
 
 export const FacilityChips: React.FC<FacilityChipsProps> = ({
-  active, onToggle, onClearAll, state
+  active, onToggle, onClearAll, state, layout = 'scroll'
 }) => {
   const activeSet = new Set(active);
   const status = statusLine(state, active);
@@ -110,7 +119,9 @@ export const FacilityChips: React.FC<FacilityChipsProps> = ({
         is the thing the camper came for.
       */}
       <div
-        className="flex items-center gap-1.5 overflow-x-auto scroll-soft pb-1 -mx-1 px-1"
+        className={`flex items-center gap-1.5 pb-1 -mx-1 px-1 ${
+          layout === 'wrap' ? 'flex-wrap' : 'overflow-x-auto scroll-soft'
+        }`}
         role="group"
         aria-label="Find facilities on the map"
       >

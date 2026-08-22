@@ -86,7 +86,7 @@ test('backroads draw, and the legend says what the lines mean', async ({ page })
   await expect(page.locator('text=Surface not recorded')).toBeVisible();
   await expect(page.locator('text=Private or permit')).toBeVisible();
   await expect(
-    page.locator('text=/not one that is\\s+maintained, ungated, passable today, or legal to drive/')
+    page.locator('text=/not a\\s+maintained, ungated, passable or legal one/')
   ).toBeVisible();
 
   await page.locator('button[aria-label="Map layers"]').click({ force: true });

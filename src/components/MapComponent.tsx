@@ -7,8 +7,9 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
   AlertTriangle, Crosshair, Eye, Info, Layers, Loader2, MousePointerClick,
-  Navigation, X
+  Navigation, Search, X
 } from 'lucide-react';
+import { UserMenu } from './UserMenu';
 
 import type {
   Campsite, CellCoverage, DestinationLand, FacilityKind, MapDestination, MapFacility,
@@ -1467,6 +1468,16 @@ interface MapComponentProps {
   beaconRefreshKey?: number;
 
   /**
+   * Opens the search sheet, from the magnifier in the map's own control
+   * stack. Phones only — a desktop keeps its search box in the header, where
+   * there is no keyboard eating the screen and a mouse does not care how far
+   * it has to travel.
+   */
+  onOpenSearch?: () => void;
+  /** Opens the sign-in sheet, for the account button in the same stack. */
+  onOpenAuth?: () => void;
+
+  /**
    * The facility layers switched on from the chips under the search.
    *
    * Empty means the layer is off entirely and nothing is fetched — this is
@@ -1538,6 +1549,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport,
   onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0,
+  onOpenSearch, onOpenAuth,
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
   facilityRefreshKey = 0
 }) => {
@@ -6804,17 +6816,41 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         controls a camper reaches for while moving were both up there. They
         sit with the zoom buttons now, in the bottom third of the screen.
 
-        The shapes carry the grouping: round for the two buttons that each
-        do one thing, one pill for the pair that share an axis. Same glass,
-        same border, same size — one set of chrome rather than three
-        floating oddments.
+        SEARCH AND THE ACCOUNT BUTTON JOINED THEM, on phones only. Both were
+        in the header, which is the same unreachable strip for the same
+        reason, and search is the control used at every single stop. The
+        magnifier opens the same sheet the header chip used to — field,
+        suggestions, "use my location" and the facility layers, all sitting
+        on top of the keyboard.
+
+        Ordered by how often a hand goes to them, most-used lowest: zoom,
+        locate, search, layers, account. The shapes carry the grouping:
+        round for the buttons that each do one thing, one pill for the pair
+        that share an axis. Same glass, same border, same size — one set of
+        chrome rather than five floating oddments.
 
         The stack rides above whatever card is open (`overlayPx`) instead of
         being buried by it. A control you can see under a sheet and cannot
         press is worse than one that moved out of the way.
       */}
+      {/*
+        THE STACK IS FULL-HEIGHT AND BOTTOM-ALIGNED, which is what lets the
+        layer menu size itself honestly.
+
+        It used to be an auto-height box pinned to the bottom, so the menu
+        above the buttons had no idea how much room was left and had to guess
+        with a viewport sum — and the guess was wrong on the phone it mattered
+        on, cutting the base-map choice off the top. Now the column spans from
+        the top of the map to the buttons, `justify-end` keeps the controls
+        where they were, and the menu is the one item allowed to shrink. Flex
+        does the measuring, so the menu is exactly as tall as the gap.
+
+        `pointer-events-none` on the column with `pointer-events-auto` on each
+        control is the price of that: a full-height invisible box down the
+        right-hand side would otherwise swallow every tap meant for the map.
+      */}
       <div
-        className="absolute right-3 z-[1000] flex flex-col items-end gap-2 transition-[bottom] duration-200"
+        className="absolute right-3 top-3 z-[1000] flex flex-col items-end justify-end gap-2 pointer-events-none transition-[bottom] duration-200"
         style={{ bottom: `calc(1.5rem + ${overlayPx}px)` }}
       >
         {/*
@@ -6824,89 +6860,102 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           — the part everybody wants — the first thing gone.
         */}
         {showLayerMenu && (
-          <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl p-2 shadow-2xl w-52 max-h-[55vh] overflow-y-auto overscroll-contain scroll-soft anim-in-up">
-            <p className="text-[12px] uppercase tracking-wider text-slate-400 font-bold px-1 pb-1">Base map</p>
-            {(Object.keys(TILE_URLS) as MapTileLayer[]).map((id) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setActiveTileLayer(id)}
-                className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-semibold ${
-                  activeTileLayer === id ? 'bg-emerald-600 text-white' : 'text-slate-300 hover:bg-slate-800'
-                }`}
-              >
-                {TILE_URLS[id].label}
-              </button>
-            ))}
+          /*
+            `min-h-0` is what makes the shrinking above actually happen — a
+            flex item defaults to `min-height: auto`, which refuses to go
+            below its content and overflows the column instead. With it, the
+            menu takes the gap it is given and scrolls only if a phone is
+            genuinely too short for the list, which no ordinary one is now.
+          */
+          <div className="pointer-events-auto min-h-0 bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl p-2.5 shadow-2xl w-[min(19rem,calc(100vw-1.5rem))] overflow-y-auto overscroll-contain scroll-soft anim-in-up">
+            {/*
+              Base map as one segmented control rather than three stacked
+              rows. Three words fit across the menu, and the choice reads as
+              a choice instead of as a list you have to get to the bottom of.
+            */}
+            <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold pb-1.5">Base map</p>
+            <div className="flex p-0.5 rounded-xl bg-slate-950/80 border border-slate-800">
+              {(Object.keys(TILE_URLS) as MapTileLayer[]).map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setActiveTileLayer(id)}
+                  aria-pressed={activeTileLayer === id}
+                  className={`flex-1 px-1 py-1.5 rounded-lg text-[11px] font-bold ${
+                    activeTileLayer === id ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {TILE_URLS[id].label}
+                </button>
+              ))}
+            </div>
 
-            <p className="text-[12px] uppercase tracking-wider text-slate-400 font-bold px-1 pt-2 pb-1">Overlays</p>
-            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
-              <span>Public land boundaries</span>
+            <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold pt-2.5 pb-0.5">Overlays</p>
+            <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
+              <span>Public land</span>
               <input
                 type="checkbox"
                 checked={showBoundaries}
                 onChange={(e) => setShowBoundaries(e.target.checked)}
-                className="accent-emerald-500 w-3.5 h-3.5"
+                className="accent-emerald-500 w-4 h-4 shrink-0"
               />
             </label>
             {/*
-              The accuracy caveat, now that the standing chip over the map is
-              gone. It sits under the switch that draws the parcels, so it is
-              read by whoever turns them on, and it says the two things that
-              must never be lost: the edges are a guess with a range, and a
-              blank map is missing data rather than missing public land.
-            */}
-            {showBoundaries && (
-              <p className="px-2 pb-1.5 text-[11px] text-slate-500 leading-tight">
-                Edges are drawn as a fade, not a line — roughly{' '}
-                {UNCERTAINTY_LABEL.cadastral_derived} to {UNCERTAINTY_LABEL.generalised}{' '}
-                out depending on the source, and not permission to camp. Nothing
-                drawn means no data here, not private land.
-              </p>
-            )}
-            {/*
-              Said when the layer is OFF, because "off" could easily be read as
-              "the app has stopped knowing". It hasn't: the parcels are still
-              loaded and a tap still names the land, its stay limit, its permit
-              and its fire ban. Only the paint is gone.
-            */}
-            {!showBoundaries && (
-              <p className="px-2 pb-1.5 text-[11px] text-slate-500 leading-tight">
-                Off by default — the map stays readable and tapping any point
-                still tells you which public land it is in.
-              </p>
-            )}
-            {/*
-              THE LITTLE ROADS.
+              THE CAVEAT, CUT TO THE BONE BUT NOT CUT.
 
-              The switch a camper flips when the question is "how do I even
-              get in there". Under it, a legend and one sentence — because
-              the four line styles are making four DIFFERENT claims, and a
-              dotted line that reads as "gravel" would be this app telling
-              somebody a surface nobody has ever recorded.
+              This used to be four lines of prose, and the menu it sat in ran
+              off the screen — so the thing that must always be said was, in
+              practice, scrolled past. Every claim it made is still here: the
+              edges are a guess, with a range; drawing one is not permission;
+              and an empty map is missing DATA, never missing public land. It
+              just stopped taking a paragraph to say so.
             */}
-            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+            {showBoundaries ? (
+              <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
+                Fuzzy edges, {UNCERTAINTY_LABEL.cadastral_derived}–{UNCERTAINTY_LABEL.generalised}.
+                Not permission to camp. Blank means no data, not private land.
+              </p>
+            ) : (
+              /* Said when the layer is OFF, because "off" reads as "the app
+                 has stopped knowing". It hasn't — only the paint is gone. */
+              <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
+                Off — a tap still names the land, its limits and its fire ban.
+              </p>
+            )}
+
+            <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
               <span>Backroads &amp; tracks</span>
               <input
                 type="checkbox"
                 checked={showBackroads}
                 onChange={(e) => setShowBackroads(e.target.checked)}
-                className="accent-emerald-500 w-3.5 h-3.5"
+                className="accent-emerald-500 w-4 h-4 shrink-0"
               />
             </label>
             {showBackroads && (
-              <div className="px-2 pb-1.5">
-                <ul className="space-y-1 pt-0.5">
+              <div className="px-1 pb-1">
+                {/*
+                  ONE COLUMN, AND THE LABELS NEVER TRUNCATE.
+
+                  Two columns fitted, and turned "Two-track / forest road"
+                  into "Two-track / fores…" and "Surface not recorded" into
+                  "Surface not reco…". The legend is the one part of this
+                  menu that cannot be compressed: each line style is making a
+                  DIFFERENT claim, and the dotted one — nobody wrote the
+                  surface down — is the claim most easily misread as one of
+                  the others. Prose gave way instead.
+                */}
+                <ul className="space-y-1 pt-1">
                   {BACKROAD_CLASS_ORDER.map((id) => {
                     const style = BACKROAD_STYLES[id];
                     return (
-                      <li key={id} className="flex items-center gap-1.5">
+                      <li key={id} className="flex items-center gap-2 min-w-0">
                         <svg
-                          width="20" height="6" viewBox="0 0 20 6"
+                          width="18" height="6" viewBox="0 0 18 6"
                           aria-hidden="true" className="shrink-0 overflow-visible"
                         >
                           <line
-                            x1="0" y1="3" x2="20" y2="3"
+                            x1="0" y1="3" x2="18" y2="3"
                             stroke={style.color}
                             strokeWidth={Math.max(2, style.weight)}
                             strokeDasharray={style.dash}
@@ -6921,34 +6970,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     );
                   })}
                 </ul>
-                <p className="text-[11px] text-slate-500 leading-tight pt-1.5">
-                  Mapped by OpenStreetMap volunteers, and only drawn once you
-                  zoom in. A line is a road somebody recorded — not one that is
-                  maintained, ungated, passable today, or legal to drive.
+                <p className="text-[11px] text-slate-500 leading-snug pt-1.5">
+                  Volunteer-mapped, drawn zoomed in. A recorded road — not a
+                  maintained, ungated, passable or legal one.
                 </p>
               </div>
             )}
+
             {/* Only listed when the optional vector tileset is actually
                 configured. A toggle that explains why it can't work is a
                 developer's note sitting in a camper's map menu. */}
             {crownLandAvailable && (
-              <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+              <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
                 <span>Crown land tiles</span>
                 <input
                   type="checkbox"
                   checked={showCrownLand}
                   onChange={(e) => setShowCrownLand(e.target.checked)}
-                  className="accent-emerald-500 w-3.5 h-3.5"
+                  className="accent-emerald-500 w-4 h-4 shrink-0"
                 />
               </label>
             )}
-            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+            <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
               <span>Weather warnings</span>
               <input
                 type="checkbox"
                 checked={showWarnings}
                 onChange={(e) => setShowWarnings(e.target.checked)}
-                className="accent-emerald-500 w-3.5 h-3.5"
+                className="accent-emerald-500 w-4 h-4 shrink-0"
               />
             </label>
             {/*
@@ -6956,34 +7005,72 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               to switch off. Fires are reported on the pin you tap, which is
               a safety answer and not a layer.
             */}
-            <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
+            <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
               <span>State / province lines</span>
               <input
                 type="checkbox"
                 checked={showAdmin1}
                 onChange={(e) => setShowAdmin1(e.target.checked)}
-                className="accent-emerald-500 w-3.5 h-3.5"
+                className="accent-emerald-500 w-4 h-4 shrink-0"
               />
             </label>
+          </div>
+        )}
+
+        {/*
+          The account button, top of the stack.
+
+          Highest because it is the one thing here you touch least, and it
+          steps aside entirely while a card is open over the map: the stack
+          rides up on top of that card, and five controls plus the zoom pill
+          is taller than the strip of screen left above a tall sheet. The
+          one that goes is the one that is not about the map.
+        */}
+        {onOpenAuth && overlayPx === 0 && (
+          <div className="pointer-events-auto shrink-0 md:hidden">
+            <UserMenu onOpenAuth={onOpenAuth} variant="fab" placement="up" />
           </div>
         )}
 
         <button
           type="button"
           onClick={() => setShowLayerMenu((open) => !open)}
-          className={`tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center ${showLayerMenu ? 'text-white ring-1 ring-emerald-500/50' : ''}`}
+          className={`pointer-events-auto shrink-0 tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center ${showLayerMenu ? 'text-white ring-1 ring-emerald-500/50' : ''}`}
           aria-label="Map layers"
           aria-expanded={showLayerMenu}
         >
           <Layers className="w-[18px] h-[18px]" />
         </button>
 
+        {/*
+          Search. Carries a count when facility layers are on, because those
+          are switched on in the sheet behind this button and are otherwise
+          invisible as a SETTING — a camper seeing no toilet pins has to be
+          able to tell "the layer is off" from "nobody has mapped one", and
+          the row of chips that used to say so is no longer on screen.
+        */}
+        {onOpenSearch && (
+          <button
+            type="button"
+            onClick={() => { haptic('tap'); onOpenSearch(); }}
+            className="pointer-events-auto shrink-0 md:hidden relative tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center"
+            aria-label="Search, and show facilities on the map"
+          >
+            <Search className="w-[18px] h-[18px]" />
+            {facilityKinds.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center border border-slate-900">
+                {facilityKinds.length}
+              </span>
+            )}
+          </button>
+        )}
+
         {onLocateUser && (
           <button
             type="button"
             onClick={onLocateUser}
             disabled={isLocating}
-            className="tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center disabled:opacity-50"
+            className="pointer-events-auto shrink-0 tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center disabled:opacity-50"
             aria-label="Centre on my location"
           >
             {isLocating
@@ -7000,7 +7087,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           the map, with the rest of the chrome. One pill rather than two
           separate circles, because they are one control with two ends.
         */}
-        <div className="flex flex-col rounded-full overflow-hidden border border-slate-700/80 shadow-xl">
+        <div className="pointer-events-auto shrink-0 flex flex-col rounded-full overflow-hidden border border-slate-700/80 shadow-xl">
           <button
             type="button"
             onClick={() => mapRef.current?.zoomIn()}
