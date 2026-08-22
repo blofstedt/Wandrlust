@@ -83,7 +83,7 @@ export interface SheetProps {
  * `visualViewport` is the only thing that knows. Zero when it is missing,
  * when the keyboard is down, or when this is switched off.
  */
-const useKeyboardInset = (active: boolean): number => {
+export const useKeyboardInset = (active: boolean): number => {
   const [inset, setInset] = React.useState(0);
 
   useEffect(() => {

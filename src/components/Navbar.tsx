@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import {
   Search, MapPin, Map as MapIcon, List, Bookmark, Wifi, WifiOff,
@@ -6,8 +6,9 @@ import {
   Users, Activity, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
 } from 'lucide-react';
 import type { AppView, FacilityKind, FilterState, GeocodedLocation } from '../types';
-import { geocodeSearch } from '../services/nominatim';
+import { useLocationSearch } from '../utils/useLocationSearch';
 import { UserMenu } from './UserMenu';
+import { SearchPanelBody } from './SearchPanelBody';
 import { FacilityChips, type FacilityLookupState } from './FacilityChips';
 import { Sheet } from './ui/Sheet';
 import { BrandMark } from './ui/BrandMark';
@@ -102,23 +103,6 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
   facilityKinds, onToggleFacilityKind, onClearFacilityKinds, facilityState,
   searchOpen, setSearchOpen
 }) => {
-  const [query, setQuery] = useState(filterState.searchQuery ?? '');
-  const [suggestions, setSuggestions] = useState<GeocodedLocation[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [showDropdown, setShowDropdown] = useState(false);
-  /** Arrow-key position in the dropdown. -1 is "nothing picked yet". */
-  const [highlighted, setHighlighted] = useState(-1);
-  /**
-   * The exact text the suggestions on screen were looked up for.
-   *
-   * Needed to tell "we asked and got nothing" apart from "nobody has asked
-   * yet" — the phone's search sheet opens with the last place already in the
-   * box, and without this it greeted you with "nothing came back for Calgary"
-   * about a search that had never run.
-   */
-  const [searchedFor, setSearchedFor] = useState<string | null>(null);
-
-  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   /**
@@ -138,12 +122,26 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
    */
   const sheetInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { setQuery(filterState.searchQuery); }, [filterState.searchQuery]);
-
-  // Clear any in-flight debounce if the nav unmounts mid-typing.
-  useEffect(() => () => {
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-  }, []);
+  /*
+   * The debounce, the request ticket and the Enter key all live in
+   * `useLocationSearch` now, because the map has a search box of its own down
+   * in its control stack and one copy of that logic is enough. See the note at
+   * the top of that file.
+   */
+  const search = useLocationSearch({
+    searchQuery: filterState.searchQuery,
+    onQueryCommitted: useCallback(
+      (label: string) => setFilterState((prev) => ({ ...prev, searchQuery: label })),
+      [setFilterState]
+    ),
+    onSelectLocation,
+    onPicked: useCallback(() => setSearchOpen(false), [setSearchOpen])
+  });
+  const {
+    query, suggestions, isSearching, showDropdown, setShowDropdown,
+    highlighted, setHighlighted, handleInputChange,
+    handleKeyDown: handleSearchKeyDown, handleSelect, clearSearch
+  } = search;
 
   /*
    * `touchstart` as well as `mousedown`, like the tool sheet below.
@@ -156,7 +154,6 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     const onPointerDownOutside = (event: MouseEvent | TouchEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowDropdown(false);
-        setHighlighted(-1);
       }
     };
     document.addEventListener('mousedown', onPointerDownOutside);
@@ -165,129 +162,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
       document.removeEventListener('mousedown', onPointerDownOutside);
       document.removeEventListener('touchstart', onPointerDownOutside);
     };
-  }, []);
-
-
-  /**
-   * Which search the answers on screen belong to.
-   *
-   * Every request takes a ticket and only the latest one is allowed to write
-   * to state. Without this, two geocodes can be in flight at once — the
-   * debounce only cancels timers that have not fired yet, not requests
-   * already gone — and whichever answered LAST won. A cached query resolves
-   * instantly while a cold one takes a second, so typing "ban" then "banff"
-   * could leave you looking at results for "ban".
-   *
-   * Bumping it also cancels: the clear button and picking a result both
-   * invalidate whatever is outstanding, which is what stops a dropdown
-   * reopening itself over a search box the camper has just emptied.
-   */
-  const searchSeq = useRef(0);
-
-  /** Abandon anything pending, timer or in-flight request. */
-  const cancelPendingSearch = useCallback(() => {
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    searchTimeout.current = null;
-    searchSeq.current += 1;
-    setIsSearching(false);
-  }, []);
-
-  const runSearch = useCallback(async (value: string): Promise<GeocodedLocation[]> => {
-    const ticket = searchSeq.current;
-    const results = await geocodeSearch(value);
-    // Superseded while we were waiting. Drop it on the floor.
-    if (ticket !== searchSeq.current) return results;
-
-    setSuggestions(results);
-    setSearchedFor(value);
-    setHighlighted(-1);
-    setIsSearching(false);
-    setShowDropdown(results.length > 0);
-    return results;
-  }, []);
-
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    setQuery(value);
-
-    cancelPendingSearch();
-
-    if (value.trim().length < 2) {
-      setSuggestions([]);
-      setSearchedFor(null);
-      setShowDropdown(false);
-      return;
-    }
-
-    setIsSearching(true);
-    // Nominatim asks for no more than one request a second; 400 ms of quiet
-    // typing keeps us comfortably inside that.
-    searchTimeout.current = setTimeout(() => { void runSearch(value); }, 400);
-  }, [cancelPendingSearch, runSearch]);
-
-  const handleSelect = useCallback((loc: GeocodedLocation) => {
-    const label = loc.displayName.split(',')[0];
-    cancelPendingSearch();
-    setQuery(label);
-    setShowDropdown(false);
-    setHighlighted(-1);
-    setFilterState((prev) => ({ ...prev, searchQuery: label }));
-    setSearchOpen(false);
-    onSelectLocation(loc);
-  }, [cancelPendingSearch, setFilterState, onSelectLocation]);
-
-  /**
-   * The keyboard, which this box used to ignore entirely.
-   *
-   * Enter did NOTHING — no form, no handler — so on a phone the Go key on the
-   * keyboard was inert, which on the app's single most-used control reads as
-   * the search being broken. Enter now searches: it takes the highlighted
-   * result, or the first one, or if the debounce has not even fired yet it
-   * runs the lookup there and then and goes to the top hit.
-   */
-  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    const open = showDropdown && suggestions.length > 0;
-
-    if (e.key === 'Escape') {
-      if (!open) return;
-      e.preventDefault();
-      // Stop it reaching a Sheet behind us and closing that too.
-      e.stopPropagation();
-      setShowDropdown(false);
-      setHighlighted(-1);
-      return;
-    }
-
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      if (!open) return;
-      e.preventDefault();
-      const step = e.key === 'ArrowDown' ? 1 : -1;
-      setHighlighted((prev) => {
-        const next = prev + step;
-        if (next < 0) return suggestions.length - 1;
-        if (next >= suggestions.length) return 0;
-        return next;
-      });
-      return;
-    }
-
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-
-    if (open) {
-      handleSelect(suggestions[highlighted >= 0 ? highlighted : 0]);
-      return;
-    }
-
-    // Pressed before the debounce fired. Don't make them wait and press again.
-    const value = query.trim();
-    if (value.length < 2) return;
-    cancelPendingSearch();
-    setIsSearching(true);
-    void runSearch(value).then((results) => {
-      if (results.length > 0) handleSelect(results[0]);
-    });
-  };
+  }, [setShowDropdown]);
 
   /**
    * Open the phone's search sheet AND put the caret in it, in one press.
@@ -306,19 +181,6 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     sheetInputRef.current?.select();
   };
 
-  /** Empty the box and forget the search, wherever it was pressed. */
-  const clearSearch = useCallback(() => {
-    // Cancels the pending lookup too. Without that, a debounce already in
-    // flight landed a moment later and popped the suggestions back up over an
-    // empty box.
-    cancelPendingSearch();
-    setQuery('');
-    setSuggestions([]);
-    setSearchedFor(null);
-    setShowDropdown(false);
-    setHighlighted(-1);
-    setFilterState((prev) => ({ ...prev, searchQuery: '' }));
-  }, [cancelPendingSearch, setFilterState]);
 
   const views: {
     id: AppView;
@@ -663,129 +525,18 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
       title="Search"
       subtitle="Go somewhere, or show what is around you"
     >
-      {/*
-        `p-4`, not `p-3`. At three the field ran within twelve pixels of a
-        full-width drawer's edges and read as clipped rather than inset — the
-        screenshot that started this looked like the search box had been cut
-        off by the screen. A docked card has an edge you can see, so what is
-        inside it needs room to sit away from that edge.
-      */}
-      <div className="p-4 space-y-3">
-        <div className="relative flex items-center">
-          <Search
-            className={`absolute left-3.5 w-4 h-4 pointer-events-none ${
-              isSearching ? 'text-emerald-400 animate-[bounce_0.6s_infinite]' : 'text-slate-400'
-            }`}
-          />
-          <input
-            ref={sheetInputRef}
-            type="text"
-            value={query}
-            onChange={handleInputChange}
-            onKeyDown={handleSearchKeyDown}
-            placeholder="Search a city, state or province…"
-            aria-label="Search for a location"
-            enterKeyHint="search"
-            autoComplete="off"
-            autoCorrect="off"
-            spellCheck={false}
-            className="w-full bg-slate-950/90 border border-slate-700/80 rounded-xl pl-10 pr-11 py-2.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 shadow-inner"
-          />
-          {query && (
-            <button
-              type="button"
-              onClick={() => { clearSearch(); sheetInputRef.current?.focus(); }}
-              className="tap-safe absolute right-3 text-slate-400 hover:text-slate-200"
-              aria-label="Clear search"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-
-        {/*
-          The other way of answering "where am I looking" — here as well as on
-          the map, because this sheet is where somebody has come to move the
-          map and their own position is the commonest destination of all.
-        */}
-        <button
-          type="button"
-          onClick={() => { setSearchOpen(false); onLocateUser(); }}
-          disabled={isLocating}
-          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-emerald-950/60 border border-emerald-600/40 text-emerald-200 text-sm font-bold disabled:opacity-50"
-        >
-          <Crosshair className="w-4 h-4 shrink-0" />
-          {isLocating ? 'Finding you…' : 'Use my current location'}
-        </button>
-
-        {suggestions.length > 0 && (
-          <ul className="divide-y divide-slate-800/60 rounded-xl border border-slate-800 overflow-hidden">
-            {suggestions.map((loc, idx) => (
-              <li key={`sheet-${loc.lat},${loc.lon},${idx}`}>
-                <button
-                  type="button"
-                  onClick={() => handleSelect(loc)}
-                  className="w-full p-3 text-left flex items-start gap-2.5 bg-slate-800/40 hover:bg-slate-800"
-                >
-                  <MapPin className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-bold text-slate-100 truncate">
-                      {loc.displayName.split(',')[0]}
-                    </span>
-                    <span className="block text-xs text-slate-400 truncate">
-                      {loc.displayName}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/*
-          An empty answer is not proof the place does not exist — the geocoder
-          returns nothing both when it found nothing and when it could not be
-          reached at all. Saying "no such place" would be this app inventing a
-          fact out of a failure, so it says both.
-        */}
-        {!isSearching && suggestions.length === 0 && searchedFor === query.trim() && (
-          <p className="px-1 py-2 text-xs text-slate-400 leading-snug">
-            Nothing came back for “{query.trim()}”. Either there is no place by
-            that name, or the lookup could not be reached just now. You can also
-            close this and tap the spot on the map.
-          </p>
-        )}
-
-        {/*
-          THE FACILITY LAYERS, IN THE SAME SHEET AS THE SEARCH.
-
-          Phones only — the desktop keeps them under the header's box. They
-          were a second row of chips at the top of a phone screen, scrolling
-          sideways over the map, and half of them were off the right edge in
-          the screenshot that started this. Down here they get full width, a
-          thumb can reach them, and they sit under the one control a camper
-          opens to ask "what is near me" — which is the same question the
-          search box is for, aimed at a thing instead of a town.
-
-          The sheet stays open when one is tapped. Turning on toilets and
-          water is two taps, and a sheet that shut after the first would make
-          it four.
-        */}
-        {activeView === 'map' && (
-          <div className="md:hidden pt-1 pb-1 border-t border-slate-800">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 pt-2 pb-1.5">
-              Show on the map
-            </p>
-            <FacilityChips
-              active={facilityKinds}
-              onToggle={onToggleFacilityKind}
-              onClearAll={onClearFacilityKinds}
-              state={facilityState}
-              layout="wrap"
-            />
-          </div>
-        )}
-      </div>
+      <SearchPanelBody
+        search={search}
+        inputRef={sheetInputRef}
+        onLocateUser={onLocateUser}
+        isLocating={isLocating}
+        onClose={() => setSearchOpen(false)}
+        showFacilities={activeView === 'map'}
+        facilityKinds={facilityKinds}
+        onToggleFacilityKind={onToggleFacilityKind}
+        onClearFacilityKinds={onClearFacilityKinds}
+        facilityState={facilityState}
+      />
     </Sheet>
     </>
   );

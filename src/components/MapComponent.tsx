@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
@@ -7,13 +8,16 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
   AlertTriangle, Crosshair, Eye, Info, Layers, Loader2, MousePointerClick,
-  Navigation, Search, X
+  Navigation, Search, User as UserIcon, X
 } from 'lucide-react';
-import { UserMenu } from './UserMenu';
+import { UserMenu, AccountPanelBody } from './UserMenu';
+import { MapPanel } from './ui/MapPanel';
+import { SearchPanelBody } from './SearchPanelBody';
+import { useLocationSearch } from '../utils/useLocationSearch';
 
 import type {
-  Campsite, CellCoverage, DestinationLand, FacilityKind, MapDestination, MapFacility,
-  MapTileLayer, NearbyFacility, BeaconSpot, BackroadScan
+  Campsite, CellCoverage, DestinationLand, FacilityKind, GeocodedLocation,
+  MapDestination, MapFacility, MapTileLayer, NearbyFacility, BeaconSpot, BackroadScan
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
@@ -816,10 +820,19 @@ const INFO_SVG =
   'stroke-linecap="round" style="width:12px;height:12px">' +
   '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.2"/></svg>';
 
-const PLUS_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" ' +
-  'stroke-linecap="round" style="width:12px;height:12px">' +
-  '<path d="M12 5v14M5 12h14"/></svg>';
+/**
+ * A TENT WITH A PLUS ON IT, not a bare plus.
+ *
+ * The plus alone said "add" and nothing else — add what? The tent is the same
+ * shape this app uses for a campsite everywhere else, so the button now says
+ * "add a campsite" in the two languages it has: a picture of the thing and,
+ * beside it, the words.
+ */
+const ADD_SPOT_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px">' +
+  '<path d="M10 3 2.5 19h15L10 3z"/><path d="M10 10.5 13.5 19"/>' +
+  '<path d="M19 4.5v5M16.5 7h5"/></svg>';
 
 const CLOSE_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" ' +
@@ -878,10 +891,28 @@ const withNavChip = (dots: MarkerDot[]): MarkerDot[] => {
  * pin is what the chips cannot be: everything recorded about the spot, and
  * the way out.
  */
+/**
+ * THE ONES THAT DO SOMETHING NEW SAY SO IN WORDS.
+ *
+ * These were five unlabelled glyphs in a row, and two of them — a bare plus
+ * and an abstract standpipe — were asking a camper to guess which one submits
+ * a place to sleep and which one logs a tap. Nobody guesses right, and the
+ * cost of guessing wrong is a campsite submitted where a dump station was
+ * meant. The three that CREATE something now carry their own name.
+ *
+ * "i" and "×" stay bare on purpose: they are the two glyphs on earth nobody
+ * has to be told, and labelling them would push the row that carries the real
+ * choices onto a second line for nothing.
+ */
 type PinAction = {
-  action: 'add' | 'add-facility' | 'details' | 'point';
+  action: 'add' | 'add-facility' | 'details' | 'point' | 'beacon';
+  /** The full sentence — the tooltip, and the accessible name. */
   label: string;
+  /** The one or two words printed beside the glyph. Bare glyph without it. */
+  text?: string;
   glyph: string;
+  /** Sets this button apart from the rest of the row — Beacon's blue. */
+  tone?: 'beacon';
 };
 
 const pinActionsRow = (secondary: PinAction[] = []): string =>
@@ -889,9 +920,12 @@ const pinActionsRow = (secondary: PinAction[] = []): string =>
   secondary
     .map(
       (s) =>
-        `<span class="wl-pin-action" data-action="${s.action}" ` +
+        `<span class="wl-pin-action${s.tone ? ` wl-pin-action-${s.tone}` : ''}" ` +
+        `data-action="${s.action}" ` +
         `role="button" tabindex="0" title="${escapeHtml(s.label)}" ` +
-        `aria-label="${escapeHtml(s.label)}">${s.glyph}</span>`
+        `aria-label="${escapeHtml(s.label)}">${s.glyph}` +
+        (s.text ? `<span>${escapeHtml(s.text)}</span>` : '') +
+        `</span>`
     )
     .join('') +
   `<span class="wl-pin-action wl-pin-action-close" data-action="close" ` +
@@ -919,7 +953,7 @@ const INFO_ACTION_POINT: PinAction = {
 /**
  * The tap-and-a-half glyph, for logging a toilet you are looking at.
  *
- * A SECOND BUTTON RATHER THAN A CHOICE INSIDE THE FIRST. "Add spot here" means
+ * A SECOND BUTTON RATHER THAN A CHOICE INSIDE THE FIRST. "Add spot" means
  * somewhere to sleep, and a camper reaching for it while meaning "there's a
  * dump station here" would have had to submit a campsite and then correct it.
  * Two things, two buttons, and the labels say which is which.
@@ -930,10 +964,15 @@ const INFO_ACTION_POINT: PinAction = {
  * own fix, which cannot describe the place you drove past this morning.
  */
 const FACILITY_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">' +
-  '<path d="M7 3v8M7 21v-6M17 3v5a3 3 0 0 1-3 3h-1M17 21v-8"/>' +
-  '<path d="M4.5 7h5"/></svg>';
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px">' +
+  // A tap with a drop under it. The old glyph was a bare standpipe, which read
+  // as anything from a goalpost to a bookmark; a basin under it was tried and
+  // turned to mush at 13px. Tap plus drop survives the size.
+  '<path d="M4 4h5v8"/>' +
+  '<path d="M9 6.5h6a2.5 2.5 0 0 1 2.5 2.5v2.5"/>' +
+  '<path d="M17.5 15.5c1.4 1.8 2.2 3 2.2 3.9a2.2 2.2 0 0 1-4.4 0c0-.9.8-2.1 2.2-3.9z"/>' +
+  '</svg>';
 
 /**
  * The "nothing switched on" default, hoisted to module scope.
@@ -945,10 +984,54 @@ const FACILITY_SVG =
  */
 const NO_FACILITY_KINDS: FacilityKind[] = [];
 
+/** Same reason as `NO_FACILITY_KINDS`: one frozen instance, stable identity. */
+const FACILITY_IDLE: FacilityLookupState = { status: 'idle' };
+
+/**
+ * One shell for every round button in the map's control stack.
+ *
+ * Same glass, border, size and shadow, written once — they are one set of
+ * chrome rather than five floating oddments, and the only thing that ever
+ * varies between them is the ring that says which one is live.
+ */
+const STACK_BUTTON =
+  'pointer-events-auto shrink-0 tap-safe w-11 h-11 rounded-full bg-slate-900/90 ' +
+  'backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white ' +
+  'hover:bg-slate-800 shadow-xl flex items-center justify-center';
+
 const ADD_FACILITY_ACTION: PinAction = {
   action: 'add-facility',
-  label: 'Add a toilet, tap or dump station here',
+  label: 'Add a toilet, tap, dump station or other amenity here',
+  text: 'Add amenity',
   glyph: FACILITY_SVG
+};
+
+/**
+ * The radar dish, for the beacon.
+ *
+ * SAME BUTTON, MOVED UNDER THE PIN. It was a pill floating at the top of the
+ * map, which meant asking "what might be around here?" started by pointing at
+ * a place and then reaching to the far corner of the screen to ask about it.
+ * The question and the place it is about are one thing now: the pin has
+ * already answered "where should it look?", so this goes straight to the
+ * beacon rather than back through that question.
+ *
+ * Blue rather than the row's slate, because it is the one button here that
+ * goes off and searches rather than recording something.
+ */
+const BEACON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px">' +
+  '<path d="M12 12v9M8.5 21h7"/>' +
+  '<path d="M12 12a4 4 0 1 0-3.4-1.9"/>' +
+  '<path d="M5.2 13.5A8 8 0 0 1 16 3.2"/></svg>';
+
+const BEACON_ACTION: PinAction = {
+  action: 'beacon',
+  label: 'Search public map data for places you might be able to sleep near here',
+  text: 'Beacon',
+  glyph: BEACON_SVG,
+  tone: 'beacon'
 };
 
 const buildCampsiteIcon = (
@@ -1182,7 +1265,9 @@ const PIN_LIFT_PX = 34;
 const buildDestinationIcon = (
   dots: MarkerDot[] = [],
   addLabel?: string,
-  animateKeys: Set<string> = new Set()
+  animateKeys: Set<string> = new Set(),
+  /** Whether a beacon can be sent from here — see `canBeacon`. */
+  withBeacon = false
 ): L.DivIcon =>
   L.divIcon({
     className: 'destination-marker',
@@ -1191,14 +1276,23 @@ const buildDestinationIcon = (
         ${dots.length ? expandedDotRow(dots, animateKeys) : ''}
         ${pinActionsRow([
           // The same "i" a submitted spot wears, for the same reason: this is
-          // where you ask the pin to say more. "Add spot here" keeps its own
+          // where you ask the pin to say more. "Add spot" keeps its own
           // button — reading about a place and submitting it are different
-          // things, and the plus is the only way to do the second.
+          // things, and the tent is the only way to do the second.
           INFO_ACTION_POINT,
-          ...(addLabel ? [{ action: 'add' as const, label: addLabel, glyph: PLUS_SVG }] : []),
-          // Always offered, unlike "Add spot here" — a facility is worth
-          // marking on ground you would never sleep on, which is most ground.
-          ADD_FACILITY_ACTION
+          ...(addLabel
+            ? [{
+                action: 'add' as const,
+                label: addLabel,
+                text: 'Add spot',
+                glyph: ADD_SPOT_SVG
+              }]
+            : []),
+          // Always offered, unlike "Add spot" — an amenity is worth marking on
+          // ground you would never sleep on, which is most ground.
+          ADD_FACILITY_ACTION,
+          // Only when a beacon could actually run. See `canBeacon`.
+          ...(withBeacon ? [BEACON_ACTION] : [])
         ])}
         <span class="absolute bottom-0 w-6 h-2 rounded-full bg-slate-950/40 blur-[2px]"></span>
         <svg viewBox="0 0 24 32" class="w-8 h-10 drop-shadow-xl relative" aria-hidden="true">
@@ -1479,14 +1573,34 @@ interface MapComponentProps {
   beaconRefreshKey?: number;
 
   /**
-   * Opens the search sheet, from the magnifier in the map's own control
-   * stack. Phones only — a desktop keeps its search box in the header, where
-   * there is no keyboard eating the screen and a mouse does not care how far
-   * it has to travel.
+   * THE SEARCH, run from the map's own control stack.
+   *
+   * Phones only — a desktop keeps its search box in the header, where there is
+   * no keyboard eating the screen and a mouse does not care how far it has to
+   * travel. The machinery is shared with that header box (see
+   * `useLocationSearch`); what the map owns is the panel it opens in.
    */
-  onOpenSearch?: () => void;
+  searchQuery?: string;
+  /** Records the place picked, so every search box in the app agrees on it. */
+  onSearchQueryChange?: (label: string) => void;
+  /** Moves the map to a geocoded place. */
+  onSelectLocation?: (loc: GeocodedLocation) => void;
   /** Opens the sign-in sheet, for the account button in the same stack. */
   onOpenAuth?: () => void;
+
+  /**
+   * Sends a Beacon from an exact point — the button under a dropped pin.
+   *
+   * The pin has already answered "where should it look?", so this goes
+   * straight to the beacon rather than back through the question.
+   */
+  onSendBeaconAt?: (lat: number, lon: number) => void;
+  /**
+   * Whether a beacon can be sent at all. A beacon is a live search of public
+   * map data, so with no connection there is nothing to search and the button
+   * is not offered — an offer that fails is worse than no offer.
+   */
+  canBeacon?: boolean;
 
   /**
    * The facility layers switched on from the chips under the search.
@@ -1497,6 +1611,10 @@ interface MapComponentProps {
   facilityKinds?: FacilityKind[];
   /** How the current lookup is going, so the chip row can say so in words. */
   onFacilityStateChange?: (state: FacilityLookupState) => void;
+  /** The same state, handed back down for the chip row inside the search panel. */
+  facilityState?: FacilityLookupState;
+  onToggleFacilityKind?: (kind: FacilityKind) => void;
+  onClearFacilityKinds?: () => void;
   /** Fired when a facility pin is tapped. */
   onSelectFacility?: (facility: MapFacility) => void;
   /**
@@ -1560,8 +1678,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport,
   onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0, topInsetPx = 0,
-  onOpenSearch, onOpenAuth,
+  searchQuery = '', onSearchQueryChange, onSelectLocation, onOpenAuth,
+  onSendBeaconAt, canBeacon = false,
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
+  facilityState = FACILITY_IDLE, onToggleFacilityKind, onClearFacilityKinds,
   facilityRefreshKey = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1716,6 +1836,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   addSpotRef.current = onAddSpotHere;
   const addFacilityRef = useRef(onAddFacilityHere);
   addFacilityRef.current = onAddFacilityHere;
+  const sendBeaconRef = useRef(onSendBeaconAt);
+  sendBeaconRef.current = onSendBeaconAt;
+  /* Read by the effect that grows the pin's row after it has been dropped,
+     which must not be re-run just because connectivity flickered. */
+  const canBeaconRef = useRef(canBeacon);
+  canBeaconRef.current = canBeacon;
   const detailRef = useRef(onOpenDetailModal);
   detailRef.current = onOpenDetailModal;
   const destinationRef = useRef(destination);
@@ -1738,17 +1864,59 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [isMapReady, setIsMapReady] = useState(false);
   const [showCrownLand, setShowCrownLand] = useState(true);
   const [crownLandAvailable, setCrownLandAvailable] = useState(false);
-  const [showLayerMenu, setShowLayerMenu] = useState(false);
+  /**
+   * WHICH OF THE STACK'S PANELS IS OPEN — one variable, so only one can be.
+   *
+   * Layers, search and the account used to be three separate pieces of state
+   * opening three different shapes: a card docked at the bottom, a drawer
+   * welded to the bottom edge, and a dropdown hanging off the button's own
+   * corner. Two of them could be up at once, over each other, and none of
+   * them looked like the others.
+   *
+   * They are one card in one place now (`ui/MapPanel`), and one variable
+   * decides which. Opening any of them closes whatever was open, so there is
+   * nothing left to overlap.
+   */
+  const [mapPanel, setMapPanel] = useState<'layers' | 'search' | 'account' | null>(null);
+  const closePanel = useCallback(() => setMapPanel(null), []);
+  const togglePanel = useCallback(
+    (panel: 'layers' | 'search' | 'account') =>
+      setMapPanel((open) => (open === panel ? null : panel)),
+    []
+  );
 
-  /* Escape closes the layer card. It has an X and a tap-anywhere-else, but a
-     panel that ignores the key every other panel in the app answers to is a
-     small trap on a desktop. */
-  useEffect(() => {
-    if (!showLayerMenu) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowLayerMenu(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [showLayerMenu]);
+  /**
+   * The search box inside the panel.
+   *
+   * `flushSync` on open is the load-bearing part of raising the keyboard: iOS
+   * only does it for a `focus()` that happens inside the tap that asked for
+   * it, and React would otherwise mount the panel after the handler has
+   * finished — leaving the field on screen, ready, and needing a second tap
+   * to type into.
+   */
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const search = useLocationSearch({
+    searchQuery,
+    onQueryCommitted: useCallback(
+      (label: string) => onSearchQueryChange?.(label),
+      [onSearchQueryChange]
+    ),
+    onSelectLocation: useCallback(
+      (loc: GeocodedLocation) => onSelectLocation?.(loc),
+      [onSelectLocation]
+    ),
+    onPicked: closePanel
+  });
+
+  const openSearchPanel = useCallback(() => {
+    haptic('tap');
+    if (mapPanel === 'search') { closePanel(); return; }
+    flushSync(() => setMapPanel('search'));
+    // `select` rather than `focus`: the box opens holding the last place
+    // searched, and somebody opening it again is almost always going
+    // somewhere else. Typing replaces it instead of appending to it.
+    searchInputRef.current?.select();
+  }, [mapPanel, closePanel]);
 
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
@@ -1938,6 +2106,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const overlayPx = Math.max(bottomSheetPx, pointCardPx);
   /** The same number, for the camera effects that read it outside a render. */
+  /*
+   * The account panel goes when its button does.
+   *
+   * The button steps out of the stack while a card is open over the map (see
+   * the note on it below), and a panel still sitting there with no control to
+   * match is the app half-forgetting what it was doing.
+   */
+  useEffect(() => {
+    if (overlayPx > 0) setMapPanel((open) => (open === 'account' ? null : open));
+  }, [overlayPx]);
+
   const overlayPxRef = useRef(0);
   overlayPxRef.current = overlayPx;
 
@@ -4034,8 +4213,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       {
         icon: buildDestinationIcon(
           destinationDotsRef.current,
-          'Add spot here',
-          freshChipKeys(destinationChipKeysRef.current, destinationDotsRef.current)
+          'Submit this spot as a place to camp',
+          freshChipKeys(destinationChipKeysRef.current, destinationDotsRef.current),
+          canBeacon
         ),
         title: 'Your chosen spot',
         zIndexOffset: 900
@@ -4046,9 +4226,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // Deliberately NOT keyed on the dots: the marker is created once per
     // dropped pin, and the row it carries is grown by the effect below as
     // each lookup lands. Rebuilding the marker instead would drop the pin
-    // again, from the top, three times over.
+    // again, from the top, three times over. `canBeacon` IS in here — losing
+    // the connection while a pin is open has to take the beacon button with
+    // it, and that changes about as often as the pin does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destination, isMapReady]);
+  }, [destination, isMapReady, canBeacon]);
 
   /**
    * Grow the dropped pin's row as the lookups land, without redrawing it.
@@ -4078,7 +4260,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // Patched in place for the same reason a submitted pin is: rebuilding
       // the icon would drop the teardrop again and cut the chips off mid-pop.
       if (patchChipRow(marker.getElement(), dots, fresh)) return;
-      const icon = buildDestinationIcon(dots, 'Add spot here', fresh);
+      const icon = buildDestinationIcon(
+        dots, 'Submit this spot as a place to camp', fresh, canBeaconRef.current
+      );
       const html = (icon.options.html as string) ?? '';
       if (html === destinationHtmlRef.current) return;
       destinationHtmlRef.current = html;
@@ -6371,6 +6555,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           if (at) addFacilityRef.current?.(at.lat, at.lon);
           return;
         }
+        /*
+         * The beacon, from the pin it is about.
+         *
+         * Straight to the search, not to the "from where?" question — the pin
+         * IS the answer to that question, and asking it again about a place
+         * somebody has just pointed at is the app not listening.
+         */
+        case 'beacon': {
+          const at = readPointRef.current;
+          if (at) sendBeaconRef.current?.(at.lat, at.lon);
+          return;
+        }
         default: break;
       }
 
@@ -6844,9 +7040,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         SEARCH AND THE ACCOUNT BUTTON JOINED THEM, on phones only. Both were
         in the header, which is the same unreachable strip for the same
         reason, and search is the control used at every single stop. The
-        magnifier opens the same sheet the header chip used to — field,
-        suggestions, "use my location" and the facility layers, all sitting
-        on top of the keyboard.
+        magnifier opens the field, the suggestions, "use my location" and the
+        facility layers, all sitting on top of the keyboard — and it opens
+        them in the SAME card layers and the account open, so the three
+        buttons in this stack behave like one set of controls instead of
+        three habits. Only one card at a time; see `mapPanel`.
 
         Ordered by how often a hand goes to them, most-used lowest: zoom,
         locate, search, layers, account. The shapes carry the grouping:
@@ -6859,217 +7057,225 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         press is worse than one that moved out of the way.
       */}
       {/*
-        THE LAYER MENU IS A CARD AT THE BOTTOM OF THE MAP, NOT A DROPDOWN
-        HANGING OFF ITS BUTTON.
+        EVERY CONTROL IN THE STACK OPENS THE SAME CARD, IN THE SAME PLACE.
 
-        Anchored to the layers button it was pinned to the right-hand edge,
-        so it grew leftwards across the map from the corner and still had the
-        button's own column deciding how wide it could be. Centred and docked
-        low it reads as what it is — a panel about the map, sitting on the
-        map — and it is the same shape and the same place as every other
-        panel a thumb opens down here.
+        The layer menu was the first thing to be a card docked at the bottom
+        of the map rather than a dropdown hanging off its own button, and for
+        a while it was the only one: search opened a full-width drawer welded
+        to the bottom edge, and the account opened a narrow dropdown up in the
+        corner. Three buttons in one row of chrome, opening three different
+        shapes in three different places, two of which could be up at once and
+        overlapping.
 
-        It is HELD CLEAR OF THE CONTROL STACK rather than drawn over it:
-        `100vw - 8rem` is the screen minus the buttons on the right and the
-        same margin again on the left, which is what keeps it centred AND
-        keeps every control visible while you use it. Nothing you might want
-        to press next disappears behind the thing you are pressing now.
-
-        `maxHeight` stops it reaching the top of the map: the beacon pill and
-        any notice up there stay readable, and a list longer than the gap
-        scrolls inside the card instead of running off the screen.
+        Now they are one shape (`ui/MapPanel`) driven by one variable, so
+        opening any of them closes the last and there is nothing to overlap.
+        Each is centred and docked low, held clear of the control stack, and
+        rides above whatever card is already open over the map.
       */}
-      {showLayerMenu && (
-        <>
+      <MapPanel
+        isOpen={mapPanel === 'layers'}
+        onClose={closePanel}
+        title="Map layers"
+        icon={Layers}
+        overlayPx={overlayPx}
+      >
+        <div className="p-2.5">
           {/*
-            A tap anywhere else puts it away — and is SWALLOWED, not passed
-            through. Dismissing a panel and dropping a destination pin with
-            one tap is two things happening for one intention, and the pin
-            was never the one that was meant.
+            Base map as one segmented control rather than three stacked
+            rows. Three words fit across the menu, and the choice reads as
+            a choice instead of as a list you have to get to the bottom of.
           */}
-          <div
-            className="absolute inset-0 z-[999]"
-            onPointerDown={() => setShowLayerMenu(false)}
-            aria-hidden="true"
-          />
-          <div
-            role="dialog"
-            aria-label="Map layers"
-            className="absolute left-1/2 -translate-x-1/2 z-[1000] flex flex-col w-[min(21rem,calc(100vw-8rem))] bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden anim-in-up transition-[bottom] duration-200"
-            style={{
-              bottom: `calc(1.5rem + ${overlayPx}px)`,
-              maxHeight: `calc(100% - 5.5rem - ${overlayPx}px)`
-            }}
-          >
-            <header className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800 shrink-0">
-              <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
-                <Layers className="w-4 h-4 text-emerald-400" />
-                Map layers
-              </span>
+          <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold pb-1.5">Base map</p>
+          <div className="flex p-0.5 rounded-xl bg-slate-950/80 border border-slate-800">
+            {(Object.keys(TILE_URLS) as MapTileLayer[]).map((id) => (
               <button
+                key={id}
                 type="button"
-                onClick={() => setShowLayerMenu(false)}
-                className="tap-safe p-1.5 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800"
-                aria-label="Close map layers"
+                onClick={() => setActiveTileLayer(id)}
+                aria-pressed={activeTileLayer === id}
+                className={`flex-1 px-1 py-1.5 rounded-lg text-[11px] font-bold ${
+                  activeTileLayer === id ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                <X className="w-4 h-4" />
+                {TILE_URLS[id].label}
               </button>
-            </header>
-
-            {/* `min-h-0` is what lets this scroll instead of overflowing the
-                card — a flex child defaults to `min-height: auto`, which
-                refuses to shrink below its content. */}
-            <div className="min-h-0 overflow-y-auto overscroll-contain scroll-soft p-2.5">
-              {/*
-                Base map as one segmented control rather than three stacked
-                rows. Three words fit across the menu, and the choice reads as
-                a choice instead of as a list you have to get to the bottom of.
-              */}
-              <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold pb-1.5">Base map</p>
-              <div className="flex p-0.5 rounded-xl bg-slate-950/80 border border-slate-800">
-                {(Object.keys(TILE_URLS) as MapTileLayer[]).map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setActiveTileLayer(id)}
-                    aria-pressed={activeTileLayer === id}
-                    className={`flex-1 px-1 py-1.5 rounded-lg text-[11px] font-bold ${
-                      activeTileLayer === id ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {TILE_URLS[id].label}
-                  </button>
-                ))}
-              </div>
-
-              <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold pt-2.5 pb-0.5">Overlays</p>
-              <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
-                <span>Public land</span>
-                <input
-                  type="checkbox"
-                  checked={showBoundaries}
-                  onChange={(e) => setShowBoundaries(e.target.checked)}
-                  className="accent-emerald-500 w-4 h-4 shrink-0"
-                />
-              </label>
-              {/*
-                THE CAVEAT, CUT TO THE BONE BUT NOT CUT.
-
-                This used to be four lines of prose, and the menu it sat in ran
-                off the screen — so the thing that must always be said was, in
-                practice, scrolled past. Every claim it made is still here: the
-                edges are a guess, with a range; drawing one is not permission;
-                and an empty map is missing DATA, never missing public land. It
-                just stopped taking a paragraph to say so.
-              */}
-              {showBoundaries ? (
-                <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
-                  Fuzzy edges, {UNCERTAINTY_LABEL.cadastral_derived}–{UNCERTAINTY_LABEL.generalised}.
-                  Not permission to camp. Blank means no data, not private land.
-                </p>
-              ) : (
-                /* Said when the layer is OFF, because "off" reads as "the app
-                   has stopped knowing". It hasn't — only the paint is gone. */
-                <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
-                  Off — a tap still names the land, its limits and its fire ban.
-                </p>
-              )}
-
-              <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
-                <span>Backroads &amp; tracks</span>
-                <input
-                  type="checkbox"
-                  checked={showBackroads}
-                  onChange={(e) => setShowBackroads(e.target.checked)}
-                  className="accent-emerald-500 w-4 h-4 shrink-0"
-                />
-              </label>
-              {showBackroads && (
-                <div className="px-1 pb-1">
-                  {/*
-                    ONE COLUMN, AND THE LABELS NEVER TRUNCATE.
-
-                    Two columns fitted, and turned "Two-track / forest road"
-                    into "Two-track / fores…" and "Surface not recorded" into
-                    "Surface not reco…". The legend is the one part of this
-                    menu that cannot be compressed: each line style is making a
-                    DIFFERENT claim, and the dotted one — nobody wrote the
-                    surface down — is the claim most easily misread as one of
-                    the others. Prose gave way instead.
-                  */}
-                  <ul className="space-y-1 pt-1">
-                    {BACKROAD_CLASS_ORDER.map((id) => {
-                      const style = BACKROAD_STYLES[id];
-                      return (
-                        <li key={id} className="flex items-center gap-2 min-w-0">
-                          <svg
-                            width="18" height="6" viewBox="0 0 18 6"
-                            aria-hidden="true" className="shrink-0 overflow-visible"
-                          >
-                            <line
-                              x1="0" y1="3" x2="18" y2="3"
-                              stroke={style.color}
-                              strokeWidth={Math.max(2, style.weight)}
-                              strokeDasharray={style.dash}
-                              strokeLinecap="round"
-                              opacity={style.opacity}
-                            />
-                          </svg>
-                          <span className="text-[11px] text-slate-400 leading-tight">
-                            {style.label}
-                          </span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  <p className="text-[11px] text-slate-500 leading-snug pt-1.5">
-                    Volunteer-mapped, drawn zoomed in. A recorded road — not a
-                    maintained, ungated, passable or legal one.
-                  </p>
-                </div>
-              )}
-
-              {/* Only listed when the optional vector tileset is actually
-                  configured. A toggle that explains why it can't work is a
-                  developer's note sitting in a camper's map menu. */}
-              {crownLandAvailable && (
-                <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
-                  <span>Crown land tiles</span>
-                  <input
-                    type="checkbox"
-                    checked={showCrownLand}
-                    onChange={(e) => setShowCrownLand(e.target.checked)}
-                    className="accent-emerald-500 w-4 h-4 shrink-0"
-                  />
-                </label>
-              )}
-              <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
-                <span>Weather warnings</span>
-                <input
-                  type="checkbox"
-                  checked={showWarnings}
-                  onChange={(e) => setShowWarnings(e.target.checked)}
-                  className="accent-emerald-500 w-4 h-4 shrink-0"
-                />
-              </label>
-              {/*
-                No "Active fires" toggle here any more: there is no fire layer
-                to switch off. Fires are reported on the pin you tap, which is
-                a safety answer and not a layer.
-              */}
-              <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
-                <span>State / province lines</span>
-                <input
-                  type="checkbox"
-                  checked={showAdmin1}
-                  onChange={(e) => setShowAdmin1(e.target.checked)}
-                  className="accent-emerald-500 w-4 h-4 shrink-0"
-                />
-              </label>
-            </div>
+            ))}
           </div>
-        </>
-      )}
+
+          <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold pt-2.5 pb-0.5">Overlays</p>
+          <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
+            <span>Public land</span>
+            <input
+              type="checkbox"
+              checked={showBoundaries}
+              onChange={(e) => setShowBoundaries(e.target.checked)}
+              className="accent-emerald-500 w-4 h-4 shrink-0"
+            />
+          </label>
+          {/*
+            THE CAVEAT, CUT TO THE BONE BUT NOT CUT.
+
+            This used to be four lines of prose, and the menu it sat in ran
+            off the screen — so the thing that must always be said was, in
+            practice, scrolled past. Every claim it made is still here: the
+            edges are a guess, with a range; drawing one is not permission;
+            and an empty map is missing DATA, never missing public land. It
+            just stopped taking a paragraph to say so.
+          */}
+          {showBoundaries ? (
+            <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
+              Fuzzy edges, {UNCERTAINTY_LABEL.cadastral_derived}–{UNCERTAINTY_LABEL.generalised}.
+              Not permission to camp. Blank means no data, not private land.
+            </p>
+          ) : (
+            /* Said when the layer is OFF, because "off" reads as "the app
+               has stopped knowing". It hasn't — only the paint is gone. */
+            <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
+              Off — a tap still names the land, its limits and its fire ban.
+            </p>
+          )}
+
+          <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
+            <span>Backroads &amp; tracks</span>
+            <input
+              type="checkbox"
+              checked={showBackroads}
+              onChange={(e) => setShowBackroads(e.target.checked)}
+              className="accent-emerald-500 w-4 h-4 shrink-0"
+            />
+          </label>
+          {showBackroads && (
+            <div className="px-1 pb-1">
+              {/*
+                ONE COLUMN, AND THE LABELS NEVER TRUNCATE.
+
+                Two columns fitted, and turned "Two-track / forest road"
+                into "Two-track / fores…" and "Surface not recorded" into
+                "Surface not reco…". The legend is the one part of this
+                menu that cannot be compressed: each line style is making a
+                DIFFERENT claim, and the dotted one — nobody wrote the
+                surface down — is the claim most easily misread as one of
+                the others. Prose gave way instead.
+              */}
+              <ul className="space-y-1 pt-1">
+                {BACKROAD_CLASS_ORDER.map((id) => {
+                  const style = BACKROAD_STYLES[id];
+                  return (
+                    <li key={id} className="flex items-center gap-2 min-w-0">
+                      <svg
+                        width="18" height="6" viewBox="0 0 18 6"
+                        aria-hidden="true" className="shrink-0 overflow-visible"
+                      >
+                        <line
+                          x1="0" y1="3" x2="18" y2="3"
+                          stroke={style.color}
+                          strokeWidth={Math.max(2, style.weight)}
+                          strokeDasharray={style.dash}
+                          strokeLinecap="round"
+                          opacity={style.opacity}
+                        />
+                      </svg>
+                      <span className="text-[11px] text-slate-400 leading-tight">
+                        {style.label}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="text-[11px] text-slate-500 leading-snug pt-1.5">
+                Volunteer-mapped, drawn zoomed in. A recorded road — not a
+                maintained, ungated, passable or legal one.
+              </p>
+            </div>
+          )}
+
+          {/* Only listed when the optional vector tileset is actually
+              configured. A toggle that explains why it can't work is a
+              developer's note sitting in a camper's map menu. */}
+          {crownLandAvailable && (
+            <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
+              <span>Crown land tiles</span>
+              <input
+                type="checkbox"
+                checked={showCrownLand}
+                onChange={(e) => setShowCrownLand(e.target.checked)}
+                className="accent-emerald-500 w-4 h-4 shrink-0"
+              />
+            </label>
+          )}
+          <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
+            <span>Weather warnings</span>
+            <input
+              type="checkbox"
+              checked={showWarnings}
+              onChange={(e) => setShowWarnings(e.target.checked)}
+              className="accent-emerald-500 w-4 h-4 shrink-0"
+            />
+          </label>
+          {/*
+            No "Active fires" toggle here any more: there is no fire layer
+            to switch off. Fires are reported on the pin you tap, which is
+            a safety answer and not a layer.
+          */}
+          <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
+            <span>State / province lines</span>
+            <input
+              type="checkbox"
+              checked={showAdmin1}
+              onChange={(e) => setShowAdmin1(e.target.checked)}
+              className="accent-emerald-500 w-4 h-4 shrink-0"
+            />
+          </label>
+        </div>
+      </MapPanel>
+
+      {/*
+        SEARCH, in the card rather than in a drawer of its own.
+
+        `liftAboveKeyboard` holds the card's bottom edge at the top of the
+        keyboard, so the field and every suggestion stay visible while typing
+        instead of the results being buried under the keys. `autoFocus={false}`
+        is the other half of that: the card would otherwise grab focus for its
+        close button and shut the keyboard the opening tap just raised — the
+        field is focused by `openSearchPanel`, inside the gesture.
+      */}
+      <MapPanel
+        isOpen={mapPanel === 'search'}
+        onClose={closePanel}
+        title="Search"
+        icon={Search}
+        overlayPx={overlayPx}
+        liftAboveKeyboard
+        autoFocus={false}
+      >
+        <SearchPanelBody
+          search={search}
+          inputRef={searchInputRef}
+          onLocateUser={() => onLocateUser?.()}
+          isLocating={isLocating}
+          onClose={closePanel}
+          showFacilities
+          facilityKinds={facilityKinds}
+          onToggleFacilityKind={onToggleFacilityKind}
+          onClearFacilityKinds={onClearFacilityKinds}
+          facilityState={facilityState}
+        />
+      </MapPanel>
+
+      {/*
+        The account, as the same card — the trophy, the ladder and the way out
+        at a size you can read, instead of a 288px dropdown squeezed against
+        the right-hand edge of a phone.
+      */}
+      <MapPanel
+        isOpen={mapPanel === 'account'}
+        onClose={closePanel}
+        title="Your account"
+        icon={UserIcon}
+        overlayPx={overlayPx}
+      >
+        <AccountPanelBody onDone={closePanel} />
+      </MapPanel>
 
       {/*
         The column is full-height and bottom-aligned. The buttons sit at the
@@ -7094,36 +7300,51 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           rides up on top of that card, and five controls plus the zoom pill
           is taller than the strip of screen left above a tall sheet. The
           one that goes is the one that is not about the map.
+
+          Signed out it goes straight to the sign-in sheet — there is no
+          account to show a panel about. Signed in it opens the same docked
+          card layers and search open, which is `onOpenPanel`.
         */}
         {onOpenAuth && overlayPx === 0 && (
           <div className="pointer-events-auto shrink-0 md:hidden">
-            <UserMenu onOpenAuth={onOpenAuth} variant="fab" placement="up" />
+            <UserMenu
+              onOpenAuth={onOpenAuth}
+              variant="fab"
+              placement="up"
+              onOpenPanel={() => { haptic('tap'); togglePanel('account'); }}
+              panelOpen={mapPanel === 'account'}
+            />
           </div>
         )}
 
         <button
           type="button"
-          onClick={() => setShowLayerMenu((open) => !open)}
-          className={`pointer-events-auto shrink-0 tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center ${showLayerMenu ? 'text-white ring-1 ring-emerald-500/50' : ''}`}
+          onClick={() => { haptic('tap'); togglePanel('layers'); }}
+          className={`${STACK_BUTTON} ${
+            mapPanel === 'layers' ? 'text-white ring-2 ring-emerald-400/70' : ''
+          }`}
           aria-label="Map layers"
-          aria-expanded={showLayerMenu}
+          aria-expanded={mapPanel === 'layers'}
         >
           <Layers className="w-[18px] h-[18px]" />
         </button>
 
         {/*
           Search. Carries a count when facility layers are on, because those
-          are switched on in the sheet behind this button and are otherwise
+          are switched on in the card behind this button and are otherwise
           invisible as a SETTING — a camper seeing no toilet pins has to be
           able to tell "the layer is off" from "nobody has mapped one", and
           the row of chips that used to say so is no longer on screen.
         */}
-        {onOpenSearch && (
+        {onSelectLocation && (
           <button
             type="button"
-            onClick={() => { haptic('tap'); onOpenSearch(); }}
-            className="pointer-events-auto shrink-0 md:hidden relative tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center"
+            onClick={openSearchPanel}
+            className={`${STACK_BUTTON} md:hidden relative ${
+              mapPanel === 'search' ? 'text-white ring-2 ring-emerald-400/70' : ''
+            }`}
             aria-label="Search, and show facilities on the map"
+            aria-expanded={mapPanel === 'search'}
           >
             <Search className="w-[18px] h-[18px]" />
             {facilityKinds.length > 0 && (
@@ -7134,17 +7355,37 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </button>
         )}
 
+        {/*
+          LOCATE — THE RING PULSES, THE BUTTON DOES NOT FADE.
+
+          It used to go half-transparent while the GPS was thinking, which is
+          the same thing every disabled control in the app does: it read as
+          "this button is unavailable", at the exact moment it was busy doing
+          the thing you asked for. A fix that is working should not look like
+          a thing that is broken.
+
+          So it wears the SAME green ring the layers button wears while its
+          panel is open — the stack's one signal for "this control is the
+          live one" — and the ring pulses while the fix is being taken. It
+          still cannot be pressed twice; it just no longer says so by fading
+          out. `anim-pulse-ring` collapses to a steady ring under
+          `prefers-reduced-motion`, so the state is still legible without the
+          motion.
+        */}
         {onLocateUser && (
           <button
             type="button"
             onClick={onLocateUser}
             disabled={isLocating}
-            className="pointer-events-auto shrink-0 tap-safe w-11 h-11 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white hover:bg-slate-800 shadow-xl flex items-center justify-center disabled:opacity-50"
+            className={`${STACK_BUTTON} ${
+              isLocating ? 'text-white anim-pulse-ring' : ''
+            }`}
             aria-label="Centre on my location"
+            aria-busy={isLocating}
           >
-            {isLocating
-              ? <Loader2 className="w-[18px] h-[18px] animate-spin text-emerald-400" />
-              : <Crosshair className="w-[18px] h-[18px]" />}
+            <Crosshair
+              className={`w-[18px] h-[18px] ${isLocating ? 'text-emerald-300' : ''}`}
+            />
           </button>
         )}
 
