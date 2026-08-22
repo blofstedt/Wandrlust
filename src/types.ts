@@ -174,7 +174,21 @@ export interface OfflineRegion {
 
 export type MapTileLayer = 'topo' | 'satellite' | 'street';
 
-export type AppView = 'map' | 'list' | 'saved';
+export type AppView = 'map' | 'list' | 'saved' | 'tools';
+
+/**
+ * How the facility lookup for the switched-on layers is going.
+ *
+ * Five states and not one boolean, because four of them look identical on a
+ * map — an empty screen — and mean completely different things. See the
+ * sentence each one gets in `facilityNotice`.
+ */
+export type FacilityLookupState =
+  | { status: 'idle' }
+  | { status: 'zoomed-out' }
+  | { status: 'loading' }
+  | { status: 'failed' }
+  | { status: 'done'; count: number; truncated: boolean };
 
 /* ------------------------------------------------------------------ *
  * Cell coverage

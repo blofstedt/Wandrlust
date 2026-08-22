@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { flushSync } from 'react-dom';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
@@ -12,11 +11,10 @@ import {
 } from 'lucide-react';
 import { UserMenu, AccountPanelBody } from './UserMenu';
 import { MapPanel } from './ui/MapPanel';
-import { SearchPanelBody } from './SearchPanelBody';
-import { useLocationSearch } from '../utils/useLocationSearch';
+import { FacilityArc } from './FacilityArc';
 
 import type {
-  Campsite, CellCoverage, DestinationLand, FacilityKind, GeocodedLocation,
+  Campsite, CellCoverage, DestinationLand, FacilityKind, FacilityLookupState,
   MapDestination, MapFacility, MapTileLayer, NearbyFacility, BeaconSpot, BackroadScan
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
@@ -26,7 +24,7 @@ import { beaconTierStyle } from '../config/beacon';
 import {
   BACKROAD_STYLES, BACKROAD_CLASS_ORDER, BACKROAD_CASING, backroadClassOf
 } from '../config/backroads';
-import { facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
+import { FACILITY, facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
 import { landRules } from '../config/landRules';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
 import {
@@ -66,7 +64,6 @@ import {
   fetchFacilitiesInView, ROAD_RADIUS_KM,
   FACILITY_GLYPH, FACILITY_LABEL, FACILITY_RADIUS_KM, FACILITY_MIN_ZOOM
 } from '../services/nearbyAmenityService';
-import type { FacilityLookupState } from './FacilityChips';
 import { calculateRoute, RouteResult } from '../services/routingService';
 import { directionsAppName, openDirections } from '../utils/handoff';
 import {
@@ -1576,19 +1573,6 @@ interface MapComponentProps {
    */
   beaconRefreshKey?: number;
 
-  /**
-   * THE SEARCH, run from the map's own control stack.
-   *
-   * Phones only — a desktop keeps its search box in the header, where there is
-   * no keyboard eating the screen and a mouse does not care how far it has to
-   * travel. The machinery is shared with that header box (see
-   * `useLocationSearch`); what the map owns is the panel it opens in.
-   */
-  searchQuery?: string;
-  /** Records the place picked, so every search box in the app agrees on it. */
-  onSearchQueryChange?: (label: string) => void;
-  /** Moves the map to a geocoded place. */
-  onSelectLocation?: (loc: GeocodedLocation) => void;
   /** Opens the sign-in sheet, for the account button in the same stack. */
   onOpenAuth?: () => void;
 
@@ -1607,15 +1591,15 @@ interface MapComponentProps {
   canBeacon?: boolean;
 
   /**
-   * The facility layers switched on from the chips under the search.
+   * The facility layers switched on from the arc in the control stack.
    *
    * Empty means the layer is off entirely and nothing is fetched — this is
    * the common case, and Overpass is not asked a question nobody posed.
    */
   facilityKinds?: FacilityKind[];
-  /** How the current lookup is going, so the chip row can say so in words. */
+  /** How the lookup is going. The app keeps it; the notice column says it. */
   onFacilityStateChange?: (state: FacilityLookupState) => void;
-  /** The same state, handed back down for the chip row inside the search panel. */
+  /** The same state, handed back down so the map can say it in words. */
   facilityState?: FacilityLookupState;
   onToggleFacilityKind?: (kind: FacilityKind) => void;
   onClearFacilityKinds?: () => void;
@@ -1682,7 +1666,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport,
   onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0, topNotice = null,
-  searchQuery = '', onSearchQueryChange, onSelectLocation, onOpenAuth,
+  onOpenAuth,
   onSendBeaconAt, canBeacon = false,
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
   facilityState = FACILITY_IDLE, onToggleFacilityKind, onClearFacilityKinds,
@@ -1880,46 +1864,31 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * decides which. Opening any of them closes whatever was open, so there is
    * nothing left to overlap.
    */
-  const [mapPanel, setMapPanel] = useState<'layers' | 'search' | 'account' | null>(null);
+  const [mapPanel, setMapPanel] = useState<'layers' | 'account' | null>(null);
   const closePanel = useCallback(() => setMapPanel(null), []);
   const togglePanel = useCallback(
-    (panel: 'layers' | 'search' | 'account') =>
+    (panel: 'layers' | 'account') =>
       setMapPanel((open) => (open === panel ? null : panel)),
     []
   );
 
   /**
-   * The search box inside the panel.
+   * THE MAP NO LONGER HAS A SEARCH BOX, AND THAT IS THE POINT.
    *
-   * `flushSync` on open is the load-bearing part of raising the keyboard: iOS
-   * only does it for a `focus()` that happens inside the tap that asked for
-   * it, and React would otherwise mount the panel after the handler has
-   * finished — leaving the field on screen, ready, and needing a second tap
-   * to type into.
+   * There were two, and they were doing two different jobs under one symbol.
+   * Typing a place name is a question about WHERE THE MAP SHOULD GO, and it
+   * belongs in a field at the top of the app where a search field belongs —
+   * which is where it now is, for phones as well as desktops, and it answers
+   * for parts of the app as well as for towns. Pressing a symbol for showers
+   * is a question about THE GROUND ALREADY ON SCREEN, and it never wanted a
+   * keyboard at all.
+   *
+   * So the magnifier down here kept the second job: it fans the facility
+   * symbols out into the map on an arc, and folds them away again the moment
+   * one is pressed. See `FacilityArc`.
    */
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const search = useLocationSearch({
-    searchQuery,
-    onQueryCommitted: useCallback(
-      (label: string) => onSearchQueryChange?.(label),
-      [onSearchQueryChange]
-    ),
-    onSelectLocation: useCallback(
-      (loc: GeocodedLocation) => onSelectLocation?.(loc),
-      [onSelectLocation]
-    ),
-    onPicked: closePanel
-  });
-
-  const openSearchPanel = useCallback(() => {
-    haptic('tap');
-    if (mapPanel === 'search') { closePanel(); return; }
-    flushSync(() => setMapPanel('search'));
-    // `select` rather than `focus`: the box opens holding the last place
-    // searched, and somebody opening it again is almost always going
-    // somewhere else. Typing replaces it instead of appending to it.
-    searchInputRef.current?.select();
-  }, [mapPanel, closePanel]);
+  const [facilityArcOpen, setFacilityArcOpen] = useState(false);
+  const closeFacilityArc = useCallback(() => setFacilityArcOpen(false), []);
 
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
@@ -2008,6 +1977,62 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
     return null;
   }, [showBackroads, backroadState]);
+
+  /**
+   * THE FACILITY LAYER, SAYING WHICH OF ITS SILENCES THIS ONE IS.
+   *
+   * This sentence used to sit under the row of chips. The chips are gone —
+   * the symbols fan out of the magnifier now and fold away the moment one is
+   * pressed — so the sentence moved to where the rest of the map's statements
+   * live, and it stays on screen for as long as the layer is on.
+   *
+   * The load-bearing case is `count === 0`: NOBODY HAS MAPPED ONE HERE, never
+   * "there are none". OpenStreetMap is volunteer-surveyed and the emptiest
+   * country is the least surveyed, which is exactly where a camper is standing
+   * when they need a tap. Somebody who reads "no water" and drives on with
+   * empty tanks has been lied to by a phrasing choice.
+   */
+  const facilityNotice = useMemo((): {
+    tone: 'quiet' | 'amber' | 'violet'; text: string; spinner?: boolean;
+  } | null => {
+    if (facilityKinds.length === 0) return null;
+
+    // "Toilets", or "toilets and water", or "3 kinds" — named while it is
+    // short enough to read, counted once it is not.
+    const names = facilityKinds.map((kind) => FACILITY[kind].plural.toLowerCase());
+    const subject = names.length === 1
+      ? names[0]
+      : names.length === 2
+        ? `${names[0]} and ${names[1]}`
+        : `${names.length} kinds`;
+
+    switch (facilityState.status) {
+      case 'zoomed-out':
+        return { tone: 'quiet', text: `Zoom in to look for ${subject} around here.` };
+      case 'loading':
+        return { tone: 'quiet', text: `Looking for ${subject}…`, spinner: true };
+      case 'failed':
+        return { tone: 'amber', text: `Couldn't check for ${subject} just now.` };
+      case 'done':
+        if (facilityState.count === 0) {
+          return {
+            tone: 'amber',
+            text: `Nobody has mapped ${subject} in this view. That is not the same as there being none.`
+          };
+        }
+        return facilityState.truncated
+          ? {
+              tone: 'violet',
+              text: `${facilityState.count} on the map — there are more here than fit in one look.`
+            }
+          : {
+              tone: 'quiet',
+              text: `${facilityState.count} on the map. Tap one to see where it came from.`
+            };
+      default:
+        return null;
+    }
+  }, [facilityKinds, facilityState]);
   /**
    * Weather warning overlay (merged areas + event pins). ON by default because
    * warnings are the safety feature, and a camper who has the layer off
@@ -4036,7 +4061,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * reload happens without a second listener.
    *
    * Every outcome is reported upward — loading, failed, empty, capped — and
-   * the wording lives in `FacilityChips`. An empty result is an absence of
+   * the wording lives in `facilityNotice`. An empty result is an absence of
    * survey, never an absence of facilities.
    */
   useEffect(() => {
@@ -6762,7 +6787,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       className: 'user-location-marker',
       html: `
         <div class="relative flex items-center justify-center">
-          <div class="absolute w-12 h-12 bg-blue-500/20 rounded-full animate-ping"></div>
+          <div class="absolute w-12 h-12 bg-blue-500/25 rounded-full wl-me-ping"></div>
           <div class="w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-lg relative z-10"></div>
         </div>`,
       iconSize: [16, 16],
@@ -6980,6 +7005,36 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 />
               )}
             <span className="leading-snug">{backroadNotice.text}</span>
+          </div>
+        )}
+
+        {/* The facility layer's own sentence — see `facilityNotice`. Same
+            three tones as the backroads above, saying the same three kinds of
+            thing: working on it, a missing answer, a good answer with more
+            behind it. */}
+        {facilityNotice && (
+          <div
+            className={`backdrop-blur-md px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xl flex items-start gap-2 anim-in-down ${
+              facilityNotice.tone === 'amber'
+                ? 'bg-amber-950/90 border border-amber-700/70 text-amber-100'
+                : facilityNotice.tone === 'violet'
+                  ? 'bg-slate-900/90 border border-violet-800/70 text-violet-200'
+                  : 'bg-slate-800/95 border border-slate-600 text-slate-300'
+            }`}
+          >
+            {facilityNotice.spinner
+              ? <Loader2 className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5 animate-spin" />
+              : (
+                <span
+                  className={`w-1.5 h-1.5 mt-1.5 rounded-full shrink-0 ${
+                    facilityNotice.tone === 'amber'
+                      ? 'bg-amber-400'
+                      : facilityNotice.tone === 'violet' ? 'bg-violet-400' : 'bg-slate-400'
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
+            <span className="leading-snug">{facilityNotice.text}</span>
           </div>
         )}
 
@@ -7381,49 +7436,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       </MapPanel>
 
       {/*
-        SEARCH, in the card rather than in a drawer of its own — and pinned to
-        the TOP of the map, unlike every other card in this stack.
-
-        It is the only one with a keyboard in it. Docked at the bottom it had
-        to hold itself above the keys, so the whole card — field, results and
-        all — jumped up the screen and shrank the moment the keyboard opened,
-        then fell back when it closed, and it did the same little dance again
-        every time the suggestions list grew or emptied. Pinned to the top
-        nothing moves: the keyboard never reaches it, the field sits where a
-        search field sits in every browser on the phone, and the results grow
-        downwards into whatever room is left.
-
-        `liftAboveKeyboard` now only caps how tall the card may grow, so a long
-        list of results stops at the top of the keys rather than running under
-        them. `autoFocus={false}` stays: the card would otherwise grab focus
-        for its close button and shut the keyboard the opening tap just raised
-        — the field is focused by `openSearchPanel`, inside the gesture.
-      */}
-      <MapPanel
-        isOpen={mapPanel === 'search'}
-        onClose={closePanel}
-        title="Search"
-        icon={Search}
-        overlayPx={overlayPx}
-        anchor="top"
-        liftAboveKeyboard
-        autoFocus={false}
-      >
-        <SearchPanelBody
-          search={search}
-          inputRef={searchInputRef}
-          onLocateUser={() => onLocateUser?.()}
-          isLocating={isLocating}
-          onClose={closePanel}
-          showFacilities
-          facilityKinds={facilityKinds}
-          onToggleFacilityKind={onToggleFacilityKind}
-          onClearFacilityKinds={onClearFacilityKinds}
-          facilityState={facilityState}
-        />
-      </MapPanel>
-
-      {/*
         The account, as the same card — the trophy, the ladder and the way out
         at a size you can read, instead of a 288px dropdown squeezed against
         the right-hand edge of a phone.
@@ -7449,6 +7461,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         box down the right-hand side would otherwise swallow every tap meant
         for the map.
       */}
+      {/*
+        The fan's backstop. Rendered here rather than inside `FacilityArc`
+        because it has to cover the whole map, and the arc lives inside the
+        control stack — an `inset-0` in there would cover the stack and
+        nothing else. Earlier in the DOM than the stack, at the same z, so the
+        controls and the arc stay above it.
+      */}
+      {facilityArcOpen && (
+        <div
+          className="absolute inset-0 z-[1000]"
+          onPointerDown={(e) => { e.preventDefault(); closeFacilityArc(); }}
+          aria-hidden="true"
+        />
+      )}
+
       <div
         className="absolute right-3 top-3 z-[1000] flex flex-col items-end justify-end gap-2 pointer-events-none transition-[bottom] duration-200"
         style={{ bottom: `calc(1.5rem + ${overlayPx}px)` }}
@@ -7491,29 +7518,41 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         </button>
 
         {/*
-          Search. Carries a count when facility layers are on, because those
-          are switched on in the card behind this button and are otherwise
-          invisible as a SETTING — a camper seeing no toilet pins has to be
-          able to tell "the layer is off" from "nobody has mapped one", and
-          the row of chips that used to say so is no longer on screen.
+          THE FACILITY SYMBOLS LIVE IN THIS BUTTON.
+
+          It carries a count when layers are on, because a switched-on layer
+          is otherwise invisible as a SETTING: a camper looking at a map with
+          no toilet pins on it has to be able to tell "the layer is off" from
+          "nobody has mapped one round here", and those are the same empty
+          screen. The arc itself hangs off the middle of this button, which is
+          why the button is wrapped — see `FacilityArc`.
         */}
-        {onSelectLocation && (
-          <button
-            type="button"
-            onClick={openSearchPanel}
-            className={`${STACK_BUTTON} md:hidden relative ${
-              mapPanel === 'search' ? 'text-white ring-2 ring-emerald-400/70' : ''
-            }`}
-            aria-label="Search, and show facilities on the map"
-            aria-expanded={mapPanel === 'search'}
-          >
-            <Search className="w-[18px] h-[18px]" />
-            {facilityKinds.length > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center border border-slate-900">
-                {facilityKinds.length}
-              </span>
-            )}
-          </button>
+        {onToggleFacilityKind && (
+          <div className="pointer-events-auto relative shrink-0">
+            <FacilityArc
+              active={facilityKinds}
+              onToggle={onToggleFacilityKind}
+              onClearAll={() => onClearFacilityKinds?.()}
+              open={facilityArcOpen}
+              onClose={closeFacilityArc}
+            />
+            <button
+              type="button"
+              onClick={() => { haptic('tap'); setFacilityArcOpen((open) => !open); }}
+              className={`${STACK_BUTTON} relative ${
+                facilityArcOpen ? 'text-white ring-2 ring-emerald-400/70' : ''
+              }`}
+              aria-label="Show toilets, water and other facilities on this map"
+              aria-expanded={facilityArcOpen}
+            >
+              <Search className="w-[18px] h-[18px]" />
+              {facilityKinds.length > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center border border-slate-900">
+                  {facilityKinds.length}
+                </span>
+              )}
+            </button>
+          </div>
         )}
 
         {/*

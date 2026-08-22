@@ -3,89 +3,64 @@
  *
  * Two things draw this logo and they must not drift apart: the icon generator
  * (`scripts/generateIcons.mjs`, which bakes the home-screen and notification
- * PNGs) and the app's own header (`src/components/ui/BrandMark.tsx`). They used
- * to be unrelated — a lucide `compass` glyph in the generator and a lucide
- * `<Compass>` component in the navbar — which only looked like one logo by
- * coincidence. This file is the coincidence made deliberate.
+ * PNGs) and the app's own header (`src/components/ui/BrandMark.tsx`).
  *
  * Plain `.mjs` on purpose: node runs the generator directly, with no build
  * step, so this cannot be TypeScript. `allowJs` lets the client import it.
  *
  * ---------------------------------------------------------------------------
- * WHY IT IS DRAWN RATHER THAN BORROWED
+ * THE COMPASS, WHICH IS THE ONE PEOPLE LIKED
  * ---------------------------------------------------------------------------
  *
- * A stock icon set is built for 20px buttons: hairline strokes, generous
- * padding, everything legible only because it sits next to a word explaining
- * it. An app icon is the opposite job. It is seen at 48px on a cluttered home
- * screen with no caption, next to two hundred other rounded squares, and the
- * only thing that survives that is MASS — filled shapes with real weight.
+ * This was briefly a drawn compass ROSE — four solid two-tone points, the
+ * shape a paper map puts in its corner — on the argument that a hairline
+ * needle cannot survive a home screen at 48px. It was replaced, because the
+ * argument was about legibility and the answer was about the wrong thing:
+ * Wandrlust's mark is the lucide compass, a needle set in a ring, and that is
+ * what the app has always looked like to the person using it.
  *
- * So this is a compass ROSE — four solid two-tone points, the shape every
- * paper map in the world puts in its corner — rather than a needle floating
- * inside a hairline circle. The ring went for two reasons. It ate a third of
- * the icon's width to say nothing, and a white ring around a two-tone needle
- * is already the most famous icon on the iPhone; being mistaken for Safari at
- * a glance is not branding.
+ * What DID survive from that round is the sizing. The old compass asked for
+ * half the canvas and got 41% of it, because it was measured against a padded
+ * 24-unit design box rather than against the mark's own widest points; on
+ * Android, after the launcher crops the middle 72 of every 108 units, that
+ * left a small compass adrift in a green square. Everything here is reckoned
+ * against `MARK_EXTENT` — the real outer edge of the ring, stroke included —
+ * so "56% of the tile" means 56% of the tile. The mark is a little bigger
+ * than the original at every size, which is the whole of the brief.
  */
 
-/** Every path below is drawn inside a 24×24 box, centred on 12,12. */
+/** The mark is drawn inside a 24×24 box, centred on 12,12. */
 export const MARK_VIEWBOX = 24;
 
+/** The ring's radius, and the weight every line is drawn at. */
+const RING_RADIUS = 10;
+const STROKE = 2.1;
+
 /**
- * The rose.
+ * The mark's widest diameter as a fraction of the 24-unit design box.
  *
- * North and south reach slightly further than east and west, which is what
- * stops a four-point star reading as a sparkle: a compass rose has a long
- * axis, and the eye takes the long one for north. The waist is deliberately
- * fat — a slender rose is elegant at 512px and a smear of white at 48.
+ * The stroke is centred on the path, so half of it hangs outside the ring and
+ * counts towards the width. Forgetting that is how the old icon came out
+ * smaller than it asked to be.
  */
-const TIP_VERTICAL = 11.4;
-const TIP_HORIZONTAL = 10.4;
-const WAIST_RADIUS = 4.6;
+export const MARK_EXTENT = (RING_RADIUS * 2 + STROKE) / MARK_VIEWBOX;
 
-/** The mark's widest diameter as a fraction of the 24-unit design box. */
-export const MARK_EXTENT = (Math.max(TIP_VERTICAL, TIP_HORIZONTAL) * 2) / MARK_VIEWBOX;
+/**
+ * The needle and the ring, exactly as lucide draws its `compass` glyph.
+ *
+ * Copied rather than read out of the package at runtime: the browser bundle
+ * cannot reach into `node_modules/lucide-react/dist` the way the generator
+ * script can, and one of the two rendering the wrong shape is precisely the
+ * drift this file exists to stop.
+ */
+export const MARK_NEEDLE =
+  'm16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411' +
+  'a2 2 0 0 1 1.265-1.265z';
 
-const build = () => {
-  const c = MARK_VIEWBOX / 2;
-  const w = WAIST_RADIUS / Math.SQRT2;
-  const f = (n) => Number(n.toFixed(2));
+export const MARK_RING = { cx: 12, cy: 12, r: RING_RADIUS };
 
-  const centre = [c, c];
-  const north = [c, c - TIP_VERTICAL];
-  const south = [c, c + TIP_VERTICAL];
-  const east = [c + TIP_HORIZONTAL, c];
-  const west = [c - TIP_HORIZONTAL, c];
-  const ne = [c + w, c - w];
-  const se = [c + w, c + w];
-  const sw = [c - w, c + w];
-  const nw = [c - w, c - w];
-
-  const tri = (a, b, d) =>
-    `M${f(a[0])} ${f(a[1])} ${f(b[0])} ${f(b[1])} ${f(d[0])} ${f(d[1])}Z`;
-
-  return {
-    /* Each point is split down its own axis, one facet lit and one in shadow,
-       the way a rose is engraved on a chart. Clockwise from north on the lit
-       side; the same four points anticlockwise on the shadowed side. */
-    lit: [
-      tri(north, ne, centre), tri(east, se, centre),
-      tri(south, sw, centre), tri(west, nw, centre)
-    ].join(' '),
-    shadow: [
-      tri(north, nw, centre), tri(east, ne, centre),
-      tri(south, se, centre), tri(west, sw, centre)
-    ].join(' ')
-  };
-};
-
-const PATHS = build();
-
-/** The lit facets of all four points, as one path. */
-export const MARK_LIT = PATHS.lit;
-/** The shadowed facets of all four points, as one path. */
-export const MARK_SHADOW = PATHS.shadow;
+/** The line weight, exported so the header draws at the icon's weight. */
+export const MARK_STROKE = STROKE;
 
 /**
  * The wordmark's gradient, so the icon on the home screen and the badge in the
@@ -97,28 +72,23 @@ export const BRAND_GRADIENT_STOPS = [
   { offset: '100%', color: '#D97706' }
 ];
 
-/** Lit is white; shadow is the app's own near-black, not a grey. */
-export const MARK_INK = { lit: '#FFFFFF', shadow: '#0B1220' };
+/** White on the gradient. There is no second tone — it is one line. */
+export const MARK_INK = { lit: '#FFFFFF' };
 
 /**
- * The mark itself, as an SVG fragment to drop inside a 24-unit group.
+ * The mark as an SVG fragment, to drop inside a 24-unit group.
  *
- * `stroke-linejoin: round` with a hairline stroke in each facet's own colour
- * is not decoration — a rose point is a very acute angle, and left sharp it
- * renders as a single jagged pixel at icon sizes. Rounding it by a fraction of
- * a unit keeps the point crisp instead.
- *
- * @param {{ lit?: string; shadow?: string; shadowOpacity?: number }} [ink]
+ * @param {{ lit?: string; strokeWidth?: number }} [ink]
  */
 export const markElements = (ink = {}) => {
   const lit = ink.lit ?? MARK_INK.lit;
-  const shadow = ink.shadow ?? MARK_INK.shadow;
-  const shadowOpacity = ink.shadowOpacity ?? 1;
+  const width = ink.strokeWidth ?? STROKE;
 
   return (
-    `<path d="${MARK_LIT}" fill="${lit}" stroke="${lit}"` +
-    ` stroke-width="0.45" stroke-linejoin="round"/>` +
-    `<path d="${MARK_SHADOW}" fill="${shadow}" stroke="${shadow}"` +
-    ` stroke-width="0.45" stroke-linejoin="round" opacity="${shadowOpacity}"/>`
+    `<g fill="none" stroke="${lit}" stroke-width="${width}"` +
+    ` stroke-linecap="round" stroke-linejoin="round">` +
+    `<path d="${MARK_NEEDLE}"/>` +
+    `<circle cx="${MARK_RING.cx}" cy="${MARK_RING.cy}" r="${MARK_RING.r}"/>` +
+    `</g>`
   );
 };

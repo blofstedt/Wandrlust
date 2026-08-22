@@ -51,7 +51,9 @@ question shouldn't rewrite components.
 | The backroads overlay (gravel, dirt, two-track) | `server/backroadRoutes.ts`, `src/services/backroadService.ts`, `src/config/backroads.ts`, the backroads effect in `src/components/MapComponent.tsx` | boundaries, weather |
 | Cell signal by carrier | `src/services/cellCoverageService.ts`, `server/cellRoutes.ts` | everything else |
 | Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
-| Search, filters, view switching | `src/App.tsx`, `src/components/Navbar.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
+| Search (it answers for the app too), filters, view switching | `src/components/Navbar.tsx`, `src/config/appSearch.ts`, `src/App.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
+| Facility layers — toilets, water, propane… | `src/config/facilities.ts`, `src/components/FacilityArc.tsx`, `src/components/ui/FacilityIcons.tsx` | boundaries |
+| The Tools page | `src/components/ToolsView.tsx`, `src/components/MobileTabBar.tsx` | map internals |
 | A campsite's detail view | `src/components/CampsiteBottomSheet.tsx` (map pin), `src/components/CampsiteDetailModal.tsx` (list card), `src/components/CampsiteCard.tsx` | map internals |
 | Submitting a spot, reporting on one | `src/components/SpotReportSheet.tsx`, `src/config/spotReport.ts`, `src/components/ui/ScalePicker.tsx` | boundaries, weather |
 | Beacon spots, the evidence ladder, the knock | `src/config/beacon.ts` (tiers + thresholds), `src/components/BeaconPanel.tsx`, `BeaconVerifyPanel.tsx`, `supabase_migration_14_spot_reports.sql` | campsites |

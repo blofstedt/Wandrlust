@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type {
   Campsite, FilterState, GeocodedLocation, AppView, LegalDocKind,
-  DestinationLand, MapDestination, CellCoverage, BeaconSpot, FacilityKind, MapFacility
+  DestinationLand, MapDestination, CellCoverage, BeaconSpot, FacilityKind,
+  FacilityLookupState, MapFacility
 } from './types';
 import { CURATED_CAMPSITES } from './data/curatedCampsites';
 import { fetchOverpassCampsites } from './services/overpass';
@@ -24,7 +25,6 @@ import { shouldAskMapDataChoice } from './services/landOverlayService';
 import { AddHereConfirm } from './components/AddHereConfirm';
 import { AddFacilitySheet } from './components/AddFacilitySheet';
 import { FacilityCard } from './components/FacilityCard';
-import type { FacilityLookupState } from './components/FacilityChips';
 import { CampingGuideModal } from './components/CampingGuideModal';
 import { FilterDrawer } from './components/FilterDrawer';
 import { AuthModal } from './components/AuthModal';
@@ -42,6 +42,7 @@ import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
 import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
 import { MobileTabBar } from './components/MobileTabBar';
+import { ToolsView } from './components/ToolsView';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
 import {
@@ -238,16 +239,6 @@ export default function App() {
    */
   const [facilityKinds, setFacilityKinds] = useState<FacilityKind[]>([]);
 
-  /**
-   * The search sheet, hoisted out of the Navbar.
-   *
-   * It is opened from two places now — the header chip on the list and saved
-   * views, and the magnifier in the map's own bottom-right control stack on
-   * a phone — and the sheet itself has to stay in the Navbar, which owns the
-   * geocoder and its request-ticket logic. So the flag lives up here where
-   * both triggers can reach it.
-   */
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [facilityState, setFacilityState] = useState<FacilityLookupState>({ status: 'idle' });
   const [facilityRefreshKey, setFacilityRefreshKey] = useState(0);
   const [isAddFacilityOpen, setIsAddFacilityOpen] = useState(false);
@@ -619,12 +610,6 @@ export default function App() {
   }, []);
 
   const handleClearFacilityKinds = useCallback(() => setFacilityKinds([]), []);
-
-  /** The place a search settled on, recorded so every search box agrees. */
-  const handleSearchQueryChange = useCallback(
-    (label: string) => setFilterState((prev) => ({ ...prev, searchQuery: label })),
-    []
-  );
 
   /** Open the facility form on a specific coordinate. */
   const handleAddFacilityAt = useCallback((latitude: number, longitude: number) => {
@@ -1368,8 +1353,6 @@ export default function App() {
           filterState={filterState}
           setFilterState={setFilterState}
           onSelectLocation={handleSelectLocation}
-          onLocateUser={handleLocateUser}
-          isLocating={isLocating}
           isOnline={isOnline}
           onOpenOfflineManager={() => setIsOfflineManagerOpen(true)}
           onOpenAddModal={() => setIsAddHereOpen(true)}
@@ -1385,10 +1368,6 @@ export default function App() {
           savedCount={savedSites.length}
           facilityKinds={facilityKinds}
           onToggleFacilityKind={handleToggleFacilityKind}
-          onClearFacilityKinds={handleClearFacilityKinds}
-          facilityState={facilityState}
-          searchOpen={isSearchOpen}
-          setSearchOpen={setIsSearchOpen}
         />
 
         <main id="main" className="flex-1 relative flex flex-col overflow-hidden min-h-0">
@@ -1439,9 +1418,6 @@ export default function App() {
                     facilityRefreshKey={facilityRefreshKey}
                     bottomSheetPx={sheetSite ? sheetPx : 0}
                     topNotice={mapTopNotice}
-                    searchQuery={filterState.searchQuery}
-                    onSearchQueryChange={handleSearchQueryChange}
-                    onSelectLocation={handleSelectLocation}
                     onToggleFacilityKind={handleToggleFacilityKind}
                     onClearFacilityKinds={handleClearFacilityKinds}
                     facilityState={facilityState}
@@ -1491,6 +1467,26 @@ export default function App() {
                 </div>
               )}
             </div>
+          )}
+
+          {/* -------------------------------------------------------- TOOLS */}
+          {/*
+            A page, not a panel over the map. Same frame as the list and the
+            saved views, reached by the same row of tabs — see `ToolsView`.
+          */}
+          {activeView === 'tools' && (
+            <ToolsView
+              activeFilterCount={activeFilterCount}
+              nearbyCount={nearbyCampers.length}
+              onOpenFilterDrawer={() => setIsFilterOpen(true)}
+              onOpenPresence={() => setIsPresenceOpen(true)}
+              onOpenScout={() => setIsScoutOpen(true)}
+              onOpenReport={() => setIsReportOpen(true)}
+              onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenOfflineManager={() => setIsOfflineManagerOpen(true)}
+              onOpenGuideModal={() => setIsGuideModalOpen(true)}
+              onOpenAddModal={() => setIsAddHereOpen(true)}
+            />
           )}
 
           {/* -------------------------------------------------------- SAVED */}
@@ -1552,13 +1548,6 @@ export default function App() {
           savedCount={savedSites.length}
           activeFilterCount={activeFilterCount}
           nearbyCount={nearbyCampers.length}
-          onOpenFilterDrawer={() => setIsFilterOpen(true)}
-          onOpenPresence={() => setIsPresenceOpen(true)}
-          onOpenScout={() => setIsScoutOpen(true)}
-          onOpenReport={() => setIsReportOpen(true)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenOfflineManager={() => setIsOfflineManagerOpen(true)}
-          onOpenGuideModal={() => setIsGuideModalOpen(true)}
           onOpenAddModal={() => setIsAddHereOpen(true)}
         />
       </div>

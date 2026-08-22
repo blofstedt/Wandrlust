@@ -12,5 +12,5 @@
   </defs>
   <rect x="0" y="0" width="512" height="512" rx="112.64" ry="112.64" fill="url(#brand)"/>
   <rect x="0" y="0" width="512" height="512" rx="112.64" ry="112.64" fill="url(#sheen)"/>
-  <g transform="translate(56.58947368421053 56.58947368421053) scale(16.61754385964912)"><path d="M12 0.6 15.25 8.75 12 12Z M22.4 12 15.25 15.25 12 12Z M12 23.4 8.75 15.25 12 12Z M1.6 12 8.75 8.75 12 12Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0.45" stroke-linejoin="round"/><path d="M12 0.6 8.75 8.75 12 12Z M22.4 12 15.25 8.75 12 12Z M12 23.4 15.25 15.25 12 12Z M1.6 12 8.75 15.25 12 12Z" fill="#0B1220" stroke="#0B1220" stroke-width="0.45" stroke-linejoin="round" opacity="1"/></g>
+  <g transform="translate(100.31493212669682 100.31493212669682) scale(12.9737556561086)"><g fill="none" stroke="#FFFFFF" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"/><circle cx="12" cy="12" r="10"/></g></g>
 </svg>
