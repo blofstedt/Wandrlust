@@ -180,10 +180,13 @@ export const bestTechnology = (
  * routinely, which is survivable here — a mast that does not load is a mast
  * we do not draw, not a wrong answer.
  */
+/* overpass.osm.ch is deliberately absent: it is Switzerland-only and answers
+   for other continents with a fast, confident zero. See the note on
+   OVERPASS_MIRRORS in server/beaconSources.ts. */
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 /**

@@ -34,10 +34,13 @@ import { USER_AGENT } from './alertSources.js';
    actually reach. See USER_AGENT in alertSources.ts. */
 const UA = USER_AGENT;
 
+/* overpass.osm.ch is deliberately absent: it is Switzerland-only and answers
+   for other continents with a fast, confident zero. See the note on
+   OVERPASS_MIRRORS in server/beaconSources.ts. */
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 /** How far out we look for facilities. Mirrored by POI_RADIUS_M on the client. */
@@ -174,7 +177,15 @@ const buildQuery = (lat: number, lon: number): string => {
 
   const towns = `node["place"~"^(city|town|village|hamlet)$"]["name"]${at(TOWN_RADIUS_M)};`;
 
-  return `[out:json][timeout:12];(${pois}${named}${here}${towns});out center tags;`;
+  /*
+   * Declared budget sits BELOW the caller's abort (see `timeoutMs`), which is
+   * the lesson beaconSources.ts already recorded: telling Overpass 12 s while
+   * hanging up at exactly 12 s means we always give up at the same instant the
+   * server would, and never receive the `remark` that says it timed out. Ten
+   * seconds declared against a fifteen-second wait lets a slow-but-working
+   * mirror finish, and lets a genuinely overrun one tell us so.
+   */
+  return `[out:json][timeout:10];(${pois}${named}${here}${towns});out center tags;`;
 };
 
 /* ------------------------------------------------------------------ */
@@ -236,7 +247,7 @@ const MAX_NAME = 46;
 export const fetchSpotContext = async (
   lat: number,
   lon: number,
-  timeoutMs = 12_000
+  timeoutMs = 15_000
 ): Promise<SpotContextResult> => {
   const query = buildQuery(lat, lon);
 

@@ -48,10 +48,13 @@ import { USER_AGENT } from './alertSources.js';
    actually reach. See USER_AGENT in alertSources.ts. */
 const UA = USER_AGENT;
 
+/* overpass.osm.ch is deliberately absent: it is Switzerland-only and answers
+   for other continents with a fast, confident zero. See the note on
+   OVERPASS_MIRRORS in server/beaconSources.ts. */
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 /**

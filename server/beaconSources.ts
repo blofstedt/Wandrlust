@@ -158,11 +158,33 @@ const pointInRing = (lat: number, lon: number, ring: Ring): boolean => {
  *
  * The order matters much less than it did, because the mirrors are now HEDGED
  * rather than tried one after another. See `fetchOverpassScan`.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY overpass.osm.ch IS NOT IN THIS LIST, AND MUST NOT BE PUT BACK
+ * ---------------------------------------------------------------------------
+ * It was here, and in the four other mirror lists in this repo, and it is a
+ * SWITZERLAND-ONLY instance. It holds no data outside Switzerland, so a query
+ * about Alberta does not fail against it — it SUCCEEDS, instantly, with zero
+ * elements. Measured in production at Banff townsite:
+ *
+ *   overpass-api.de: timed out after 12004 ms |
+ *   overpass.kumi.systems: timed out after 12001 ms |
+ *   overpass.osm.ch: 0 elements in 2191 ms
+ *
+ * Two seconds of confident nothing beats eleven seconds of real answer, so on
+ * this path — which hedges the mirrors and takes the first one home — the
+ * Swiss server won every single race. Beacon has been asking Switzerland about
+ * Canada and reporting the answer as "there is nowhere to sleep here". It is
+ * also why that never refunded a beacon: a scan that returns successfully is,
+ * as far as the route can tell, a scan that ran.
+ *
+ * A regional instance must never sit in a fallback list beside planet-wide
+ * ones. The mirror that LACKS the data is the one that answers first.
  */
 const OVERPASS_MIRRORS = [
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 /**

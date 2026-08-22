@@ -9,10 +9,13 @@ import { TtlCache } from '../utils/ttlCache';
  * regularly, so we try several in order and fail soft with an empty array.
  */
 
+/* overpass.osm.ch is deliberately absent: it is Switzerland-only and answers
+   for other continents with a fast, confident zero. See the note on
+   OVERPASS_MIRRORS in server/beaconSources.ts. */
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 const MILES_TO_METRES = 1609.34;
