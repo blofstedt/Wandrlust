@@ -80,6 +80,8 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
   const [suggestions, setSuggestions] = useState<GeocodedLocation[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  /** Arrow-key position in the dropdown. -1 is "nothing picked yet". */
+  const [highlighted, setHighlighted] = useState(-1);
   const [showMobileTools, setShowMobileTools] = useState(false);
 
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -93,14 +95,26 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
   }, []);
 
+  /*
+   * `touchstart` as well as `mousedown`, like the tool sheet below.
+   *
+   * iOS only synthesises mouse events for elements it considers clickable, so
+   * the usual way of dismissing this — tapping the map — often produced no
+   * mousedown at all and the suggestions just sat there over the map.
+   */
   useEffect(() => {
-    const onClickOutside = (event: MouseEvent) => {
+    const onPointerDownOutside = (event: MouseEvent | TouchEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowDropdown(false);
+        setHighlighted(-1);
       }
     };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
+    document.addEventListener('mousedown', onPointerDownOutside);
+    document.addEventListener('touchstart', onPointerDownOutside);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDownOutside);
+      document.removeEventListener('touchstart', onPointerDownOutside);
+    };
   }, []);
 
   // The mobile tool sheet closes on an outside tap or on Escape, like every
@@ -125,36 +139,122 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     };
   }, [showMobileTools]);
 
+  /**
+   * Which search the answers on screen belong to.
+   *
+   * Every request takes a ticket and only the latest one is allowed to write
+   * to state. Without this, two geocodes can be in flight at once — the
+   * debounce only cancels timers that have not fired yet, not requests
+   * already gone — and whichever answered LAST won. A cached query resolves
+   * instantly while a cold one takes a second, so typing "ban" then "banff"
+   * could leave you looking at results for "ban".
+   *
+   * Bumping it also cancels: the clear button and picking a result both
+   * invalidate whatever is outstanding, which is what stops a dropdown
+   * reopening itself over a search box the camper has just emptied.
+   */
+  const searchSeq = useRef(0);
+
+  /** Abandon anything pending, timer or in-flight request. */
+  const cancelPendingSearch = useCallback(() => {
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    searchTimeout.current = null;
+    searchSeq.current += 1;
+    setIsSearching(false);
+  }, []);
+
+  const runSearch = useCallback(async (value: string): Promise<GeocodedLocation[]> => {
+    const ticket = searchSeq.current;
+    const results = await geocodeSearch(value);
+    // Superseded while we were waiting. Drop it on the floor.
+    if (ticket !== searchSeq.current) return results;
+
+    setSuggestions(results);
+    setHighlighted(-1);
+    setIsSearching(false);
+    setShowDropdown(results.length > 0);
+    return results;
+  }, []);
+
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setQuery(value);
 
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    cancelPendingSearch();
 
     if (value.trim().length < 2) {
       setSuggestions([]);
       setShowDropdown(false);
-      setIsSearching(false);
       return;
     }
 
     setIsSearching(true);
     // Nominatim asks for no more than one request a second; 400 ms of quiet
     // typing keeps us comfortably inside that.
-    searchTimeout.current = setTimeout(async () => {
-      const results = await geocodeSearch(value);
-      setSuggestions(results);
-      setIsSearching(false);
-      setShowDropdown(true);
-    }, 400);
-  }, []);
+    searchTimeout.current = setTimeout(() => { void runSearch(value); }, 400);
+  }, [cancelPendingSearch, runSearch]);
 
-  const handleSelect = (loc: GeocodedLocation) => {
+  const handleSelect = useCallback((loc: GeocodedLocation) => {
     const label = loc.displayName.split(',')[0];
+    cancelPendingSearch();
     setQuery(label);
     setShowDropdown(false);
+    setHighlighted(-1);
     setFilterState((prev) => ({ ...prev, searchQuery: label }));
     onSelectLocation(loc);
+  }, [cancelPendingSearch, setFilterState, onSelectLocation]);
+
+  /**
+   * The keyboard, which this box used to ignore entirely.
+   *
+   * Enter did NOTHING — no form, no handler — so on a phone the Go key on the
+   * keyboard was inert, which on the app's single most-used control reads as
+   * the search being broken. Enter now searches: it takes the highlighted
+   * result, or the first one, or if the debounce has not even fired yet it
+   * runs the lookup there and then and goes to the top hit.
+   */
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const open = showDropdown && suggestions.length > 0;
+
+    if (e.key === 'Escape') {
+      if (!open) return;
+      e.preventDefault();
+      // Stop it reaching a Sheet behind us and closing that too.
+      e.stopPropagation();
+      setShowDropdown(false);
+      setHighlighted(-1);
+      return;
+    }
+
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!open) return;
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      setHighlighted((prev) => {
+        const next = prev + step;
+        if (next < 0) return suggestions.length - 1;
+        if (next >= suggestions.length) return 0;
+        return next;
+      });
+      return;
+    }
+
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+
+    if (open) {
+      handleSelect(suggestions[highlighted >= 0 ? highlighted : 0]);
+      return;
+    }
+
+    // Pressed before the debounce fired. Don't make them wait and press again.
+    const value = query.trim();
+    if (value.length < 2) return;
+    cancelPendingSearch();
+    setIsSearching(true);
+    void runSearch(value).then((results) => {
+      if (results.length > 0) handleSelect(results[0]);
+    });
   };
 
   const views: { id: AppView; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -313,17 +413,36 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
               type="text"
               value={query}
               onChange={handleInputChange}
-              onFocus={() => query.trim().length >= 2 && setShowDropdown(true)}
+              onKeyDown={handleSearchKeyDown}
+              onFocus={() => query.trim().length >= 2 && suggestions.length > 0 && setShowDropdown(true)}
               placeholder="Search a city, state or province…"
               aria-label="Search for a location"
+              // Tells a phone keyboard to show "Go" rather than a newline key,
+              // now that pressing it actually does something.
+              enterKeyHint="search"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              role="combobox"
+              aria-expanded={showDropdown && suggestions.length > 0}
+              aria-controls="location-suggestions"
+              aria-autocomplete="list"
+              aria-activedescendant={
+                highlighted >= 0 ? `location-suggestion-${highlighted}` : undefined
+              }
               className="w-full bg-slate-950/90 border border-slate-700/80 rounded-xl pl-10 pr-20 py-2 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 shadow-inner"
             />
             {query && (
               <button
                 onClick={() => {
+                  // Cancels the pending lookup too. Without that, a debounce
+                  // already in flight landed a moment later and popped the
+                  // suggestions back up over an empty box.
+                  cancelPendingSearch();
                   setQuery('');
                   setSuggestions([]);
                   setShowDropdown(false);
+                  setHighlighted(-1);
                   setFilterState((prev) => ({ ...prev, searchQuery: '' }));
                 }}
                 className="absolute right-10 text-slate-400 hover:text-slate-200"
@@ -350,12 +469,22 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
               <p className="p-1.5 px-3 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-800">
                 Locations
               </p>
-              <ul className="max-h-60 overflow-y-auto divide-y divide-slate-800/50 scroll-soft">
+              <ul
+                id="location-suggestions"
+                role="listbox"
+                className="max-h-60 overflow-y-auto divide-y divide-slate-800/50 scroll-soft"
+              >
                 {suggestions.map((loc, idx) => (
                   <li key={`${loc.lat},${loc.lon},${idx}`}>
                     <button
+                      id={`location-suggestion-${idx}`}
+                      role="option"
+                      aria-selected={idx === highlighted}
                       onClick={() => handleSelect(loc)}
-                      className="w-full p-2.5 hover:bg-slate-800/80 text-left flex items-start gap-2.5 text-xs text-slate-200"
+                      onMouseEnter={() => setHighlighted(idx)}
+                      className={`w-full p-2.5 text-left flex items-start gap-2.5 text-xs text-slate-200 ${
+                        idx === highlighted ? 'bg-slate-800/80' : 'hover:bg-slate-800/80'
+                      }`}
                     >
                       <MapPin className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                       <span className="min-w-0">

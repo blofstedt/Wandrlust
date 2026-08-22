@@ -59,11 +59,21 @@ const readList = async <T>(key: string): Promise<T[]> => {
   }
 };
 
-const writeList = async <T>(key: string, value: T[]): Promise<void> => {
+/**
+ * Returns whether the write actually landed.
+ *
+ * Still never throws — a failure here must not break a render. But it no
+ * longer fails *silently*: a full disk used to make `downloadOfflineRegion`
+ * look like a button that did nothing, because the region record was dropped
+ * on the floor with no way for the caller to know. Callers that are telling a
+ * camper what happened need the answer; the ones that aren't can ignore it.
+ */
+const writeList = async <T>(key: string, value: T[]): Promise<boolean> => {
   try {
     await dataStore.setItem(key, value);
+    return true;
   } catch {
-    // Storage full or unavailable; drop silently rather than breaking the UI.
+    return false;
   }
 };
 
@@ -146,7 +156,9 @@ export const mergeSavedCampsites = async (remote: Campsite[]): Promise<Campsite[
   return merged;
 };
 
-export const clearSavedCampsites = (): Promise<void> => writeList(SAVED_KEY, []);
+export const clearSavedCampsites = async (): Promise<void> => {
+  await writeList(SAVED_KEY, []);
+};
 
 /* ------------------------------------------------------------------ */
 /* User-submitted campsites                                            */
@@ -250,8 +262,58 @@ const withinBounds = (site: Campsite, bounds: OfflineRegion['bounds']): boolean 
   site.longitude >= bounds.west && site.longitude <= bounds.east;
 
 /**
+ * Is this the browser saying "no room left", rather than one tile going wrong?
+ *
+ * The distinction decides whether to carry on. A 404 on one tile costs that
+ * tile; a full disk means every remaining `setItem` will fail too, so pressing
+ * on just spends a camper's mobile data downloading imagery that is thrown
+ * away on arrival.
+ *
+ * Named rather than sniffed by message: Chrome and Firefox raise a DOMException
+ * called QuotaExceededError, Safari has historically used its own name and
+ * legacy code 22, and localforage may hand back either the DOMException or an
+ * Error wrapping its text.
+ */
+const isStorageFull = (err: unknown): boolean => {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { name?: string; code?: number; message?: string };
+  return (
+    e.name === 'QuotaExceededError' ||
+    e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    e.code === 22 ||
+    /quota|storage.*full|exceeded the quota/i.test(e.message ?? '')
+  );
+};
+
+/** What a download actually managed, as opposed to what it attempted. */
+export interface OfflineDownloadResult {
+  /** Null only when the region record itself could not be written. */
+  region: OfflineRegion | null;
+  /** True only when every requested tile is on the device. */
+  ok: boolean;
+  /** The device ran out of room. The pack is short and will stay short. */
+  storageFull: boolean;
+  tilesStored: number;
+  tilesRequested: number;
+  /** Plain-English outcome, safe to show a camper as-is. */
+  message: string;
+}
+
+/**
  * Download and cache map tiles for a bounding box, plus the campsites inside
  * it, so the area is usable with no connectivity.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS COUNTS WHAT IT STORED AND NOT WHAT IT ASKED FOR
+ * ---------------------------------------------------------------------------
+ * This used to swallow every per-tile failure alike, march the progress bar to
+ * 100%, and record the region with the full tile count — so a phone with no
+ * room left showed "Downloaded ✓" and a green tick, and the blank map was
+ * discovered later, in the place with no signal, which is the one moment the
+ * feature exists for. Storage failures now stop the run and are reported.
+ *
+ * A short pack is still worth keeping — some imagery beats none — so it is
+ * saved either way. It is just never described as whole when it isn't.
  */
 export const downloadOfflineRegion = async (
   name: string,
@@ -260,7 +322,7 @@ export const downloadOfflineRegion = async (
   campsites: Campsite[],
   onProgress?: (percent: number) => void,
   options: { zoomMin?: number; zoomMax?: number; maxTiles?: number } = {}
-): Promise<OfflineRegion> => {
+): Promise<OfflineDownloadResult> => {
   const zoomMin = options.zoomMin ?? 8;
   const zoomMax = options.zoomMax ?? 12;
   const maxTiles = options.maxTiles ?? 400;
@@ -269,6 +331,8 @@ export const downloadOfflineRegion = async (
 
   let bytes = 0;
   let completed = 0;
+  let stored = 0;
+  let storageFull = false;
   const CONCURRENCY = 6;
 
   const fetchTile = async ({ z, x, y }: TileCoord): Promise<void> => {
@@ -277,6 +341,7 @@ export const downloadOfflineRegion = async (
       const existing = await tileStore.getItem<Blob>(key);
       if (existing) {
         bytes += existing.size;
+        stored += 1;
         return;
       }
 
@@ -290,8 +355,11 @@ export const downloadOfflineRegion = async (
       const blob = await response.blob();
       await tileStore.setItem(key, blob);
       bytes += blob.size;
-    } catch {
-      // Skip individual tile failures — a partial cache is still useful.
+      stored += 1;
+    } catch (err) {
+      // One tile going wrong costs that tile. A full disk costs all the rest,
+      // so record it and let the loop below stop.
+      if (isStorageFull(err)) storageFull = true;
     } finally {
       completed += 1;
       onProgress?.(Math.round((completed / tiles.length) * 100));
@@ -300,6 +368,7 @@ export const downloadOfflineRegion = async (
 
   for (let i = 0; i < tiles.length; i += CONCURRENCY) {
     await Promise.all(tiles.slice(i, i + CONCURRENCY).map(fetchTile));
+    if (storageFull) break;
   }
 
   /**
@@ -308,12 +377,25 @@ export const downloadOfflineRegion = async (
    * Into the pack's own list, NOT the bookmarks — see OFFLINE_SITES_KEY. A
    * camper who downloads the Rockies has not bookmarked the Rockies.
    */
-  const cached = await getOfflineCampsites();
-  const cachedIds = new Set(cached.map((site) => site.id));
-  const additions = campsites.filter((site) => !cachedIds.has(site.id));
-  if (additions.length > 0) {
-    await writeList(OFFLINE_SITES_KEY, [...cached, ...additions]);
+  let sitesStored = 0;
+  if (!storageFull) {
+    const cached = await getOfflineCampsites();
+    const cachedIds = new Set(cached.map((site) => site.id));
+    const additions = campsites.filter((site) => !cachedIds.has(site.id));
+    const wanted = [...cached, ...additions];
+    if (additions.length > 0) {
+      if (await writeList(OFFLINE_SITES_KEY, wanted)) {
+        sitesStored = campsites.length;
+      } else {
+        storageFull = true;
+      }
+    } else {
+      // Every one of them was already here from an overlapping pack.
+      sitesStored = campsites.length;
+    }
   }
+
+  const complete = stored === tiles.length && sitesStored === campsites.length;
 
   const region: OfflineRegion = {
     id: `region-${Date.now()}`,
@@ -322,17 +404,68 @@ export const downloadOfflineRegion = async (
     center,
     zoomMin,
     zoomMax,
-    tileCount: tiles.length,
-    sizeMb: Math.max(0.1, Number((bytes / (1024 * 1024)).toFixed(1))),
+    tileCount: stored,
+    tilesRequested: tiles.length,
+    complete,
+    sizeMb: Number((bytes / (1024 * 1024)).toFixed(1)),
     downloadedAt: new Date().toISOString().split('T')[0],
-    campsiteCount: campsites.length
+    campsiteCount: sitesStored
   };
 
   const regions = await getDownloadedRegions();
-  await writeList(REGIONS_KEY, [region, ...regions]);
+  const recorded = await writeList(REGIONS_KEY, [region, ...regions]);
 
   onProgress?.(100);
-  return region;
+
+  if (!recorded) {
+    return {
+      region: null,
+      ok: false,
+      storageFull: true,
+      tilesStored: stored,
+      tilesRequested: tiles.length,
+      message:
+        'There is no room left on this device, so nothing could be saved. ' +
+        'Delete a stored region and try again.'
+    };
+  }
+
+  if (storageFull) {
+    return {
+      region,
+      ok: false,
+      storageFull: true,
+      tilesStored: stored,
+      tilesRequested: tiles.length,
+      message:
+        `This device ran out of room. ${stored} of ${tiles.length} map tiles were ` +
+        'saved, so parts of this area will be blank with no signal. Delete a ' +
+        'stored region to make space.'
+    };
+  }
+
+  if (!complete) {
+    return {
+      region,
+      ok: false,
+      storageFull: false,
+      tilesStored: stored,
+      tilesRequested: tiles.length,
+      message:
+        `${stored} of ${tiles.length} map tiles were saved — the rest could not be ` +
+        'downloaded. Parts of this area will be blank with no signal. Try again ' +
+        'on a better connection.'
+    };
+  }
+
+  return {
+    region,
+    ok: true,
+    storageFull: false,
+    tilesStored: stored,
+    tilesRequested: tiles.length,
+    message: `${name} is saved and will work with no signal.`
+  };
 };
 
 export const deleteOfflineRegion = async (id: string): Promise<void> => {

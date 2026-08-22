@@ -3,7 +3,8 @@ import { OfflineRegion, Campsite } from '../types';
 import {
   getDownloadedRegions,
   downloadOfflineRegion,
-  deleteOfflineRegion
+  deleteOfflineRegion,
+  type OfflineDownloadResult
 } from '../services/offlineStorage';
 import {
   MapDataChoice,
@@ -42,6 +43,8 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
   const [regions, setRegions] = useState<OfflineRegion[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
+  /** The last download's real outcome. Cleared when a new one starts. */
+  const [downloadResult, setDownloadResult] = useState<OfflineDownloadResult | null>(null);
 
   /* Which map data this device carries — see landOverlayService. */
   const [choice, setChoice] = useState<MapDataChoice>(null);
@@ -102,6 +105,7 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
   const handleDownloadCurrentRegion = async () => {
     setIsDownloading(true);
     setProgress(0);
+    setDownloadResult(null);
 
     const regionName = `${currentLocationName || 'Dispersed Area'} Sector`;
     const bounds = {
@@ -111,13 +115,17 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
       west: center[1] - 0.3
     };
 
-    await downloadOfflineRegion(
+    const result = await downloadOfflineRegion(
       regionName,
       center,
       bounds,
       campsitesInView,
       (pct) => setProgress(pct)
     );
+
+    // Said out loud, whichever way it went. A pack that is short is exactly
+    // the thing a camper needs to know about BEFORE they lose signal.
+    setDownloadResult(result);
 
     await loadRegions();
     setIsDownloading(false);
@@ -312,7 +320,8 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
               <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Current Search Viewport</span>
               <h3 className="font-bold text-base text-slate-100 mt-0.5">{currentLocationName || 'Selected Public Land Zone'}</h3>
               <p className="text-xs text-slate-300">
-                Includes {campsitesInView.length} free campsites and surrounding 30-mile topomap tiles.
+                {campsitesInView.length} free campsites, plus topo tiles for about
+                20 miles around this point, down to street level.
               </p>
             </div>
             <HardDrive className="w-5 h-5 text-emerald-400 shrink-0" />
@@ -332,13 +341,38 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
               </div>
             </div>
           ) : (
-            <button
-              onClick={handleDownloadCurrentRegion}
-              className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 transition-all"
-            >
-              <Download className="w-4 h-4" />
-              Download Offline Package for "{currentLocationName || 'Current Map'}" (~12 MB)
-            </button>
+            <>
+              <button
+                onClick={handleDownloadCurrentRegion}
+                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 transition-all"
+              >
+                <Download className="w-4 h-4" />
+                Download this area for offline use
+              </button>
+
+              {/*
+                The honest answer, good or bad. The size is only known after
+                the fact — the button used to promise "~12 MB" for every
+                region regardless, which was a guess wearing a number.
+              */}
+              {downloadResult && (
+                <div
+                  role="status"
+                  className={`flex items-start gap-2 p-2.5 rounded-xl text-[11px] leading-relaxed border ${
+                    downloadResult.ok
+                      ? 'bg-emerald-950/50 border-emerald-800/60 text-emerald-200'
+                      : 'bg-amber-950/50 border-amber-800/60 text-amber-200'
+                  }`}
+                >
+                  {downloadResult.ok ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-px text-emerald-400" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-px text-amber-400" />
+                  )}
+                  <span>{downloadResult.message}</span>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -359,13 +393,28 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
                   key={reg.id}
                   className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between text-xs"
                 >
+                  {/*
+                    A tick is a claim. Regions saved before this app knew the
+                    difference have no `complete` flag at all, so they are
+                    treated as unknown rather than quietly passed as whole.
+                  */}
                   <div className="flex items-center gap-2.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    {reg.complete === false ? (
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    )}
                     <div>
                       <div className="font-bold text-slate-200">{reg.name}</div>
                       <div className="text-[10px] text-slate-400">
-                        {reg.sizeMb} MB • {reg.campsiteCount} Sites • Downloaded {reg.downloadedAt}
+                        {reg.sizeMb} MB • {reg.campsiteCount} sites • {reg.downloadedAt}
                       </div>
+                      {reg.complete === false && (
+                        <div className="text-[10px] text-amber-300/90">
+                          Partial — {reg.tileCount} of {reg.tilesRequested} tiles.
+                          Some of this area will be blank.
+                        </div>
+                      )}
                     </div>
                   </div>
                   <button

@@ -146,7 +146,27 @@ export interface OfflineRegion {
   center: [number, number];
   zoomMin: number;
   zoomMax: number;
+  /**
+   * Tiles this region actually HOLDS, not the number it set out to fetch.
+   *
+   * These were the same number until a download that could not store anything
+   * still recorded the full count and drew a green tick — the app promising
+   * imagery for ground it had none of, to a camper who by then had no signal
+   * to find out otherwise.
+   */
   tileCount: number;
+  /**
+   * What it asked for. Equal to `tileCount` on a clean download.
+   *
+   * Optional because regions already sitting on a phone were written before
+   * this existed. Absent means "not recorded", which is not the same as zero.
+   */
+  tilesRequested?: number;
+  /**
+   * False when tiles were missed — storage filled, or the network dropped.
+   * Absent on regions saved by an older build, whose real state is unknown.
+   */
+  complete?: boolean;
   sizeMb: number;
   downloadedAt: string;
   campsiteCount: number;
