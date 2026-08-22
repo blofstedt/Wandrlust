@@ -144,12 +144,12 @@ export const ReportContentSheet: React.FC<ReportContentSheetProps> = ({
             }`}
           >
             <span className="block text-xs font-bold text-slate-100">{r.label}</span>
-            <span className="block text-[10px] text-slate-400 mt-0.5">{r.detail}</span>
+            <span className="block text-[12px] text-slate-400 mt-0.5">{r.detail}</span>
           </button>
         ))}
 
         <label className="block pt-1">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+          <span className="text-[12px] font-bold uppercase tracking-wider text-slate-400">
             Anything else worth knowing
           </span>
           <textarea
@@ -162,7 +162,7 @@ export const ReportContentSheet: React.FC<ReportContentSheetProps> = ({
           />
         </label>
 
-        <p className="text-[10px] text-slate-500 leading-snug">
+        <p className="text-[12px] text-slate-500 leading-snug">
           Reports are private — nobody sees who filed one, and no count is shown
           anywhere. If a few people report the same thing it is hidden while it
           is checked, not deleted.

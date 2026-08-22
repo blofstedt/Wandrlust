@@ -69,7 +69,7 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
             </div>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white border border-slate-700"
+              className="p-1.5 tap-safe rounded-xl bg-slate-800 text-slate-400 hover:text-white border border-slate-700"
               aria-label="Close filters"
             >
               <X className="w-5 h-5" />
@@ -81,7 +81,7 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
             <div>
               <label
                 htmlFor="filter-sort"
-                className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2"
+                className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2"
               >
                 Sort results by
               </label>
@@ -102,7 +102,7 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
 
             {/* Land type */}
             <div>
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2">
                 Land ownership
               </span>
               <div className="grid grid-cols-2 gap-2">
@@ -125,7 +125,7 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
                         {item.label}
                         {checked && <Check className="w-3.5 h-3.5 text-emerald-400" />}
                       </span>
-                      <span className="block text-[10px] text-slate-400 mt-0.5">{item.desc}</span>
+                      <span className="block text-[12px] text-slate-400 mt-0.5">{item.desc}</span>
                     </button>
                   );
                 })}
@@ -137,7 +137,7 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
               <div className="flex justify-between items-center mb-1">
                 <label
                   htmlFor="filter-radius"
-                  className="text-[11px] font-bold text-slate-400 uppercase tracking-wider"
+                  className="text-xs font-bold text-slate-400 uppercase tracking-wider"
                 >
                   Search radius
                 </label>
@@ -163,7 +163,7 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
             <div>
               <label
                 htmlFor="filter-road"
-                className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2"
+                className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2"
               >
                 Roughest road you'll drive
               </label>
@@ -182,14 +182,14 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
                   <option key={id} value={id}>{ROAD_ACCESS_LABEL[id]}</option>
                 ))}
               </select>
-              <p className="text-[10px] text-slate-500 mt-1">
+              <p className="text-[12px] text-slate-500 mt-1">
                 Hides sites whose access road is rougher than this.
               </p>
             </div>
 
             {/* Amenities */}
             <div>
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2">
                 Must have
               </span>
               <div className="space-y-2">
@@ -217,7 +217,7 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
               <div className="flex justify-between items-center mb-1">
                 <label
                   htmlFor="filter-rig"
-                  className="text-[11px] font-bold text-slate-400 uppercase tracking-wider"
+                  className="text-xs font-bold text-slate-400 uppercase tracking-wider"
                 >
                   Minimum rig space
                 </label>
@@ -259,4 +259,4 @@ export const FilterDrawer: React.FC<FilterDrawerProps> = ({
       </div>
     </div>
   );
-};
+};

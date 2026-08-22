@@ -105,14 +105,14 @@ export const ScalePicker: React.FC<ScalePickerProps> = ({
   return (
     <div className="rounded-2xl border border-slate-700/80 bg-slate-800/40 p-3">
       <div className="flex items-baseline justify-between gap-3 mb-2.5">
-        <p className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5 min-w-0">
+        <p className="text-xs font-bold text-slate-200 flex items-center gap-1.5 min-w-0">
           {emoji && <span aria-hidden="true">{emoji}</span>}
           <span className="truncate">{label}</span>
         </p>
         {/* The answer, in words. This is the part people actually read — the
             track is just how you change it. */}
         <p
-          className={`text-[11px] font-bold shrink-0 tabular-nums ${
+          className={`text-xs font-bold shrink-0 tabular-nums ${
             answered ? '' : 'text-slate-500 font-semibold'
           }`}
           style={answered ? { color: accent } : undefined}
@@ -185,13 +185,13 @@ export const ScalePicker: React.FC<ScalePickerProps> = ({
 
       {/* End labels only. Printing all five under a phone-width track turns
           into unreadable four-point type. */}
-      <div className="flex justify-between text-[9px] text-slate-500 -mt-0.5">
+      <div className="flex justify-between text-[11px] text-slate-500 -mt-0.5">
         <span className="truncate max-w-[45%]">{stops[0]}</span>
         <span className="truncate max-w-[45%] text-right">{stops[last]}</span>
       </div>
 
       {hint && answered && (
-        <p className="text-[10px] text-slate-400 mt-1.5 anim-in-up">{hint}</p>
+        <p className="text-[12px] text-slate-400 mt-1.5 anim-in-up">{hint}</p>
       )}
     </div>
   );
@@ -223,7 +223,7 @@ export const TriToggle: React.FC<{
 
   return (
     <div className="rounded-2xl border border-slate-700/80 bg-slate-800/40 p-3 flex items-center justify-between gap-3">
-      <p className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5 min-w-0">
+      <p className="text-xs font-bold text-slate-200 flex items-center gap-1.5 min-w-0">
         {emoji && <span aria-hidden="true">{emoji}</span>}
         <span className="min-w-0">{label}</span>
       </p>
@@ -232,7 +232,7 @@ export const TriToggle: React.FC<{
           type="button"
           aria-pressed={yesActive}
           onClick={() => pick(true)}
-          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition-colors duration-150 tap-target ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors duration-150 tap-target ${
             yesActive
               ? danger
                 ? 'bg-red-950/70 border-red-500/70 text-red-200'
@@ -246,7 +246,7 @@ export const TriToggle: React.FC<{
           type="button"
           aria-pressed={noActive}
           onClick={() => pick(false)}
-          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition-colors duration-150 tap-target ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors duration-150 tap-target ${
             noActive
               ? 'bg-slate-700 border-slate-500 text-slate-100'
               : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-600'

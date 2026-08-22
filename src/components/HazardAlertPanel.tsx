@@ -56,7 +56,7 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
     return (
       <div className="rounded-xl border border-slate-700/60 bg-slate-900/60 px-3 py-2.5 flex items-center gap-2">
         <Info className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-        <span className="text-[11px] text-slate-400">
+        <span className="text-xs text-slate-400">
           No active weather alerts or fire restrictions here.
         </span>
       </div>
@@ -78,28 +78,28 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-bold text-orange-200">{ban.title}</span>
                 {ban.stage && (
-                  <span className="px-1.5 py-0.5 rounded bg-orange-600 text-white text-[9px] font-bold uppercase tracking-wide">
+                  <span className="px-1.5 py-0.5 rounded bg-orange-600 text-white text-[11px] font-bold uppercase tracking-wide">
                     {ban.stage.replace('_', ' ')}
                   </span>
                 )}
               </div>
               {ban.detail && (
-                <p className="text-[11px] text-orange-200/80 mt-1 leading-snug">{ban.detail}</p>
+                <p className="text-xs text-orange-200/80 mt-1 leading-snug">{ban.detail}</p>
               )}
               <div className="flex items-center gap-2 mt-1.5">
-                {ban.authority && <span className="text-[10px] text-orange-300/70">{ban.authority}</span>}
+                {ban.authority && <span className="text-[12px] text-orange-300/70">{ban.authority}</span>}
                 {ban.source_url && (
                   <a
                     href={ban.source_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[10px] text-orange-300 hover:text-orange-200 font-semibold flex items-center gap-0.5"
+                    className="text-[12px] text-orange-300 hover:text-orange-200 font-semibold flex items-center gap-0.5"
                   >
                     Official notice <ExternalLink className="w-2.5 h-2.5" />
                   </a>
                 )}
               </div>
-              <p className="text-[10px] text-orange-300/60 mt-1.5 italic">
+              <p className="text-[12px] text-orange-300/60 mt-1.5 italic">
                 This is a legal restriction, not a forecast. Confirm with the managing
                 agency before any fire.
               </p>
@@ -125,16 +125,16 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs font-bold text-slate-100">{alert.event}</span>
-                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${SEVERITY_STYLE[alert.severity]}`}>
+                    <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold uppercase ${SEVERITY_STYLE[alert.severity]}`}>
                       {alert.severity}
                     </span>
                   </div>
                   {!compact && (
-                    <p className="text-[11px] text-slate-300 mt-1 leading-snug line-clamp-2">
+                    <p className="text-xs text-slate-300 mt-1 leading-snug line-clamp-2">
                       {alert.headline}
                     </p>
                   )}
-                  <p className="text-[10px] text-slate-400 mt-1 truncate">{alert.areaDescription}</p>
+                  <p className="text-[12px] text-slate-400 mt-1 truncate">{alert.areaDescription}</p>
                 </div>
                 {isOpen ? (
                   <ChevronUp className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -150,19 +150,19 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
                   <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-700/60">
                     <div className="flex items-center gap-1.5 mb-1">
                       <AlertTriangle className="w-3 h-3 text-amber-400" />
-                      <span className="text-[10px] font-bold text-amber-300 uppercase tracking-wide">
+                      <span className="text-[12px] font-bold text-amber-300 uppercase tracking-wide">
                         What to do
                       </span>
                     </div>
-                    <p className="text-[11px] text-slate-200 leading-snug whitespace-pre-line">
+                    <p className="text-xs text-slate-200 leading-snug whitespace-pre-line">
                       {alert.instruction}
                     </p>
                   </div>
                 )}
-                <p className="text-[11px] text-slate-300 leading-snug whitespace-pre-line max-h-48 overflow-y-auto scroll-soft">
+                <p className="text-xs text-slate-300 leading-snug whitespace-pre-line max-h-48 overflow-y-auto scroll-soft">
                   {alert.description}
                 </p>
-                <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-700/60">
+                <div className="flex items-center justify-between text-[12px] text-slate-500 pt-1 border-t border-slate-700/60">
                   <span>{alert.sender}</span>
                   {alert.expires && <span>Until {new Date(alert.expires).toLocaleString()}</span>}
                 </div>
@@ -174,7 +174,7 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
 
       {informational.length > 0 && (
         <details className="group">
-          <summary className="cursor-pointer text-[11px] text-slate-400 hover:text-slate-200 font-semibold flex items-center gap-1.5 px-1">
+          <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-200 font-semibold flex items-center gap-1.5 px-1">
             <ChevronDown className="w-3 h-3 group-open:rotate-180 transition-moook" />
             {informational.length} more advisor{informational.length === 1 ? 'y' : 'ies'}
           </summary>
@@ -185,8 +185,8 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
               return (
                 <div key={alert.id} className="rounded-lg border border-slate-700/60 bg-slate-900/60 px-2.5 py-2 flex items-center gap-2">
                   <Icon className="w-3 h-3 shrink-0" style={{ color: style.color }} />
-                  <span className="text-[11px] text-slate-300 truncate flex-1">{alert.event}</span>
-                  <span className="text-[9px] text-slate-500 shrink-0">{alert.severity}</span>
+                  <span className="text-xs text-slate-300 truncate flex-1">{alert.event}</span>
+                  <span className="text-[11px] text-slate-500 shrink-0">{alert.severity}</span>
                 </div>
               );
             })}
@@ -194,7 +194,7 @@ export const HazardAlertPanel: React.FC<HazardAlertPanelProps> = ({
         </details>
       )}
 
-      <p className="text-[9px] text-slate-500 leading-tight px-1">
+      <p className="text-[11px] text-slate-500 leading-tight px-1">
         Alerts from the National Weather Service and Environment Canada. Always confirm
         with official channels before making a safety decision.
       </p>

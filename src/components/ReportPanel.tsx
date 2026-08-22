@@ -90,7 +90,7 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
             <AlertTriangle className="w-4 h-4 text-amber-400" />
             <h2 className="text-sm font-bold text-slate-100">Report</h2>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-200 text-sm font-bold px-2" aria-label="Close">✕</button>
+          <button onClick={onClose} className="tap-safe text-slate-500 hover:text-slate-200 text-sm font-bold px-2" aria-label="Close">✕</button>
         </div>
 
         <div className="flex border-b border-slate-800 shrink-0">
@@ -102,7 +102,7 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
                 setKind(m === 'hazard' ? 'washout' : 'physical_barrier');
                 setNotice(null);
               }}
-              className={`flex-1 px-2 py-2 text-[11px] font-bold ${
+              className={`flex-1 px-2 py-2 text-xs font-bold ${
                 mode === m ? 'text-amber-400 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
@@ -112,7 +112,7 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3 scroll-soft">
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+          <div className="flex items-center gap-1.5 text-xs text-slate-400">
             <MapPin className="w-3 h-3" />
             {center[0].toFixed(5)}, {center[1].toFixed(5)}
           </div>
@@ -123,7 +123,7 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
                 key={k.id}
                 data-stagger={Math.min(i, 8)}
                 onClick={() => setKind(k.id)}
-                className={`px-2 py-2 rounded-xl border text-[10px] font-semibold anim-in-up ${
+                className={`px-2 py-2 rounded-xl border text-[12px] font-semibold anim-in-up ${
                   kind === k.id ? 'bg-amber-950/60 border-amber-500/60 text-amber-200' : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600'
                 }`}
               >
@@ -153,9 +153,9 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
             Submit report
           </button>
 
-          {notice && <p className="text-[11px] text-emerald-300 text-center anim-in-up">{notice}</p>}
+          {notice && <p className="text-xs text-emerald-300 text-center anim-in-up">{notice}</p>}
 
-          <p className="text-[10px] text-slate-500 leading-snug">
+          <p className="text-[12px] text-slate-500 leading-snug">
             {mode === 'hazard'
               ? 'Reports earn points. If three other campers confirm yours, you get an early-reporter bonus.'
               : 'Site reports are aggregated by area. Several independent reports in one region raise a zone alert for everyone heading there.'}

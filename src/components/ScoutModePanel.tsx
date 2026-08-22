@@ -95,11 +95,11 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
             <Activity className="w-4 h-4 text-amber-400" />
             <h2 className="text-sm font-bold text-slate-100">Scout Mode</h2>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-200 text-sm font-bold px-2" aria-label="Close">✕</button>
+          <button onClick={onClose} className="tap-safe text-slate-500 hover:text-slate-200 text-sm font-bold px-2" aria-label="Close">✕</button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4 scroll-soft">
-          <p className="text-[11px] text-slate-400 leading-snug">
+          <p className="text-xs text-slate-400 leading-snug">
             Maps road surfaces automatically while you drive, using your phone&apos;s motion
             sensors. Mount the phone, start a session, and forget about it — you earn
             points for roads nobody has mapped yet.
@@ -108,7 +108,7 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
           {!supported && (
             <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-700/50 flex gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-[11px] text-amber-200">
+              <p className="text-xs text-amber-200">
                 This device has no motion sensors. Scout Mode needs a phone or tablet.
               </p>
             </div>
@@ -117,8 +117,8 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
           {running && (
             <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-3 space-y-3 anim-in-up">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Recording</span>
-                <span className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400">
+                <span className="text-[12px] font-bold uppercase tracking-wider text-slate-400">Recording</span>
+                <span className="flex items-center gap-1.5 text-[12px] font-bold text-emerald-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   LIVE
                 </span>
@@ -129,12 +129,12 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
                 mounted ? 'bg-emerald-950/50 border-emerald-700/50' : 'bg-amber-950/50 border-amber-700/50'
               }`}>
                 <Smartphone className={`w-3.5 h-3.5 ${mounted ? 'text-emerald-400' : 'text-amber-400'}`} />
-                <span className={`text-[11px] font-semibold ${mounted ? 'text-emerald-200' : 'text-amber-200'}`}>
+                <span className={`text-xs font-semibold ${mounted ? 'text-emerald-200' : 'text-amber-200'}`}>
                   {mounted ? 'Phone is mounted' : 'Phone is moving too much'}
                 </span>
               </div>
               {!mounted && (
-                <p className="text-[10px] text-amber-300/80 leading-snug -mt-1.5">
+                <p className="text-[12px] text-amber-300/80 leading-snug -mt-1.5">
                   Data isn&apos;t being recorded. Secure the phone in a dash or vent mount so
                   movement reflects the road, not your hands.
                 </p>
@@ -142,28 +142,28 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
 
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <p className="text-[9px] uppercase tracking-wide text-slate-500">Speed</p>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Speed</p>
                   <p className="text-sm font-bold text-slate-100">{speedKph}</p>
-                  <p className="text-[9px] text-slate-500">km/h</p>
+                  <p className="text-[11px] text-slate-500">km/h</p>
                 </div>
                 <div>
-                  <p className="text-[9px] uppercase tracking-wide text-slate-500">Samples</p>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Samples</p>
                   <p className="text-sm font-bold text-slate-100">{samples}</p>
-                  <p className="text-[9px] text-slate-500">buffered</p>
+                  <p className="text-[11px] text-slate-500">buffered</p>
                 </div>
                 <div>
-                  <p className="text-[9px] uppercase tracking-wide text-slate-500">Distance</p>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Distance</p>
                   <p className="text-sm font-bold text-slate-100">{(distanceM / 1000).toFixed(1)}</p>
-                  <p className="text-[9px] text-slate-500">km</p>
+                  <p className="text-[11px] text-slate-500">km</p>
                 </div>
               </div>
 
               {surface && (
                 <div className="flex items-center gap-2 pt-2 border-t border-slate-700">
                   <Gauge className="w-3.5 h-3.5 text-slate-400" />
-                  <span className="text-[11px] text-slate-400">Surface right now:</span>
+                  <span className="text-xs text-slate-400">Surface right now:</span>
                   <span
-                    className="text-[11px] font-bold px-2 py-0.5 rounded"
+                    className="text-xs font-bold px-2 py-0.5 rounded"
                     style={{ backgroundColor: `${SURFACE_COLOR[surface]}22`, color: SURFACE_COLOR[surface] }}
                   >
                     {SURFACE_LABEL[surface]}
@@ -178,19 +178,19 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
               <div className="flex-1 rounded-xl bg-emerald-950/40 border border-emerald-700/40 p-2.5 text-center">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 mx-auto mb-1" />
                 <p className="text-sm font-bold text-emerald-200">{uploaded}</p>
-                <p className="text-[9px] text-emerald-300/70">batches uploaded</p>
+                <p className="text-[11px] text-emerald-300/70">batches uploaded</p>
               </div>
               <div className="flex-1 rounded-xl bg-slate-800/50 border border-slate-700 p-2.5 text-center">
                 <AlertTriangle className="w-3.5 h-3.5 text-slate-400 mx-auto mb-1" />
                 <p className="text-sm font-bold text-slate-300">{rejected}</p>
-                <p className="text-[9px] text-slate-500">filtered out</p>
+                <p className="text-[11px] text-slate-500">filtered out</p>
               </div>
             </div>
           )}
 
           {error && (
             <div className="p-2.5 rounded-xl bg-rose-950/60 border border-rose-700/50">
-              <p className="text-[11px] text-rose-200">{error}</p>
+              <p className="text-xs text-rose-200">{error}</p>
             </div>
           )}
 
@@ -208,17 +208,17 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
           <div className="rounded-xl bg-slate-800/40 border border-slate-700/60 p-3 space-y-1.5">
             <div className="flex items-center gap-1.5">
               <Coins className="w-3 h-3 text-amber-400" />
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              <span className="text-[12px] font-bold uppercase tracking-wider text-slate-400">
                 How points work here
               </span>
             </div>
-            <p className="text-[10px] text-slate-400 leading-snug">
+            <p className="text-[12px] text-slate-400 leading-snug">
               5 points per accepted batch, up to 6 a day. Batches only count when the phone
               is mounted, you&apos;re moving above 5 km/h, and the segment is at least 200 m.
               Rejected batches are still stored so the filter can be improved — they just
               don&apos;t pay.
             </p>
-            <p className="text-[10px] text-slate-500 leading-snug">
+            <p className="text-[12px] text-slate-500 leading-snug">
               Uses GPS and motion sensors continuously, so expect noticeable battery drain.
               Best run while plugged in.
             </p>
@@ -227,4 +227,4 @@ export const ScoutModePanel: React.FC<ScoutModePanelProps> = ({ isOpen, onClose,
       </div>
     </div>
   );
-};
+};

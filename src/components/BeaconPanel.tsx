@@ -118,12 +118,12 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
           small print somebody has already scrolled past.
         */}
         <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-3">
-          <p className="text-[11px] text-slate-300 leading-snug">
+          <p className="text-xs text-slate-300 leading-snug">
             Beacon looks through public map data for places you might be able to
             sleep near here. It is guessing, and it cannot see a sign that went
             up last week.
           </p>
-          <p className="text-[11px] font-bold text-amber-300 mt-1.5">{BEACON_CAVEAT}</p>
+          <p className="text-xs font-bold text-amber-300 mt-1.5">{BEACON_CAVEAT}</p>
         </div>
 
         {!result && (
@@ -139,7 +139,7 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
         )}
 
         {busy && (
-          <p className="text-[11px] text-slate-400 text-center anim-in-up">
+          <p className="text-xs text-slate-400 text-center anim-in-up">
             Reading map data and checking street-level signs. This takes a few seconds.
           </p>
         )}
@@ -160,7 +160,7 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
         )}
 
         {result?.signageNote && (
-          <div className="flex items-start gap-2 text-[10px] text-slate-400 leading-snug">
+          <div className="flex items-start gap-2 text-[12px] text-slate-400 leading-snug">
             <ShieldQuestion className="w-3.5 h-3.5 shrink-0 mt-px" />
             <span>{result.signageNote}</span>
           </div>
@@ -175,7 +175,7 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
           make sense instead of looking like clutter that appeared by itself.
         */}
         {result?.ok && (
-          <p className="text-[10px] text-slate-400 leading-snug flex items-start gap-1.5">
+          <p className="text-[12px] text-slate-400 leading-snug flex items-start gap-1.5">
             <MapPin className="w-3 h-3 shrink-0 mt-px" />
             <span>
               These and any others found are now grey rings on the map, for every
@@ -186,7 +186,7 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
         )}
 
         {result && (
-          <p className="text-[10px] text-slate-500 leading-snug">{result.disclaimer}</p>
+          <p className="text-[12px] text-slate-500 leading-snug">{result.disclaimer}</p>
         )}
 
         {/*
@@ -200,13 +200,13 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
         {model && <ModelNote model={model} />}
 
         {result?.cached && (
-          <p className="text-[10px] text-emerald-400/80">
+          <p className="text-[12px] text-emerald-400/80">
             Someone swept this ground in the last two days, so this one was free.
           </p>
         )}
 
         {typeof remaining === 'number' && (
-          <p className="text-[10px] text-slate-500">
+          <p className="text-[12px] text-slate-500">
             {remaining === 0
               ? 'That was your last beacon for now. Ground others have already scanned stays free.'
               : `${remaining} beacon${remaining === 1 ? '' : 's'} left in the next twelve hours.`}
@@ -216,7 +216,7 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
         {result && !busy && (
           <button
             onClick={handleSend}
-            className="w-full px-3 py-2 rounded-xl border border-slate-700 text-slate-300 hover:border-slate-600 font-semibold text-[11px]"
+            className="w-full px-3 py-2 rounded-xl border border-slate-700 text-slate-300 hover:border-slate-600 font-semibold text-xs"
           >
             Scan again
           </button>
@@ -244,12 +244,12 @@ const BeaconSpotCard: React.FC<{
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs font-bold text-slate-100 truncate">{spot.label}</p>
-          <p className="text-[11px] font-semibold mt-0.5" style={{ color: style.color }}>
+          <p className="text-xs font-semibold mt-0.5" style={{ color: style.color }}>
             {style.emoji} {style.label}
           </p>
         </div>
         {typeof spot.metresAway === 'number' && (
-          <span className="text-[10px] text-slate-400 shrink-0 flex items-center gap-1">
+          <span className="text-[12px] text-slate-400 shrink-0 flex items-center gap-1">
             <MapPin className="w-3 h-3" />
             {spot.metresAway < 1000
               ? `${spot.metresAway} m`
@@ -259,19 +259,19 @@ const BeaconSpotCard: React.FC<{
       </div>
 
       {/* The tier's MEANING, always — not just its name. */}
-      <p className="text-[11px] text-slate-300 mt-1.5 leading-snug">{style.meaning}</p>
+      <p className="text-xs text-slate-300 mt-1.5 leading-snug">{style.meaning}</p>
 
       {spot.landBasis && (
-        <p className="text-[10px] text-slate-400 mt-1 leading-snug">{spot.landBasis}</p>
+        <p className="text-[12px] text-slate-400 mt-1 leading-snug">{spot.landBasis}</p>
       )}
 
-      <p className="text-[10px] text-slate-400 mt-1 leading-snug">
+      <p className="text-[12px] text-slate-400 mt-1 leading-snug">
         {SIGN_EVIDENCE_COPY[spot.signEvidence]}
       </p>
 
       <button
         onClick={onNavigate}
-        className="mt-2.5 w-full px-3 py-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-100 font-bold text-[11px] flex items-center justify-center gap-1.5"
+        className="mt-2.5 w-full px-3 py-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-100 font-bold text-xs flex items-center justify-center gap-1.5"
       >
         <Navigation className="w-3 h-3" />
         Take me there
@@ -289,19 +289,19 @@ const ModelNote: React.FC<{ model: BeaconModelSummary }> = ({ model }) => {
     <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-2.5">
       <div className="flex items-center gap-1.5 mb-1">
         <Brain className="w-3 h-3 text-slate-500" />
-        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+        <p className="text-[12px] font-bold text-slate-400 uppercase tracking-wide">
           What Wandrlust has learned here
         </p>
       </div>
 
       {thin ? (
-        <p className="text-[10px] text-slate-400 leading-snug">
+        <p className="text-[12px] text-slate-400 leading-snug">
           Only {model.observations_here} camper report{model.observations_here === 1 ? '' : 's'} from
           around here so far, so the ranking above is mostly the plain rules rather
           than anything learned. It gets better as people check in.
         </p>
       ) : (
-        <p className="text-[10px] text-slate-400 leading-snug">
+        <p className="text-[12px] text-slate-400 leading-snug">
           From {model.stays_recorded} recorded stay{model.stays_recorded === 1 ? '' : 's'} and{' '}
           {model.reports_recorded} bad outcome{model.reports_recorded === 1 ? '' : 's'}, it now
           leans toward {model.trusts_most.map(beaconTokenLabel).join(', ') || 'nothing in particular'}

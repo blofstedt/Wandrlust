@@ -111,7 +111,7 @@ export const Sheet: React.FC<SheetProps> = ({
             {icon && <div className="shrink-0">{icon}</div>}
             <div className="min-w-0">
               <h2 id={titleId.current} className="text-sm font-bold text-slate-100 truncate">{title}</h2>
-              {subtitle && <p className="text-[11px] text-slate-400 truncate">{subtitle}</p>}
+              {subtitle && <p className="text-xs text-slate-400 truncate">{subtitle}</p>}
             </div>
           </div>
           <button
@@ -167,7 +167,7 @@ export function Segmented<T extends string>({
             role="tab"
             aria-selected={active}
             onClick={() => onChange(opt.id)}
-            className={`relative z-10 flex-1 px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors duration-200 ${
+            className={`relative z-10 flex-1 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors duration-200 ${
               active ? 'text-white' : 'text-slate-400 hover:text-slate-200'
             }`}
           >

@@ -67,13 +67,13 @@ export const SubmissionChip: React.FC<{
   return (
     <div>
       <span
-        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wide ${className}`}
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-bold uppercase tracking-wide ${className}`}
       >
         <Icon className="w-2.5 h-2.5 shrink-0" />
         {label}
       </span>
       {withDetail && (
-        <p className="text-[10px] text-slate-500 leading-snug mt-1">
+        <p className="text-[12px] text-slate-500 leading-snug mt-1">
           {state === 'local_only'
             ? 'Saved here, but not sent anywhere. Sign in and add it again to share it with other campers.'
             : state === 'pending_review'

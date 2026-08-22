@@ -263,7 +263,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
           {/* ---- The warning, before anything else ---- */}
           {flagged && (
             <div className="rounded-2xl border border-red-700/60 bg-red-950/40 p-3 anim-in-up">
-              <p className="text-[11px] font-bold text-red-200 flex items-center gap-1.5 mb-1.5">
+              <p className="text-xs font-bold text-red-200 flex items-center gap-1.5 mb-1.5">
                 <ShieldAlert className="w-3.5 h-3.5" />
                 Somebody got a knock here
               </p>
@@ -278,7 +278,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
                 </p>
               )}
 
-              <p className="text-[10px] text-red-300/80 mt-2 leading-snug">
+              <p className="text-[12px] text-red-300/80 mt-2 leading-snug">
                 {spot.knock && spot.knock.count > 1
                   ? `${spot.knock.count} campers have reported being moved on here. `
                   : ''}
@@ -294,12 +294,12 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
             className="rounded-2xl border p-3"
             style={{ borderColor: style.ring, background: style.colorSoft }}
           >
-            <p className="text-[11px] text-slate-200 leading-snug">{style.meaning}</p>
+            <p className="text-xs text-slate-200 leading-snug">{style.meaning}</p>
             {spot.landBasis && (
-              <p className="text-[10px] text-slate-400 mt-1 leading-snug">{spot.landBasis}</p>
+              <p className="text-[12px] text-slate-400 mt-1 leading-snug">{spot.landBasis}</p>
             )}
             {hint && (
-              <p className="text-[10px] text-slate-400 mt-1.5 font-semibold">{hint}</p>
+              <p className="text-[12px] text-slate-400 mt-1.5 font-semibold">{hint}</p>
             )}
           </div>
 
@@ -316,18 +316,18 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
                 <Star className="w-4 h-4" />
                 {spot.verifyCount === 0 ? 'Be the first to report on it' : 'Report on this spot'}
               </button>
-              <p className="text-[10px] text-slate-500 text-center leading-snug -mt-1">
+              <p className="text-[12px] text-slate-500 text-center leading-snug -mt-1">
                 A photo and being here is all it takes. About thirty seconds.
               </p>
 
               <button
                 onClick={startTracking}
-                className="w-full px-4 py-2.5 rounded-xl border border-slate-700 text-slate-200 hover:border-sky-600/60 font-bold text-[11px] flex items-center justify-center gap-2"
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-700 text-slate-200 hover:border-sky-600/60 font-bold text-xs flex items-center justify-center gap-2"
               >
                 <Moon className="w-3.5 h-3.5" />
                 I&apos;m staying the night here
               </button>
-              <p className="text-[10px] text-slate-500 leading-snug">{DWELL_EXPLAINER}</p>
+              <p className="text-[12px] text-slate-500 leading-snug">{DWELL_EXPLAINER}</p>
             </>
           )}
 
@@ -338,7 +338,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
                 <p className="text-xs font-bold text-slate-100">
                   {Math.floor(minutes / 60)}h {minutes % 60}m here
                 </p>
-                <p className="text-[10px] text-slate-400">
+                <p className="text-[12px] text-slate-400">
                   {ready ? 'Long enough' : `${DWELL_MINUTES_REQUIRED / 60}h needed`}
                 </p>
               </div>
@@ -349,12 +349,12 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
                 />
               </div>
               {typeof dwell?.distanceM === 'number' && (
-                <p className="text-[10px] text-slate-400 mt-1.5">
+                <p className="text-[12px] text-slate-400 mt-1.5">
                   {dwell.distanceM} m from the spot — check-in needs you within {GEOFENCE_METRES} m.
                 </p>
               )}
               {dwell && !dwell.ok && dwell.message && (
-                <p className="text-[10px] text-amber-300 mt-1.5 leading-snug">{dwell.message}</p>
+                <p className="text-[12px] text-amber-300 mt-1.5 leading-snug">{dwell.message}</p>
               )}
 
               <button
@@ -366,7 +366,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
               </button>
 
               {!ready && (
-                <p className="text-[10px] text-slate-500 mt-1.5 text-center leading-snug">
+                <p className="text-[12px] text-slate-500 mt-1.5 text-center leading-snug">
                   You can file a normal report right now. Staying the full four
                   hours makes it an overnight vouch instead.
                 </p>
@@ -378,7 +378,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
           <div className="pt-2 border-t border-slate-800">
             <div className="flex items-center gap-1.5 mb-2">
               <AlertTriangle className="w-3 h-3 text-red-400" />
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+              <p className="text-[12px] font-bold text-slate-400 uppercase tracking-wide">
                 Went badly?
               </p>
             </div>
@@ -389,7 +389,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
                   data-stagger={Math.min(i, 8)}
                   disabled={busy}
                   onClick={() => takeDown(option.outcome)}
-                  className="px-2 py-2 rounded-xl border border-slate-700 bg-slate-800/50 text-slate-300 hover:border-red-600/60 hover:text-red-200 text-[10px] font-semibold anim-in-up disabled:opacity-50"
+                  className="px-2 py-2 rounded-xl border border-slate-700 bg-slate-800/50 text-slate-300 hover:border-red-600/60 hover:text-red-200 text-[12px] font-semibold anim-in-up disabled:opacity-50"
                 >
                   {busy ? <Loader2 className="w-3 h-3 animate-spin mx-auto" />
                         : <>{option.emoji} {option.label}</>}
@@ -402,7 +402,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
               because only "gone" means there is nothing left to warn anybody
               about.
             */}
-            <p className="text-[10px] text-slate-500 mt-2 leading-snug">
+            <p className="text-[12px] text-slate-500 mt-2 leading-snug">
               The first three turn this spot red for everyone and leave it on the
               map with your note, so the next camper is warned instead of
               finding it themselves. “Gated, gone or unusable” takes it off
@@ -430,7 +430,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
             <div className="pt-2 border-t border-slate-800">
               <div className="flex items-center gap-1.5 mb-2">
                 <MapPin className="w-3 h-3 text-slate-400" />
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                <p className="text-[12px] font-bold text-slate-400 uppercase tracking-wide">
                   You added this spot
                 </p>
               </div>
@@ -438,7 +438,7 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
               {removal.removable ? (
                 confirmingRemove ? (
                   <div className="rounded-2xl border border-red-800/60 bg-red-950/30 p-3 anim-in-up">
-                    <p className="text-[11px] text-red-100 leading-snug">
+                    <p className="text-xs text-red-100 leading-snug">
                       Take it off the map for good? Nobody else has reported
                       here, so nothing of anybody else&apos;s goes with it — but
                       it cannot be undone.
@@ -447,14 +447,14 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
                       <button
                         onClick={() => setConfirmingRemove(false)}
                         disabled={busy}
-                        className="flex-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold disabled:opacity-50"
+                        className="flex-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold disabled:opacity-50"
                       >
                         Keep it
                       </button>
                       <button
                         onClick={removeMine}
                         disabled={busy}
-                        className="flex-1 px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
+                        className="flex-1 px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
                       >
                         {busy
                           ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -468,18 +468,18 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
                     <button
                       onClick={() => setConfirmingRemove(true)}
                       disabled={busy}
-                      className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-slate-800/50 text-slate-300 hover:border-red-600/60 hover:text-red-200 text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-slate-800/50 text-slate-300 hover:border-red-600/60 hover:text-red-200 text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       Remove this spot
                     </button>
-                    <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
+                    <p className="text-[12px] text-slate-500 mt-1.5 leading-snug">
                       {removal.message}
                     </p>
                   </>
                 )
               ) : (
-                <p className="text-[10px] text-slate-500 leading-snug">
+                <p className="text-[12px] text-slate-500 leading-snug">
                   {removal.message}
                 </p>
               )}
@@ -527,7 +527,7 @@ const SpotConditionsCard: React.FC<{ spot: BeaconSpot }> = ({ spot }) => {
 
   return (
     <div className="rounded-2xl border border-slate-700 bg-slate-800/40 p-3">
-      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+      <p className="text-[12px] font-bold text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
         <Radar className="w-3 h-3" />
         What {conditions.sampleSize} camper{conditions.sampleSize === 1 ? '' : 's'} said
       </p>
@@ -539,10 +539,10 @@ const SpotConditionsCard: React.FC<{ spot: BeaconSpot }> = ({ spot }) => {
             data-stagger={Math.min(i, 8)}
             className="flex items-baseline justify-between gap-2 anim-in-up"
           >
-            <span className="text-[10px] text-slate-400 truncate">
+            <span className="text-[12px] text-slate-400 truncate">
               {field.emoji} {field.question.replace(/\?$/, '')}
             </span>
-            <span className="text-[10px] font-bold text-slate-200 shrink-0 text-right">
+            <span className="text-[12px] font-bold text-slate-200 shrink-0 text-right">
               {label}
             </span>
           </div>
@@ -550,7 +550,7 @@ const SpotConditionsCard: React.FC<{ spot: BeaconSpot }> = ({ spot }) => {
       </div>
 
       {typeof conditions.cellBars === 'number' && (
-        <p className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-slate-700/60">
+        <p className="text-[12px] text-slate-400 mt-2 pt-2 border-t border-slate-700/60">
           Signal around {Math.round(conditions.cellBars)}/5 — an estimate from tower
           positions, not a reading anybody took.
         </p>
@@ -559,7 +559,7 @@ const SpotConditionsCard: React.FC<{ spot: BeaconSpot }> = ({ spot }) => {
       {/* The permanent caveat on averaged data. Two campers agreeing is not a
           survey, and the sample size is shown rather than smoothed over. */}
       {conditions.sampleSize < 3 && (
-        <p className="text-[10px] text-slate-500 mt-2 leading-snug">
+        <p className="text-[12px] text-slate-500 mt-2 leading-snug">
           That is {conditions.sampleSize === 1 ? 'one camper' : 'a couple of campers'} —
           treat it as a hint, not a description.
         </p>

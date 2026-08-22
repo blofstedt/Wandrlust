@@ -105,7 +105,7 @@ export const TierBadge: React.FC<{ tier: TrustTier; className?: string }> = ({
   const def = TIER_BY_ID[tier] ?? TIER_BY_ID[DEFAULT_TIER];
   return (
     <span
-      className={`px-2 py-0.5 rounded-lg border text-[10px] font-bold inline-flex items-center gap-1 ${def.ring} ${className}`}
+      className={`px-2 py-0.5 rounded-lg border text-[12px] font-bold inline-flex items-center gap-1 ${def.ring} ${className}`}
     >
       <Trophy tier={tier} size={12} />
       {def.label}

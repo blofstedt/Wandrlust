@@ -82,7 +82,7 @@ export const Admin1Line: React.FC<Admin1LineProps> = ({
 
   if (variant === 'badge') {
     return (
-      <span className="px-1.5 py-0.5 rounded bg-slate-700/60 border border-slate-600/80 text-[9px] font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1">
+      <span className="px-1.5 py-0.5 rounded bg-slate-700/60 border border-slate-600/80 text-[11px] font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1">
         <Flag className="w-2.5 h-2.5" />
         {text}
       </span>
@@ -91,13 +91,13 @@ export const Admin1Line: React.FC<Admin1LineProps> = ({
 
   return (
     <span className="flex flex-col gap-0.5 mt-0.5">
-      <span className="text-[10px] text-slate-400 flex items-center gap-1">
+      <span className="text-[12px] text-slate-400 flex items-center gap-1">
         <MapPin className="w-2.5 h-2.5" />
         {text}
       </span>
       {gap && (
         // Amber, not red: this is a limit on what we know, not a hazard.
-        <span className="text-[10px] text-amber-300/80 flex items-start gap-1">
+        <span className="text-[12px] text-amber-300/80 flex items-start gap-1">
           <Info className="w-2.5 h-2.5 mt-[3px] shrink-0" />
           <span>What’s drawn here is incomplete — {gap}. A blank map is not an empty one.</span>
         </span>

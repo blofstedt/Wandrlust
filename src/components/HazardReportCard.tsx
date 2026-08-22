@@ -71,7 +71,7 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-sm font-bold text-slate-100">{style.label}</h2>
               <span
-                className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${
+                className={`px-1.5 py-0.5 rounded border text-[11px] font-bold ${
                   confirmed
                     ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40'
                     : 'bg-slate-700/40 text-slate-400 border-slate-600'
@@ -82,7 +82,7 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
             </div>
 
             {/* Standing before content. A camper's word, quantified. */}
-            <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+            <p className="text-[12px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
               <Clock className="w-2.5 h-2.5" />
               Reported {relativeAge(record.created_at)}
               <span>·</span>
@@ -93,7 +93,7 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
 
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800 shrink-0"
+            className="p-1.5 tap-safe rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800 shrink-0"
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -101,12 +101,12 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
         </div>
 
         {record.detail && (
-          <p className="px-3.5 pb-2 text-[12px] text-slate-200 leading-relaxed">
+          <p className="px-3.5 pb-2 text-xs text-slate-200 leading-relaxed">
             “{record.detail}”
           </p>
         )}
 
-        <p className="px-3.5 pb-3 text-[9px] text-slate-500 leading-snug">
+        <p className="px-3.5 pb-3 text-[11px] text-slate-500 leading-snug">
           One camper's account of this spot, not an official closure. Conditions
           change fast on unpaved roads — treat it as a heads-up and judge the
           road when you get there.
@@ -116,7 +116,7 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
           <button
             onClick={() => vote(true)}
             disabled={busy}
-            className="flex-1 px-3 py-2.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-950/40 flex items-center justify-center gap-1.5 disabled:opacity-50"
+            className="flex-1 px-3 py-2.5 text-xs font-bold text-emerald-300 hover:bg-emerald-950/40 flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ThumbsUp className="w-3.5 h-3.5" />}
             Still there
@@ -124,7 +124,7 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
           <button
             onClick={() => vote(false)}
             disabled={busy}
-            className="flex-1 px-3 py-2.5 text-[11px] font-bold text-slate-400 hover:bg-slate-800 border-l border-slate-800 flex items-center justify-center gap-1.5 disabled:opacity-50"
+            className="flex-1 px-3 py-2.5 text-xs font-bold text-slate-400 hover:bg-slate-800 border-l border-slate-800 flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             <ThumbsDown className="w-3.5 h-3.5" />
             Clear now
@@ -132,11 +132,11 @@ export const HazardReportCard: React.FC<HazardReportCardProps> = ({
         </div>
 
         {notice && (
-          <p className="px-3.5 py-2 text-[11px] text-emerald-300 text-center border-t border-slate-800 anim-in-up">
+          <p className="px-3.5 py-2 text-xs text-emerald-300 text-center border-t border-slate-800 anim-in-up">
             {notice}
           </p>
         )}
       </div>
     </div>
   );
-};
+};

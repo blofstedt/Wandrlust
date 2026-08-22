@@ -67,7 +67,7 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = React.memo(({
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="btn absolute top-2 left-2 px-1.5 py-1 rounded-md bg-slate-950/80 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-950/80 text-[10px] font-bold flex items-center gap-1 backdrop-blur-md"
+            className="btn absolute top-2 left-2 px-1.5 py-1 rounded-md bg-slate-950/80 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-950/80 text-[12px] font-bold flex items-center gap-1 backdrop-blur-md"
             title="Open Street View at these coordinates"
           >
             <ExternalLink className="w-3 h-3" />
@@ -76,7 +76,7 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = React.memo(({
 
           <button
             onClick={(e) => onToggleSave(campsite, e)}
-            className={`absolute top-2 right-2 p-2 rounded-full backdrop-blur-md border ${
+            className={`absolute top-2 right-2 p-2 tap-safe rounded-full backdrop-blur-md border ${
               isSaved
                 ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md'
                 : 'bg-slate-950/70 text-slate-300 border-slate-700 hover:text-white hover:bg-slate-950'
@@ -87,7 +87,7 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = React.memo(({
           </button>
 
           <span
-            className={`absolute bottom-2 left-2 px-2 py-0.5 rounded text-[10px] font-black uppercase border tracking-wider ${LAND_TYPE_STYLE[campsite.landType]}`}
+            className={`absolute bottom-2 left-2 px-2 py-0.5 rounded text-[12px] font-black uppercase border tracking-wider ${LAND_TYPE_STYLE[campsite.landType]}`}
           >
             {campsite.landType.replace('_', ' ')}
           </span>
@@ -131,7 +131,7 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = React.memo(({
                     <span>{campsite.rating.toFixed(1)} ({campsite.reviewCount})</span>
                   </>
                 ) : (
-                  <span className="text-emerald-400 text-[10px] font-extrabold uppercase tracking-wide">
+                  <span className="text-emerald-400 text-[12px] font-extrabold uppercase tracking-wide">
                     Public site
                   </span>
                 )}
@@ -148,34 +148,34 @@ export const CampsiteCard: React.FC<CampsiteCardProps> = React.memo(({
                 describes, and the row collapses to a note when nobody has. */}
             <div className="flex items-center gap-2 flex-wrap">
               {amenities.stayLimitDays !== undefined && (
-                <span className="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 font-semibold text-[11px] border border-emerald-800/50">
+                <span className="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 font-semibold text-xs border border-emerald-800/50">
                   {amenities.stayLimitDays}-day limit
                 </span>
               )}
 
               {bestSignal !== undefined && (
-                <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                <span className="flex items-center gap-1 text-xs text-slate-400">
                   <Wifi className="w-3.5 h-3.5 text-teal-400" />
                   {bestSignal} bars
                 </span>
               )}
 
               {amenities.roadAccess && (
-                <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                <span className="flex items-center gap-1 text-xs text-slate-400">
                   <Truck className="w-3.5 h-3.5 text-amber-400" />
                   {ROAD_ACCESS_LABEL[amenities.roadAccess]}
                 </span>
               )}
 
               {amenities.water && amenities.water !== 'none' && (
-                <span className="flex items-center gap-1 text-[11px] text-sky-400">
+                <span className="flex items-center gap-1 text-xs text-sky-400">
                   <Droplet className="w-3.5 h-3.5" />
                   {WATER_LABEL[amenities.water]}
                 </span>
               )}
 
               {knownAmenityCount(amenities) === 0 && (
-                <span className="text-[11px] text-slate-500 italic">
+                <span className="text-xs text-slate-500 italic">
                   No facilities recorded — check before you go
                 </span>
               )}

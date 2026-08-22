@@ -53,7 +53,7 @@ const STRENGTH_COPY: Record<SignalStrength, { label: string; className: string }
 };
 
 const TechnologyChip: React.FC<{ technology: CellTechnology }> = ({ technology }) => (
-  <span className="px-1.5 py-px rounded bg-slate-700/70 border border-slate-600/60 text-[9px] font-bold text-slate-200 tracking-wide">
+  <span className="px-1.5 py-px rounded bg-slate-700/70 border border-slate-600/60 text-[11px] font-bold text-slate-200 tracking-wide">
     {technology}
   </span>
 );
@@ -66,13 +66,13 @@ export const CellCoverageCard: React.FC<{
 
   return (
     <section>
-      <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+      <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
         <Signal className="w-3 h-3" />
         Cell signal
       </h3>
 
       {isLoading && (
-        <div className="flex items-center gap-2 text-[11px] text-slate-400 py-2">
+        <div className="flex items-center gap-2 text-xs text-slate-400 py-2">
           <Loader2 className="w-3 h-3 animate-spin" />
           Checking coverage…
         </div>
@@ -95,7 +95,7 @@ export const CellCoverageCard: React.FC<{
                 </span>
                 {overall.technology && <TechnologyChip technology={overall.technology} />}
               </div>
-              <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1.5">
+              <p className="text-[12px] text-slate-400 mt-1.5 flex items-center gap-1.5">
                 <RadioTower className="w-3 h-3 shrink-0" />
                 Nearest mast {overall.nearestTowerKm} km away
                 {overall.towerCount > 1 && ` · ${overall.towerCount} within range`}
@@ -116,17 +116,17 @@ export const CellCoverageCard: React.FC<{
           */}
 
           {!overall && (
-            <p className="text-[11px] text-slate-400 rounded-xl border border-slate-700/60 bg-slate-800/50 px-3 py-2.5">
+            <p className="text-xs text-slate-400 rounded-xl border border-slate-700/60 bg-slate-800/50 px-3 py-2.5">
               {coverage.note ?? 'No coverage information for this point.'}
             </p>
           )}
 
           {/* The caveat travels with the numbers, always, in every branch. */}
           {coverage.basis && overall && (
-            <p className="text-[9px] text-slate-500 leading-tight mt-1.5">{coverage.basis}</p>
+            <p className="text-[11px] text-slate-500 leading-tight mt-1.5">{coverage.basis}</p>
           )}
           {coverage.note && overall && (
-            <p className="text-[9px] text-slate-500 leading-tight mt-1">{coverage.note}</p>
+            <p className="text-[11px] text-slate-500 leading-tight mt-1">{coverage.note}</p>
           )}
         </>
       )}

@@ -394,7 +394,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
           {/* Why the button is off, said plainly, rather than a dead button
               nobody can explain. */}
           {!busy && !uploading && (!hasPhoto || !position) && (
-            <p className="text-[10px] text-slate-500 text-center leading-snug">
+            <p className="text-[12px] text-slate-500 text-center leading-snug">
               {!position
                 ? locating ? 'Finding your position…' : 'Waiting on your position.'
                 : PHOTO_REQUIRED_REASON}
@@ -402,7 +402,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
           )}
 
           {answeredCount > 0 && (
-            <p className="text-[10px] text-slate-500 text-center">
+            <p className="text-[12px] text-slate-500 text-center">
               {answeredCount} question{answeredCount === 1 ? '' : 's'} answered.
               The rest stay blank — that is fine.
             </p>
@@ -414,7 +414,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
         {/* ---- The name, built not typed ---- */}
         {mode === 'create' && (
           <div className="rounded-2xl border border-slate-700 bg-slate-800/40 p-3">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
+            <p className="text-[12px] font-bold text-slate-400 uppercase tracking-wide mb-1">
               This spot will be called
             </p>
             {contextLoading ? (
@@ -428,7 +428,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
               out instantly why it is that and not something else.
             */}
             {context?.nameBasis && !contextLoading && (
-              <p className="text-[10px] text-slate-500 mt-1 leading-snug flex items-start gap-1.5">
+              <p className="text-[12px] text-slate-500 mt-1 leading-snug flex items-start gap-1.5">
                 <Info className="w-3 h-3 shrink-0 mt-px" />
                 {context.nameBasis}
               </p>
@@ -436,7 +436,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
           </div>
         )}
 
-        <p className="text-[11px] text-slate-400 leading-snug">{REPORT_INTRO}</p>
+        <p className="text-xs text-slate-400 leading-snug">{REPORT_INTRO}</p>
 
         {/* ---- Photos ---- */}
         <section>
@@ -461,7 +461,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
                 )}
                 {photo.failed && (
                   <div className="absolute inset-0 bg-red-950/70 flex items-center justify-center">
-                    <span className="text-[9px] font-bold text-red-200 px-1 text-center">
+                    <span className="text-[11px] font-bold text-red-200 px-1 text-center">
                       Failed
                     </span>
                   </div>
@@ -470,7 +470,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
                   type="button"
                   onClick={() => removePhoto(photo.id)}
                   aria-label="Remove this photo"
-                  className="absolute top-1 right-1 p-1 rounded-lg bg-slate-950/80 text-slate-300 hover:text-white"
+                  className="absolute top-1 right-1 p-1 tap-safe rounded-lg bg-slate-950/80 text-slate-300 hover:text-white"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -486,7 +486,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
                 {photos.length === 0
                   ? <Camera className="w-5 h-5" />
                   : <Plus className="w-5 h-5" />}
-                <span className="text-[9px] font-bold">
+                <span className="text-[11px] font-bold">
                   {photos.length === 0 ? 'Take one' : 'Add'}
                 </span>
               </button>
@@ -503,7 +503,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
             className="hidden"
           />
 
-          <p className="text-[10px] text-slate-500 mt-2 leading-snug">
+          <p className="text-[12px] text-slate-500 mt-2 leading-snug">
             {PHOTO_REQUIRED_REASON}
           </p>
         </section>
@@ -547,7 +547,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
           <SectionLabel>Nearby</SectionLabel>
 
           {contextLoading && (
-            <p className="text-[11px] text-slate-500">Checking what is around here…</p>
+            <p className="text-xs text-slate-500">Checking what is around here…</p>
           )}
 
           {/* What we found ourselves. Shown, not asked. */}
@@ -558,13 +558,13 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
                 key={question.key}
                 className="rounded-2xl border border-emerald-800/40 bg-emerald-950/20 p-3 flex items-center justify-between gap-3 anim-in-up"
               >
-                <p className="text-[11px] text-slate-200 font-semibold flex items-center gap-1.5 min-w-0">
+                <p className="text-xs text-slate-200 font-semibold flex items-center gap-1.5 min-w-0">
                   <span aria-hidden="true">{question.emoji}</span>
                   <span className="truncate">
                     {question.foundPrefix}: {foundPoi?.name}
                   </span>
                 </p>
-                <span className="text-[10px] text-emerald-300 shrink-0 font-bold">
+                <span className="text-[12px] text-emerald-300 shrink-0 font-bold">
                   {foundPoi && foundPoi.metresAway < 1000
                     ? `${foundPoi.metresAway} m`
                     : `${((foundPoi?.metresAway ?? 0) / 1000).toFixed(1)} km`}
@@ -587,7 +587,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
             ))}
 
           {context && !context.poiLookupFailed && (
-            <p className="text-[10px] text-slate-500 leading-snug">
+            <p className="text-[12px] text-slate-500 leading-snug">
               We looked within {POI_RADIUS_M / 1000} km on OpenStreetMap. It misses
               plenty — if you know of one we did not list, say so above.
             </p>
@@ -596,11 +596,11 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
           {/* Auto-captured, and labelled as an estimate rather than a reading. */}
           {typeof report.cellBars === 'number' && (
             <div className="rounded-2xl border border-slate-700/80 bg-slate-800/40 p-3 flex items-center justify-between gap-3">
-              <p className="text-[11px] text-slate-200 font-semibold flex items-center gap-1.5">
+              <p className="text-xs text-slate-200 font-semibold flex items-center gap-1.5">
                 <Signal className="w-3.5 h-3.5 text-sky-400" />
                 Signal here
               </p>
-              <span className="text-[10px] text-slate-300 font-bold">
+              <span className="text-[12px] text-slate-300 font-bold">
                 {report.cellBars}/5 {report.cellCarrier ? `· ${report.cellCarrier}` : ''}
               </span>
             </div>
@@ -626,7 +626,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
           */}
           {knocked && (
             <div className="rounded-2xl border border-red-800/50 bg-red-950/30 p-3 anim-in-up">
-              <p className="text-[11px] text-red-200 leading-snug flex items-start gap-1.5">
+              <p className="text-xs text-red-200 leading-snug flex items-start gap-1.5">
                 <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-px" />
                 {KNOCK_CONSEQUENCE}
               </p>
@@ -649,7 +649,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
           />
         </section>
 
-        <p className="text-[10px] text-slate-500 leading-snug">{REPORT_VISIBILITY_NOTE}</p>
+        <p className="text-[12px] text-slate-500 leading-snug">{REPORT_VISIBILITY_NOTE}</p>
       </div>
     </Sheet>
   );
@@ -660,7 +660,7 @@ export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
 const SectionLabel: React.FC<{ children: React.ReactNode; danger?: boolean }> = ({
   children, danger = false
 }) => (
-  <p className={`text-[10px] font-bold uppercase tracking-wide mb-2 ${
+  <p className={`text-[12px] font-bold uppercase tracking-wide mb-2 ${
     danger ? 'text-red-400' : 'text-slate-400'
   }`}>
     {children}

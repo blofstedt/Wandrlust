@@ -152,16 +152,18 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
       <div className="relative w-full max-w-3xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden text-slate-100 max-h-[90vh] flex flex-col">
         {/* Modal Header Bar */}
         <div className="sticky top-0 z-20 bg-slate-900/95 border-b border-slate-800 px-5 py-3.5 flex items-center justify-between backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            <span className="px-2.5 py-1 rounded-md bg-emerald-950 text-emerald-400 font-bold text-xs border border-emerald-800 uppercase">
+          {/* min-w-0 so the manager's name gives way to the buttons rather
+              than shoving the close control off the right-hand edge. */}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="px-2.5 py-1 rounded-md bg-emerald-950 text-emerald-400 font-bold text-xs border border-emerald-800 uppercase whitespace-nowrap shrink-0">
               {campsite.landType.replace('_', ' ')}
             </span>
-            <span className="text-xs text-slate-400 truncate max-w-[200px] sm:max-w-none">
+            <span className="text-xs text-slate-400 truncate">
               {campsite.landManager}
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => onToggleSave(campsite)}
               className={`p-2 rounded-xl border transition-all ${
@@ -170,12 +172,14 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                   : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
               }`}
               title={isSaved ? 'Saved Offline' : 'Save Offline'}
+              aria-label={isSaved ? 'Remove from saved' : 'Save for offline'}
             >
               <Bookmark className="w-4 h-4 fill-current" />
             </button>
             <button
               onClick={onClose}
-              className="p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white border border-slate-700 transition-colors"
+              className="p-2 tap-safe rounded-xl bg-slate-800 text-slate-400 hover:text-white border border-slate-700 transition-colors"
+              aria-label="Close campsite details"
             >
               <X className="w-5 h-5" />
             </button>
@@ -323,7 +327,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                   href="https://www.albertarelm.com/"
                   target="_blank"
                   rel="noreferrer"
-                  className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-semibold text-[11px] border border-cyan-400/30 flex items-center gap-1 transition-all"
+                  className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-semibold text-xs border border-cyan-400/30 flex items-center gap-1 transition-all"
                 >
                   <span>Buy on AlbertaRELM</span>
                   <ExternalLink className="w-3 h-3" />
@@ -333,11 +337,11 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {/* When You Need a Pass */}
                 <div className="bg-slate-900/80 p-3 rounded-xl border border-cyan-500/20 space-y-1.5">
-                  <div className="font-bold text-cyan-300 text-[11px] uppercase tracking-wider flex items-center gap-1">
+                  <div className="font-bold text-cyan-300 text-xs uppercase tracking-wider flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
                     When You Need a Pass
                   </div>
-                  <ul className="space-y-1 text-slate-300 text-[11px] list-disc list-inside">
+                  <ul className="space-y-1 text-slate-300 text-xs list-disc list-inside">
                     <li><strong>Eastern Slopes:</strong> Mandatory for anyone 18+ random camping along Rocky Mountains.</li>
                     <li><strong>Pass Cost:</strong> $20 per person for a 3-day pass, or $30 per person for an annual pass.</li>
                     <li><strong>Where to buy:</strong> Available online via AlbertaRELM.</li>
@@ -347,11 +351,11 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
 
                 {/* When You Do Not Need a Pass */}
                 <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 space-y-1.5">
-                  <div className="font-bold text-slate-400 text-[11px] uppercase tracking-wider flex items-center gap-1">
+                  <div className="font-bold text-slate-400 text-xs uppercase tracking-wider flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     When You Do NOT Need a Pass
                   </div>
-                  <ul className="space-y-1 text-slate-300 text-[11px] list-disc list-inside">
+                  <ul className="space-y-1 text-slate-300 text-xs list-disc list-inside">
                     <li><strong>General Crown Land:</strong> Random camping on public land outside designated Eastern Slopes pass area is free.</li>
                     <li><strong>Day Use Exempt:</strong> Parking or recreating on public land during the day requires no pass.</li>
                     <li><strong>Exemptions:</strong> Status card holders, specific local residents, and low-income assistance recipients.</li>
@@ -389,10 +393,10 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                         <div className="text-emerald-400 font-extrabold text-sm mt-0.5">
                           {'★'.repeat(bars)}{'☆'.repeat(Math.max(0, 5 - bars))}
                         </div>
-                        <div className="text-[10px] text-slate-400 mt-1">{bars}/5 bars</div>
+                        <div className="text-[12px] text-slate-400 mt-1">{bars}/5 bars</div>
                       </>
                     ) : (
-                      <div className="text-[10px] text-slate-500 mt-2 italic">{UNKNOWN_LABEL}</div>
+                      <div className="text-[12px] text-slate-500 mt-2 italic">{UNKNOWN_LABEL}</div>
                     )}
                   </div>
                 ))}
@@ -447,7 +451,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                 >
                   <Icon className={`w-4 h-4 shrink-0 ${value ? tint : 'text-slate-600'}`} />
                   <div className="min-w-0">
-                    <div className="text-slate-400 text-[10px] uppercase font-bold">{label}</div>
+                    <div className="text-slate-400 text-[12px] uppercase font-bold">{label}</div>
                     <div
                       className={`font-semibold truncate ${
                         value ? 'text-slate-200' : 'text-slate-500 italic font-normal'
@@ -460,7 +464,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
               ))}
             </div>
 
-            <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+            <p className="mt-3 text-xs text-slate-500 leading-relaxed">
               Anything marked “{UNKNOWN_LABEL}” has not been surveyed — it is not a
               statement that the facility is absent. Dispersed sites rarely have any
               of this; arrive self-sufficient.
@@ -497,7 +501,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                   site (a unique index, so a second one edits the first).
                 */}
                 <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase">
+                  <label className="text-xs font-bold text-slate-400 uppercase">
                     Vehicle / Rig Type
                   </label>
                   <input
@@ -510,7 +514,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase">Rating (1 to 5 Stars)</label>
+                  <label className="text-xs font-bold text-slate-400 uppercase">Rating (1 to 5 Stars)</label>
                   <div className="flex gap-1 mt-1">
                     {[1, 2, 3, 4, 5].map((star) => (
                       <button
@@ -528,7 +532,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase">Review & Conditions</label>
+                  <label className="text-xs font-bold text-slate-400 uppercase">Review & Conditions</label>
                   <textarea
                     required
                     rows={3}
@@ -540,7 +544,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                 </div>
 
                 {reviewError && (
-                  <p className="text-[11px] text-rose-300 bg-rose-950/50 border border-rose-800/50 rounded-lg p-2">
+                  <p className="text-xs text-rose-300 bg-rose-950/50 border border-rose-800/50 rounded-lg p-2">
                     {reviewError}
                   </p>
                 )}
@@ -553,7 +557,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                   <Send className="w-3.5 h-3.5" />
                   {isSavingReview ? 'Posting…' : user ? 'Post Review' : 'Sign in to post'}
                 </button>
-                <p className="text-[10px] text-slate-500 text-center leading-snug">
+                <p className="text-[12px] text-slate-500 text-center leading-snug">
                   Posted under your account handle. You get one review per spot —
                   posting again edits the one you already left.
                 </p>
@@ -576,13 +580,13 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
                     </div>
                     <p className="text-xs text-slate-300">{rev.comment}</p>
                     <div className="flex items-center justify-between mt-1.5">
-                      <div className="text-[10px] text-slate-500">{rev.date}</div>
+                      <div className="text-[12px] text-slate-500">{rev.date}</div>
                       {/* Only offered for server-backed reviews. A bundled one
                           has no row to report. */}
                       {serverReviews?.some((r) => r.id === rev.id) && (
                         <button
                           onClick={() => setReportingReview({ id: rev.id, author: rev.author })}
-                          className="text-[10px] text-slate-600 hover:text-rose-300 flex items-center gap-1"
+                          className="text-[12px] text-slate-600 hover:text-rose-300 flex items-center gap-1"
                           aria-label={`Report the review by ${rev.author}`}
                         >
                           <Flag className="w-2.5 h-2.5" />

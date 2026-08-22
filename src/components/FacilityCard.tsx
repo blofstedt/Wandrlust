@@ -87,18 +87,18 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
             {/* When it has a name, the kind still has to be said — "Ranger
                 Station" tells you nothing about whether there is a toilet. */}
             {facility.name && (
-              <p className="text-[11px] text-slate-400">{spec.label}</p>
+              <p className="text-xs text-slate-400">{spec.label}</p>
             )}
-            <p className="text-[11px] text-slate-300 leading-snug mt-1">{meaning}</p>
+            <p className="text-xs text-slate-300 leading-snug mt-1">{meaning}</p>
 
             {facility.detail && (
-              <p className="text-[11px] text-slate-300 leading-snug mt-1.5 border-l-2 border-slate-700 pl-2">
+              <p className="text-xs text-slate-300 leading-snug mt-1.5 border-l-2 border-slate-700 pl-2">
                 “{facility.detail}”
               </p>
             )}
 
             {facility.fee !== undefined && (
-              <p className="text-[10px] text-slate-400 mt-1">
+              <p className="text-[12px] text-slate-400 mt-1">
                 {facility.fee ? 'Charges a fee.' : 'Recorded as free.'}
               </p>
             )}
@@ -107,7 +107,7 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 shrink-0"
+            className="p-1.5 tap-safe rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 shrink-0"
             aria-label="Close"
           >
             <X className="w-3.5 h-3.5" />
@@ -120,7 +120,7 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
               type="button"
               disabled={busy}
               onClick={() => void vote(true)}
-              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold flex items-center justify-center gap-1.5 hover:border-emerald-600 hover:text-emerald-300 disabled:opacity-60"
+              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-emerald-600 hover:text-emerald-300 disabled:opacity-60"
             >
               {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
               It&apos;s there
@@ -129,7 +129,7 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
               type="button"
               disabled={busy}
               onClick={() => void vote(false)}
-              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold flex items-center justify-center gap-1.5 hover:border-rose-600 hover:text-rose-300 disabled:opacity-60"
+              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-rose-600 hover:text-rose-300 disabled:opacity-60"
             >
               <ThumbsDown className="w-3.5 h-3.5" />
               Not there
@@ -140,7 +140,7 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
                 haptic('tap');
                 openDirections(facility.latitude, facility.longitude);
               }}
-              className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold flex items-center gap-1.5 hover:border-slate-500"
+              className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 hover:border-slate-500"
               aria-label={`Open in ${directionsAppName()}`}
             >
               <Navigation className="w-3.5 h-3.5" />
@@ -148,7 +148,7 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
           </div>
 
           {notice && (
-            <p className="text-[11px] text-slate-200 bg-slate-800/70 border border-slate-700 rounded-lg px-2.5 py-1.5 leading-snug">
+            <p className="text-xs text-slate-200 bg-slate-800/70 border border-slate-700 rounded-lg px-2.5 py-1.5 leading-snug">
               {notice}
             </p>
           )}
@@ -158,7 +158,7 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
             mapped in 2019 can be locked, burnt down, or behind a gate that
             went up last spring, and this app has no way of knowing.
           */}
-          <p className="text-[10px] text-slate-500 leading-snug">
+          <p className="text-[12px] text-slate-500 leading-snug">
             Nobody has been sent to check this. It may be locked, seasonal, or
             gone — and finding nothing mapped nearby only means nobody has
             mapped one, not that there is none.

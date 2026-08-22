@@ -103,7 +103,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
             <p className="text-xs font-bold text-sky-200 mb-1">
               Add Wandrlust to your Home Screen first
             </p>
-            <p className="text-[11px] text-sky-100/80 leading-snug">
+            <p className="text-xs text-sky-100/80 leading-snug">
               On iPhone and iPad, Safari only delivers alerts to installed apps. Tap
               Share, then <strong>Add to Home Screen</strong>, and open it from there —
               alerts will be available.
@@ -118,7 +118,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
     return (
       <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-3 flex items-start gap-2">
         <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-        <p className="text-[11px] text-slate-300">
+        <p className="text-xs text-slate-300">
           Alerts need a secure (HTTPS) connection. They&apos;ll work once this is
           deployed.
         </p>
@@ -130,7 +130,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
     return (
       <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-3 flex items-start gap-2">
         <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-        <p className="text-[11px] text-slate-300">
+        <p className="text-xs text-slate-300">
           This browser doesn&apos;t support push notifications. Alerts will still show
           in the app while it&apos;s open.
         </p>
@@ -147,7 +147,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
           <BellOff className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
           <div>
             <p className="text-xs font-bold text-amber-200 mb-1">Alerts are blocked</p>
-            <p className="text-[11px] text-amber-100/80 leading-snug">
+            <p className="text-xs text-amber-100/80 leading-snug">
               Your browser is blocking notifications for this site. To turn them back
               on, open the padlock icon in the address bar and allow notifications.
             </p>
@@ -184,7 +184,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
             >
               {enabled ? 'Alerts are on for this device' : 'Turn on safety alerts'}
             </p>
-            <p className="text-[11px] text-slate-400 leading-snug mt-0.5">
+            <p className="text-xs text-slate-400 leading-snug mt-0.5">
               {enabled
                 ? 'You’ll get fire, flood and storm warnings for where you are, even when the app is closed.'
                 : 'Get fire, flood and storm warnings for your area — including when the app is closed.'}
@@ -196,7 +196,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
           <button
             onClick={enabled ? disable : enable}
             disabled={busy || !user}
-            className={`flex-1 px-3 py-2 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-moook ${
+            className={`flex-1 px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-moook ${
               enabled
                 ? 'bg-slate-800 text-slate-300 border border-slate-700'
                 : 'bg-emerald-600 hover:bg-emerald-500 text-white'
@@ -215,7 +215,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
           {enabled && (
             <button
               onClick={test}
-              className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-[11px] font-bold flex items-center gap-1.5 transition-moook"
+              className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold flex items-center gap-1.5 transition-moook"
             >
               <Send className="w-3 h-3" />
               Test
@@ -224,13 +224,13 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
         </div>
 
         {!user && (
-          <p className="text-[10px] text-slate-500 mt-2">Sign in to enable alerts.</p>
+          <p className="text-[12px] text-slate-500 mt-2">Sign in to enable alerts.</p>
         )}
       </div>
 
       {notice && (
         <p
-          className={`text-[11px] flex items-start gap-1.5 ${
+          className={`text-xs flex items-start gap-1.5 ${
             notice.ok ? 'text-emerald-300' : 'text-amber-300'
           }`}
         >
@@ -245,7 +245,7 @@ export const PushSettings: React.FC<PushSettingsProps> = ({ center }) => {
 
       {/* The honest caveat. Someone might plan around these alerts. */}
       <div className="rounded-xl bg-slate-800/40 border border-slate-700/60 p-2.5">
-        <p className="text-[10px] text-slate-400 leading-snug">
+        <p className="text-[12px] text-slate-400 leading-snug">
           <strong className="text-slate-300">Never rely on alerts alone.</strong> No
           signal, a dead battery, or a push service outage all mean a warning never
           arrives. Carry a satellite communicator if a missed alert would matter.

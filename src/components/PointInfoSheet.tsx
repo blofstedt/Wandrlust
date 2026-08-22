@@ -105,7 +105,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
         <div className="px-4 pb-3 shrink-0">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] font-bold text-slate-300 uppercase tracking-wide">
+              <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 uppercase tracking-wide">
                 Point you picked
               </span>
               <h2 className="text-base font-bold text-slate-100 truncate mt-1">
@@ -117,7 +117,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
                 question this card does not answer.
               */}
               {land?.designation && (
-                <p className="text-[11px] text-slate-400 truncate">{land.designation}</p>
+                <p className="text-xs text-slate-400 truncate">{land.designation}</p>
               )}
               <Admin1Line latitude={latitude} longitude={longitude} />
             </div>
@@ -125,7 +125,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 shrink-0"
+              className="p-2 tap-safe rounded-xl bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 shrink-0"
               aria-label="Close"
             >
               <X className="w-4 h-4" />
@@ -151,18 +151,18 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
             const card = landRules(land);
             return (
               <section className="rounded-xl border border-violet-900/50 bg-violet-950/25 px-3 py-2.5">
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-violet-300 mb-1.5">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-violet-300 mb-1.5">
                   Camping rules on this land
                 </h3>
                 <ul className="space-y-1">
                   {card.rules.map((rule) => (
-                    <li key={rule} className="flex gap-1.5 text-[11px] text-slate-200 leading-snug">
+                    <li key={rule} className="flex gap-1.5 text-xs text-slate-200 leading-snug">
                       <span aria-hidden="true" className="text-violet-400 shrink-0">•</span>
                       <span>{rule}</span>
                     </li>
                   ))}
                 </ul>
-                <p className="text-[9px] text-slate-400 leading-snug mt-2 pt-2 border-t border-violet-900/50">
+                <p className="text-[11px] text-slate-400 leading-snug mt-2 pt-2 border-t border-violet-900/50">
                   {card.basis ? `${card.basis}. ` : ''}
                   The boundary this came from is approximate — its edge can be
                   hundreds of metres out.
@@ -173,7 +173,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
           })()}
 
           {dots.length === 0 ? (
-            <p className="text-[11px] text-slate-400 leading-snug">
+            <p className="text-xs text-slate-400 leading-snug">
               Nothing has come back about this point yet. That is not the same
               as nothing being here — the weather, warnings and nearby
               facilities are still being looked up, and any of them can come
@@ -181,7 +181,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
             </p>
           ) : (
             <>
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 pt-0.5">
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 pt-0.5">
                 What is known here
               </h3>
 
@@ -219,7 +219,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
                           can be hundreds of metres out.
                         */}
                         {dot.full && dot.full !== dot.label && (
-                          <p className="text-[11px] text-slate-300 leading-snug mt-1">
+                          <p className="text-xs text-slate-300 leading-snug mt-1">
                             {dot.full}
                           </p>
                         )}
@@ -227,7 +227,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
                           <button
                             type="button"
                             onClick={() => { haptic('tap'); onShowOnMap(dot); }}
-                            className="mt-2 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-[10px] font-bold text-slate-200 hover:text-white hover:border-slate-500 flex items-center gap-1.5"
+                            className="mt-2 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-[12px] font-bold text-slate-200 hover:text-white hover:border-slate-500 flex items-center gap-1.5"
                           >
                             Show me on the map
                             <ArrowRight className="w-3 h-3" />
@@ -255,7 +255,7 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
             {copied ? 'Copied' : coords}
           </button>
 
-          <p className="text-[10px] text-slate-500 leading-snug flex items-start gap-1.5 pt-1">
+          <p className="text-[12px] text-slate-500 leading-snug flex items-start gap-1.5 pt-1">
             <MapPin className="w-3 h-3 shrink-0 mt-0.5" />
             <span>
               Nobody has stood here for Wandrlust. Everything above is read off
