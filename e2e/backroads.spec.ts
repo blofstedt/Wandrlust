@@ -7,9 +7,9 @@ import { loadApp, sleep } from './helpers';
  * Every other spec in here talks to the real services. This one deliberately
  * does not: Overpass is rate-limited, its answer for any given box changes as
  * volunteers edit it, and what is being checked is OUR half — that the layer
- * draws, that the legend appears with the caveat under it, and that the three
- * silences (nothing mapped, could not check, too much to draw) each say which
- * one they are instead of all rendering as an empty map.
+ * draws, that the legend appears with the caveat under it, and that the
+ * silences (zoomed out, nothing mapped, could not check, too much to draw)
+ * each say which one they are instead of all rendering as an empty map.
  *
  * The stub answers relative to whatever box is asked for, so the test does not
  * care where the map happens to open.
@@ -33,26 +33,11 @@ const roadsIn = (url: string) => {
     [[lat(f), lon(0.15)], [lat(f + 0.05), lon(0.5)], [lat(f), lon(0.85)]];
 
   return [
-    {
-      id: 1, name: 'Willow Springs Rd', kind: 'unclassified', surface: 'unpaved',
-      surfaceTag: 'gravel', access: 'open', gated: false, seasonal: false,
-      fourWheelDrive: false, line: across(0.3)
-    },
-    {
-      id: 2, name: null, kind: 'track', surface: 'unrecorded', surfaceTag: null,
-      access: 'open', gated: true, seasonal: false, fourWheelDrive: true,
-      line: across(0.45)
-    },
-    {
-      id: 3, name: null, kind: 'service', surface: 'unrecorded', surfaceTag: null,
-      access: 'open', gated: false, seasonal: false, fourWheelDrive: false,
-      line: across(0.6)
-    },
-    {
-      id: 4, name: null, kind: 'track', surface: 'unpaved', surfaceTag: 'dirt',
-      access: 'private', gated: false, seasonal: false, fourWheelDrive: false,
-      line: across(0.75)
-    }
+    { kind: 'unclassified', surface: 'unpaved', access: 'open', line: across(0.25) },
+    { kind: 'track', surface: 'unrecorded', access: 'open', line: across(0.4) },
+    { kind: 'service', surface: 'unrecorded', access: 'open', line: across(0.55) },
+    { kind: 'residential', surface: 'paved', access: 'open', line: across(0.7) },
+    { kind: 'track', surface: 'unpaved', access: 'private', line: across(0.85) }
   ];
 };
 
@@ -99,6 +84,7 @@ test('backroads draw, and the legend says what the lines mean', async ({ page })
   // not optional: it is what stops a drawn line reading as a promise.
   await expect(page.locator('text=Gravel or dirt')).toBeVisible();
   await expect(page.locator('text=Surface not recorded')).toBeVisible();
+  await expect(page.locator('text=Private or permit')).toBeVisible();
   await expect(
     page.locator('text=/not one that is\\s+maintained, ungated, passable today, or legal to drive/')
   ).toBeVisible();

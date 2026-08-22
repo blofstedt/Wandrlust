@@ -106,25 +106,29 @@ const MIN_LENGTH_M = 45;
 export type BackroadSurface = 'unpaved' | 'paved' | 'unrecorded';
 export type BackroadAccess = 'open' | 'permit' | 'private';
 
+/**
+ * Four fields, because four fields are what the map draws.
+ *
+ * OSM knows plenty more about these ways — a name, a gate, `4wd_only`,
+ * seasonal access, the exact surface word — and none of it is sent, because
+ * the layer draws unlabelled, non-interactive lines and there is nowhere for
+ * any of it to appear. Measured on a real viewport, those extras were an
+ * eighth of the payload, paid for on a phone with one bar.
+ *
+ * They are not carried "in case", either — a field nothing reads is a field
+ * nobody notices has gone wrong. The day a camper can tap a road and be told
+ * what OSM has on it, the tags are still in `way.tags` right here and the
+ * answers are a few lines away: `barrier`/`locked` for a gate,
+ * `seasonal`/`snowplowing` for a winter closure, `4wd_only` and `smoothness`
+ * for whether a van has any business on it.
+ */
 export interface BackroadWay {
-  /** OSM way id. Stable enough to key a React render on. */
-  id: number;
-  /** Name or road number. Most tracks have neither, and that is normal. */
-  name: string | null;
   /** The raw `highway` value — `track`, `service`, `unclassified`… */
   kind: string;
   /** What OSM records about the surface. `unrecorded` is a real answer. */
   surface: BackroadSurface;
-  /** The raw tag, for the one line of text the map shows. */
-  surfaceTag: string | null;
   /** OSM says a permit or permission is needed, or that it is private. */
   access: BackroadAccess;
-  /** A gate, bollard or barrier is recorded on the way. */
-  gated: boolean;
-  /** Seasonal access, or explicitly not ploughed. */
-  seasonal: boolean;
-  /** `4wd_only=yes`, or smoothness bad enough to mean the same thing. */
-  fourWheelDrive: boolean;
   /** [lat, lon] pairs, simplified for drawing. */
   line: [number, number][];
 }
@@ -180,19 +184,6 @@ const accessOf = (tags: Record<string, string>): BackroadAccess => {
   }
   return 'open';
 };
-
-const isGated = (tags: Record<string, string>): boolean =>
-  tags.barrier === 'gate' || tags.barrier === 'lift_gate' || tags.barrier === 'bollard' ||
-  tags.barrier === 'block' || tags.gate === 'yes' || tags.locked === 'yes';
-
-const isSeasonal = (tags: Record<string, string>): boolean =>
-  Boolean(tags.seasonal) || tags.snowplowing === 'no' || Boolean(tags['motor_vehicle:conditional']);
-
-const needsFourWheelDrive = (tags: Record<string, string>): boolean =>
-  tags['4wd_only'] === 'yes' ||
-  tags.smoothness === 'very_bad' || tags.smoothness === 'horrible' ||
-  tags.smoothness === 'very_horrible' || tags.smoothness === 'impassable' ||
-  tags.tracktype === 'grade5';
 
 /**
  * Service roads worth drawing, and the two kinds that are pure clutter.
@@ -400,7 +391,7 @@ const scanBox = async (
     if (geometry.length < 2) continue;
     if (isClutterService(tags)) continue;
 
-    const { surface, tag } = surfaceOf(tags);
+    const { surface } = surfaceOf(tags);
 
     /**
      * A major road only earns its place by being unpaved. The Overpass clause
@@ -425,15 +416,9 @@ const scanBox = async (
     scored.push({
       metres,
       way: {
-        id: way.id ?? 0,
-        name: tags.name?.trim() || tags.ref?.trim() || null,
         kind: tags.highway ?? 'road',
         surface,
-        surfaceTag: tag,
         access: accessOf(tags),
-        gated: isGated(tags),
-        seasonal: isSeasonal(tags),
-        fourWheelDrive: needsFourWheelDrive(tags),
         line
       }
     });

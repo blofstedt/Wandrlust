@@ -818,22 +818,17 @@ export type BackroadSurface = 'unpaved' | 'paved' | 'unrecorded';
 /** What OSM says about driving it. `open` means nothing says otherwise. */
 export type BackroadAccess = 'open' | 'permit' | 'private';
 
+/**
+ * Four fields, because four fields are what the map draws. What OSM knows
+ * and this deliberately does not carry — the name, the gate, `4wd_only`,
+ * seasonal access — is listed in `server/backroadRoutes.ts`, along with
+ * where to pick it back up.
+ */
 export interface BackroadWay {
-  /** OSM way id. */
-  id: number;
-  /** Name or road number. Most tracks have neither, and that is normal. */
-  name: string | null;
   /** The raw `highway` value — `track`, `service`, `unclassified`… */
   kind: string;
   surface: BackroadSurface;
-  /** The raw OSM tag behind `surface`, for the line of text on screen. */
-  surfaceTag: string | null;
   access: BackroadAccess;
-  /** A gate, bollard or barrier is recorded on the way. */
-  gated: boolean;
-  /** Seasonal access, or explicitly not ploughed. */
-  seasonal: boolean;
-  fourWheelDrive: boolean;
   /** [lat, lon] pairs, simplified for drawing. */
   line: [number, number][];
 }
