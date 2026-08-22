@@ -302,9 +302,12 @@ export const fetchSpotContext = async (
         // Overpass explains itself in the body — a rejected query, a demand for
         // a token, a rationed client. Logging the status alone threw that away.
         const body = await res.text().catch(() => '');
+        // Timing separates a rejected query (instant) from one the server
+        // accepted and then died on (near the declared budget). Different
+        // faults, opposite fixes — worth the extra field.
         tried.push(
-          `${host}: HTTP ${res.status}` +
-          (body ? ` ${body.slice(0, 200).replace(/\s+/g, ' ').trim()}` : '')
+          `${host}: HTTP ${res.status} after ${Date.now() - startedAt} ms` +
+          (body ? ` — ${body.slice(0, 200).replace(/\s+/g, ' ').trim()}` : '')
         );
         continue;
       }
