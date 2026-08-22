@@ -26,9 +26,9 @@ import { haptic } from '../utils/animation';
  * THIS IS A LAYOUT ROW, NOT A FLOATING BAR. It is a flex sibling of the
  * map, so the map is simply shorter and the bar cannot cover the zoom
  * buttons, the attribution, or the boundary and backroad notices that
- * stack along the map's bottom edge. The only thing that floats is the
- * add button, and it floats over the middle of the map where nothing else
- * ever sits.
+ * stack along the map's bottom edge. Nothing here reaches outside the row
+ * either — the add button used to hang half out of it, and over the map
+ * Leaflet's own panes painted across the half that stuck up.
  */
 
 interface Tool {
@@ -161,51 +161,57 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
         padding sits BELOW this bar, which would leave a slate gap under it.
         Padding it here instead lets the bar's own background run to the
         bottom edge of the glass, the way a native tab bar does.
+
+        The z-index is load-bearing. Leaflet gives its own panes z-indices in
+        the hundreds, and this bar is a plain flex sibling of the map, so
+        without a number of its own anything of ours that reaches upward gets
+        painted over by the tiles. That is what sliced the top off the add
+        button on the map view.
       */}
       <nav
-        className="md:hidden relative shrink-0 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(2,6,23,0.5)]"
+        className="md:hidden relative z-[1200] shrink-0 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(2,6,23,0.5)]"
         aria-label="Main"
       >
-        {/*
-          The add button.
+        <div className="flex items-center">
+          {tabs.map(({ id, label, icon: Icon, badge }, index) => (
+            <React.Fragment key={id}>
+              {/*
+                The add button.
 
-          It floats clear of the bar so it reads as the one thing you DO
-          rather than one of four places you go. It sits centred, over the
-          middle of the map's bottom edge, which is the one strip of the map
-          chrome that has never held a control.
+                It used to float half out of the bar, over the map. That read
+                well in a mock-up and badly on a phone: Leaflet painted over
+                its top half, so what a thumb saw was a teal semicircle sitting
+                off-centre in the bar. It lives INSIDE the bar now — centred in
+                its own slot, the full circle visible, nothing overlapping
+                anything. It is still the only round thing down here, which is
+                what made it read as the one thing you DO.
+              */}
+              {index === 2 && (
+                <div className="w-[74px] shrink-0 flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={() => { haptic('tap'); onOpenAddModal(); }}
+                    className="w-[50px] h-[50px] rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 text-white shadow-lg shadow-emerald-950/70 ring-1 ring-emerald-300/30 flex items-center justify-center anim-pop"
+                    aria-label="Submit the spot you are standing in"
+                  >
+                    <Plus className="w-7 h-7" strokeWidth={2.5} />
+                  </button>
+                </div>
+              )}
 
-          The `z-10` is load-bearing. The tab row below is a later sibling,
-          so without it the tabs paint over the button's bottom half — the
-          half a thumb actually lands on — and the tap silently opened
-          Saved instead.
-        */}
-        <button
-          type="button"
-          onClick={() => { haptic('tap'); onOpenAddModal(); }}
-          className="absolute -top-7 left-1/2 -translate-x-1/2 z-10 w-14 h-14 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 border-4 border-slate-900 text-white shadow-xl shadow-emerald-950/60 flex items-center justify-center anim-pop"
-          aria-label="Submit the spot you are standing in"
-        >
-          <Plus className="w-7 h-7" strokeWidth={2.5} />
-        </button>
-
-        <div className="flex items-stretch">
-          {tabs.map(({ id, label, icon: Icon, badge }, index) => {
-            const active = id !== 'tools' && activeView === id;
-            /* The two tabs either side of the add button give up a little
-               width to it, so nothing sits under a floating circle. */
-            const clearsFab = index === 1 ? 'pr-7' : index === 2 ? 'pl-7' : '';
-            return (
               <button
-                key={id}
                 type="button"
                 onClick={() => select(id)}
-                aria-current={active ? 'page' : undefined}
-                className={`relative flex-1 flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 min-h-[54px] no-press ${clearsFab} ${
-                  active ? 'text-emerald-400' : 'text-slate-400'
+                aria-current={id !== 'tools' && activeView === id ? 'page' : undefined}
+                className={`relative flex-1 flex flex-col items-center justify-center gap-0.5 pt-2.5 pb-2 min-h-[62px] no-press ${
+                  id !== 'tools' && activeView === id ? 'text-emerald-400' : 'text-slate-400'
                 }`}
               >
                 <span className="relative">
-                  <Icon className="w-[22px] h-[22px]" strokeWidth={active ? 2.4 : 2} />
+                  <Icon
+                    className="w-[22px] h-[22px]"
+                    strokeWidth={id !== 'tools' && activeView === id ? 2.4 : 2}
+                  />
                   {badge != null && badge > 0 && (
                     <span className="absolute -top-1.5 -right-2.5 min-w-[17px] h-[17px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center">
                       {badge > 99 ? '99+' : badge}
@@ -213,36 +219,53 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
                   )}
                 </span>
                 <span className="text-[11px] font-bold leading-none">{label}</span>
-                {active && (
+                {id !== 'tools' && activeView === id && (
                   <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-emerald-400" />
                 )}
               </button>
-            );
-          })}
+            </React.Fragment>
+          ))}
         </div>
       </nav>
 
+      {/*
+        Tools is a floating card, not a drawer.
+
+        As a bottom sheet it slid up over the tab bar, so the Tools tab you
+        had just pressed vanished under the thing it opened, and the last
+        group ran off the bottom edge of the screen with nothing to say it
+        was still going. A centred card sits clear of both edges: the bar
+        stays visible underneath it, and the list scrolls inside the card
+        where a scroll obviously belongs.
+      */}
       <Sheet
         isOpen={showTools}
         onClose={() => setShowTools(false)}
+        variant="dialog"
         title="Tools"
         subtitle="Everything that is not the map itself"
       >
-        <div className="p-3 space-y-4">
+        {/*
+          The list is taller than any phone, so the card fades at its bottom
+          edge instead of guillotining a row. Without it the last thing you
+          can see is half a tool with a hard line through it, which reads as
+          a broken card rather than as "keep scrolling".
+        */}
+        <div className="relative p-4 space-y-5">
           {groups.map(({ heading, tools }) => (
             <div key={heading}>
-              <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 px-1 pb-1.5">
+              <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 px-0.5 pb-2">
                 {heading}
               </h3>
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 {tools.map(({ key, label, blurb, icon: Icon, iconClass, onClick, badge, badgeClass }) => (
                   <button
                     key={key}
                     type="button"
                     onClick={() => { setShowTools(false); onClick(); }}
-                    className="w-full flex items-center gap-3 p-3 rounded-xl bg-slate-800/60 hover:bg-slate-800 border border-slate-700/70 text-left"
+                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700/60 text-left"
                   >
-                    <span className="w-9 h-9 shrink-0 rounded-lg bg-slate-900/80 border border-slate-700 flex items-center justify-center">
+                    <span className="w-9 h-9 shrink-0 rounded-lg bg-slate-900/80 border border-slate-700 flex items-center justify-center self-start">
                       <Icon className={`w-[18px] h-[18px] ${iconClass}`} />
                     </span>
                     <span className="min-w-0 flex-1">
@@ -261,6 +284,10 @@ export const MobileTabBar: React.FC<MobileTabBarProps> = ({
               </div>
             </div>
           ))}
+          <div
+            aria-hidden="true"
+            className="sticky bottom-0 -mb-4 h-7 bg-gradient-to-t from-slate-900 to-transparent pointer-events-none"
+          />
         </div>
       </Sheet>
     </>

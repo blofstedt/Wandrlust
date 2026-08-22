@@ -94,10 +94,14 @@ export const Sheet: React.FC<SheetProps> = ({
         aria-labelledby={titleId.current}
         tabIndex={-1}
         onKeyDown={handleKeyDown}
-        className={`w-full ${maxWidthClass} bg-slate-900 border-slate-700 shadow-2xl max-h-[90vh] flex flex-col outline-none ${
+        className={`w-full ${maxWidthClass} bg-slate-900 border-slate-700 shadow-2xl flex flex-col outline-none ${
           isSheet
-            ? 'border-t sm:border rounded-t-3xl sm:rounded-2xl anim-sheet-up sm:anim-expand'
-            : 'border rounded-2xl anim-expand'
+            ? 'max-h-[90vh] border-t sm:border rounded-t-3xl sm:rounded-2xl anim-sheet-up sm:anim-expand'
+            /* A dialog is a card floating in the middle of the screen, so it
+               stops short of the edges the sheet is allowed to reach — the
+               tab bar and the header stay visible around it, which is what
+               tells you it is a layer and not a new screen. */
+            : 'max-h-[82vh] border rounded-2xl anim-expand'
         }`}
       >
         {isSheet && (
@@ -106,12 +110,17 @@ export const Sheet: React.FC<SheetProps> = ({
           </div>
         )}
 
-        <header className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-800 shrink-0">
-          <div className="flex items-center gap-2.5 min-w-0">
-            {icon && <div className="shrink-0">{icon}</div>}
+        {/* The subtitle WRAPS. It used to be `truncate`, which is fine for a
+            three-word caption and wrong for the ones that are a sentence —
+            "Wandrlust does not know where you are yet" arrived on a phone as
+            "Wandrlust does not know where you are …", which reads like the
+            app broke off mid-thought. */}
+        <header className="flex items-start justify-between gap-3 px-4 py-3.5 border-b border-slate-800 shrink-0">
+          <div className="flex items-start gap-2.5 min-w-0">
+            {icon && <div className="shrink-0 mt-0.5">{icon}</div>}
             <div className="min-w-0">
-              <h2 id={titleId.current} className="text-sm font-bold text-slate-100 truncate">{title}</h2>
-              {subtitle && <p className="text-xs text-slate-400 truncate">{subtitle}</p>}
+              <h2 id={titleId.current} className="text-sm font-bold text-slate-100">{title}</h2>
+              {subtitle && <p className="text-xs text-slate-400 leading-snug mt-0.5">{subtitle}</p>}
             </div>
           </div>
           <button
@@ -178,4 +187,4 @@ export function Segmented<T extends string>({
       })}
     </div>
   );
-}
+}

@@ -56,14 +56,21 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
     }
     icon={<PlusCircle className="w-5 h-5 text-emerald-400" />}
   >
-    <div className="space-y-3 text-xs text-slate-300">
+    {/*
+      PADDING LIVES HERE, not in Sheet. Sheet hands its children the bare
+      scroll box so a full-bleed list can use the whole width, which meant
+      this dialog's text and buttons ran edge to edge against the card's
+      border with nothing between them. Everything below is inside one
+      padded column with real space between the things you can press.
+    */}
+    <div className="p-4 space-y-3.5 text-slate-300">
       {userLocation ? (
         <>
-          <p className="flex items-center gap-2 font-mono text-xs text-slate-200 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
-            <Crosshair className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <p className="flex items-center gap-2 font-mono text-[13px] text-slate-200 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5">
+            <Crosshair className="w-4 h-4 text-emerald-400 shrink-0" />
             {userLocation[0].toFixed(5)}, {userLocation[1].toFixed(5)}
           </p>
-          <p className="text-xs text-slate-400 leading-snug">
+          <p className="text-xs text-slate-400 leading-relaxed">
             That is your phone&apos;s fix, as good as it managed — it may be a
             few dozen metres off, and it is where you are rather than where the
             pullout is. You can correct the numbers on the next screen.
@@ -72,7 +79,7 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
           <button
             type="button"
             onClick={() => onConfirm(userLocation[0], userLocation[1])}
-            className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950"
+            className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[13px] flex items-center justify-center gap-2 shadow-lg shadow-emerald-950"
           >
             <PlusCircle className="w-4 h-4" />
             Yes, add my current location
@@ -87,15 +94,15 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
           <button
             type="button"
             onClick={() => onAddFacility(userLocation[0], userLocation[1])}
-            className="w-full py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-2 hover:bg-slate-700"
+            className="w-full py-3 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-2 hover:bg-slate-700"
           >
-            <Droplets className="w-3.5 h-3.5" />
+            <Droplets className="w-4 h-4 shrink-0" />
             It&apos;s a toilet, tap or dump station — not a campsite
           </button>
         </>
       ) : (
         <>
-          <p className="text-xs text-slate-400 leading-snug">
+          <p className="text-xs text-slate-400 leading-relaxed">
             Nothing has been located yet, or location is switched off for this
             site. Find your position first, or add the spot from the map.
           </p>
@@ -104,7 +111,7 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
             type="button"
             onClick={onLocateUser}
             disabled={isLocating}
-            className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 disabled:opacity-60"
+            className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[13px] flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 disabled:opacity-60"
           >
             {isLocating
               ? <Loader2 className="w-4 h-4 animate-spin" />
@@ -118,19 +125,26 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
         The other way in, spelled out rather than implied. This dialog is
         most often opened by someone who meant "add that place over there",
         and that is a real thing the app does — just not with this button.
+
+        It is fenced off above the rule because it is a different answer to
+        the question, not another way of saying yes. Stacked flush against
+        the green button it read as a third equal option and the dialog
+        looked like a wall of buttons.
       */}
-      <button
-        type="button"
-        onClick={onClose}
-        className="w-full py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-2 hover:bg-slate-700"
-      >
-        <MapPin className="w-3.5 h-3.5" />
-        No — I&apos;ll tap the spot on the map
-      </button>
-      <p className="text-[12px] text-slate-500 leading-snug text-center">
-        Tapping anywhere on the map drops a pin, and the card that opens has an
-        Add spot button with those coordinates already in it.
-      </p>
+      <div className="pt-3.5 border-t border-slate-800 space-y-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full py-3 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-2 hover:bg-slate-700"
+        >
+          <MapPin className="w-4 h-4" />
+          No — I&apos;ll tap the spot on the map
+        </button>
+        <p className="text-[11px] text-slate-500 leading-relaxed px-1">
+          Tapping anywhere on the map drops a pin, and the card that opens has
+          an Add spot button with those coordinates already in it.
+        </p>
+      </div>
     </div>
   </Sheet>
 );
