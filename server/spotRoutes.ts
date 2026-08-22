@@ -89,7 +89,11 @@ export const registerSpotRoutes = (app: Express): void => {
 
     // TEMPORARY diagnostic, see probeSpotContext. Remove with it.
     if (req.query.probe === '1') {
-      const lines = await probeSpotContext(lat, lon);
+      const lines = await probeSpotContext(lat, lon, {
+        mirror: typeof req.query.mirror === 'string' ? req.query.mirror : undefined,
+        groups: typeof req.query.groups === 'string' ? req.query.groups.split(',') : undefined,
+        budgetMs: Number(req.query.budget) || undefined
+      });
       for (const line of lines) console.info(`[spot-probe] ${line}`);
       return res.json({ probe: lines });
     }

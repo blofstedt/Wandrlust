@@ -318,18 +318,30 @@ const MAX_NAME = 46;
 /* ------------------------------------------------------------------ */
 
 /** TEMPORARY diagnostic: ask each group separately and report what happened. */
-export const probeSpotContext = async (lat: number, lon: number): Promise<string[]> => {
+export const probeSpotContext = async (
+  lat: number,
+  lon: number,
+  opts: { mirror?: string; groups?: string[]; budgetMs?: number } = {}
+): Promise<string[]> => {
   const out: string[] = [];
   // One mirror, short budget. The full sweep blew the 30 s function cap
   // because overpass-api.de spends 15 s on every group. kumi rejects the
   // combined query in ~320 ms, so it answers the question fastest.
-  const probeMirrors = ['https://overpass.kumi.systems/api/interpreter'];
-  for (const [name, query] of Object.entries(buildProbeQueries(lat, lon))) {
+  const byKey: Record<string, string> = {
+    de: 'https://overpass-api.de/api/interpreter',
+    kumi: 'https://overpass.kumi.systems/api/interpreter',
+    coffee: 'https://overpass.private.coffee/api/interpreter'
+  };
+  const probeMirrors = [byKey[opts.mirror ?? 'kumi'] ?? byKey.kumi];
+  const wanted = opts.groups;
+  const entries = Object.entries(buildProbeQueries(lat, lon))
+    .filter(([name]) => !wanted || wanted.includes(name));
+  for (const [name, query] of entries) {
     for (const mirror of probeMirrors) {
       const host = new URL(mirror).host;
       const startedAt = Date.now();
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5_000);
+      const timer = setTimeout(() => controller.abort(), opts.budgetMs ?? 5_000);
       try {
         const res = await fetch(mirror, {
           method: 'POST',
