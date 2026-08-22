@@ -102,14 +102,14 @@ const alertIcon = (size, color, nodes) => {
 };
 
 /**
- * Android draws the badge as a silhouette from the alpha channel alone, so
- * there is no two-tone to be had: the shadowed facets keep their shape by
- * being thinner ink rather than a different colour.
+ * Android draws the badge as a silhouette from the alpha channel alone, so it
+ * is white on nothing — and a slightly heavier line, because a hairline ring
+ * shown at 24px in a status bar disappears.
  */
 const badgeIcon = (size, markFrac) => {
   const boxSize = (size * markFrac) / MARK_EXTENT;
   const offset = (size - boxSize) / 2;
-  const ink = { lit: '#ffffff', shadow: '#ffffff', shadowOpacity: 0.45 };
+  const ink = { lit: '#ffffff', strokeWidth: 2.6 };
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
   <g transform="translate(${offset} ${offset}) scale(${boxSize / MARK_VIEWBOX})">${markElements(ink)}</g>
@@ -134,8 +134,8 @@ const run = async () => {
 
   const jobs = [
     // Install icons. Rounded, because these are shown as-is.
-    ['icon-192.png', appIcon(192, 0.74, 22)],
-    ['icon-512.png', appIcon(512, 0.74, 22)],
+    ['icon-192.png', appIcon(192, 0.56, 22)],
+    ['icon-512.png', appIcon(512, 0.56, 22)],
     /*
       Maskable — the Android home screen, and the one Brian actually looks at.
       The platform crops this to the middle 72 of every 108 units and then
@@ -145,20 +145,20 @@ const run = async () => {
       padded box came out at 31% of the file, which is 47% of the circle a
       Pixel actually draws — a small compass adrift in a green square.
 
-      0.64 puts the rose's points just inside the circle a Pixel actually
-      draws, so the compass fills its badge the way a native icon does while
-      staying well within the 80% safe zone the web spec guarantees on every
-      other launcher. It can sit wider than a solid disc could because a star
-      leaves its diagonals empty — nothing is near the mask on the corners.
+      0.46 of the real extent puts the ring comfortably inside the circle a
+      Pixel draws while staying well within the 80% safe zone the web spec
+      guarantees on every other launcher. A ring is a solid outline all the
+      way round, unlike a four-pointed star, so it cannot be pushed as wide as
+      the rose could.
     */
-    ['maskable-192.png', appIcon(192, 0.64, 0)],
-    ['maskable-512.png', appIcon(512, 0.64, 0)],
+    ['maskable-192.png', appIcon(192, 0.46, 0)],
+    ['maskable-512.png', appIcon(512, 0.46, 0)],
     // iOS rounds the corners itself and renders transparency as black.
-    ['apple-touch-icon.png', appIcon(180, 0.72, 0)],
-    // 32px has room for the rose and nothing else, so it gets proportionally
-    // more of the canvas than any other size.
-    ['favicon-32.png', appIcon(32, 0.86, 22)],
-    ['badge.png', badgeIcon(96, 0.92)]
+    ['apple-touch-icon.png', appIcon(180, 0.56, 0)],
+    // 32px has room for the compass and nothing else, so it gets
+    // proportionally more of the canvas than any other size.
+    ['favicon-32.png', appIcon(32, 0.66, 22)],
+    ['badge.png', badgeIcon(96, 0.8)]
   ];
 
   for (const [name, [icon, color]] of Object.entries(ALERT_ICONS)) {
@@ -172,7 +172,7 @@ const run = async () => {
   }
 
   // The vector master, committed so the raster set is reproducible.
-  fs.writeFileSync(path.join(OUT_DIR, 'icon.svg'), appIcon(512, 0.74, 22));
+  fs.writeFileSync(path.join(OUT_DIR, 'icon.svg'), appIcon(512, 0.56, 22));
   console.log('  icon.svg                 (vector master)');
   console.log(`\n${jobs.length + 1} files written to public/icons/`);
 };

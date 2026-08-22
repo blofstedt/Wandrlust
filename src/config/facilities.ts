@@ -35,13 +35,27 @@
  * Every screen that draws these says so — see `nearbyAmenityService.ts` for
  * the long version of that rule.
  */
-import type { LucideIcon } from 'lucide-react';
+import type React from 'react';
 import {
-  Toilet, GlassWater, ShowerHead, ArrowDownToLine, Fuel, Flame,
-  WashingMachine, ShoppingCart, Trash2, Wind, Footprints, Fish, Sailboat,
-  Route
+  Toilet, GlassWater, ShowerHead, Fuel, WashingMachine, Trash2, Wind,
+  Footprints, Fish, Sailboat, Route
 } from 'lucide-react';
+import {
+  DumpStationIcon, PropaneIcon, GroceriesIcon
+} from '../components/ui/FacilityIcons';
 import type { FacilityKind } from '../types';
+
+/**
+ * What a facility's symbol has to be able to be.
+ *
+ * Most are lucide components; three are drawn by hand because no icon set has
+ * a dump station, a propane bottle or a bag of shopping that reads as those
+ * things (see `components/ui/FacilityIcons.tsx`). Both satisfy this.
+ */
+export type FacilityIcon = React.ComponentType<{
+  className?: string;
+  strokeWidth?: number;
+}>;
 
 /**
  * The `poi_kind` enum values in Postgres, as they actually are.
@@ -76,7 +90,7 @@ export interface FacilitySpec {
    * control. The colour a facility owns stays where it means something — on
    * its pins — rather than being sprayed across the chrome as well.
    */
-  icon: LucideIcon;
+  icon: FacilityIcon;
   color: string;
   /** Overpass selectors that mean this kind. Empty = not in OpenStreetMap. */
   osm: string[];
@@ -115,7 +129,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: 'shower', searchable: true, addable: true
   },
   dump: {
-    label: 'Dump station', plural: 'Dump', glyph: '🚽', icon: ArrowDownToLine, color: '#A3E635',
+    label: 'Dump station', plural: 'Dump', glyph: '🚽', icon: DumpStationIcon, color: '#A3E635',
     osm: [
       'node["amenity"="sanitary_dump_station"]',
       'way["amenity"="sanitary_dump_station"]'
@@ -128,7 +142,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: 'fuel', searchable: true, addable: true
   },
   propane: {
-    label: 'Propane', plural: 'Propane', glyph: '🔥', icon: Flame, color: '#FDBA74',
+    label: 'Propane', plural: 'Propane', glyph: '🔥', icon: PropaneIcon, color: '#FDBA74',
     /* `fuel:lpg` is on ordinary fuel stations that also sell it; the shop tag
        is the dedicated bottle exchange. Both are somewhere you refill. */
     osm: [
@@ -143,7 +157,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     dbKind: 'laundry', searchable: true, addable: true
   },
   groceries: {
-    label: 'Groceries', plural: 'Groceries', glyph: '🛒', icon: ShoppingCart, color: '#F0ABFC',
+    label: 'Groceries', plural: 'Groceries', glyph: '🛒', icon: GroceriesIcon, color: '#F0ABFC',
     osm: [
       'node["shop"="supermarket"]', 'way["shop"="supermarket"]',
       'node["shop"="convenience"]', 'way["shop"="convenience"]'
@@ -161,10 +175,21 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     ],
     dbKind: 'trash', searchable: true, addable: true
   },
+  /**
+   * NOT ON THE ROW, AND NOT IN THE ADD SHEET.
+   *
+   * A tyre compressor is a thing you use once a season, at a garage you were
+   * going to anyway — and as a symbol it is unreadable: every drawing of
+   * "air" is three little curls that could equally be wind, steam or a
+   * draught. It held a slot in a row where every slot has to earn itself
+   * against "where is the nearest toilet". The spec stays, because campers
+   * have already tagged air on spots and a pin has to be able to name what it
+   * is showing; only the two ways of asking for one are gone.
+   */
   air: {
     label: 'Air compressor', plural: 'Air', glyph: '💨', icon: Wind, color: '#93C5FD',
     osm: ['node["amenity"="compressed_air"]'],
-    dbKind: 'air_compressor', searchable: true, addable: true
+    dbKind: 'air_compressor', searchable: false, addable: false
   },
   /* ---------------------------------------------------------------- *
    * Below here: found, never submitted, and never given a chip.

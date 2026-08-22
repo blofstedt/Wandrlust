@@ -180,6 +180,28 @@
   100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
 }
 
+/*
+ * "YOU ARE HERE", ANNOUNCED AND THEN LEFT ALONE.
+ *
+ * The blue dot's halo used to pulse for ever. A thing that never stops moving
+ * is a thing your eye never stops checking, and this one had nothing new to
+ * say after the first second: it is not a live signal, an alert, or a fix
+ * still being taken — it is a position, already found, sitting still.
+ *
+ * Three pulses. Enough to catch the eye and say WHERE YOU LANDED when a fix
+ * comes in, then it is gone and the dot is just a dot on the map. It restarts
+ * on its own every time, because the marker is rebuilt whenever a new fix
+ * arrives — which is the only moment the announcement is worth making.
+ *
+ * `both` holds the last frame, so the halo ends invisible rather than
+ * snapping back to full size on the final tick.
+ */
+@keyframes me-ping {
+  0%   { transform: scale(0.55); opacity: 0.55; }
+  70%  { transform: scale(1.9); opacity: 0; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
 @keyframes pulse-ring-danger {
   0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
   70%  { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
@@ -286,6 +308,7 @@
   .anim-pulse      { animation: pulse-ring 2s var(--ease-standard) infinite; }
   .anim-pulse-danger { animation: pulse-ring-danger 1.6s var(--ease-standard) infinite; }
   .anim-pulse-ring { animation: pulse-ring-live 1.6s var(--ease-standard) infinite; }
+  .wl-me-ping      { animation: me-ping 1.5s var(--ease-standard) 3 both; }
 
   /* Stagger helpers, applied as data-stagger on list children. */
   [data-stagger="0"] { animation-delay: 0ms; }
@@ -1051,6 +1074,9 @@
 
   .skeleton { animation: none; background: rgb(30 41 59); }
   .anim-pulse, .anim-pulse-danger, .wl-dot-urgent { animation: none; }
+  /* The halo is an announcement, and an announcement nobody asked to see
+     move is just a flash. It keeps its place and stays put. */
+  .wl-me-ping { animation: none; opacity: 0; }
   /* The ring is the STATE, not the decoration — losing the animation must not
      lose the mark that says which control is working. */
   .anim-pulse-ring {
