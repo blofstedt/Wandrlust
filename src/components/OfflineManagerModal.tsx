@@ -18,9 +18,10 @@ import {
   deleteLandPack
 } from '../services/landOverlayService';
 import {
-  Download, WifiOff, Trash2, CheckCircle2, HardDrive, X,
+  Download, Wifi, WifiOff, Trash2, CheckCircle2, HardDrive, X,
   Zap, AlertTriangle, Loader2
 } from 'lucide-react';
+import { ConnectionStatus, CONNECTION_NOTE } from './ui/ConnectionStatus';
 
 interface OfflineManagerModalProps {
   isOpen: boolean;
@@ -28,8 +29,9 @@ interface OfflineManagerModalProps {
   currentLocationName: string;
   center: [number, number];
   campsitesInView: Campsite[];
-  isOfflineMode: boolean;
-  setIsOfflineMode: (offline: boolean) => void;
+  /** Read-only: what the device says about its connection. See
+   *  ui/ConnectionStatus for why this stopped being a switch. */
+  isOnline: boolean;
 }
 
 export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
@@ -38,8 +40,7 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
   currentLocationName,
   center,
   campsitesInView,
-  isOfflineMode,
-  setIsOfflineMode
+  isOnline
 }) => {
   const [regions, setRegions] = useState<OfflineRegion[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -182,25 +183,32 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
           </button>
         </div>
 
-        {/* Offline Mode Switch Box */}
+        {/*
+          THE CONNECTION, REPORTED — NOT SIMULATED.
+
+          This was a switch labelled "Simulate Wilderness Connection", which
+          is a developer's test harness sitting in a camper's settings. Worse,
+          it could be left on: the app then behaved as though there were no
+          signal while there plainly was, and nothing on screen explained why
+          nothing was loading. The phone already knows, so it answers.
+        */}
         <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <WifiOff className={`w-5 h-5 ${isOfflineMode ? 'text-amber-400 animate-pulse' : 'text-slate-500'}`} />
+            {isOnline
+              ? <Wifi className="w-5 h-5 text-emerald-400" />
+              : <WifiOff className="w-5 h-5 text-rose-400" />}
             <div>
-              <div className="font-bold text-xs text-slate-200">Simulate Wilderness Connection (Offline Mode)</div>
-              <div className="text-xs text-slate-400">Forces map to use stored offline tiles & downloaded sites</div>
+              <div className="font-bold text-xs text-slate-200">
+                {isOnline ? 'Connected' : 'No connection'}
+              </div>
+              <div className="text-xs text-slate-400 leading-snug">
+                {isOnline
+                  ? CONNECTION_NOTE.online
+                  : 'Everything below is what this phone can still show you out here.'}
+              </div>
             </div>
           </div>
-          <button
-            onClick={() => setIsOfflineMode(!isOfflineMode)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-              isOfflineMode
-                ? 'bg-amber-500 text-slate-950 border-amber-300'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            {isOfflineMode ? 'OFFLINE ON' : 'OFFLINE OFF'}
-          </button>
+          <ConnectionStatus isOnline={isOnline} variant="pill" className="shrink-0" />
         </div>
 
         {/* ------------------------------------------------------------ */}

@@ -41,6 +41,7 @@ import { flushPendingSpots } from './services/spotSync';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
 import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
+import { Sheet } from './components/ui/Sheet';
 import { MobileTabBar } from './components/MobileTabBar';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
@@ -64,7 +65,11 @@ import { calculateRoute, type RouteResult } from './services/routingService';
 import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
 import { useAuth } from './contexts/AuthContext';
-import { Search, Bookmark, MapPinOff, SlidersHorizontal, Waves, Radar } from 'lucide-react';
+import {
+  Search, Bookmark, MapPinOff, SlidersHorizontal, Waves, Radar,
+  Crosshair, MapPin, Loader2
+} from 'lucide-react';
+import { useOnlineStatus } from './utils/useOnlineStatus';
 
 /** Calgary, AB — the app's home coordinates. */
 const HOME_CENTER: [number, number] = [51.0447, -114.0719];
@@ -78,7 +83,19 @@ export default function App() {
 
   // Navigation & view
   const [activeView, setActiveView] = useState<AppView>('map');
-  const [isOfflineMode, setIsOfflineMode] = useState(false);
+
+  /**
+   * Offline is OBSERVED now, not chosen.
+   *
+   * It used to be a switch in the header that nobody ever touched, and which
+   * could be left in either wrong position — "Online" showing green with no
+   * bars, or the whole app refusing to fetch anything on a perfect
+   * connection. The device already knows, so the device answers, and the
+   * only thing on screen is a light that reports it. See
+   * utils/useOnlineStatus for exactly how much `navigator.onLine` is worth.
+   */
+  const isOnline = useOnlineStatus();
+  const isOfflineMode = !isOnline;
 
   /**
    * Whether to ask which map data this device should carry.
@@ -193,6 +210,23 @@ export default function App() {
   const [beaconAt, setBeaconAt] = useState<[number, number] | null>(null);
   const [beaconSpot, setBeaconSpot] = useState<BeaconSpot | null>(null);
   const [beaconRefreshKey, setBeaconRefreshKey] = useState(0);
+
+  /**
+   * WHERE the beacon should look, asked before it is sent.
+   *
+   * The pill used to say "Send a beacon from here" and mean the pin — which
+   * only worked if you had already dropped one, and quietly meant something
+   * different from what "here" means to somebody standing in a pullout at
+   * dusk. So it asks: your own position, or a piece of ground you point at.
+   *
+   * `isBeaconChoiceOpen` is that question. `beaconPicking` is the second
+   * answer in progress — the map is waiting for a tap, and the beacon goes
+   * out the moment the pin lands rather than making the camper find the pill
+   * a second time. `beaconLocating` is the first answer waiting on the GPS.
+   */
+  const [isBeaconChoiceOpen, setIsBeaconChoiceOpen] = useState(false);
+  const [beaconPicking, setBeaconPicking] = useState(false);
+  const [beaconLocating, setBeaconLocating] = useState(false);
   const [legalDoc, setLegalDoc] = useState<LegalDocKind | null>(null);
 
   /**
@@ -538,8 +572,23 @@ export default function App() {
       setSelectedReport(null);
       setPinRefusal(null);
       setDestination({ latitude: lat, longitude: lon, land });
+
+      /*
+        A pin dropped to answer "where should the beacon look?" sends the
+        beacon itself. Making the camper place the marker and THEN find the
+        pill again is asking the same question twice.
+
+        Only a pin the map ACCEPTED gets here — a tap in water or outside
+        coverage goes to onPinRefused instead — so pick mode simply stays on
+        until a real piece of ground is chosen, or Cancel.
+      */
+      if (beaconPicking) {
+        setBeaconPicking(false);
+        setBeaconAt([lat, lon]);
+        setIsBeaconOpen(true);
+      }
     },
-    []
+    [beaconPicking]
   );
 
   /**
@@ -614,12 +663,117 @@ export default function App() {
 
   /* ---------------------------------------------------------------- BEACON */
 
-  /** Send a beacon from the pin the camper just dropped. */
-  const handleSendBeacon = useCallback(() => {
-    if (!destination) return;
-    setBeaconAt([destination.latitude, destination.longitude]);
+  /**
+   * A ticket for the "where should it look?" question currently on screen.
+   *
+   * Bumped whenever the question is dismissed, so a GPS fix that arrives
+   * after the camper changed their mind lands on the floor instead of
+   * springing a beacon panel open over whatever they went and did instead.
+   */
+  const beaconAskRef = useRef(0);
+
+  const closeBeaconChoice = useCallback(() => {
+    beaconAskRef.current += 1;
+    setBeaconLocating(false);
+    setIsBeaconChoiceOpen(false);
+  }, []);
+
+  /**
+   * Is the app floating something across the top of the map right now?
+   *
+   * The beacon pill, the "tap the map" instruction while it waits, and the
+   * "exploring public lands…" toast all live at top centre. The map's own
+   * notices live at top left and are wide enough to reach the middle of a
+   * phone, so it is told to start below them. Everything that decides
+   * whether the pill is on screen is here in one place, because two
+   * expressions that must agree and are three hundred lines apart do not
+   * stay agreeing.
+   *
+   * It is not offered with no connection. A beacon is a live search of
+   * public map data — there is nothing on the phone for it to read — so the
+   * pill would be a button that could only fail. The amber "Offline — saved
+   * maps and spots" banner is already sitting where it was, saying why.
+   */
+  const showBeaconPill =
+    isOnline && !destination?.campsite && !isBeaconOpen && !isSearchingSites;
+  const mapTopInsetPx = beaconPicking ? 62 : (showBeaconPill || isSearchingSites) ? 44 : 0;
+
+  /** Open the beacon on one exact point, whichever way it was chosen. */
+  const openBeaconAt = useCallback((latitude: number, longitude: number) => {
+    setIsBeaconChoiceOpen(false);
+    setBeaconPicking(false);
+    setBeaconAt([latitude, longitude]);
     setIsBeaconOpen(true);
-  }, [destination]);
+  }, []);
+
+  /**
+   * "From where I am."
+   *
+   * Takes a FRESH fix rather than reusing the last one when there isn't one
+   * yet. A beacon is a question about the ground within a few hundred metres,
+   * and answering it from a position taken an hour and eighty kilometres ago
+   * would search the wrong valley without ever saying so.
+   *
+   * If the fix cannot be had, it says so and leaves the question open — the
+   * other answer is still right there. It does NOT quietly fall back to the
+   * map centre, which would be the app inventing a place the camper never
+   * pointed at.
+   */
+  const handleBeaconFromMe = useCallback(() => {
+    if (!('geolocation' in navigator)) {
+      toast.warning(
+        'This phone will not share its position',
+        'Put a marker on the map instead and the beacon will look there.'
+      );
+      return;
+    }
+
+    const ticket = beaconAskRef.current;
+    setBeaconLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (beaconAskRef.current !== ticket) return;
+        setBeaconLocating(false);
+        setUserLocation([pos.coords.latitude, pos.coords.longitude]);
+        openBeaconAt(pos.coords.latitude, pos.coords.longitude);
+      },
+      (err) => {
+        if (beaconAskRef.current !== ticket) return;
+        setBeaconLocating(false);
+        console.warn('Geolocation unavailable:', err.message);
+        toast.warning(
+          'Could not get your position',
+          'Location may be switched off. Put a marker on the map instead.'
+        );
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }, [openBeaconAt, toast]);
+
+  /** "Put a marker on the map." Hand the map back and wait for the tap. */
+  const handleBeaconPickOnMap = useCallback(() => {
+    setIsBeaconChoiceOpen(false);
+    setBeaconPicking(true);
+  }, []);
+
+  const cancelBeaconPicking = useCallback(() => setBeaconPicking(false), []);
+
+  /* Losing the connection takes pick mode down with it. The pill that
+     started it is gone offline, so an armed mode with nothing on screen
+     saying so would spring a beacon panel open on the next tap of the map. */
+  useEffect(() => {
+    if (!isOnline) setBeaconPicking(false);
+  }, [isOnline]);
+
+  /* Escape gets out of pick mode. There is a Cancel on the banner too, but a
+     mode you cannot leave with the key that leaves every other mode is a
+     trap on a desktop. */
+  useEffect(() => {
+    if (!beaconPicking) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setBeaconPicking(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [beaconPicking]);
 
   /**
    * Sending the camper to a Beacon spot reuses the existing destination flow
@@ -1264,8 +1418,7 @@ export default function App() {
           onSelectLocation={handleSelectLocation}
           onLocateUser={handleLocateUser}
           isLocating={isLocating}
-          isOfflineMode={isOfflineMode}
-          setIsOfflineMode={setIsOfflineMode}
+          isOnline={isOnline}
           onOpenOfflineManager={() => setIsOfflineManagerOpen(true)}
           onOpenAddModal={() => setIsAddHereOpen(true)}
           onOpenGuideModal={() => setIsGuideModalOpen(true)}
@@ -1333,44 +1486,113 @@ export default function App() {
                     onSelectFacility={setSelectedFacility}
                     facilityRefreshKey={facilityRefreshKey}
                     bottomSheetPx={sheetSite ? sheetPx : 0}
+                    topInsetPx={mapTopInsetPx}
                     onOpenSearch={() => setIsSearchOpen(true)}
                     onOpenAuth={() => setIsAuthOpen(true)}
                   />
                 </ErrorBoundary>
 
                 {isSearchingSites && (
-                  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
-                    <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
-                    <span>Exploring public lands…</span>
+                  <div className="absolute top-4 inset-x-3 z-[1000] flex justify-center pointer-events-none">
+                    <div className="bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
+                      <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
+                      <span>Exploring public lands…</span>
+                    </div>
                   </div>
                 )}
 
                 {/*
-                  Beacon, offered only on a BARE dropped pin.
+                  Beacon, offered on open ground — never on a campsite.
 
-                  Not on a campsite: asking "what might be around here?" while
-                  standing on a known campsite is answering a question the
-                  camper did not ask. The pin has to be a piece of ground they
-                  chose, which is exactly what a destination with no campsite is.
+                  Asking "what might be around here?" while standing on a
+                  known campsite is answering a question the camper did not
+                  ask, so the pill steps aside the moment a campsite is the
+                  destination. It no longer waits for a pin, though: it used
+                  to appear only after one was dropped, which hid the whole
+                  feature from anybody who had not happened to tap the map,
+                  and made "from here" mean the pin rather than the camper.
+                  Now the pill asks where to look, and one of the two answers
+                  is the pin it used to require.
+
+                  While the map is waiting for that pin the pill is replaced
+                  by the instruction, so the top of the screen never holds
+                  two competing things to do.
                 */}
-                {destination && !destination.campsite && !isBeaconOpen && (
-                  <button
-                    onClick={handleSendBeacon}
-                    className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 border border-sky-500/50 text-sky-300 hover:text-sky-200 hover:border-sky-400 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2 anim-in-down"
-                  >
-                    <Radar className="w-4 h-4" />
-                    <span>Send a beacon from here</span>
-                  </button>
-                )}
+                {beaconPicking ? (
+                    /*
+                      CENTRED BY A FULL-WIDTH ROW, NOT BY `left-1/2`.
+
+                      An absolutely positioned box with only `left: 50%` can
+                      never be wider than half the screen — that is all the
+                      room its containing block offers it — so this pill
+                      shrank to 196px and broke one short sentence over four
+                      lines with the Cancel button stranded in the middle of
+                      them. A row across the whole width with the pill
+                      centred inside it can use the width it can see.
+                    */
+                    <div className="absolute top-4 inset-x-3 z-[1000] flex justify-center pointer-events-none">
+                      <div className="pointer-events-auto max-w-full bg-slate-900/95 border border-sky-500/60 text-sky-200 pl-3.5 pr-2 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
+                        <MapPin className="w-4 h-4 shrink-0 animate-[bounce_0.9s_infinite]" />
+                        <span className="min-w-0">Tap the map where the beacon should look</span>
+                        <button
+                          type="button"
+                          onClick={cancelBeaconPicking}
+                          className="tap-safe shrink-0 px-2.5 py-1 rounded-full bg-slate-800 border border-slate-600 text-slate-300 hover:text-white text-[11px] font-bold"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : showBeaconPill ? (
+                    /*
+                      THE PILL CARRIES ITS OWN EXPLANATION.
+
+                      "Beacon" is a word this app made up, and a camper who
+                      has never pressed it has no way to know whether it
+                      broadcasts their position to strangers — which is the
+                      guess most people make, and the opposite of what it
+                      does. The tooltip says what it actually does and, in
+                      the same breath, that it is guessing. It shows on hover
+                      and on keyboard focus; on a phone the same sentence is
+                      the first thing in the sheet the pill opens, because
+                      there is no hovering with a thumb.
+
+                      `pointer-events-none` on the wrapper with `auto` on the
+                      button: the tooltip is invisible but still has a box,
+                      and a transparent box hanging over the map eats every
+                      tap that lands in it. Hover still reaches the wrapper
+                      through the button, which is what lights it up.
+                    */
+                    <div className="absolute top-4 inset-x-3 z-[1000] flex flex-col items-center group pointer-events-none anim-in-down">
+                      <button
+                        onClick={() => setIsBeaconChoiceOpen(true)}
+                        aria-describedby="beacon-pill-tip"
+                        className="pointer-events-auto tap-safe bg-slate-900/95 border border-sky-500/50 text-sky-300 hover:text-sky-200 hover:border-sky-400 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2"
+                      >
+                        <Radar className="w-4 h-4" />
+                        <span>Send a Beacon</span>
+                      </button>
+                      <span
+                        id="beacon-pill-tip"
+                        role="tooltip"
+                        className="mt-1.5 max-w-[16rem] px-3 py-1.5 rounded-xl bg-slate-950/95 border border-slate-700 text-[11px] text-slate-300 text-center leading-snug shadow-xl pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
+                      >
+                        Searches public map data for places you might be able to
+                        sleep nearby. It is guessing, not promising.
+                      </span>
+                    </div>
+                  ) : null}
 
                 {outOfCoverageNotice && (
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs flex items-start gap-2 anim-in-up">
-                    <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>
-                      <strong>{outOfCoverageNotice}</strong> is outside our coverage.
-                      Wandrlust currently supports {COVERAGE_LABEL}, so campsite and
-                      boundary data is unavailable here.
-                    </span>
+                  <div className="absolute bottom-4 inset-x-3 z-[1000] flex justify-center pointer-events-none">
+                    <div className="max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs flex items-start gap-2 anim-in-up">
+                      <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>{outOfCoverageNotice}</strong> is outside our coverage.
+                        Wandrlust currently supports {COVERAGE_LABEL}, so campsite and
+                        boundary data is unavailable here.
+                      </span>
+                    </div>
                   </div>
                 )}
 
@@ -1385,15 +1607,17 @@ export default function App() {
                   Auto-clears after 2.4s; see handlePinRefused.
                 */}
                 {pinRefusal && (
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-amber-500/60 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs flex items-start gap-2 anim-in-up">
-                    {pinRefusal === 'water'
-                      ? <Waves className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
-                      : <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />}
-                    <span>
+                  <div className="absolute bottom-4 inset-x-3 z-[1000] flex justify-center pointer-events-none">
+                    <div className="max-w-sm bg-slate-900/95 border border-amber-500/60 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs flex items-start gap-2 anim-in-up">
                       {pinRefusal === 'water'
-                        ? <>This spot is in <strong>water</strong>. Drop the pin on land — a campsite needs a place to pitch a tent.</>
-                        : <>This spot is <strong>outside our coverage</strong>. Wandrlust currently supports {COVERAGE_LABEL}.</>}
-                    </span>
+                        ? <Waves className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
+                        : <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />}
+                      <span>
+                        {pinRefusal === 'water'
+                          ? <>This spot is in <strong>water</strong>. Drop the pin on land — a campsite needs a place to pitch a tent.</>
+                          : <>This spot is <strong>outside our coverage</strong>. Wandrlust currently supports {COVERAGE_LABEL}.</>}
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1526,8 +1750,7 @@ export default function App() {
         currentLocationName={currentLocationName}
         center={center}
         campsitesInView={visibleSites}
-        isOfflineMode={isOfflineMode}
-        setIsOfflineMode={setIsOfflineMode}
+        isOnline={isOnline}
       />
 
       {/*
@@ -1650,6 +1873,66 @@ export default function App() {
         campsiteId={sheetSite?.id ?? selectedCampsite?.id ?? null}
         onRequireAuth={() => setIsAuthOpen(true)}
       />
+
+      {/*
+        WHERE SHOULD IT LOOK? — the whole of the beacon's setup, in two
+        buttons docked at thumb level.
+
+        Two answers and no third: "somewhere near the middle of the screen"
+        is not an answer a camper ever means, and a beacon aimed at a place
+        nobody chose would return leads for ground nobody is standing on or
+        driving to.
+      */}
+      <Sheet
+        isOpen={isBeaconChoiceOpen}
+        onClose={closeBeaconChoice}
+        variant="dock"
+        icon={<Radar className="w-4 h-4 text-sky-400" />}
+        title="Send a Beacon"
+        subtitle="It searches public map data for places you might be able to sleep. Where should it look?"
+      >
+        <div className="p-4 space-y-2.5">
+          <button
+            type="button"
+            onClick={handleBeaconFromMe}
+            disabled={beaconLocating}
+            className="w-full text-left flex items-start gap-3 px-3 py-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700/60 disabled:opacity-60"
+          >
+            <span className="w-9 h-9 shrink-0 rounded-lg bg-slate-900/80 border border-slate-700 flex items-center justify-center">
+              {beaconLocating
+                ? <Loader2 className="w-[18px] h-[18px] text-sky-400 animate-spin" />
+                : <Crosshair className="w-[18px] h-[18px] text-sky-400" />}
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-bold text-slate-100">
+                {beaconLocating ? 'Finding you…' : 'From where I am'}
+              </span>
+              <span className="block text-xs text-slate-400 leading-snug mt-0.5">
+                Takes a fresh fix from this phone and looks around that.
+              </span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleBeaconPickOnMap}
+            className="w-full text-left flex items-start gap-3 px-3 py-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700/60"
+          >
+            <span className="w-9 h-9 shrink-0 rounded-lg bg-slate-900/80 border border-slate-700 flex items-center justify-center">
+              <MapPin className="w-[18px] h-[18px] text-sky-400" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-bold text-slate-100">
+                Put a marker on the map
+              </span>
+              <span className="block text-xs text-slate-400 leading-snug mt-0.5">
+                Tap the ground you are curious about. The beacon goes out as
+                soon as the pin lands.
+              </span>
+            </span>
+          </button>
+        </div>
+      </Sheet>
 
       <BeaconPanel
         isOpen={isBeaconOpen}

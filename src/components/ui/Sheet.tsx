@@ -22,7 +22,20 @@ export interface SheetProps {
   icon?: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  variant?: 'sheet' | 'dialog';
+  /**
+   * Where the panel sits.
+   *
+   * `sheet`  — edge to edge along the bottom, the classic drawer.
+   * `dialog` — a card floating in the middle of the screen.
+   * `dock`   — a card floating LOW: centred, held clear of the phone's tab
+   *            bar, no wider than it needs to be. This is the one for a panel
+   *            opened from a control down at thumb level — the map's layers
+   *            and its search. A drawer for those was wrong twice over: it
+   *            took the full width of the screen for a handful of switches,
+   *            and it swallowed the bottom of the map, which is the part
+   *            somebody has their thumb on and is usually looking at.
+   */
+  variant?: 'sheet' | 'dialog' | 'dock';
   maxWidthClass?: string;
   /**
    * Leave the app behind this panel working.
@@ -155,12 +168,35 @@ export const Sheet: React.FC<SheetProps> = ({
 
   if (!isOpen) return null;
   const isSheet = variant === 'sheet';
+  const isDock = variant === 'dock';
+
+  /*
+    A dock is narrower than a dialog by default and narrow at EVERY width,
+    not just above `sm`. It is a card that has to sit over a live map without
+    burying it, so `w-full` up to a phone's edges is exactly what it must not
+    be. Callers can still override.
+  */
+  const widthClass = isDock
+    ? (maxWidthClass === 'sm:max-w-md' ? 'max-w-sm' : maxWidthClass)
+    : maxWidthClass;
+
+  /*
+    Where the card lands.
+
+    The dock's `5.25rem` is the tab bar's measured height (a 62px row plus
+    its padding) with a little air under the card, and the safe-area inset on
+    top of that for the phones with a home indicator. Above `sm` there is no
+    tab bar, so it relaxes to an ordinary margin.
+  */
+  const overlayClass = isSheet
+    ? 'items-end sm:items-center p-0 sm:p-4'
+    : isDock
+      ? 'items-end px-4 pt-4 pb-[calc(5.25rem+env(safe-area-inset-bottom))] sm:pb-8'
+      : 'items-center p-4';
 
   return (
     <div
-      className={`fixed inset-0 z-[1800] flex justify-center bg-slate-950/70 anim-backdrop ${
-        isSheet ? 'items-end sm:items-center p-0 sm:p-4' : 'items-center p-4'
-      }`}
+      className={`fixed inset-0 z-[1800] flex justify-center bg-slate-950/70 anim-backdrop ${overlayClass}`}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={keyboardInset ? { paddingBottom: keyboardInset } : undefined}
     >
@@ -176,16 +212,22 @@ export const Sheet: React.FC<SheetProps> = ({
         aria-labelledby={titleId.current}
         tabIndex={-1}
         onKeyDown={handleKeyDown}
-        className={`w-full ${maxWidthClass} bg-slate-900 border-slate-700 shadow-2xl flex flex-col outline-none ${
+        className={`w-full ${widthClass} bg-slate-900 border-slate-700 shadow-2xl flex flex-col outline-none ${
           isSheet
             ? 'max-h-[90vh] border-t sm:border rounded-t-3xl sm:rounded-2xl anim-sheet-up sm:anim-expand'
-            /* A dialog is a card floating in the middle of the screen, so it
-               stops short of the edges the sheet is allowed to reach — the
-               tab bar and the header stay visible around it, which is what
-               tells you it is a layer and not a new screen. The 78 is
-               measured, not chosen: the phone tab bar is about 9vh, and a
-               centred card any taller than this reaches under it. */
-            : 'max-h-[78vh] border rounded-2xl anim-expand'
+            : isDock
+              /* Shorter than a centred dialog because it starts from the
+                 bottom of the screen: 70vh from down there still leaves the
+                 header, the beacon pill and the top of the map in view, which
+                 is the whole point of docking it rather than drawering it. */
+              ? 'max-h-[70vh] border rounded-2xl anim-in-up'
+              /* A dialog is a card floating in the middle of the screen, so it
+                 stops short of the edges the sheet is allowed to reach — the
+                 tab bar and the header stay visible around it, which is what
+                 tells you it is a layer and not a new screen. The 78 is
+                 measured, not chosen: the phone tab bar is about 9vh, and a
+                 centred card any taller than this reaches under it. */
+              : 'max-h-[78vh] border rounded-2xl anim-expand'
         }`}
       >
         {isSheet && (

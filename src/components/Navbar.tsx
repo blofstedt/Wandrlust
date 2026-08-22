@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import {
-  Search, MapPin, Map as MapIcon, List, Bookmark, Plug, Unplug,
+  Search, MapPin, Map as MapIcon, List, Bookmark, Wifi, WifiOff,
   Download, PlusCircle, BookOpen, X, Crosshair,
   Users, Activity, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
 } from 'lucide-react';
@@ -11,6 +11,7 @@ import { UserMenu } from './UserMenu';
 import { FacilityChips, type FacilityLookupState } from './FacilityChips';
 import { Sheet } from './ui/Sheet';
 import { BrandMark } from './ui/BrandMark';
+import { ConnectionStatus } from './ui/ConnectionStatus';
 
 interface NavbarProps {
   activeView: AppView;
@@ -20,8 +21,16 @@ interface NavbarProps {
   onSelectLocation: (loc: GeocodedLocation) => void;
   onLocateUser: () => void;
   isLocating: boolean;
-  isOfflineMode: boolean;
-  setIsOfflineMode: (offline: boolean) => void;
+  /**
+   * Whether the device believes it has a connection.
+   *
+   * READ ONLY, AND DELIBERATELY SO. This used to be a switch: a plug icon
+   * the camper flipped to "go offline". Nobody ever flipped it — a phone in
+   * a canyon is offline whether or not anyone told the app so — and a switch
+   * that is off while the connection is fine, or on while it is gone, is the
+   * app stating something untrue about the world. Now it only reports.
+   */
+  isOnline: boolean;
   onOpenOfflineManager: () => void;
   onOpenAddModal: () => void;
   onOpenGuideModal: () => void;
@@ -86,7 +95,7 @@ interface ToolButton {
  *  changes below it. */
 export const Navbar: React.FC<NavbarProps> = React.memo(({
   activeView, setActiveView, filterState, setFilterState, onSelectLocation,
-  onLocateUser, isLocating, isOfflineMode, setIsOfflineMode, onOpenOfflineManager,
+  onLocateUser, isLocating, isOnline, onOpenOfflineManager,
   onOpenAddModal, onOpenGuideModal, onOpenFilterDrawer, onOpenAuth, onOpenPresence,
   onOpenScout, onOpenSettings, onOpenReport, nearbyCount = 0,
   activeFilterCount = 0, savedCount,
@@ -385,12 +394,13 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           {/*
             Mobile controls.
 
-            Down to one on the map. Online/offline is a rarely-flipped state
-            switch and can live up here; everything you TOUCH while camping
-            has left the header. The view switcher and the tools went to the
-            bottom tab bar; search, the facility layers and the account
-            button now ride in the map's own control stack at bottom right,
-            beside layers and locate, where a thumb already is.
+            Down to one on the map, and that one is not a control: the
+            connection light only reports whether the phone has a network.
+            Everything you TOUCH while camping has left the header. The view
+            switcher and the tools went to the bottom tab bar; search, the
+            facility layers and the account button now ride in the map's own
+            control stack at bottom right, beside layers and locate, where a
+            thumb already is.
 
             The account button comes BACK to the header on the list and the
             saved views, because there is no map down there to hold it and a
@@ -398,17 +408,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
             stretch for.
           */}
           <div className="flex items-center gap-1.5 md:hidden">
-            <button
-              onClick={() => setIsOfflineMode(!isOfflineMode)}
-              className={`p-2 tap-safe rounded-lg border ${
-                isOfflineMode
-                  ? 'bg-slate-800 text-slate-400 border-slate-700'
-                  : 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50'
-              }`}
-              aria-label={isOfflineMode ? 'Go online' : 'Go offline'}
-            >
-              {isOfflineMode ? <Unplug className="w-4 h-4" /> : <Plug className="w-4 h-4" />}
-            </button>
+            <ConnectionStatus isOnline={isOnline} />
 
             {activeView !== 'map' && <UserMenu onOpenAuth={onOpenAuth} />}
           </div>
@@ -608,18 +608,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
             ))}
           </div>
 
-          <button
-            onClick={() => setIsOfflineMode(!isOfflineMode)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border ${
-              isOfflineMode
-                ? 'bg-slate-800 text-slate-400 border-slate-700 shadow-inner'
-                : 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50 shadow-md shadow-emerald-950/40'
-            }`}
-            title={isOfflineMode ? 'Offline — using saved data' : 'Online'}
-          >
-            {isOfflineMode ? <Unplug className="w-3.5 h-3.5" /> : <Plug className="w-3.5 h-3.5" />}
-            {isOfflineMode ? 'Offline' : 'Online'}
-          </button>
+          <ConnectionStatus isOnline={isOnline} variant="pill" />
 
           {tools.map(({ key, label, icon: Icon, iconClass, onClick, badge, badgeClass }) => (
             <button
@@ -656,16 +645,32 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
 
       Phones only — a desktop keeps the box in the header, where there is no
       keyboard eating the screen and a mouse does not care how far it travels.
+
+      IT IS A DOCKED CARD NOW, NOT A DRAWER. Full width and welded to the
+      bottom edge, it read as a new screen rather than a layer: it covered
+      the tab bar, so the map you were about to search had gone, and the
+      field itself looked cut off by the edge of the phone. Docked, it floats
+      clear of both edges with the map still visible around it, which is the
+      truth of the thing — you have not left the map, you are pointing it
+      somewhere.
     */}
     <Sheet
       isOpen={searchOpen}
       onClose={() => setSearchOpen(false)}
+      variant="dock"
       liftAboveKeyboard
       autoFocus={false}
       title="Search"
       subtitle="Go somewhere, or show what is around you"
     >
-      <div className="p-3 space-y-2.5">
+      {/*
+        `p-4`, not `p-3`. At three the field ran within twelve pixels of a
+        full-width drawer's edges and read as clipped rather than inset — the
+        screenshot that started this looked like the search box had been cut
+        off by the screen. A docked card has an edge you can see, so what is
+        inside it needs room to sit away from that edge.
+      */}
+      <div className="p-4 space-y-3">
         <div className="relative flex items-center">
           <Search
             className={`absolute left-3.5 w-4 h-4 pointer-events-none ${
