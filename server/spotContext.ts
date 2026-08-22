@@ -27,7 +27,7 @@
  *
  * Nothing here throws. Every export resolves to a result object.
  */
-import { metresBetween } from './beaconSources.js';
+import { metresBetween, overpassFailureRemark } from './beaconSources.js';
 import { USER_AGENT } from './alertSources.js';
 
 /* One User-Agent for the whole server, with a contact somebody can
@@ -257,8 +257,17 @@ export const fetchSpotContext = async (
       });
       if (!res.ok) continue;
 
-      const data = (await res.json()) as { elements?: unknown };
+      const data = (await res.json()) as { elements?: unknown; remark?: unknown };
       if (!Array.isArray(data?.elements)) continue;
+
+      /*
+       * Overpass answers a timed-out query with 200 and an empty list, putting
+       * the reason in `remark`. Untreated, that is indistinguishable from
+       * genuinely empty ground — and this endpoint's whole job is telling
+       * "there is no toilet here" apart from "we could not check".
+       * See `overpassFailureRemark`.
+       */
+      if (overpassFailureRemark(data)) continue;
 
       elements = data.elements as OverpassElement[];
       break;

@@ -339,6 +339,41 @@ const buildQuery = (lat: number, lon: number, radiusM: number, timeoutS: number)
  * rather than by position — which is also what makes the function robust to a
  * mirror reordering them.
  */
+/**
+ * OVERPASS SAYS "200 OK" WHEN IT HAS FAILED, AND WE BELIEVED IT.
+ *
+ * A query that exceeds its declared `[timeout:N]`, or that runs the server out
+ * of memory, does NOT come back as an HTTP error. It comes back 200, with a
+ * perfectly well-formed body, an EMPTY `elements` array, and the reason in a
+ * `remark`:
+ *
+ *   { "version": 0.6, "elements": [], "remark": "runtime error: Query timed
+ *     out in \"query\" at line 1 after 11 seconds" }
+ *
+ * Nothing here read `remark`, so that was indistinguishable from a scan that
+ * swept the ground and found it empty — the single worst way for this app to
+ * be wrong. Measured in production: Banff townsite, which sits inside a named
+ * national park beside a named river with fuel and toilets in town, answered
+ * "nothing named nearby" with `poiLookupFailed: false`. For Beacon the cost is
+ * higher than a wrong label: a fake-empty scan reports `openstreetmap: 'ok'`,
+ * so the route concludes the ground was swept, keeps the camper's token, and
+ * tells them there is nowhere to sleep here.
+ *
+ * A remark is not automatically fatal — Overpass also uses it for advisory
+ * notes — so only the failure wordings count, and a remark that arrives
+ * alongside real elements is left alone.
+ */
+export const overpassFailureRemark = (
+  data: { elements?: unknown; remark?: unknown } | null
+): string | null => {
+  const remark = typeof data?.remark === 'string' ? data.remark.trim() : '';
+  if (!remark) return null;
+  if (!/error|timed out|timeout|out of memory|too many requests/i.test(remark)) return null;
+  // Real results despite the note: keep them rather than throw away good data.
+  if (Array.isArray(data?.elements) && data.elements.length > 0) return null;
+  return remark.slice(0, 160);
+};
+
 const sortElements = (elements: OverpassElement[]): Omit<OverpassScan, keyof SourceNote> => {
   const areas: OverpassElement[] = [];
   const roads: OverpassElement[] = [];
@@ -520,11 +555,25 @@ export const fetchOverpassScan = async (
       throw new Error(`${host}: HTTP ${res.status}`);
     }
 
-    const data = (await res.json().catch(() => null)) as { elements?: unknown } | null;
+    const data = (await res.json().catch(() => null)) as
+      { elements?: unknown; remark?: unknown } | null;
     if (!Array.isArray(data?.elements)) {
       tried.push(`${host}: answered without an element list`);
       handTurnOn();
       throw new Error(`${host}: no elements`);
+    }
+
+    /*
+     * A 200 that is really a failure. Treated as this mirror refusing, so
+     * `Promise.any` moves to the next one and an all-mirror failure becomes
+     * an honest "could not scan" — which refunds the beacon — instead of a
+     * confident "there is nowhere to sleep here".
+     */
+    const remark = overpassFailureRemark(data);
+    if (remark) {
+      tried.push(`${host}: 200 but failed — ${remark}`);
+      handTurnOn();
+      throw new Error(`${host}: ${remark}`);
     }
 
     tried.push(`${host}: ok in ${Date.now() - startedAt} ms`);
