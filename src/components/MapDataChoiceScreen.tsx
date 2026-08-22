@@ -147,7 +147,7 @@ export const MapDataChoiceScreen: React.FC<MapDataChoiceScreenProps> = ({ onChos
                 {/* The honest part. Not a footnote. */}
                 <div className="flex gap-2 p-2.5 rounded-xl bg-amber-950/40 border border-amber-800/50">
                   <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-px" />
-                  <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                  <p className="text-xs text-amber-200/90 leading-relaxed">
                     Edges are approximate — up to about a kilometre out — and small
                     areas are missing entirely.{' '}
                     <strong className="text-amber-100">
@@ -186,7 +186,7 @@ export const MapDataChoiceScreen: React.FC<MapDataChoiceScreenProps> = ({ onChos
 
                 {busy ? (
                   <div className="space-y-2 pt-1">
-                    <div className="flex justify-between text-[11px] font-bold text-sky-300">
+                    <div className="flex justify-between text-xs font-bold text-sky-300">
                       <span className="flex items-center gap-1.5">
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         Downloading…
@@ -207,14 +207,14 @@ export const MapDataChoiceScreen: React.FC<MapDataChoiceScreenProps> = ({ onChos
                         }}
                       />
                     </div>
-                    <p className="text-[11px] text-slate-500">
+                    <p className="text-xs text-slate-500">
                       Keep this screen open. Anything already saved is kept if you stop.
                     </p>
                   </div>
                 ) : packUnavailable ? (
                   <div className="flex gap-2 p-2.5 rounded-xl bg-slate-950 border border-slate-800">
                     <WifiOff className="w-4 h-4 text-slate-500 shrink-0 mt-px" />
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                    <p className="text-xs text-slate-400 leading-relaxed">
                       {manifest?.message ??
                         'Full-detail maps aren’t available right now.'}
                     </p>
@@ -242,13 +242,13 @@ export const MapDataChoiceScreen: React.FC<MapDataChoiceScreenProps> = ({ onChos
                 )}
 
                 {error && (
-                  <p className="text-[11px] text-rose-300 leading-relaxed">{error}</p>
+                  <p className="text-xs text-rose-300 leading-relaxed">{error}</p>
                 )}
               </div>
             </div>
           </div>
 
-          <p className="text-center text-[11px] text-slate-500 leading-relaxed anim-fade">
+          <p className="text-center text-xs text-slate-500 leading-relaxed anim-fade">
             <Check className="w-3 h-3 inline-block mr-1 -mt-px" />
             You can change this later in Offline Maps. Whichever you pick, boundaries
             are approximate and camping rules are set locally — always check signs on

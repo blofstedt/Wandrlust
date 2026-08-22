@@ -95,7 +95,7 @@ export const LegalGate: React.FC<LegalGateProps> = ({ onOpenFullText }) => {
               Before you head out
             </h2>
           </div>
-          <p className="text-[11px] text-slate-400 leading-snug">
+          <p className="text-xs text-slate-400 leading-snug">
             Two minutes, once. Please actually read the middle bit.
           </p>
         </header>
@@ -109,7 +109,7 @@ export const LegalGate: React.FC<LegalGateProps> = ({ onOpenFullText }) => {
                 Wandrlust is a tool, not a guardian angel
               </h3>
             </div>
-            <div className="space-y-2 text-[11px] text-amber-100/90 leading-relaxed">
+            <div className="space-y-2 text-xs text-amber-100/90 leading-relaxed">
               <p>
                 This app is built to <strong>augment</strong> your overlanding — not to
                 keep you safe. It cannot summon help, it does not monitor you, and if
@@ -138,13 +138,13 @@ export const LegalGate: React.FC<LegalGateProps> = ({ onOpenFullText }) => {
               <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
               <h3 className="text-xs font-bold text-slate-200">Your data</h3>
             </div>
-            <p className="text-[11px] text-slate-300 leading-relaxed">
+            <p className="text-xs text-slate-300 leading-relaxed">
               We store your name, username, email, password and location so the app can
               work. Your password is hashed — we cannot read it. Shared location is
               rounded to about a kilometre before anyone else sees it, and presence
               records expire after four hours.
             </p>
-            <p className="text-[11px] text-emerald-300 font-semibold mt-2">
+            <p className="text-xs text-emerald-300 font-semibold mt-2">
               We never sell your data and never share it with third-party vendors.
             </p>
           </section>
@@ -159,14 +159,14 @@ export const LegalGate: React.FC<LegalGateProps> = ({ onOpenFullText }) => {
               >
                 <span className="flex items-center gap-2 min-w-0">
                   <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span className="text-[11px] font-semibold text-slate-200 truncate">
+                  <span className="text-xs font-semibold text-slate-200 truncate">
                     {doc.kind === 'privacy_policy'
                       ? 'Privacy Policy'
                       : doc.kind === 'terms_of_service'
                       ? 'Terms of Service'
                       : 'Safety Disclaimer'}
                   </span>
-                  <span className="text-[10px] text-slate-500 shrink-0">
+                  <span className="text-[12px] text-slate-500 shrink-0">
                     v{doc.version}
                   </span>
                 </span>
@@ -176,7 +176,7 @@ export const LegalGate: React.FC<LegalGateProps> = ({ onOpenFullText }) => {
           </section>
 
           {error && (
-            <p className="text-[11px] text-rose-300 bg-rose-950/50 border border-rose-800/50 rounded-lg p-2">
+            <p className="text-xs text-rose-300 bg-rose-950/50 border border-rose-800/50 rounded-lg p-2">
               {error}
             </p>
           )}
@@ -190,7 +190,7 @@ export const LegalGate: React.FC<LegalGateProps> = ({ onOpenFullText }) => {
               onChange={(e) => setChecked(e.target.checked)}
               className="accent-emerald-500 w-4 h-4 mt-0.5 shrink-0"
             />
-            <span className="text-[11px] text-slate-300 leading-snug group-hover:text-slate-200">
+            <span className="text-xs text-slate-300 leading-snug group-hover:text-slate-200">
               I understand Wandrlust is a planning tool and that I am responsible for my
               own safety. I accept the Terms of Service and Privacy Policy.
             </span>
@@ -273,7 +273,7 @@ export const LegalDocumentModal: React.FC<{
           <h2 className="text-sm font-bold text-slate-100">{title}</h2>
           <button
             onClick={onClose}
-            className="px-2 text-slate-500 hover:text-slate-100 text-sm font-bold"
+            className="tap-safe px-2 text-slate-500 hover:text-slate-100 text-sm font-bold"
             aria-label="Close"
           >
             ✕
@@ -286,7 +286,7 @@ export const LegalDocumentModal: React.FC<{
               <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
             </div>
           ) : (
-            <pre className="text-[12px] text-slate-300 leading-relaxed whitespace-pre-wrap font-sans">
+            <pre className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap font-sans">
               {body}
             </pre>
           )}
@@ -294,4 +294,4 @@ export const LegalDocumentModal: React.FC<{
       </div>
     </div>
   );
-};
+};

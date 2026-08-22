@@ -64,7 +64,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({ onOpenAuth }) => {
           </div>
         )}
         <span
-          className="hidden sm:flex items-center gap-1 text-[11px] font-bold"
+          className="hidden sm:flex items-center gap-1 text-xs font-bold"
           style={{ color: tierDef.colorSoft }}
           title={`${tierDef.label} — ${pointsBalance} points`}
         >
@@ -80,11 +80,11 @@ export const UserMenu: React.FC<UserMenuProps> = ({ onOpenAuth }) => {
             <p className="text-sm font-bold text-slate-100 truncate">
               {profile?.display_name ?? profile?.handle ?? 'Camper'}
             </p>
-            <p className="text-[11px] text-slate-400 truncate">{user.email}</p>
+            <p className="text-xs text-slate-400 truncate">{user.email}</p>
 
             <div className="flex items-center gap-2 mt-2">
               <TierBadge tier={tier} />
-              <span className="text-[10px] font-bold text-slate-300 flex items-center gap-1">
+              <span className="text-[12px] font-bold text-slate-300 flex items-center gap-1">
                 <Sparkles className="w-3 h-3 text-amber-300" />
                 {pointsBalance} points
               </span>
@@ -99,11 +99,11 @@ export const UserMenu: React.FC<UserMenuProps> = ({ onOpenAuth }) => {
                 <p className="text-xs font-bold" style={{ color: tierDef.colorSoft }}>
                   {tierDef.label}
                 </p>
-                <p className="text-[10px] text-slate-400 leading-snug">{tierDef.blurb}</p>
+                <p className="text-[12px] text-slate-400 leading-snug">{tierDef.blurb}</p>
               </div>
             </div>
 
-            <div className="flex justify-between text-[10px] text-slate-400 mt-2.5 mb-1">
+            <div className="flex justify-between text-[12px] text-slate-400 mt-2.5 mb-1">
               <span>Trust score {score}</span>
               {next ? (
                 <span>
@@ -129,7 +129,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({ onOpenAuth }) => {
 
           {/* The whole ladder, so there is something to climb toward. */}
           <div className="p-3 border-b border-slate-800">
-            <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
               The ladder
             </p>
             <div className="flex items-end justify-between gap-1">
@@ -143,7 +143,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({ onOpenAuth }) => {
                   >
                     <Trophy tier={t.id} size={reached && t.rank === tierDef.rank ? 22 : 16} animate={false} />
                     <span
-                      className="text-[8px] font-bold leading-none text-center"
+                      className="text-[10px] font-bold leading-none text-center"
                       style={{ color: reached ? t.colorSoft : '#64748b' }}
                     >
                       {t.label}
@@ -152,7 +152,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({ onOpenAuth }) => {
                 );
               })}
             </div>
-            <p className="text-[9px] text-slate-500 mt-2 leading-tight">
+            <p className="text-[11px] text-slate-500 mt-2 leading-tight">
               Points come from checking in, scouting new sites, and verifying amenities.
               They are earned only — never sold.
             </p>

@@ -110,15 +110,15 @@ export const NearbyFiresCard: React.FC<NearbyFiresCardProps> = ({
 
   return (
     <section>
-      <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+      <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
         <Flame className="w-3 h-3" />
         Active fire nearby
       </h3>
       {loading && (
-        <div className="text-[11px] text-slate-400">Checking for fires…</div>
+        <div className="text-xs text-slate-400">Checking for fires…</div>
       )}
       {error && !loading && (
-        <div className="text-[11px] text-slate-500">Fire data unavailable: {error}</div>
+        <div className="text-xs text-slate-500">Fire data unavailable: {error}</div>
       )}
       {fires.length > 0 && (
         <ul className="space-y-1.5">
@@ -137,10 +137,10 @@ export const NearbyFiresCard: React.FC<NearbyFiresCardProps> = ({
                   ? <TriangleAlert className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${dotClass}`} />
                   : <Flame className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${dotClass}`} />}
                 <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-slate-100 font-semibold leading-tight truncate">
+                  <div className="text-xs text-slate-100 font-semibold leading-tight truncate">
                     {fire.name}
                   </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                  <div className="text-[12px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
                     <span className={dotClass + ' font-bold'}>
                       {formatKm(distanceKm)} {tier === 'near' ? '· nearby' : '· in the area'}
                     </span>

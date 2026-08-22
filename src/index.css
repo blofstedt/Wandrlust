@@ -1,6 +1,26 @@
 @import "tailwindcss";
 
 /* ====================================================================
+   Type scale — sized for a phone held at arm's length, in daylight,
+   often by someone who is not twenty-five.
+
+   The app used to run on a 9-11px scale. On a screen in a truck cab
+   that is a squint, and squinting at a campsite's road-access rating
+   is exactly the moment the app has to be readable. Tailwind's own
+   `xs` and `sm` are nudged up here so the whole app moves together,
+   rather than being re-tagged class by class and drifting apart again.
+
+   Nothing below 11px ships. That is the floor.
+   ==================================================================== */
+@theme {
+  --text-xs: 0.8125rem;              /* 13px, was 12 */
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.9375rem;              /* 15px, was 14 */
+  --text-sm--line-height: 1.3125rem;
+  --text-base--line-height: 1.5rem;
+}
+
+/* ====================================================================
    Wandrlust motion system — inspired by PebbleOS
 
    The house curve is "moook": a short ramp, linear travel, then an
@@ -281,6 +301,31 @@
   }
 
   .tap-target { min-height: 44px; min-width: 44px; }
+
+  /* --------------------------------------------------------------
+     A 44px touch target that does NOT make the button 44px.
+
+     Half the icon buttons in this app are 30-34px squares — a close
+     X, a layer switcher, a zoom control. Growing them to Apple's 44px
+     minimum would fatten every toolbar and crowd the map, which is the
+     opposite of what was asked for. So the BOX stays the size it looks
+     and an invisible pad centred on it takes the taps. Nothing moves,
+     nothing reflows, and a cold thumb in a moving truck still lands it.
+
+     The pad is a child of the button, so the press, the focus ring and
+     the hover all belong to the button exactly as before.
+     -------------------------------------------------------------- */
+  .tap-safe { position: relative; }
+  .tap-safe::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+    /* No paint of its own — it exists only to be hit. */
+  }
 }
 
 /* ====================================================================
@@ -532,7 +577,7 @@
   white-space: nowrap;
   padding: 2px 7px 2px 5px;
   border-radius: 9999px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.35;
   color: #e2e8f0;
@@ -561,7 +606,7 @@
   border: 2px solid var(--wl-chip-color);
   box-shadow: 0 0 0 1px rgba(2, 6, 23, 0.6);
 }
-.wl-chip-glyph { font-size: 9px; line-height: 1; }
+.wl-chip-glyph { font-size: 10px; line-height: 1; }
 
 /* A CEILING ON HOW WIDE ONE CHIP MAY GET.
    Most chips are two or three words and never come near this. A warning chip
@@ -627,12 +672,12 @@
 .wl-chip-nav:hover { background: #6ee7b7; }
 .wl-chip-nav .wl-chip-dot { display: none; }
 .wl-chip .wl-chip-arrow {
-  font-size: 9px;
+  font-size: 10px;
   opacity: 0.6;
   margin-left: 1px;
 }
 .wl-chip-go .wl-chip-arrow {
-  font-size: 9px;
+  font-size: 10px;
   opacity: 0.85;
   margin-left: 1px;
 }
@@ -669,7 +714,7 @@
   white-space: nowrap;
   padding: 4px 9px;
   border-radius: 9999px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1;
   color: #e2e8f0;
@@ -722,7 +767,7 @@
   text-align: center;
   padding: 3px 8px;
   border-radius: 12px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1.3;
   color: #f8fafc;
@@ -733,12 +778,12 @@
 }
 /* The name leads. It was the same size and weight as the rules under it, which
    made the card read as five equal lines instead of a heading and its list. */
-.wl-tour-stop-label b { font-weight: 800; font-size: 11px; }
+.wl-tour-stop-label b { font-weight: 800; font-size: 12px; }
 /* What kind of thing it is — "US Forest Service" — under the name it belongs
    to rather than mixed into the rules, which it is not one of. */
 .wl-tour-stop-label-card b { margin-bottom: 3px; }
 .wl-tour-stop-label small {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   opacity: 0.8;
   margin-top: -2px;
@@ -749,7 +794,7 @@
 .wl-tour-stop-label i {
   font-style: normal;
   font-weight: 600;
-  font-size: 9.5px;
+  font-size: 10.5px;
   opacity: 0.97;
 }
 /* BULLETED, BECAUSE THEY ARE A LIST OF RULES.
@@ -770,7 +815,7 @@
 .wl-tour-stop-label em {
   font-style: normal;
   font-weight: 600;
-  font-size: 9px;
+  font-size: 10px;
   opacity: 0.92;
 }
 

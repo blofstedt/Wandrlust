@@ -160,14 +160,14 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
               <button
                 onClick={() => setQuery('')}
                 aria-label="Clear search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 tap-safe rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-2 mt-2 text-[11px]">
+          <div className="flex items-center justify-between gap-2 mt-2 text-xs">
             <span className="text-slate-500">
               {searching
                 ? `${hitCount} ${hitCount === 1 ? 'result' : 'results'} in ${matches.length} ${matches.length === 1 ? 'section' : 'sections'}`
@@ -187,7 +187,7 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
         </div>
 
         {/* The standing caveat. This guide summarises rules; it is not the rules. */}
-        <div className="flex items-start gap-2 p-3 rounded-2xl bg-slate-950 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
+        <div className="flex items-start gap-2 p-3 rounded-2xl bg-slate-950 border border-slate-800 text-xs text-slate-400 leading-relaxed">
           <Info className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
           <p>
             A plain-language summary of published agency rules — not legal advice, and not current by
@@ -231,15 +231,15 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
                           <Highlight text={section.title} tokens={tokens} />
                         </h3>
                         {section.scope && (
-                          <span className="px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-400 text-[10px] font-semibold border border-slate-700">
+                          <span className="px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-400 text-[12px] font-semibold border border-slate-700">
                             <Highlight text={section.scope} tokens={tokens} />
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-400 leading-snug mt-0.5">
+                      <p className="text-xs text-slate-400 leading-snug mt-0.5">
                         <Highlight text={section.summary} tokens={tokens} />
                       </p>
-                      <p className="text-[10px] text-slate-500 mt-1">
+                      <p className="text-[12px] text-slate-500 mt-1">
                         {subsections.length}{' '}
                         {subsections.length === 1 ? 'topic' : 'topics'}
                         {searching && subsections.length < section.subsections.length && ' matched'}
@@ -261,7 +261,7 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
                             <Highlight text={sub.title} tokens={tokens} />
                           </h4>
 
-                          <ul className="space-y-1.5 text-[11px] text-slate-300 leading-relaxed">
+                          <ul className="space-y-1.5 text-xs text-slate-300 leading-relaxed">
                             {sub.entries.map((entry, i) => (
                               <li key={i} className="flex gap-2">
                                 <span className="text-slate-600 select-none">—</span>
@@ -278,7 +278,7 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
                           </ul>
 
                           {sub.caveat && (
-                            <p className="mt-2 pt-2 border-t border-slate-800 text-[10px] text-slate-500 italic leading-relaxed">
+                            <p className="mt-2 pt-2 border-t border-slate-800 text-[12px] text-slate-500 italic leading-relaxed">
                               <Highlight text={sub.caveat} tokens={tokens} />
                             </p>
                           )}
@@ -288,7 +288,7 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
                       {(section.source || section.links) && (
                         <div className="flex flex-wrap items-center gap-2 pt-0.5">
                           {section.source && (
-                            <span className="text-[10px] text-slate-500 mr-1">
+                            <span className="text-[12px] text-slate-500 mr-1">
                               Source: <Highlight text={section.source} tokens={tokens} />
                             </span>
                           )}
@@ -298,7 +298,7 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
                               href={link.href}
                               target="_blank"
                               rel="noreferrer"
-                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1 text-[10px] font-semibold transition-colors duration-200"
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1 text-[12px] font-semibold transition-colors duration-200"
                             >
                               {link.label}
                               <ExternalLink className="w-2.5 h-2.5" />
@@ -316,4 +316,4 @@ export const CampingGuideModal: React.FC<CampingGuideModalProps> = ({ isOpen, on
       </div>
     </Sheet>
   );
-};
+};

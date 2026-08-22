@@ -5071,7 +5071,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // instead of having to compare numbers.
         const count = c.getChildCount();
         const size = count < 10 ? 34 : count < 100 ? 42 : 50;
-        const text = count < 100 ? 'text-xs' : 'text-[11px]';
+        const text = count < 100 ? 'text-xs' : 'text-xs';
 
         return L.divIcon({
           html:
@@ -6652,7 +6652,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
 
         {!isWithinCoverage(center[0], center[1]) && (
-          <div className="bg-slate-800/95 backdrop-blur-md border border-slate-600 text-slate-300 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
+          <div className="bg-slate-800/95 backdrop-blur-md border border-slate-600 text-slate-300 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xl flex items-start gap-2 anim-in-up">
             <Eye className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
             <span>Outside coverage. Wandrlust supports {COVERAGE_LABEL}.</span>
           </div>
@@ -6668,7 +6668,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           overstatement. It clears itself the moment both feeds answer.
         */}
         {showWarnings && alertGap && (
-          <div className="bg-amber-950/90 backdrop-blur-md border border-amber-700/70 text-amber-100 px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up">
+          <div className="bg-amber-950/90 backdrop-blur-md border border-amber-700/70 text-amber-100 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xl flex items-start gap-2 anim-in-up">
             <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
             <span className="leading-snug">{alertGap}</span>
           </div>
@@ -6685,7 +6685,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         */}
         {backroadNotice && (
           <div
-            className={`backdrop-blur-md px-3 py-1.5 rounded-xl text-[11px] font-semibold shadow-xl flex items-start gap-2 anim-in-up ${
+            className={`backdrop-blur-md px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xl flex items-start gap-2 anim-in-up ${
               backroadNotice.tone === 'amber'
                 ? 'bg-amber-950/90 border border-amber-700/70 text-amber-100'
                 : backroadNotice.tone === 'violet'
@@ -6724,7 +6724,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         than left for the camper to discover at the trailhead.
       */}
       {facilityTrip && readLat !== null && readLon !== null && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[1400] w-[min(23rem,calc(100%-1.5rem))] anim-in-up">
+        <div className="absolute bottom-11 md:bottom-3 left-1/2 -translate-x-1/2 z-[1400] w-[min(23rem,calc(100%-1.5rem))] anim-in-up">
           <div
             className="rounded-2xl bg-slate-900/96 backdrop-blur-md border shadow-2xl px-3 py-2.5"
             style={{ borderColor: FACILITY_COLOR[facilityTrip.facility.kind] }}
@@ -6737,12 +6737,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <p className="text-xs font-bold text-slate-100 truncate">
                   {facilityTrip.facility.name ?? FACILITY_LABEL[facilityTrip.facility.kind]}
                 </p>
-                <p className="text-[10px] text-slate-400">
+                <p className="text-[12px] text-slate-400">
                   {FACILITY_LABEL[facilityTrip.facility.kind]} ·{' '}
                   {facilityTrip.facility.distanceKm} km from this spot
                   {facilityTrip.facility.fee === true && ' · charges a fee'}
                 </p>
-                <p className="text-[10px] text-slate-300 mt-0.5">
+                <p className="text-[12px] text-slate-300 mt-0.5">
                   {facilityTrip.loading ? (
                     <span className="flex items-center gap-1.5 text-slate-400">
                       <Loader2 className="w-3 h-3 animate-spin" />
@@ -6765,14 +6765,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               <button
                 type="button"
                 onClick={() => setFacilityTrip(null)}
-                className="p-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 shrink-0"
+                className="p-1.5 tap-safe rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100 shrink-0"
                 aria-label="Hide this facility"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
 
-            <p className="text-[9px] text-slate-500 leading-tight mt-1.5">
+            <p className="text-[11px] text-slate-500 leading-tight mt-1.5">
               Mapped by an OpenStreetMap volunteer. Nobody has checked whether it
               is open, maintained or still there.
             </p>
@@ -6800,7 +6800,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         <button
           type="button"
           onClick={() => setShowLayerMenu((open) => !open)}
-          className="p-2 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white shadow-xl"
+          className="p-2 tap-safe rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white shadow-xl"
           aria-label="Map layers"
           aria-expanded={showLayerMenu}
         >
@@ -6809,7 +6809,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
         {showLayerMenu && (
           <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-xl p-2 shadow-2xl w-48 anim-in-down">
-            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold px-1 pb-1">Base map</p>
+            <p className="text-[12px] uppercase tracking-wider text-slate-400 font-bold px-1 pb-1">Base map</p>
             {(Object.keys(TILE_URLS) as MapTileLayer[]).map((id) => (
               <button
                 key={id}
@@ -6823,7 +6823,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               </button>
             ))}
 
-            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold px-1 pt-2 pb-1">Overlays</p>
+            <p className="text-[12px] uppercase tracking-wider text-slate-400 font-bold px-1 pt-2 pb-1">Overlays</p>
             <label className="flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 cursor-pointer">
               <span>Public land boundaries</span>
               <input
@@ -6841,7 +6841,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               blank map is missing data rather than missing public land.
             */}
             {showBoundaries && (
-              <p className="px-2 pb-1.5 text-[9px] text-slate-500 leading-tight">
+              <p className="px-2 pb-1.5 text-[11px] text-slate-500 leading-tight">
                 Edges are drawn as a fade, not a line — roughly{' '}
                 {UNCERTAINTY_LABEL.cadastral_derived} to {UNCERTAINTY_LABEL.generalised}{' '}
                 out depending on the source, and not permission to camp. Nothing
@@ -6855,7 +6855,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               and its fire ban. Only the paint is gone.
             */}
             {!showBoundaries && (
-              <p className="px-2 pb-1.5 text-[9px] text-slate-500 leading-tight">
+              <p className="px-2 pb-1.5 text-[11px] text-slate-500 leading-tight">
                 Off by default — the map stays readable and tapping any point
                 still tells you which public land it is in.
               </p>
@@ -6898,14 +6898,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                             opacity={style.opacity}
                           />
                         </svg>
-                        <span className="text-[9px] text-slate-400 leading-tight">
+                        <span className="text-[11px] text-slate-400 leading-tight">
                           {style.label}
                         </span>
                       </li>
                     );
                   })}
                 </ul>
-                <p className="text-[9px] text-slate-500 leading-tight pt-1.5">
+                <p className="text-[11px] text-slate-500 leading-tight pt-1.5">
                   Mapped by OpenStreetMap volunteers, and only drawn once you
                   zoom in. A line is a road somebody recorded — not one that is
                   maintained, ungated, passable today, or legal to drive.
@@ -6957,7 +6957,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             type="button"
             onClick={onLocateUser}
             disabled={isLocating}
-            className="p-2 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white shadow-xl disabled:opacity-50"
+            className="p-2 tap-safe rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white shadow-xl disabled:opacity-50"
             aria-label="Centre on my location"
           >
             {isLocating
@@ -6978,7 +6978,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         <button
           type="button"
           onClick={() => mapRef.current?.zoomIn()}
-          className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none"
+          className="tap-safe w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none"
           aria-label="Zoom in"
         >
           +
@@ -6986,7 +6986,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         <button
           type="button"
           onClick={() => mapRef.current?.zoomOut()}
-          className="w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none border-t border-slate-700/80"
+          className="tap-safe w-9 h-9 bg-slate-900/90 backdrop-blur-md text-slate-200 hover:text-white hover:bg-slate-800 text-lg font-bold leading-none border-t border-slate-700/80"
           aria-label="Zoom out"
         >
           −
@@ -7011,7 +7011,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         <button
           type="button"
           onClick={() => setShowCredits((open) => !open)}
-          className="w-5 h-5 rounded-full bg-slate-950/60 backdrop-blur-sm border border-slate-700/50 text-slate-400 hover:text-slate-100 hover:bg-slate-900/80 flex items-center justify-center shrink-0"
+          className="tap-safe w-5 h-5 rounded-full bg-slate-950/60 backdrop-blur-sm border border-slate-700/50 text-slate-400 hover:text-slate-100 hover:bg-slate-900/80 flex items-center justify-center shrink-0"
           aria-label={showCredits ? 'Hide map credits' : 'Show map credits'}
           aria-expanded={showCredits}
         >
@@ -7020,7 +7020,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
         {showCredits && (
           <div
-            className="px-2 py-1 rounded-md bg-slate-950/90 backdrop-blur-sm border border-slate-700/60 text-[9px] text-slate-300 max-w-[70vw] anim-in-up"
+            className="px-2 py-1 rounded-md bg-slate-950/90 backdrop-blur-sm border border-slate-700/60 text-[11px] text-slate-300 max-w-[70vw] anim-in-up"
             dangerouslySetInnerHTML={{
               __html: isOfflineMode
                 ? 'Offline tile cache'
@@ -7038,10 +7038,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         there — but once you know, the hint is clutter, so it removes itself.
       */}
       {!destination && !pointCardOpen && (
-        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
+        <div className="absolute bottom-13 md:bottom-5 left-1/2 -translate-x-1/2 z-[999] pointer-events-none anim-in-up">
           <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/70 shadow-xl">
             <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span className="text-[11px] font-semibold text-slate-200">
+            <span className="text-xs font-semibold text-slate-200">
               Tap anywhere to pick a spot
             </span>
           </div>
@@ -7073,10 +7073,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         inside the block.
       */}
       {showBoundaries && boundaries.meta?.truncated && !wideViewFailed && !zoomTooFar && !centreGap && (
-        <div className="absolute bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
+        <div className="absolute bottom-13 md:bottom-5 left-3 z-[998] pointer-events-none anim-in-up">
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-violet-800/70 shadow-xl">
             <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
-            <span className="text-[10px] font-semibold text-violet-200">
+            <span className="text-[12px] font-semibold text-violet-200">
               There's more here — zoom in to see it all
             </span>
           </div>
@@ -7109,10 +7109,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         two amber chips never share the corner.
       */}
       {showBoundaries && (wideViewFailed || zoomTooFar) && (
-        <div className="absolute bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
+        <div className="absolute bottom-13 md:bottom-5 left-3 right-3 z-[998] pointer-events-none anim-in-up">
           <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
             <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
-            <span className="text-[10px] font-semibold text-amber-200 leading-snug">
+            <span className="text-[12px] font-semibold text-amber-200 leading-snug">
               {centreGap && !hasMappedCrownLand(centreGap.isoCode)
                 ? `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`
                 : zoomTooFar
@@ -7149,10 +7149,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         corner.
       */}
       {showBoundaries && !wideViewFailed && !zoomTooFar && liveZoom >= BOUNDARY_MIN_ZOOM && centreGap && (
-        <div className="absolute bottom-16 left-3 right-3 z-[998] pointer-events-none anim-in-up">
+        <div className="absolute bottom-24 md:bottom-16 left-3 right-3 z-[998] pointer-events-none anim-in-up">
           <div className="inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-900/85 backdrop-blur-md border border-amber-700/70 shadow-xl">
             <span className="w-1.5 h-1.5 mt-1 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
-            <span className="text-[10px] font-semibold text-amber-200 leading-snug">
+            <span className="text-[12px] font-semibold text-amber-200 leading-snug">
               {hasMappedCrownLand(centreGap.isoCode)
                 ? `${centreGap.name} — ${centreGap.gap}.`
                 : `${centreGap.name} — ${centreGap.gap}. A blank map here means we have no data, never that the land isn’t there.`}

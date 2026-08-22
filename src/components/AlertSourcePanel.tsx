@@ -36,7 +36,7 @@ export const AlertSourcePanel: React.FC = () => {
     return (
       <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 flex items-center gap-2">
         <Loader2 className="w-3.5 h-3.5 text-slate-500 animate-spin" />
-        <span className="text-[11px] text-slate-400">Checking the alert feed…</span>
+        <span className="text-xs text-slate-400">Checking the alert feed…</span>
       </div>
     );
   }
@@ -86,15 +86,15 @@ export const AlertSourcePanel: React.FC = () => {
     <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 space-y-2.5">
       <div className="flex items-center gap-2">
         <RadioTower className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-        <span className="text-[11px] font-bold text-slate-200">Official alert feed</span>
+        <span className="text-xs font-bold text-slate-200">Official alert feed</span>
       </div>
 
       <div className={`rounded-xl border px-2.5 py-2 ${health.tone}`}>
         <div className="flex items-center gap-1.5">
           <HealthIcon className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[11px] font-bold">{health.label}</span>
+          <span className="text-xs font-bold">{health.label}</span>
         </div>
-        <p className="text-[10px] opacity-90 leading-snug mt-1">{health.detail}</p>
+        <p className="text-[12px] opacity-90 leading-snug mt-1">{health.detail}</p>
       </div>
 
       {/* Who the warnings actually come from. */}
@@ -105,12 +105,12 @@ export const AlertSourcePanel: React.FC = () => {
             <div key={authority.id} className="rounded-xl bg-slate-900/60 border border-slate-800 p-2.5">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="text-[11px] font-bold text-slate-200 leading-snug">{authority.name}</p>
-                  <p className="text-[10px] text-slate-500">{authority.scope}</p>
+                  <p className="text-xs font-bold text-slate-200 leading-snug">{authority.name}</p>
+                  <p className="text-[12px] text-slate-500">{authority.scope}</p>
                 </div>
                 {feed && (
                   <span
-                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 ${
+                    className={`px-1.5 py-0.5 rounded text-[11px] font-bold uppercase shrink-0 ${
                       feed.state === 'ok'
                         ? 'bg-emerald-600/20 text-emerald-300'
                         : feed.state === 'unreachable'
@@ -122,12 +122,12 @@ export const AlertSourcePanel: React.FC = () => {
                   </span>
                 )}
               </div>
-              <p className="text-[10px] text-slate-400 leading-snug mt-1">{authority.covers}</p>
+              <p className="text-[12px] text-slate-400 leading-snug mt-1">{authority.covers}</p>
               <a
                 href={authority.url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-300 hover:text-white mt-1.5"
+                className="inline-flex items-center gap-1 text-[12px] font-semibold text-slate-300 hover:text-white mt-1.5"
               >
                 Official warnings <ExternalLink className="w-2.5 h-2.5" />
               </a>
@@ -137,14 +137,14 @@ export const AlertSourcePanel: React.FC = () => {
       </div>
 
       {lastRun && (
-        <p className="text-[9px] text-slate-500 leading-tight">
+        <p className="text-[11px] text-slate-500 leading-tight">
           Last checked {new Date(lastRun.finishedAt).toLocaleString()}
           {typeof status?.activeAlerts === 'number' && ` · ${status.activeAlerts} alerts in force`}
           {lastRun.error && ` · ${lastRun.error}`}
         </p>
       )}
 
-      <p className="text-[9px] text-slate-500 leading-tight">
+      <p className="text-[11px] text-slate-500 leading-tight">
         Wandrlust relays these warnings, it does not issue them. The agency is always the
         authority — confirm with them before making a safety decision.
       </p>

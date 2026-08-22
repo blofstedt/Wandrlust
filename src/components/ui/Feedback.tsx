@@ -139,7 +139,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-semibold text-slate-100 leading-snug">{t.message}</p>
                 {t.detail && (
-                  <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{t.detail}</p>
+                  <p className="text-xs text-slate-400 mt-0.5 leading-snug">{t.detail}</p>
                 )}
                 {t.action && (
                   <button
@@ -147,7 +147,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
                       t.action?.onClick();
                       dismiss(t.id);
                     }}
-                    className={`mt-1.5 text-[11px] font-bold ${style.accent} hover:underline`}
+                    className={`mt-1.5 text-xs font-bold ${style.accent} hover:underline`}
                   >
                     {t.action.label}
                   </button>
@@ -155,7 +155,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
               </div>
               <button
                 onClick={() => dismiss(t.id)}
-                className="p-1 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800 shrink-0"
+                className="p-1 tap-safe rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800 shrink-0"
                 aria-label="Dismiss notification"
               >
                 <X className="w-3 h-3" />
@@ -221,16 +221,16 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         <p className="text-sm font-bold text-slate-100 mb-1">
           {this.props.fallbackLabel ?? 'Something broke here'}
         </p>
-        <p className="text-[11px] text-slate-400 max-w-xs leading-snug mb-4">
+        <p className="text-xs text-slate-400 max-w-xs leading-snug mb-4">
           The rest of the app is still working. You can retry this section, or carry on
           and come back to it.
         </p>
         {this.state.error && (
           <details className="mb-4 max-w-xs w-full">
-            <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-300">
+            <summary className="text-[12px] text-slate-500 cursor-pointer hover:text-slate-300">
               Technical detail
             </summary>
-            <pre className="text-[9px] text-slate-500 mt-1.5 p-2 rounded-lg bg-slate-950 border border-slate-800 overflow-x-auto text-left">
+            <pre className="text-[11px] text-slate-500 mt-1.5 p-2 rounded-lg bg-slate-950 border border-slate-800 overflow-x-auto text-left">
               {this.state.error.message}
             </pre>
           </details>
@@ -299,7 +299,7 @@ export const EmptyState: React.FC<{
       <Icon className="w-6 h-6 text-slate-400" />
     </div>
     <p className="text-sm font-bold text-slate-200 mb-1">{title}</p>
-    <p className="text-[11px] text-slate-400 max-w-xs leading-snug mb-4">{description}</p>
+    <p className="text-xs text-slate-400 max-w-xs leading-snug mb-4">{description}</p>
     {action && (
       <button
         onClick={action.onClick}
@@ -385,10 +385,10 @@ export const OfflineIndicator: React.FC = () => {
       role="status"
       aria-live="polite"
     >
-      <div className="px-3 py-1.5 rounded-full bg-amber-500 text-slate-950 text-[11px] font-bold shadow-xl flex items-center gap-1.5">
+      <div className="px-3 py-1.5 rounded-full bg-amber-500 text-slate-950 text-xs font-bold shadow-xl flex items-center gap-1.5">
         <span className="w-1.5 h-1.5 rounded-full bg-slate-950 animate-pulse" />
         Offline — showing saved data
       </div>
     </div>
   );
-};
+};

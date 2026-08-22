@@ -254,21 +254,21 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] font-bold text-slate-300 uppercase tracking-wide">
+                <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 uppercase tracking-wide">
                   {campsite.landType.replace('_', ' ')}
                 </span>
-                <span className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${capacity.className}`}>
+                <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold ${capacity.className}`}>
                   {capacity.label}
                 </span>
                 {hazards.some((h) => h.kind === 'fire_ban') && (
-                  <span className="px-1.5 py-0.5 rounded bg-orange-600 text-white text-[9px] font-bold flex items-center gap-1 anim-pulse-danger">
+                  <span className="px-1.5 py-0.5 rounded bg-orange-600 text-white text-[11px] font-bold flex items-center gap-1 anim-pulse-danger">
                     <Flame className="w-2.5 h-2.5" />
                     FIRE BAN
                   </span>
                 )}
               </div>
               <h2 className="text-base font-bold text-slate-100 truncate">{campsite.name}</h2>
-              <p className="text-[11px] text-slate-400 truncate">
+              <p className="text-xs text-slate-400 truncate">
                 {campsite.address.nearestCity}
                 {campsite.address.stateProvince && `, ${campsite.address.stateProvince}`}
               </p>
@@ -305,7 +305,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                   primary action competing with Save. */}
               <button
                 onClick={() => { haptic('tap'); setIsReporting(true); }}
-                className="p-2 rounded-xl border bg-slate-800 border-slate-700 text-slate-500 hover:text-rose-300"
+                className="p-2 tap-safe rounded-xl border bg-slate-800 border-slate-700 text-slate-500 hover:text-rose-300"
                 aria-label="Report this spot"
                 title="Report this spot"
               >
@@ -313,7 +313,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
               </button>
               <button
                 onClick={() => { haptic('tap'); onToggleSave(campsite); }}
-                className={`p-2 rounded-xl border ${
+                className={`p-2 tap-safe rounded-xl border ${
                   isSaved
                     ? 'bg-amber-500 text-slate-950 border-amber-400'
                     : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
@@ -324,7 +324,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
               </button>
               <button
                 onClick={onClose}
-                className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100"
+                className="p-2 tap-safe rounded-xl bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-100"
                 aria-label="Close"
               >
                 <X className="w-4 h-4" />
@@ -332,7 +332,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 mt-2.5 text-[11px] text-slate-400 flex-wrap">
+          <div className="flex items-center gap-3 mt-2.5 text-xs text-slate-400 flex-wrap">
             <span className="flex items-center gap-1">
               <Star className="w-3 h-3 text-amber-400" />
               {campsite.rating > 0 ? campsite.rating.toFixed(1) : '—'}
@@ -355,7 +355,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
         {snap !== 'peek' && (
           <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-4 scroll-soft">
             {loading && (
-              <div className="flex items-center gap-2 text-[11px] text-slate-400">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 Loading conditions…
               </div>
@@ -363,7 +363,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
 
             {/* Hazards first: safety before scenery */}
             <section>
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                 Conditions &amp; alerts
               </h3>
               <HazardAlertPanel alerts={weather.alerts} pointHazards={hazards} compact />
@@ -383,7 +383,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
             />
 
             <section>
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                 Are you here? Report capacity
               </h3>
               <div className="grid grid-cols-4 gap-1.5">
@@ -392,19 +392,19 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                     key={c}
                     onClick={() => handleCheckIn(c)}
                     disabled={checkingIn}
-                    className={`px-2 py-2 rounded-xl border text-[10px] font-bold disabled:opacity-50 ${CAPACITY_STYLE[c].className}`}
+                    className={`px-2 py-2 rounded-xl border text-[12px] font-bold disabled:opacity-50 ${CAPACITY_STYLE[c].className}`}
                   >
                     {CAPACITY_STYLE[c].label}
                   </button>
                 ))}
               </div>
               {notice && (
-                <p className="text-[10px] text-emerald-300 mt-1.5 flex items-center gap-1 anim-in-up">
+                <p className="text-[12px] text-emerald-300 mt-1.5 flex items-center gap-1 anim-in-up">
                   <CheckCircle2 className="w-3 h-3" />
                   {notice}
                 </p>
               )}
-              <p className="text-[9px] text-slate-500 mt-1">
+              <p className="text-[11px] text-slate-500 mt-1">
                 Checking in earns points and keeps capacity current for everyone else.
               </p>
             </section>
@@ -426,7 +426,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                   href={getStreetViewUrl(campsite.latitude, campsite.longitude)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn absolute bottom-2 right-2 px-2 py-1 rounded-lg bg-slate-950/80 backdrop-blur-sm text-cyan-300 text-[10px] font-bold flex items-center gap-1 border border-cyan-500/40"
+                  className="btn absolute bottom-2 right-2 px-2 py-1 rounded-lg bg-slate-950/80 backdrop-blur-sm text-cyan-300 text-[12px] font-bold flex items-center gap-1 border border-cyan-500/40"
                 >
                   <Camera className="w-2.5 h-2.5" />
                   Street View
@@ -436,7 +436,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
 
             {rules.length > 0 && (
               <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                   Local rules
                 </h3>
                 {rules.slice(0, 2).map((r, i) => (
@@ -450,7 +450,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                       <TentTree className="w-3.5 h-3.5 text-emerald-400" />
                       <span className="text-xs font-bold text-slate-200">{r.land_name}</span>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="grid grid-cols-2 gap-2 text-xs">
                       {r.stay_limit_days && (
                         <div>
                           <span className="text-slate-500">Stay limit</span>
@@ -465,9 +465,9 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                       </div>
                     </div>
                     {r.leave_no_trace && (
-                      <p className="text-[10px] text-slate-400 mt-2 leading-snug">{r.leave_no_trace}</p>
+                      <p className="text-[12px] text-slate-400 mt-2 leading-snug">{r.leave_no_trace}</p>
                     )}
-                    <p className="text-[9px] text-slate-500 mt-2 pt-2 border-t border-slate-700/60">
+                    <p className="text-[11px] text-slate-500 mt-2 pt-2 border-t border-slate-700/60">
                       {r.attribution}
                     </p>
                   </div>
@@ -476,7 +476,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
             )}
 
             <section>
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                 Amenities
               </h3>
               <div className="grid grid-cols-2 gap-2">
@@ -500,9 +500,9 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                   >
                     <div className="flex items-center gap-1.5 text-slate-500">
                       <Icon className="w-3 h-3" />
-                      <span className="text-[9px] uppercase tracking-wide font-bold">{label}</span>
+                      <span className="text-[11px] uppercase tracking-wide font-bold">{label}</span>
                     </div>
-                    <p className="text-[11px] text-slate-200 font-semibold capitalize mt-0.5">{value}</p>
+                    <p className="text-xs text-slate-200 font-semibold capitalize mt-0.5">{value}</p>
                   </div>
                 ))}
               </div>
@@ -525,7 +525,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                   time applied to it. The arrival-time version lives in the
                   destination sheet, where a route exists to work it out from.
                 */}
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                   Forecast here
                 </h3>
                 <div className="flex gap-2 overflow-x-auto pb-1 scroll-soft">
@@ -535,11 +535,11 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                       data-stagger={Math.min(i, 8)}
                       className="shrink-0 w-24 rounded-xl bg-slate-800/50 border border-slate-700/60 p-2 text-center anim-in-up"
                     >
-                      <p className="text-[10px] font-bold text-slate-300 truncate">{p.name}</p>
+                      <p className="text-[12px] font-bold text-slate-300 truncate">{p.name}</p>
                       <p className="text-lg font-bold text-slate-100 my-0.5">{p.temperature}°</p>
-                      <p className="text-[9px] text-slate-400 leading-tight line-clamp-2">{p.shortForecast}</p>
+                      <p className="text-[11px] text-slate-400 leading-tight line-clamp-2">{p.shortForecast}</p>
                       {p.precipProbability != null && p.precipProbability > 0 && (
-                        <p className="text-[9px] text-sky-400 mt-0.5">{p.precipProbability}% precip</p>
+                        <p className="text-[11px] text-sky-400 mt-0.5">{p.precipProbability}% precip</p>
                       )}
                     </div>
                   ))}
@@ -547,11 +547,11 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
               </section>
             )}
 
-            {weather.note && <p className="text-[10px] text-slate-500 italic">{weather.note}</p>}
+            {weather.note && <p className="text-[12px] text-slate-500 italic">{weather.note}</p>}
 
             <section>
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">About</h3>
-              <p className="text-[12px] text-slate-300 leading-relaxed">{campsite.description}</p>
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">About</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">{campsite.description}</p>
             </section>
 
             <section className="flex gap-2">
@@ -599,14 +599,14 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
             */}
             {campsite.submittedByMe && removal !== null && (
               <section className="pt-3 border-t border-slate-800 anim-in-up">
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                   You added this spot
                 </h3>
 
                 {canRemove ? (
                   confirmingRemove ? (
                     <div className="rounded-xl border border-rose-800/60 bg-rose-950/30 p-3 anim-in-up">
-                      <p className="text-[11px] text-rose-100 leading-snug">
+                      <p className="text-xs text-rose-100 leading-snug">
                         Take it off the map for good? Nobody else has used this
                         one, so nothing of anybody else&apos;s goes with it — but
                         it cannot be undone.
@@ -615,14 +615,14 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                         <button
                           onClick={() => { haptic('tap'); setConfirmingRemove(false); }}
                           disabled={removing}
-                          className="flex-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold disabled:opacity-50"
+                          className="flex-1 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold disabled:opacity-50"
                         >
                           Keep it
                         </button>
                         <button
                           onClick={handleRemove}
                           disabled={removing}
-                          className="flex-1 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
+                          className="flex-1 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
                         >
                           {removing
                             ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -635,12 +635,12 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                     <>
                       <button
                         onClick={() => { haptic('tap'); setConfirmingRemove(true); }}
-                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:border-rose-600/60 hover:text-rose-200 text-[11px] font-bold flex items-center justify-center gap-1.5"
+                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:border-rose-600/60 hover:text-rose-200 text-xs font-bold flex items-center justify-center gap-1.5"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         Remove this spot
                       </button>
-                      <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
+                      <p className="text-[12px] text-slate-500 mt-1.5 leading-snug">
                         {removal.exists
                           ? 'Nobody else has reviewed, saved or checked in here, so it is still yours to take down.'
                           : 'This one is saved on your device only, so removing it affects nobody else.'}
@@ -648,7 +648,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                     </>
                   )
                 ) : (
-                  <p className="text-[10px] text-slate-500 leading-snug">
+                  <p className="text-[12px] text-slate-500 leading-snug">
                     {removal.message ||
                       'Other campers are using this spot now, so it stays on the map.'}
                   </p>

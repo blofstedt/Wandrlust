@@ -40,7 +40,7 @@ const Toggle: React.FC<ToggleProps> = ({ label, description, value, onChange, ic
     <span className="flex-1 min-w-0">
       <span className="block text-xs font-semibold text-slate-200">{label}</span>
       {description && (
-        <span className="block text-[10px] text-slate-500 leading-snug mt-0.5">{description}</span>
+        <span className="block text-[12px] text-slate-500 leading-snug mt-0.5">{description}</span>
       )}
     </span>
     <input
@@ -152,7 +152,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="text-slate-500 hover:text-slate-200 text-sm font-bold px-2"
+            className="tap-safe text-slate-500 hover:text-slate-200 text-sm font-bold px-2"
             aria-label="Close settings"
           >
             ✕
@@ -165,7 +165,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               mobile PWA, where the OS throttles the background poll. The
               automatic path catches most updates; this is the escape hatch. */}
           <section>
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+            <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
               App
             </h3>
             <button
@@ -198,7 +198,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               who issues the warnings and whether we are still hearing them,
               and that is not a per-account preference. */}
           <section>
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+            <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
               Where alerts come from
             </h3>
             <AlertSourcePanel />
@@ -221,14 +221,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           ) : (
             <>
               <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
                   Notifications
                 </h3>
                 <PushSettings center={center} />
               </section>
 
               <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
                   Safety alerts
                 </h3>
 
@@ -262,7 +262,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 />
 
                 <div className="px-2.5 pt-2">
-                  <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                  <div className="flex justify-between text-[12px] text-slate-400 mb-1">
                     <label htmlFor="alert-radius">Alert radius</label>
                     <span className="font-bold text-slate-200">{settings.alert_radius_km} km</span>
                   </div>
@@ -280,7 +280,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </section>
 
               <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
                   Privacy
                 </h3>
                 <Toggle
@@ -300,7 +300,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </section>
 
               <section>
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
                   Display
                 </h3>
                 <Toggle
@@ -314,7 +314,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
               {onOpenLegal && (
                 <section>
-                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                  <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
                     Legal
                   </h3>
                   {LEGAL_LINKS.map(([kind, label]) => (
@@ -337,7 +337,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     <Coffee className="w-3.5 h-3.5 text-amber-400" />
                     <span className="text-xs font-bold text-slate-200">Support Wandrlust</span>
                   </div>
-                  <p className="text-[10px] text-slate-400 leading-snug mb-2.5">
+                  <p className="text-[12px] text-slate-400 leading-snug mb-2.5">
                     Wandrlust is free and has no ads. If it&apos;s useful to you, you can buy
                     the project a coffee. It buys you nothing in the app — no points, no
                     tiers, no stealth spots. Those are earned by contributing, and that
@@ -347,7 +347,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     href="https://buymeacoffee.com/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-bold"
+                    className="btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold"
                   >
                     <Coffee className="w-3 h-3" />
                     Buy me a coffee

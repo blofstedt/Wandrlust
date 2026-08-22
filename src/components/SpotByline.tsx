@@ -32,7 +32,7 @@ export const SpotByline: React.FC<{
   campsite: Campsite;
   /** Tailwind size classes, so the list card can run larger than the sheet. */
   className?: string;
-}> = ({ campsite, className = 'text-[11px]' }) => {
+}> = ({ campsite, className = 'text-xs' }) => {
   const [author, setAuthor] = useState<string | null>(null);
 
   const { submittedBy, submittedByMe } = campsite;

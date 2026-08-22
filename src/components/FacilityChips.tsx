@@ -123,7 +123,7 @@ export const FacilityChips: React.FC<FacilityChipsProps> = ({
               type="button"
               aria-pressed={on}
               onClick={() => { haptic('tap'); onToggle(kind); }}
-              className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-[11px] font-bold whitespace-nowrap ${
+              className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-xs font-bold whitespace-nowrap ${
                 on
                   ? 'text-slate-950 border-transparent shadow-md'
                   : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:text-slate-100 hover:border-slate-600'
@@ -145,7 +145,7 @@ export const FacilityChips: React.FC<FacilityChipsProps> = ({
             <Loader2 className="w-3 h-3 text-slate-400 animate-spin shrink-0 mt-0.5" />
           )}
           <p
-            className={`text-[10px] leading-snug flex-1 ${
+            className={`text-[12px] leading-snug flex-1 ${
               status.tone === 'warn' ? 'text-amber-300/90' : 'text-slate-400'
             }`}
           >
@@ -154,7 +154,7 @@ export const FacilityChips: React.FC<FacilityChipsProps> = ({
           <button
             type="button"
             onClick={() => { haptic('tap'); onClearAll(); }}
-            className="shrink-0 text-[10px] font-bold text-slate-400 hover:text-slate-200 underline underline-offset-2"
+            className="shrink-0 text-[12px] font-bold text-slate-400 hover:text-slate-200 underline underline-offset-2"
           >
             Clear
           </button>

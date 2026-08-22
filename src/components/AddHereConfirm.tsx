@@ -59,11 +59,11 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
     <div className="space-y-3 text-xs text-slate-300">
       {userLocation ? (
         <>
-          <p className="flex items-center gap-2 font-mono text-[11px] text-slate-200 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
+          <p className="flex items-center gap-2 font-mono text-xs text-slate-200 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
             <Crosshair className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             {userLocation[0].toFixed(5)}, {userLocation[1].toFixed(5)}
           </p>
-          <p className="text-[11px] text-slate-400 leading-snug">
+          <p className="text-xs text-slate-400 leading-snug">
             That is your phone&apos;s fix, as good as it managed — it may be a
             few dozen metres off, and it is where you are rather than where the
             pullout is. You can correct the numbers on the next screen.
@@ -87,7 +87,7 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
           <button
             type="button"
             onClick={() => onAddFacility(userLocation[0], userLocation[1])}
-            className="w-full py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-[11px] flex items-center justify-center gap-2 hover:bg-slate-700"
+            className="w-full py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-2 hover:bg-slate-700"
           >
             <Droplets className="w-3.5 h-3.5" />
             It&apos;s a toilet, tap or dump station — not a campsite
@@ -95,7 +95,7 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
         </>
       ) : (
         <>
-          <p className="text-[11px] text-slate-400 leading-snug">
+          <p className="text-xs text-slate-400 leading-snug">
             Nothing has been located yet, or location is switched off for this
             site. Find your position first, or add the spot from the map.
           </p>
@@ -122,12 +122,12 @@ export const AddHereConfirm: React.FC<AddHereConfirmProps> = ({
       <button
         type="button"
         onClick={onClose}
-        className="w-full py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-[11px] flex items-center justify-center gap-2 hover:bg-slate-700"
+        className="w-full py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-2 hover:bg-slate-700"
       >
         <MapPin className="w-3.5 h-3.5" />
         No — I&apos;ll tap the spot on the map
       </button>
-      <p className="text-[10px] text-slate-500 leading-snug text-center">
+      <p className="text-[12px] text-slate-500 leading-snug text-center">
         Tapping anywhere on the map drops a pin, and the card that opens has an
         Add spot button with those coordinates already in it.
       </p>

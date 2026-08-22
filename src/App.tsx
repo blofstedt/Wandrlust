@@ -41,6 +41,7 @@ import { flushPendingSpots } from './services/spotSync';
 import { LegalGate, LegalDocumentModal } from './components/LegalGate';
 import { HazardReportCard } from './components/HazardReportCard';
 import { ErrorBoundary, EmptyState, useToast } from './components/ui/Feedback';
+import { MobileTabBar } from './components/MobileTabBar';
 import { isWithinCoverage, COVERAGE_LABEL } from './config/coverage';
 import {
   createDefaultFilters, DEFAULT_FILTERS, ALL_LAND_TYPES,
@@ -1337,7 +1338,7 @@ export default function App() {
                 )}
 
                 {outOfCoverageNotice && (
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-[11px] flex items-start gap-2 anim-in-up">
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs flex items-start gap-2 anim-in-up">
                     <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
                     <span>
                       <strong>{outOfCoverageNotice}</strong> is outside our coverage.
@@ -1358,7 +1359,7 @@ export default function App() {
                   Auto-clears after 2.4s; see handlePinRefused.
                 */}
                 {pinRefusal && (
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-amber-500/60 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-[11px] flex items-start gap-2 anim-in-up">
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-sm bg-slate-900/95 border border-amber-500/60 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs flex items-start gap-2 anim-in-up">
                     {pinRefusal === 'water'
                       ? <Waves className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
                       : <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />}
@@ -1375,7 +1376,7 @@ export default function App() {
 
           {/* --------------------------------------------------------- LIST */}
           {activeView === 'list' && (
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 pb-16 md:pb-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                 <div>
                   <h2 className="font-['Outfit'] font-bold text-xl text-slate-100">
@@ -1413,7 +1414,7 @@ export default function App() {
 
           {/* -------------------------------------------------------- SAVED */}
           {activeView === 'saved' && (
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 pb-16 md:pb-6 max-w-7xl mx-auto w-full space-y-4 scroll-soft">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                 <div>
                   <h2 className="font-['Outfit'] font-bold text-xl text-slate-100 flex items-center gap-2">
@@ -1453,6 +1454,32 @@ export default function App() {
             </div>
           )}
         </main>
+
+        {/*
+          The phone's primary navigation.
+
+          A flex sibling of <main>, not an overlay: the map gets a shorter
+          box rather than a bar parked on top of it, so the zoom buttons,
+          the attribution and the boundary/backroad notices along the map's
+          bottom edge keep the room they had. On a desktop it is not
+          rendered at all — the header's own switcher and tool rail are
+          still there and still reachable.
+        */}
+        <MobileTabBar
+          activeView={activeView}
+          setActiveView={setActiveView}
+          savedCount={savedSites.length}
+          activeFilterCount={activeFilterCount}
+          nearbyCount={nearbyCampers.length}
+          onOpenFilterDrawer={() => setIsFilterOpen(true)}
+          onOpenPresence={() => setIsPresenceOpen(true)}
+          onOpenScout={() => setIsScoutOpen(true)}
+          onOpenReport={() => setIsReportOpen(true)}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenOfflineManager={() => setIsOfflineManagerOpen(true)}
+          onOpenGuideModal={() => setIsGuideModalOpen(true)}
+          onOpenAddModal={() => setIsAddHereOpen(true)}
+        />
       </div>
 
       {/* ------------------------------------------------ Modals & panels */}

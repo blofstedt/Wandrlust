@@ -214,18 +214,18 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
         {/* Where it goes, shown before anything is asked. */}
         {lat !== null && lon !== null ? (
           <div>
-            <p className="flex items-center gap-2 font-mono text-[11px] text-slate-200 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
+            <p className="flex items-center gap-2 font-mono text-xs text-slate-200 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
               <Crosshair className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
               {lat.toFixed(5)}, {lon.toFixed(5)}
             </p>
-            <p className="text-[10px] text-slate-500 leading-snug mt-1">
+            <p className="text-[12px] text-slate-500 leading-snug mt-1">
               {fromGps
                 ? 'That is your phone’s fix, as good as it managed — it may be a few dozen metres off.'
                 : 'That is where you tapped the map. Close the sheet and tap again to move it.'}
             </p>
           </div>
         ) : (
-          <p className="text-[11px] text-amber-300/90 leading-snug">
+          <p className="text-xs text-amber-300/90 leading-snug">
             Nothing has been located yet. Tap the map to place a pin, then add
             the facility from the card that opens.
           </p>
@@ -234,7 +234,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
         {/* ---- The duplicate check ---- */}
         {!showForm && (
           <div className="rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 space-y-2">
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400">
               Already here?
             </h3>
 
@@ -242,14 +242,14 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
               <div className="space-y-1.5">
                 <SkeletonLine className="w-3/4" />
                 <SkeletonLine className="w-1/2" />
-                <p className="text-[10px] text-slate-500">
+                <p className="text-[12px] text-slate-500">
                   Checking what is already mapped nearby…
                 </p>
               </div>
             )}
 
             {check.status === 'failed' && (
-              <p className="text-[11px] text-amber-300/90 leading-snug flex items-start gap-1.5">
+              <p className="text-xs text-amber-300/90 leading-snug flex items-start gap-1.5">
                 <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
                 {/*
                   Not "nothing here". The check failed; what is on the ground
@@ -264,7 +264,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
 
             {check.status === 'done' && nearbyCount > 0 && (
               <>
-                <p className="text-[11px] text-slate-400 leading-snug">
+                <p className="text-xs text-slate-400 leading-snug">
                   {nearbyCount === 1 ? 'One thing is' : `${nearbyCount} things are`} already
                   mapped within {Math.round(NEARBY_RADIUS_KM * 1000)} m. If yours is one
                   of them, tap it to confirm it rather than adding a second pin.
@@ -279,17 +279,17 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
                         className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg bg-slate-900 border border-slate-700 hover:border-slate-500 text-left disabled:opacity-60"
                       >
                         <span
-                          className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] shrink-0"
+                          className="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
                           style={{ background: `${FACILITY[facility.kind].color}22` }}
                           aria-hidden="true"
                         >
                           {FACILITY[facility.kind].glyph}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block text-[11px] font-bold text-slate-100 truncate">
+                          <span className="block text-xs font-bold text-slate-100 truncate">
                             {facility.name ?? FACILITY[facility.kind].label}
                           </span>
-                          <span className="block text-[10px] text-slate-400 truncate">
+                          <span className="block text-[12px] text-slate-400 truncate">
                             {Math.round(facility.distanceKm * 1000)} m away ·{' '}
                             {facility.fromOsm ? 'OpenStreetMap' : 'added by a camper'}
                           </span>
@@ -310,7 +310,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
             <button
               type="button"
               onClick={() => { haptic('tap'); setPast(true); }}
-              className="w-full py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-bold hover:bg-slate-700"
+              className="w-full py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold hover:bg-slate-700"
             >
               {nearbyCount > 0 ? 'None of these — add a new one' : 'Add one here'}
             </button>
@@ -321,7 +321,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
         {showForm && (
           <>
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
                 What is it?
               </p>
               <div className="flex flex-wrap gap-1.5">
@@ -334,7 +334,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
                       type="button"
                       aria-pressed={on}
                       onClick={() => { haptic('tap'); setKind(k); }}
-                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-[11px] font-bold ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-xs font-bold ${
                         on
                           ? 'text-slate-950 border-transparent shadow-md'
                           : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:border-slate-600'
@@ -352,7 +352,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
             <div>
               <label
                 htmlFor="facility-name"
-                className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1"
+                className="block text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-1"
               >
                 Name <span className="normal-case font-normal">(optional)</span>
               </label>
@@ -369,7 +369,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
                 The old form made this required, which meant the honest answer
                 for most pit toilets was to invent something.
               */}
-              <p className="text-[10px] text-slate-500 mt-1">
+              <p className="text-[12px] text-slate-500 mt-1">
                 Most pit toilets have no name. Blank is a fine answer.
               </p>
             </div>
@@ -377,7 +377,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
             <div>
               <label
                 htmlFor="facility-detail"
-                className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1"
+                className="block text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-1"
               >
                 Anything worth knowing <span className="normal-case font-normal">(optional)</span>
               </label>
@@ -393,7 +393,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
             </div>
 
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
                 Does it cost anything?
               </p>
               {/*
@@ -409,7 +409,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
                       type="button"
                       aria-pressed={fee === value}
                       onClick={() => { haptic('tap'); setFee(value); }}
-                      className={`flex-1 py-2 rounded-lg border text-[11px] font-bold ${
+                      className={`flex-1 py-2 rounded-lg border text-xs font-bold ${
                         fee === value
                           ? 'bg-emerald-600 border-emerald-500 text-white'
                           : 'bg-slate-950/80 border-slate-700 text-slate-300 hover:border-slate-600'
@@ -432,7 +432,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
               {busy ? 'Adding…' : `Add this ${FACILITY[kind].label.toLowerCase()}`}
             </button>
 
-            <p className="text-[10px] text-slate-500 leading-snug flex items-start gap-1.5">
+            <p className="text-[12px] text-slate-500 leading-snug flex items-start gap-1.5">
               <MapPin className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
                 It goes on the map straight away, drawn hollow and labelled as
@@ -445,7 +445,7 @@ export const AddFacilitySheet: React.FC<AddFacilitySheetProps> = ({
         )}
 
         {notice && (
-          <p className="text-[11px] text-slate-200 bg-slate-800/70 border border-slate-700 rounded-xl px-3 py-2 leading-snug">
+          <p className="text-xs text-slate-200 bg-slate-800/70 border border-slate-700 rounded-xl px-3 py-2 leading-snug">
             {notice}
           </p>
         )}

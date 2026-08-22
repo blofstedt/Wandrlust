@@ -94,12 +94,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               <h2 className="text-base font-bold text-slate-100">
                 {mode === 'signup' ? 'Create your account' : 'Sign in to Wandrlust'}
               </h2>
-              <p className="text-[11px] text-slate-400">Save spots, check in, and earn points</p>
+              <p className="text-xs text-slate-400">Save spots, check in, and earn points</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800"
+            className="p-1.5 tap-safe rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800"
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -114,7 +114,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 <p className="text-xs font-semibold text-amber-200">
                   Authentication isn&apos;t configured
                 </p>
-                <p className="text-[11px] text-amber-300/80 mt-1 leading-snug">
+                <p className="text-xs text-amber-300/80 mt-1 leading-snug">
                   Set <code className="font-mono">VITE_SUPABASE_URL</code> and{' '}
                   <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> in your{' '}
                   <code className="font-mono">.env</code>, then restart the dev server.
@@ -135,13 +135,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
             <div className="flex items-center gap-3 my-4">
               <div className="flex-1 h-px bg-slate-700" />
-              <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">or</span>
+              <span className="text-[12px] uppercase tracking-wider text-slate-500 font-bold">or</span>
               <div className="flex-1 h-px bg-slate-700" />
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-3">
               <div>
-                <label className="text-[11px] font-semibold text-slate-400">Email</label>
+                <label className="text-xs font-semibold text-slate-400">Email</label>
                 <input
                   type="email"
                   required
@@ -155,7 +155,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
               {mode !== 'magic' && (
                 <div>
-                  <label className="text-[11px] font-semibold text-slate-400">Password</label>
+                  <label className="text-xs font-semibold text-slate-400">Password</label>
                   <input
                     type="password"
                     required
@@ -190,7 +190,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
             {notice && (
               <div
-                className={`mt-3 p-2.5 rounded-xl flex gap-2 text-[11px] ${
+                className={`mt-3 p-2.5 rounded-xl flex gap-2 text-xs ${
                   notice.ok
                     ? 'bg-emerald-950/60 border border-emerald-700/50 text-emerald-200'
                     : 'bg-rose-950/60 border border-rose-700/50 text-rose-200'
@@ -205,7 +205,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               </div>
             )}
 
-            <div className="mt-4 pt-3 border-t border-slate-800 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+            <div className="mt-4 pt-3 border-t border-slate-800 flex flex-wrap gap-x-3 gap-y-1 text-xs">
               {mode !== 'magic' && (
                 <button
                   onClick={() => { setMode('magic'); setNotice(null); }}
@@ -235,4 +235,4 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       </div>
     </div>
   );
-};
+};

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Compass, Search, MapPin, Map as MapIcon, List, Bookmark, Plug, Unplug,
-  Download, PlusCircle, BookOpen, X, Crosshair, MoreHorizontal,
+  Download, PlusCircle, BookOpen, X, Crosshair,
   Users, Activity, Settings as SettingsIcon, AlertTriangle, SlidersHorizontal
 } from 'lucide-react';
 import type { AppView, FacilityKind, FilterState, GeocodedLocation } from '../types';
@@ -82,11 +82,9 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
   const [showDropdown, setShowDropdown] = useState(false);
   /** Arrow-key position in the dropdown. -1 is "nothing picked yet". */
   const [highlighted, setHighlighted] = useState(-1);
-  const [showMobileTools, setShowMobileTools] = useState(false);
 
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const mobileToolsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setQuery(filterState.searchQuery); }, [filterState.searchQuery]);
 
@@ -117,27 +115,6 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     };
   }, []);
 
-  // The mobile tool sheet closes on an outside tap or on Escape, like every
-  // other transient surface in the app.
-  useEffect(() => {
-    if (!showMobileTools) return;
-    const onPointerDown = (event: MouseEvent | TouchEvent) => {
-      if (mobileToolsRef.current && !mobileToolsRef.current.contains(event.target as Node)) {
-        setShowMobileTools(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setShowMobileTools(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('touchstart', onPointerDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('touchstart', onPointerDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [showMobileTools]);
 
   /**
    * Which search the answers on screen belong to.
@@ -257,10 +234,15 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     });
   };
 
-  const views: { id: AppView; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  const views: {
+    id: AppView;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: number;
+  }[] = [
     { id: 'map', label: 'Map', icon: MapIcon },
     { id: 'list', label: 'List', icon: List },
-    { id: 'saved', label: `Saved (${savedCount})`, icon: Bookmark }
+    { id: 'saved', label: 'Saved', icon: Bookmark, badge: savedCount }
   ];
 
   const tools: ToolButton[] = [
@@ -290,9 +272,6 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
     { key: 'add', label: 'Submit the spot you are standing in', short: 'Add here', icon: PlusCircle, iconClass: 'text-emerald-400', onClick: onOpenAddModal }
   ];
 
-  // Collapsed onto the mobile "more" button, so a filter left on or campers
-  // parked nearby is still visible without opening the sheet.
-  const totalToolBadges = tools.reduce((sum, tool) => sum + (tool.badge ?? 0), 0);
 
   /*
    * The header sits above the map's own overlay controls (the layer and locate
@@ -302,7 +281,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
    */
   return (
     <header className="sticky top-0 z-[1400] bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-slate-100 px-3 sm:px-6 py-2 sm:py-2.5 shadow-xl">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-2 md:gap-3">
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:flex-wrap items-center justify-between gap-2 md:gap-3">
         {/* Brand */}
         <div className="flex items-center justify-between w-full md:w-auto gap-3">
           <button
@@ -316,7 +295,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
               <span className="font-['Outfit'] font-extrabold text-lg md:text-xl tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-amber-300 bg-clip-text text-transparent">
                 Wandrlust
               </span>
-              <p className="text-[11px] text-slate-400 hidden sm:block">
+              <p className="text-xs text-slate-400 hidden xl:block whitespace-nowrap">
                 BLM, National Forest &amp; Crown Land explorer
               </p>
             </div>
@@ -325,19 +304,16 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           {/*
             Mobile controls.
 
-            Everything on the desktop tool rail — profile, settings, filters,
-            the lot — used to live inside a `hidden md:flex`, so on a phone the
-            header was a logo and a search box and nothing else. There was no
-            way to sign in, change a filter, or switch to the list. On a
-            mobile-first app that is the whole app missing.
-
-            Three controls stay on the bar itself — connection, account, and a
-            tool sheet holding the rest — so the header stays one thumb tall.
+            Down to two. The view switcher and the eight tools that used to
+            crowd in here now live in the bottom tab bar (MobileTabBar.tsx),
+            where a thumb can reach them and each one has room for a label
+            that says what it is. What stays is what belongs beside the
+            brand: whether you are online, and who you are.
           */}
           <div className="flex items-center gap-1.5 md:hidden">
             <button
               onClick={() => setIsOfflineMode(!isOfflineMode)}
-              className={`p-2 rounded-lg border ${
+              className={`p-2 tap-safe rounded-lg border ${
                 isOfflineMode
                   ? 'bg-slate-800 text-slate-400 border-slate-700'
                   : 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50'
@@ -348,49 +324,6 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
             </button>
 
             <UserMenu onOpenAuth={onOpenAuth} />
-
-            <div className="relative" ref={mobileToolsRef}>
-              <button
-                onClick={() => setShowMobileTools((open) => !open)}
-                className="relative p-2 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-200"
-                aria-label="More tools"
-                aria-expanded={showMobileTools}
-              >
-                <MoreHorizontal className="w-4 h-4" />
-                {totalToolBadges > 0 && (
-                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-bold flex items-center justify-center">
-                    {totalToolBadges}
-                  </span>
-                )}
-              </button>
-
-              {showMobileTools && (
-                <div className="absolute right-0 mt-2 w-[17rem] bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-2 z-[1100] anim-in-down">
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {tools.map(({ key, short, label, icon: Icon, iconClass, onClick, badge, badgeClass }) => (
-                      <button
-                        key={key}
-                        onClick={() => { setShowMobileTools(false); onClick(); }}
-                        aria-label={label}
-                        className="relative flex flex-col items-center gap-1 px-1 py-2.5 rounded-xl bg-slate-800/70 hover:bg-slate-700 border border-slate-700/70"
-                      >
-                        <Icon className={`w-5 h-5 ${iconClass}`} />
-                        <span className="w-full text-[10px] font-semibold text-slate-300 leading-tight text-center break-words">
-                          {short}
-                        </span>
-                        {badge != null && badge > 0 && (
-                          <span
-                            className={`absolute top-1 right-1 min-w-[15px] h-[15px] px-1 rounded-full ${badgeClass} text-slate-950 text-[9px] font-bold flex items-center justify-center`}
-                          >
-                            {badge}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
         </div>
 
@@ -401,7 +334,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           input on every breakpoint — the geocode dropdown below is absolutely
           positioned, so nothing else has ever occupied this space.
         */}
-        <div className="w-full md:max-w-md space-y-1.5">
+        <div className="w-full md:flex-1 md:min-w-[16rem] md:max-w-md space-y-1.5">
         <div className="relative w-full" ref={dropdownRef}>
           <div className="relative flex items-center">
             <Search
@@ -445,7 +378,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
                   setHighlighted(-1);
                   setFilterState((prev) => ({ ...prev, searchQuery: '' }));
                 }}
-                className="absolute right-10 text-slate-400 hover:text-slate-200"
+                className="tap-safe absolute right-10 text-slate-400 hover:text-slate-200"
                 aria-label="Clear search"
               >
                 <X className="w-4 h-4" />
@@ -454,7 +387,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
             <button
               onClick={onLocateUser}
               disabled={isLocating}
-              className="absolute right-2 p-1.5 rounded-lg bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600/50 border border-emerald-500/30 flex items-center justify-center"
+              className="absolute right-2 p-1.5 tap-safe rounded-lg bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600/50 border border-emerald-500/30 flex items-center justify-center"
               aria-label="Use my current location"
             >
               {isLocating && (
@@ -466,7 +399,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
 
           {showDropdown && suggestions.length > 0 && (
             <div className="absolute top-full left-0 right-0 mt-1.5 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-[1050] anim-in-down">
-              <p className="p-1.5 px-3 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-800">
+              <p className="p-1.5 px-3 text-xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-800">
                 Locations
               </p>
               <ul
@@ -491,7 +424,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
                         <span className="block font-semibold text-slate-100 truncate">
                           {loc.displayName.split(',')[0]}
                         </span>
-                        <span className="block text-[11px] text-slate-400 truncate">
+                        <span className="block text-xs text-slate-400 truncate">
                           {loc.displayName}
                         </span>
                       </span>
@@ -519,38 +452,23 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
         </div>
 
         {/*
-          View switcher, mobile.
+          Views, connection and the tool rail.
 
-          Full width and its own row, because Map / List / Saved is the single
-          most-used control in the app and on a phone it was not reachable at
-          all — the desktop segmented control it lives in is inside the
-          `hidden md:flex` block below.
+          `w-full` puts these on their own row on a desktop, deliberately.
+          Brand, search, the three views, the online pill, eight tools and
+          the account menu do not fit across 1280px — which is what
+          `max-w-7xl` caps this at no matter how wide the monitor is — and
+          when they were asked to, the account button was simply clipped off
+          the right-hand edge and there was no way to sign in. Two honest
+          rows beat one row with a button missing from it.
         */}
-        <div className="flex w-full md:hidden items-center p-1 bg-slate-950 border border-slate-800 rounded-xl">
-          {views.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              onClick={() => setActiveView(id)}
-              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-semibold ${
-                activeView === id
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-slate-400'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Views + tools */}
-        <div className="hidden md:flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2 w-full justify-end">
           <div className="flex items-center p-1 bg-slate-950 border border-slate-800 rounded-xl">
-            {views.map(({ id, label, icon: Icon }) => (
+            {views.map(({ id, label, icon: Icon, badge }) => (
               <button
                 key={id}
                 onClick={() => setActiveView(id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap ${
                   activeView === id
                     ? 'bg-emerald-600 text-white shadow-md'
                     : 'text-slate-400 hover:text-slate-200'
@@ -558,6 +476,11 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
               >
                 <Icon className="w-3.5 h-3.5" />
                 {label}
+                {badge != null && badge > 0 && (
+                  <span className="min-w-[17px] h-[17px] px-1 rounded-full bg-amber-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center">
+                    {badge}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -581,12 +504,12 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
               onClick={onClick}
               title={label}
               aria-label={label}
-              className="relative p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700"
+              className="relative p-2 tap-safe rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700"
             >
               <Icon className={`w-4 h-4 ${iconClass}`} />
               {badge != null && badge > 0 && (
                 <span
-                  className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full ${badgeClass} text-slate-950 text-[10px] font-bold flex items-center justify-center anim-pop`}
+                  className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full ${badgeClass} text-slate-950 text-[12px] font-bold flex items-center justify-center anim-pop`}
                 >
                   {badge}
                 </span>
