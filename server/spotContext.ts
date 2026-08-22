@@ -60,8 +60,15 @@ const SITE_RADIUS_M = 200;
 /** How far out we look for something to name the place after. */
 const NAME_RADIUS_M = 3000;
 
-/** How far out we look for the nearest town. Rural gaps get wide. */
-const TOWN_RADIUS_M = 25000;
+/**
+ * How far out we look for the nearest town. Rural gaps get wide.
+ *
+ * 15 km, down from 25. A 25 km radius over `place` nodes is the single most
+ * expensive clause left in the query, and the whole request has to finish
+ * inside one Overpass budget — see the note on `buildQuery`. The nearest town
+ * is a garnish on a spot's name; it is not worth failing the entire lookup for.
+ */
+const TOWN_RADIUS_M = 15000;
 
 export type PoiKind = 'shower' | 'restroom' | 'fuel';
 
@@ -156,7 +163,6 @@ const buildQuery = (lat: number, lon: number): string => {
   // Things worth naming a spot after, nearest wins.
   const named = [
     `way["boundary"="protected_area"]["name"]${at(NAME_RADIUS_M)};`,
-    `relation["boundary"="protected_area"]["name"]${at(NAME_RADIUS_M)};`,
     `way["leisure"~"^(park|nature_reserve)$"]["name"]${at(NAME_RADIUS_M)};`,
     `node["natural"~"^(peak|ridge|spring|water)$"]["name"]${at(NAME_RADIUS_M)};`,
     `way["waterway"~"^(river|stream)$"]["name"]${at(NAME_RADIUS_M)};`,
@@ -186,6 +192,30 @@ const buildQuery = (lat: number, lon: number): string => {
    * mirror finish, and lets a genuinely overrun one tell us so.
    */
   /*
+   * WHAT THIS QUERY MAY AND MAY NOT CONTAIN
+   *
+   * Measured against production, prairie Alberta, nothing scenic in range:
+   *
+   *   overpass-api.de: 200 but failed — runtime error: Query timed out in
+   *     "query" at line 1 after 14 seconds. |
+   *   overpass.kumi.systems: HTTP 500 after 322 ms — Internal Server Error |
+   *   overpass.private.coffee: HTTP 500 after 332 ms — Internal Server Error
+   *
+   * Two faults, not one. The main instance ACCEPTED it and ran out of budget;
+   * the other two threw it out in a third of a second. The clause both
+   * behaviours pointed at was `relation["boundary"="protected_area"](around:)`
+   * — an `around` against relations makes Overpass resolve every member's
+   * geometry, and around here that means loading a national park boundary to
+   * decide whether it is within 3 km. It is gone.
+   *
+   * The cost is real and worth stating: protected areas are usually mapped as
+   * relations, so a spot beside a named park is now less likely to be named
+   * after it. A slightly plainer name beats a lookup that fails entirely,
+   * which is what this has been doing for its whole life.
+   *
+   * Keep this query cheap. Everything it asks for shares ONE Overpass budget,
+   * and the endpoint returns nothing at all if that budget is blown.
+   *
    * `out center 500;`, NOT `out center tags;`, which is what this asked for
    * until measured against production.
    *
