@@ -42,7 +42,8 @@ app.set('trust proxy', 1);
  * so everything downstream sees the URL it expects.
  *
  *   /api/weather/alerts?minLat=50
- *     → Vercel invokes this function with ?path=weather&path=alerts&minLat=50
+ *     → Vercel invokes this function with ?path=weather&path=alerts
+&minLat=50
  *     → we restore  /api/weather/alerts?minLat=50
  */
 app.use((req, _res, next) => {
@@ -100,7 +101,8 @@ app.get('/api/health', (_req, res) => {
       vapidPrivate: Boolean(process.env.VAPID_PRIVATE_KEY),
       mapillaryToken: Boolean(process.env.MAPILLARY_TOKEN),
       /**
-       * The agent string, printed rather than reduced to a boolean.
+       * The agent string, printed ra
+ther than reduced to a boolean.
        *
        * The National Weather Service and OpenStreetMap both refuse callers
        * they cannot identify, and this deployment spent its whole life sending
@@ -152,7 +154,8 @@ await safeRegister(
  * own when Supabase is absent, so registering it is always safe.
  */
 await safeRegister(
-  'land-pack',
+ 
+ 'land-pack',
   () => import('../server/landPackRoutes.js'),
   'registerLandPackRoutes'
 );
@@ -213,7 +216,8 @@ await safeRegister(
 /**
  * Backroads: the unpaved and minor roads drawn as a map overlay.
  *
- * Registered here as well as in `server.ts` — see the note on fires above for
+ * Registered here as well as in `server.ts` — see the note on fires ab
+ove for
  * what happens when it is only in one of them. A pure Overpass proxy with an
  * in-memory cache and a CDN cache header; no keys, nothing to configure.
  */
@@ -267,7 +271,8 @@ await safeRegister(
  * Spot context: the name a coordinate gets, and the facilities within 5 km.
  *
  * MISSING FOR THE SAME REASON FIRES AND ALERTS WERE, which is the third time
- * this file has grown a route that `server.ts` had and it did not. Every
+ * this file has grown a route that `server.ts` had and 
+it did not. Every
  * deployed request to /api/spot/context fell through to the 404 below, the
  * client turned that into `poiLookupFailed: true` exactly as designed, and the
  * report sheet therefore asked every camper about showers, restrooms and fuel
@@ -281,6 +286,17 @@ await safeRegister(
   () => import('../server/spotRoutes.js'),
   'registerSpotRoutes'
 );
+
+await safeRegister(
+  'road-segments',
+  () => import('../server/roadSegmentRoutes.js'),
+  'registerRoadSegmentRoutes'
+);
+
+  /**
+   * Scout Paths: user-recorded road surface data from Scout Mode.
+   * Closes the loop: recordings are now stored AND displayed on the map.
+   */
 
 /**
  * Which feature owns a path, so a route that failed to LOAD can say so.
@@ -306,7 +322,8 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/backroads/, 'backroads'],
   [/^\/api\/facilities/, 'facilities'],
   [/^\/api\/beacon/, 'beacon'],
-  [/^\/api\/spot/, 'spot']
+  [/^\/api\/spot/, 'spot'],
+  [/^\/api\/road-segments/, 'road-segments'],
 ];
 
 // Unknown /api routes return JSON, not the SPA's HTML. A typo in a fetch URL
@@ -314,7 +331,8 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
 app.use((req, res) => {
   const owner = FEATURE_FOR_PATH.find(([pattern]) => pattern.test(req.path))?.[1];
 
-  if (owner && loadErrors[owner]) {
+  if (owner && loadErrors[owner]) 
+{
     return res.status(503).json({
       error: `The ${owner} service failed to start on this deployment.`,
       detail: loadErrors[owner],

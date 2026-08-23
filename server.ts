@@ -15,6 +15,7 @@ import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
 import { registerBeaconRoutes } from './server/beaconRoutes';
 import { registerSpotRoutes } from './server/spotRoutes';
+import { registerRoadSegmentRoutes } from './server/roadSegmentRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -40,7 +41,8 @@ const startServer = async (): Promise<void> => {
   // req.protocol reports 'http' on an https request, and the ingest endpoint
   // builds its own callback URL from it.
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '256kb' }));
+  app.use(express.json({ limit:
+ '256kb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', app: 'Wandrlust' });
@@ -84,6 +86,9 @@ const startServer = async (): Promise<void> => {
   // already within 5 km, so the report form can skip the name field and any
   // question the map can answer on its own.
   registerSpotRoutes(app);
+
+  // Scout Paths: user-recorded road surface data.
+  registerRoadSegmentRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.
@@ -136,7 +141,8 @@ const startServer = async (): Promise<void> => {
           const name = path.basename(filePath);
 
           if (name === 'sw.js') {
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Cache-Control',
+ 'no-cache, no-store, must-revalidate');
             res.setHeader('Service-Worker-Allowed', '/');
             return;
           }
