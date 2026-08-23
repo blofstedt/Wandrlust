@@ -14,8 +14,9 @@ import { registerFacilityRoutes } from './server/facilityRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
 import { registerBeaconRoutes } from './server/beaconRoutes';
-import { registerSpotRoutes } from './server/sp
-import { registerRoadSegmentRoutes } from './server/roadSegmentRoutes';otRoutes';
+import { registerSpotRoutes } from './server/spotRoutes';
+import { registerRoadSegmentRoutes } from './server/roadSegmentRoutes';
+
 
 /**
  * One process serves both the API and the client.
