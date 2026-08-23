@@ -3,6 +3,7 @@ import { Check, Loader2, MessageSquarePlus, ThumbsDown } from 'lucide-react';
 import type { PendingFacilityCheck } from '../utils/facilityCheck';
 import { FACILITY } from '../config/facilities';
 import { votePoi, addPoiNote } from '../services/dataService';
+import { checkStandingAt } from '../utils/atFacility';
 import { Sheet } from './ui/Sheet';
 import { haptic } from '../utils/animation';
 
@@ -24,11 +25,16 @@ import { haptic } from '../utils/animation';
  * hold a vote would quietly fork the record. Those pins get the note and a line
  * saying why, rather than two buttons that could only fail.
  *
- * A NOTE always. "Behind the yellow wall, at the back" is the single most
- * useful thing a camper can leave and the hardest for any dataset to hold, and
- * it does not depend on which source drew the pin. It is also not a vote and
- * never counts as one — writing down where a thing is is not the same as
- * saying you found it there today.
+ * A NOTE only from somebody whose phone is at it. "Behind the yellow wall, at
+ * the back" is the single most useful thing a camper can leave and the hardest
+ * for any dataset to hold — and it is worth exactly nothing written from
+ * somewhere else, because on the pin it looks identical to the real thing.
+ * Being SENT somewhere is not being there, and this sheet only knows the
+ * first, so the note asks the phone. A vote is a memory and is asked for as
+ * one; a note is directions. See `utils/atFacility.ts`.
+ *
+ * A note is also not a vote and never counts as one — writing down where a
+ * thing is is not the same as saying you found it there today.
  *
  * NOTHING is collected by default. Dismissing is a real answer: a camper who
  * did not get there, or got there and did not look, has nothing to say, and an
@@ -82,9 +88,31 @@ export const FacilityCheckSheet: React.FC<FacilityCheckSheetProps> = ({
     onClose();
   };
 
-  const saveNote = async () => {
+  /**
+   * The fix comes first here too, and for the same reason as on the card.
+   *
+   * BEING SENT SOMEWHERE IS NOT BEING THERE. This sheet knows the camper was
+   * handed to Google Maps; it does not know they arrived, and it certainly does
+   * not know they are still standing there — plenty of people open the app
+   * again back at camp. A vote is a memory and is asked for as one; a note is
+   * DIRECTIONS, and directions written from twenty kilometres away are somebody
+   * guessing at what they saw. So the note asks the phone, and if the phone
+   * says elsewhere, it says so and the vote is still there to give.
+   */
+  const startWriting = async () => {
     if (!isSignedIn) { onRequireAuth(); return; }
 
+    setBusy(true);
+    setNotice('Checking you are at it…');
+    const near = await checkStandingAt(pending.latitude, pending.longitude);
+    setBusy(false);
+
+    if (!near.ok) { setNotice(near.message); return; }
+    setNotice(null);
+    setWriting(true);
+  };
+
+  const saveNote = async () => {
     setBusy(true);
     const result = await addPoiNote({
       poiId: pending.poiId ?? null,
@@ -145,10 +173,13 @@ export const FacilityCheckSheet: React.FC<FacilityCheckSheetProps> = ({
         {!writing ? (
           <button
             type="button"
-            onClick={() => { haptic('tap'); setWriting(true); }}
-            className="w-full py-3 rounded-xl bg-slate-800/50 border border-slate-700/60 text-slate-200 text-sm font-bold flex items-center justify-center gap-2 hover:border-slate-500"
+            disabled={busy}
+            onClick={() => void startWriting()}
+            className="w-full py-3 rounded-xl bg-slate-800/50 border border-slate-700/60 text-slate-200 text-sm font-bold flex items-center justify-center gap-2 hover:border-slate-500 disabled:opacity-60"
           >
-            <MessageSquarePlus className="w-4 h-4 text-emerald-400" />
+            {busy
+              ? <Loader2 className="w-4 h-4 animate-spin" />
+              : <MessageSquarePlus className="w-4 h-4 text-emerald-400" />}
             Leave a note about finding it
           </button>
         ) : (

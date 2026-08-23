@@ -24,7 +24,6 @@ import { MapDataChoiceScreen } from './components/MapDataChoiceScreen';
 import { shouldAskMapDataChoice } from './services/landOverlayService';
 import { AddHereConfirm } from './components/AddHereConfirm';
 import { AddFacilitySheet } from './components/AddFacilitySheet';
-import { FacilityCard } from './components/FacilityCard';
 import { FacilityCheckSheet } from './components/FacilityCheckSheet';
 import { CampingGuideModal } from './components/CampingGuideModal';
 import { FilterDrawer } from './components/FilterDrawer';
@@ -1469,6 +1468,10 @@ export default function App() {
                     facilityKinds={facilityKinds}
                     onFacilityStateChange={setFacilityState}
                     onSelectFacility={setSelectedFacility}
+                    selectedFacility={selectedFacility}
+                    onCloseFacility={() => setSelectedFacility(null)}
+                    isSignedIn={Boolean(user)}
+                    onFacilityNoteSaved={() => setFacilityRefreshKey((key) => key + 1)}
                     facilityRefreshKey={facilityRefreshKey}
                     bottomSheetPx={sheetSite ? sheetPx : 0}
                     topNotice={mapTopNotice}
@@ -1662,14 +1665,6 @@ export default function App() {
         isSignedIn={Boolean(user)}
         onRequireAuth={() => setIsAuthOpen(true)}
         onSaved={handleFacilitySaved}
-      />
-
-      <FacilityCard
-        facility={selectedFacility}
-        onClose={() => setSelectedFacility(null)}
-        isSignedIn={Boolean(user)}
-        onRequireAuth={() => setIsAuthOpen(true)}
-        onVoted={() => setFacilityRefreshKey((key) => key + 1)}
       />
 
       {/*

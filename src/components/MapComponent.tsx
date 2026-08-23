@@ -6,12 +6,13 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
-  AlertTriangle, Crosshair, Eye, Info, Layers, Loader2, MousePointerClick,
-  Navigation, Search, User as UserIcon, X
+  AlertTriangle, Crosshair, Eye, Info, Layers, Loader2, MapPin,
+  MousePointerClick, Navigation, Search, User as UserIcon, X
 } from 'lucide-react';
 import { UserMenu, AccountPanelBody } from './UserMenu';
 import { MapPanel } from './ui/MapPanel';
 import { FacilityPicker } from './FacilityPicker';
+import { FacilityCard } from './FacilityCard';
 import { rememberFacilityHandoff } from '../utils/facilityCheck';
 
 import type {
@@ -1608,6 +1609,22 @@ interface MapComponentProps {
   /** Fired when a facility pin is tapped. */
   onSelectFacility?: (facility: MapFacility) => void;
   /**
+   * The tapped facility, handed back so its card can be THE SAME CARD the
+   * layer menu and the facility picker open in.
+   *
+   * The app still owns the selection — it is the app that clears it, and the
+   * app that knows who is signed in — but the card has to be rendered in here,
+   * because `ui/MapPanel` is positioned inside the map's own box and takes its
+   * place in the same one-card-at-a-time rule as the other two. A card floating
+   * at the bottom of the WINDOW was a fourth shape in a fourth place.
+   */
+  selectedFacility?: MapFacility | null;
+  onCloseFacility?: () => void;
+  /** Whether there is somebody to attribute a note to. */
+  isSignedIn?: boolean;
+  /** Fired after a note lands, so the layer redraws carrying it. */
+  onFacilityNoteSaved?: () => void;
+  /**
    * Bumped to force the facility layer to refetch.
    *
    * Same reason `beaconRefreshKey` exists: without it a camper adds a toilet,
@@ -1672,6 +1689,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   onSendBeaconAt, canBeacon = false,
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
   facilityState = FACILITY_IDLE, onToggleFacilityKind, onClearFacilityKinds,
+  selectedFacility = null, onCloseFacility, isSignedIn = false,
+  onFacilityNoteSaved,
   facilityRefreshKey = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -4111,7 +4130,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           title: `${facility.name ?? FACILITY_LABEL[facility.kind]} — ${meaning}`,
           riseOnHover: true
         });
-        marker.on('click', () => facilityTapRef.current?.(facility));
+        marker.on('click', () => {
+          /* One card at a time: tapping a pin puts away whatever control was
+             open, because the card that is about to appear takes the same
+             place on the screen. */
+          setMapPanel(null);
+          facilityTapRef.current?.(facility);
+        });
         group.addLayer(marker);
       });
 
@@ -7505,6 +7530,36 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           <FacilityPicker
             active={facilityKinds}
             onToggle={onToggleFacilityKind}
+          />
+        </MapPanel>
+      )}
+
+      {/*
+        A TAPPED FACILITY, IN THE SAME CARD AS EVERYTHING ELSE ON THIS MAP.
+
+        It used to be its own shape welded to the bottom of the window: wider
+        than the layer menu, in a different place, over the tab bar. Same box
+        now — same width, same dock, same header — so the map has one card and
+        one place it appears, whatever opened it.
+
+        Its own `isOpen` rather than a fourth value in `mapPanel`, because this
+        one is a SELECTION and not a control: tapping a pin closes whichever
+        control was open (see the tap handler), and closing the card leaves you
+        where you were rather than reopening a menu.
+      */}
+      {selectedFacility && (
+        <MapPanel
+          isOpen
+          onClose={() => onCloseFacility?.()}
+          title={selectedFacility.name ?? FACILITY[selectedFacility.kind].label}
+          icon={MapPin}
+          overlayPx={overlayPx}
+        >
+          <FacilityCard
+            facility={selectedFacility}
+            isSignedIn={isSignedIn}
+            onRequireAuth={() => onOpenAuth?.()}
+            onSaved={() => onFacilityNoteSaved?.()}
           />
         </MapPanel>
       )}
