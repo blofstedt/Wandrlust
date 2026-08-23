@@ -17,7 +17,6 @@ import { registerBeaconRoutes } from './server/beaconRoutes';
 import { registerSpotRoutes } from './server/spotRoutes';
 import { registerRoadSegmentRoutes } from './server/roadSegmentRoutes';
 
-
 /**
  * One process serves both the API and the client.
  *
@@ -40,7 +39,8 @@ const startServer = async (): Promise<void> => {
   // Behind a reverse proxy (Vercel, any tunnel used for phone testing) the
   // real scheme and client IP arrive in X-Forwarded-* headers. Without this,
   // req.protocol reports 'http' on an https request, and the ingest endpoint
-  // builds its own callback URL from it.
+  // builds its own callback U
+RL from it.
   app.set('trust proxy', 1);
   app.use(express.json({ limit:
  '256kb' }));
@@ -139,7 +139,8 @@ n either side; the response is a unified GeoJSON that the
     app.use(
       express.static(distPath, {
         index: false,
-        setHeaders: (res, filePath) => {
+      
+  setHeaders: (res, filePath) => {
           const name = path.basename(filePath);
 
           if (name === 'sw.js') {
@@ -188,6 +189,7 @@ n either side; the response is a unified GeoJSON that the
 };
 
 startServer().catch((err) => {
+
   console.error('Failed to start server:', err);
   process.exit(1);
 });
