@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { UserMenu, AccountPanelBody } from './UserMenu';
 import { MapPanel } from './ui/MapPanel';
-import { FacilityArc } from './FacilityArc';
+import { FacilityPicker } from './FacilityPicker';
 
 import type {
   Campsite, CellCoverage, DestinationLand, FacilityKind, FacilityLookupState,
@@ -1883,12 +1883,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * is a question about THE GROUND ALREADY ON SCREEN, and it never wanted a
    * keyboard at all.
    *
-   * So the magnifier down here kept the second job: it fans the facility
-   * symbols out into the map on an arc, and folds them away again the moment
-   * one is pressed. See `FacilityArc`.
+   * So the magnifier down here kept the second job: it springs a small panel
+   * of facility symbols out of itself, named and in the colours their pins
+   * wear, and folds it away again the moment one is pressed. See
+   * `FacilityPicker`.
    */
-  const [facilityArcOpen, setFacilityArcOpen] = useState(false);
-  const closeFacilityArc = useCallback(() => setFacilityArcOpen(false), []);
+  const [facilityPickerOpen, setFacilityPickerOpen] = useState(false);
+  const closeFacilityPicker = useCallback(() => setFacilityPickerOpen(false), []);
 
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
@@ -7462,16 +7463,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         for the map.
       */}
       {/*
-        The fan's backstop. Rendered here rather than inside `FacilityArc`
-        because it has to cover the whole map, and the arc lives inside the
-        control stack — an `inset-0` in there would cover the stack and
-        nothing else. Earlier in the DOM than the stack, at the same z, so the
-        controls and the arc stay above it.
+        The panel's backstop. Rendered here rather than inside
+        `FacilityPicker` because it has to cover the whole map, and the panel
+        lives inside the control stack — an `inset-0` in there would cover the
+        stack and nothing else. Earlier in the DOM than the stack, at the same
+        z, so the controls and the panel stay above it.
       */}
-      {facilityArcOpen && (
+      {facilityPickerOpen && (
         <div
           className="absolute inset-0 z-[1000]"
-          onPointerDown={(e) => { e.preventDefault(); closeFacilityArc(); }}
+          onPointerDown={(e) => { e.preventDefault(); closeFacilityPicker(); }}
           aria-hidden="true"
         />
       )}
@@ -7525,25 +7526,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           no toilet pins on it has to be able to tell "the layer is off" from
           "nobody has mapped one round here", and those are the same empty
           screen. The arc itself hangs off the middle of this button, which is
-          why the button is wrapped — see `FacilityArc`.
+          why the button is wrapped — see `FacilityPicker`.
         */}
         {onToggleFacilityKind && (
           <div className="pointer-events-auto relative shrink-0">
-            <FacilityArc
+            <FacilityPicker
               active={facilityKinds}
               onToggle={onToggleFacilityKind}
               onClearAll={() => onClearFacilityKinds?.()}
-              open={facilityArcOpen}
-              onClose={closeFacilityArc}
+              open={facilityPickerOpen}
+              onClose={closeFacilityPicker}
             />
             <button
               type="button"
-              onClick={() => { haptic('tap'); setFacilityArcOpen((open) => !open); }}
+              onClick={() => { haptic('tap'); setFacilityPickerOpen((open) => !open); }}
               className={`${STACK_BUTTON} relative ${
-                facilityArcOpen ? 'text-white ring-2 ring-emerald-400/70' : ''
+                facilityPickerOpen ? 'text-white ring-2 ring-emerald-400/70' : ''
               }`}
               aria-label="Show toilets, water and other facilities on this map"
-              aria-expanded={facilityArcOpen}
+              aria-expanded={facilityPickerOpen}
             >
               <Search className="w-[18px] h-[18px]" />
               {facilityKinds.length > 0 && (
