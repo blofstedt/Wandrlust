@@ -1,6 +1,19 @@
-import { TtlCache } from '../utils/ttlCache';
 import type { SurfaceQuality } from './scoutMode';
 
+/**
+ * Viewport bounds for fetching road segments.
+ */
+export interface ViewportBounds {
+  minLat: number;
+  minLon: number;
+  maxLat: number;
+  maxLon: number;
+}
+
+/**
+ * A road segment with crowdsourced surface quality data.
+ * Used by the Scout Paths feature.
+ */
 export interface ScoutRoadSegment {
   id: string;
   line: [number, number][];
@@ -11,14 +24,21 @@ export interface ScoutRoadSegment {
   osmWayId: number | null;
 }
 
-export interface ScoutRoadSegmentScan {
-  ok: boolean;
+/**
+ * Response from the road segments API.
+ */
+export interface ScoutRoadSegmentsResponse {
   segments: ScoutRoadSegment[];
-  truncated: boolean;
 }
 
-const EMPTY: ScoutRoadSegmentScan = { ok: false, segments: [], truncated: false };
+/**
+ * Minimum zoom level to show Scout Paths.
+ */
+export const SCOUT_PATHS_MIN_ZOOM = 10;
 
+/**
+ * Surface type to display color mapping.
+ */
 export const SCOUT_SURFACE_COLOR: Record<SurfaceQuality, string> = {
   smooth_paved: '#10B981',
   rough_paved: '#84CC16',
@@ -26,70 +46,45 @@ export const SCOUT_SURFACE_COLOR: Record<SurfaceQuality, string> = {
   washboard: '#F59E0B',
   rutted_dirt: '#F97316',
   rock_crawl: '#EF4444',
-  impassable: '#7F1D1D'
+  impassable: '#7F1D1D',
 };
 
+/**
+ * Surface type to human-readable label mapping.
+ */
 export const SCOUT_SURFACE_LABEL: Record<SurfaceQuality, string> = {
-  smooth_paved: 'Smooth pavement',
-  rough_paved: 'Rough pavement',
-  good_gravel: 'Good gravel',
+  smooth_paved: 'Smooth Pavement',
+  rough_paved: 'Rough Pavement',
+  good_gravel: 'Good Gravel',
   washboard: 'Washboard',
-  rutted_dirt: 'Rutted dirt',
-  rock_crawl: 'Rock crawling',
-  impassable: 'Impassable'
+  rutted_dirt: 'Rutted Dirt',
+  rock_crawl: 'Rock Crawling',
+  impassable: 'Impassable',
 };
 
-const segmentCache = new TtlCache<ScoutRoadSegmentScan>(10 * 60 * 1000, 40);
-
-export interface ViewportBounds {
-  minLat: number;
-  minLon: number;
-  maxLat: number;
-  maxLon: number;
-}
-
+/**
+ * Fetch road segments within the current viewport.
+ */
 export const fetchScoutRoadSegments = async (
   bounds: ViewportBounds,
   signal?: AbortSignal
-): Promise<ScoutRoadSegmentScan> => {
-  const cacheKey = bounds.minLat.toFixed(2) + ',' + bounds.minLon.toFixed(2) + ',' + bounds.maxLat.toFixed(2) + ',' + bounds.maxLon.toFixed(2);
-  const cached = segmentCache.get(cacheKey);
-  if (cached) return cached;
+): Promise<ScoutRoadSegmentsResponse> => {
   try {
-    const params = new URLSearchParams({
-      minLat: bounds.minLat.toFixed(5),
-      minLon: bounds.minLon.toFixed(5),
-      maxLat: bounds.maxLat.toFixed(5),
-      maxLon: bounds.maxLon.toFixed(5)
-    });
-    const res = await fetch('/api/road-segments?' + params, { signal });
-    if (!res.ok) {
-      if (res.status === 404) console.warn('[scout-paths] /api/road-segments endpoint not found.');
-      return EMPTY;
+    const response = await fetch(
+      `/api/road-segments?minLat=${bounds.minLat}&minLon=${bounds.minLon}&maxLat=${bounds.maxLat}&maxLon=${bounds.maxLon}`,
+      { signal }
+    );
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch road segments: ${response.status}`);
     }
-    const data = await res.json();
-    if (data?.ok === true && Array.isArray(data.segments)) {
-      const scan: ScoutRoadSegmentScan = {
-        ok: true,
-        segments: data.segments.map((s: any) => ({
-          id: s.id,
-          line: s.line,
-          surface: s.surface,
-          roughness: s.roughness,
-          sampleCount: s.sampleCount,
-          updatedAt: s.updatedAt,
-          osmWayId: s.osmWayId
-        })),
-        truncated: data.truncated ?? false
-      };
-      segmentCache.set(cacheKey, scan);
-      return scan;
+    
+    return await response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
     }
-    return EMPTY;
-  } catch {
-    return EMPTY;
+    // Return empty segments on error to fail gracefully
+    return { segments: [] };
   }
 };
-
-export const SCOUT_PATHS_MIN_ZOOM = 10;
-export const shouldShowScoutPaths = (zoom: number): boolean => zoom >= SCOUT_PATHS_MIN_ZOOM;
