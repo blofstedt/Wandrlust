@@ -69,7 +69,7 @@ import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/we
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
 import { useAuth } from './contexts/AuthContext';
 import {
-  Search, Bookmark, MapPinOff, SlidersHorizontal, Waves
+  Bookmark, MapPinOff, SlidersHorizontal, Waves
 } from 'lucide-react';
 import { useOnlineStatus } from './utils/useOnlineStatus';
 import { haptic } from './utils/animation';
@@ -1328,13 +1328,6 @@ export default function App() {
    */
   const mapTopNotice = (
     <>
-      {isSearchingSites && (
-        <div className="max-w-full bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
-          <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
-          <span>Exploring public lands…</span>
-        </div>
-      )}
-
       {outOfCoverageNotice && (
         <div className="max-w-full bg-slate-900/95 border border-slate-600 text-slate-200 px-3.5 py-2 rounded-2xl shadow-2xl backdrop-blur-md text-xs flex items-start gap-2 anim-in-down">
           <MapPinOff className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
@@ -1472,6 +1465,7 @@ export default function App() {
                     onCloseFacility={() => setSelectedFacility(null)}
                     isSignedIn={Boolean(user)}
                     onFacilityNoteSaved={() => setFacilityRefreshKey((key) => key + 1)}
+                    isSearchingSites={isSearchingSites}
                     facilityRefreshKey={facilityRefreshKey}
                     bottomSheetPx={sheetSite ? sheetPx : 0}
                     topNotice={mapTopNotice}

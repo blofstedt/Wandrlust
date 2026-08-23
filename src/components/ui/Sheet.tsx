@@ -196,7 +196,11 @@ export const Sheet: React.FC<SheetProps> = ({
 
   return (
     <div
-      className={`fixed inset-0 z-[1800] flex justify-center bg-slate-950/70 anim-backdrop ${overlayClass}`}
+      /* `backdrop-blur-sm` as a class, not only as the end state of
+         `anim-backdrop`: under `prefers-reduced-motion` that animation does not
+         run, and the blur is not decoration — it is what separates a card from
+         the busy map behind it. */
+      className={`fixed inset-0 z-[1800] flex justify-center bg-slate-950/70 backdrop-blur-sm anim-backdrop ${overlayClass}`}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={keyboardInset ? { paddingBottom: keyboardInset } : undefined}
     >
@@ -221,13 +225,25 @@ export const Sheet: React.FC<SheetProps> = ({
                  header, the beacon pill and the top of the map in view, which
                  is the whole point of docking it rather than drawering it. */
               ? 'max-h-[70vh] border rounded-2xl anim-in-up'
-              /* A dialog is a card floating in the middle of the screen, so it
-                 stops short of the edges the sheet is allowed to reach — the
-                 tab bar and the header stay visible around it, which is what
-                 tells you it is a layer and not a new screen. The 78 is
-                 measured, not chosen: the phone tab bar is about 9vh, and a
-                 centred card any taller than this reaches under it. */
-              : 'max-h-[78vh] border rounded-2xl anim-expand'
+              /*
+                A dialog is a card floating in the middle of the screen, so it
+                stops short of the edges the sheet is allowed to reach — the
+                tab bar and the header stay visible around it, which is what
+                tells you it is a layer and not a new screen. The 78 is
+                measured, not chosen: the phone tab bar is about 9vh, and a
+                centred card any taller than this reaches under it. The 40rem
+                caps it on a desktop, where 78vh of a tall monitor is a card
+                nobody can read across.
+
+                A FIXED height, not a maximum, and that is the point of it.
+                Every tool in this app opens one of these, and a stack of
+                panels that are each a different height — settings tall,
+                Scout Mode short, reports somewhere between — reads as a
+                different screen every time rather than one app. Short content
+                leaves room at the bottom; long content scrolls inside. One
+                box, always.
+              */
+              : 'h-[min(78vh,40rem)] border rounded-2xl anim-expand'
         }`}
       >
         {isSheet && (

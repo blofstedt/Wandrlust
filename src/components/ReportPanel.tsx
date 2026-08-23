@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, Check, MapPin } from 'lucide-react';
 import { reportHazard, reportBurnedSite } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { HAZARD_REPORT_KINDS, hazardReportStyle } from '../config/hazardReports';
+import { Sheet } from './ui/Sheet';
 
 /**
  * "Add a POI" used to be a third tab here and it has moved out.
@@ -83,85 +84,82 @@ export const ReportPanel: React.FC<ReportPanelProps> = ({
   const kinds = mode === 'hazard' ? HAZARD_KINDS : BURN_REASONS;
 
   return (
-    <div className="fixed inset-0 z-[1800] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 anim-backdrop">
-      <div className="w-full sm:max-w-md bg-slate-900 border-t sm:border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl max-h-[88vh] flex flex-col anim-sheet-up sm:anim-expand">
-        <div className="flex items-center justify-between p-4 border-b border-slate-800 shrink-0">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400" />
-            <h2 className="text-sm font-bold text-slate-100">Report</h2>
-          </div>
-          <button onClick={onClose} className="tap-safe text-slate-500 hover:text-slate-200 text-sm font-bold px-2" aria-label="Close">✕</button>
+    <Sheet
+      isOpen
+      onClose={onClose}
+      variant="dialog"
+      icon={<AlertTriangle className="w-4 h-4 text-amber-400" />}
+      title="Report a problem"
+      subtitle="A hazard, a gate, a closure, or something wrong with a spot"
+    >
+      <div className="p-4 space-y-3 scroll-soft">
+      <div className="flex border-b border-slate-800 -mx-4 -mt-4 mb-1">
+        {([['hazard', 'Road hazard'], ['burn', 'Site problem']] as [Mode, string][]).map(([m, label]) => (
+          <button
+            key={m}
+            onClick={() => {
+              setMode(m);
+              setKind(m === 'hazard' ? 'washout' : 'physical_barrier');
+              setNotice(null);
+            }}
+            className={`flex-1 px-2 py-2 text-xs font-bold ${
+              mode === m ? 'text-amber-400 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+        <div className="flex items-center gap-1.5 text-xs text-slate-400">
+          <MapPin className="w-3 h-3" />
+          {center[0].toFixed(5)}, {center[1].toFixed(5)}
         </div>
 
-        <div className="flex border-b border-slate-800 shrink-0">
-          {([['hazard', 'Road hazard'], ['burn', 'Site problem']] as [Mode, string][]).map(([m, label]) => (
+        <div className="grid grid-cols-3 gap-1.5">
+          {kinds.map((k, i) => (
             <button
-              key={m}
-              onClick={() => {
-                setMode(m);
-                setKind(m === 'hazard' ? 'washout' : 'physical_barrier');
-                setNotice(null);
-              }}
-              className={`flex-1 px-2 py-2 text-xs font-bold ${
-                mode === m ? 'text-amber-400 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'
+              key={k.id}
+              data-stagger={Math.min(i, 8)}
+              onClick={() => setKind(k.id)}
+              className={`px-2 py-2 rounded-xl border text-[12px] font-semibold anim-in-up ${
+                kind === k.id ? 'bg-amber-950/60 border-amber-500/60 text-amber-200' : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600'
               }`}
             >
-              {label}
+              {k.label}
             </button>
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 scroll-soft">
-          <div className="flex items-center gap-1.5 text-xs text-slate-400">
-            <MapPin className="w-3 h-3" />
-            {center[0].toFixed(5)}, {center[1].toFixed(5)}
-          </div>
+        <textarea
+          value={detail}
+          onChange={(e) => setDetail(e.target.value)}
+          rows={3}
+          placeholder={
+            mode === 'hazard'
+              ? 'What should other drivers know? How bad, and can a 2WD get through?'
+              : 'What changed about this site?'
+          }
+          className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
+        />
 
-          <div className="grid grid-cols-3 gap-1.5">
-            {kinds.map((k, i) => (
-              <button
-                key={k.id}
-                data-stagger={Math.min(i, 8)}
-                onClick={() => setKind(k.id)}
-                className={`px-2 py-2 rounded-xl border text-[12px] font-semibold anim-in-up ${
-                  kind === k.id ? 'bg-amber-950/60 border-amber-500/60 text-amber-200' : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600'
-                }`}
-              >
-                {k.label}
-              </button>
-            ))}
-          </div>
+        <button
+          onClick={submit}
+          disabled={busy}
+          className="w-full px-4 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs flex items-center justify-center gap-2 disabled:opacity-60"
+        >
+          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+          Submit report
+        </button>
 
-          <textarea
-            value={detail}
-            onChange={(e) => setDetail(e.target.value)}
-            rows={3}
-            placeholder={
-              mode === 'hazard'
-                ? 'What should other drivers know? How bad, and can a 2WD get through?'
-                : 'What changed about this site?'
-            }
-            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
-          />
+        {notice && <p className="text-xs text-emerald-300 text-center anim-in-up">{notice}</p>}
 
-          <button
-            onClick={submit}
-            disabled={busy}
-            className="w-full px-4 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs flex items-center justify-center gap-2 disabled:opacity-60"
-          >
-            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-            Submit report
-          </button>
-
-          {notice && <p className="text-xs text-emerald-300 text-center anim-in-up">{notice}</p>}
-
-          <p className="text-[12px] text-slate-500 leading-snug">
-            {mode === 'hazard'
-              ? 'Reports earn points. If three other campers confirm yours, you get an early-reporter bonus.'
-              : 'Site reports are aggregated by area. Several independent reports in one region raise a zone alert for everyone heading there.'}
-          </p>
-        </div>
+        <p className="text-[12px] text-slate-500 leading-snug">
+          {mode === 'hazard'
+            ? 'Reports earn points. If three other campers confirm yours, you get an early-reporter bonus.'
+            : 'Site reports are aggregated by area. Several independent reports in one region raise a zone alert for everyone heading there.'}
+        </p>
       </div>
-    </div>
+    </Sheet>
   );
 };

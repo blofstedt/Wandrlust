@@ -9,6 +9,7 @@ import { PushSettings } from './PushSettings';
 import { AlertSourcePanel } from './AlertSourcePanel';
 import type { LegalDocKind } from '../types';
 import { checkForUpdate } from '../services/updateService';
+import { Sheet } from './ui/Sheet';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -134,232 +135,222 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-[1800] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 anim-backdrop"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <Sheet
+      isOpen
+      onClose={onClose}
+      variant="dialog"
+      icon={<Settings className="w-4 h-4 text-slate-300" />}
+      title="Settings"
+      subtitle="Alerts, units, position sharing, legal"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Settings"
-        className="w-full sm:max-w-md bg-slate-900 border-t sm:border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl max-h-[88vh] flex flex-col anim-sheet-up sm:anim-expand"
-      >
-        <header className="flex items-center justify-between p-4 border-b border-slate-800 shrink-0">
-          <div className="flex items-center gap-2">
-            <Settings className="w-4 h-4 text-slate-300" />
-            <h2 className="text-sm font-bold text-slate-100">Settings</h2>
-            {busy && <Loader2 className="w-3 h-3 animate-spin text-slate-500" />}
+      <div className="p-3 space-y-4 scroll-soft">
+        {/* Saving is quiet — a spinner in a header nobody is looking at is
+            no answer at all, so it says so where the switches are. */}
+        {(busy || saved) && (
+          <p className="flex items-center gap-1.5 text-[12px] font-bold text-slate-400">
+            {busy && <Loader2 className="w-3 h-3 animate-spin" />}
             {saved && <Check className="w-3 h-3 text-emerald-400 anim-pop" />}
-          </div>
+            {busy ? 'Saving…' : 'Saved'}
+          </p>
+        )}
+        {/* Shown to everyone, signed in or not: a manual "check for
+            updates" is the only way to force a fresh check on an installed
+            mobile PWA, where the OS throttles the background poll. The
+            automatic path catches most updates; this is the escape hatch. */}
+        <section>
+          <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+            App
+          </h3>
           <button
-            onClick={onClose}
-            className="tap-safe text-slate-500 hover:text-slate-200 text-sm font-bold px-2"
-            aria-label="Close settings"
+            onClick={handleCheckUpdate}
+            disabled={updateState === 'checking'}
+            className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-slate-800/50 text-left disabled:opacity-50"
           >
-            ✕
+            {updateState === 'checking' ? (
+              <Loader2 className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+            ) : updateState === 'up-to-date' ? (
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            ) : updateState === 'error' ? (
+              <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
+            ) : (
+              <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+            )}
+            <span className="text-xs text-slate-300 flex-1">
+              {updateState === 'checking'
+                ? 'Checking for updates…'
+                : updateState === 'up-to-date'
+                ? 'You are on the latest version'
+                : updateState === 'error'
+                ? 'Could not check — try again later'
+                : 'Check for updates'}
+            </span>
           </button>
-        </header>
+        </section>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-4 scroll-soft">
-          {/* Shown to everyone, signed in or not: a manual "check for
-              updates" is the only way to force a fresh check on an installed
-              mobile PWA, where the OS throttles the background poll. The
-              automatic path catches most updates; this is the escape hatch. */}
-          <section>
-            <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
-              App
-            </h3>
+        {/* Shown whether or not anyone is signed in: a camper needs to know
+            who issues the warnings and whether we are still hearing them,
+            and that is not a per-account preference. */}
+        <section>
+          <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+            Where alerts come from
+          </h3>
+          <AlertSourcePanel />
+        </section>
+
+        {!user ? (
+          <div className="text-center py-6">
+            <p className="text-xs text-slate-400 mb-3">Sign in to save your preferences.</p>
             <button
-              onClick={handleCheckUpdate}
-              disabled={updateState === 'checking'}
-              className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-slate-800/50 text-left disabled:opacity-50"
+              onClick={onRequireAuth}
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-bold text-xs"
             >
-              {updateState === 'checking' ? (
-                <Loader2 className="w-3.5 h-3.5 text-slate-400 animate-spin" />
-              ) : updateState === 'up-to-date' ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
-              ) : updateState === 'error' ? (
-                <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
-              ) : (
-                <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-              )}
-              <span className="text-xs text-slate-300 flex-1">
-                {updateState === 'checking'
-                  ? 'Checking for updates…'
-                  : updateState === 'up-to-date'
-                  ? 'You are on the latest version'
-                  : updateState === 'error'
-                  ? 'Could not check — try again later'
-                  : 'Check for updates'}
-              </span>
+              Sign in
             </button>
-          </section>
+          </div>
+        ) : !settings ? (
+          <div className="flex justify-center py-8">
+            <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
+          </div>
+        ) : (
+          <>
+            <section>
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
+                Notifications
+              </h3>
+              <PushSettings center={center} />
+            </section>
 
-          {/* Shown whether or not anyone is signed in: a camper needs to know
-              who issues the warnings and whether we are still hearing them,
-              and that is not a per-account preference. */}
-          <section>
-            <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
-              Where alerts come from
-            </h3>
-            <AlertSourcePanel />
-          </section>
+            <section>
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                Safety alerts
+              </h3>
 
-          {!user ? (
-            <div className="text-center py-6">
-              <p className="text-xs text-slate-400 mb-3">Sign in to save your preferences.</p>
-              <button
-                onClick={onRequireAuth}
-                className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-bold text-xs"
-              >
-                Sign in
-              </button>
-            </div>
-          ) : !settings ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
-            </div>
-          ) : (
-            <>
-              <section>
-                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-2">
-                  Notifications
-                </h3>
-                <PushSettings center={center} />
-              </section>
+              <Toggle
+                icon={Flame}
+                label="Fire alerts"
+                description="Red flag warnings, fire weather watches, and agency fire bans."
+                value={settings.notify_fire_alerts}
+                onChange={(v) => patch({ notify_fire_alerts: v })}
+              />
+              <Toggle
+                icon={Waves}
+                label="Flood alerts"
+                description="Flash flood and flood warnings near you."
+                value={settings.notify_flood_alerts}
+                onChange={(v) => patch({ notify_flood_alerts: v })}
+              />
+              <Toggle
+                icon={CloudLightning}
+                label="Storm alerts"
+                description="Severe thunderstorm, tornado and winter storm warnings."
+                value={settings.notify_storm_alerts}
+                onChange={(v) => patch({ notify_storm_alerts: v })}
+              />
+              <Toggle
+                icon={Bell}
+                label="Zone heat alerts"
+                description="When several campers report problems in an area you're heading to."
+                value={settings.notify_zone_heat}
+                onChange={(v) => patch({ notify_zone_heat: v })}
+              />
 
-              <section>
-                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
-                  Safety alerts
-                </h3>
-
-                <Toggle
-                  icon={Flame}
-                  label="Fire alerts"
-                  description="Red flag warnings, fire weather watches, and agency fire bans."
-                  value={settings.notify_fire_alerts}
-                  onChange={(v) => patch({ notify_fire_alerts: v })}
-                />
-                <Toggle
-                  icon={Waves}
-                  label="Flood alerts"
-                  description="Flash flood and flood warnings near you."
-                  value={settings.notify_flood_alerts}
-                  onChange={(v) => patch({ notify_flood_alerts: v })}
-                />
-                <Toggle
-                  icon={CloudLightning}
-                  label="Storm alerts"
-                  description="Severe thunderstorm, tornado and winter storm warnings."
-                  value={settings.notify_storm_alerts}
-                  onChange={(v) => patch({ notify_storm_alerts: v })}
-                />
-                <Toggle
-                  icon={Bell}
-                  label="Zone heat alerts"
-                  description="When several campers report problems in an area you're heading to."
-                  value={settings.notify_zone_heat}
-                  onChange={(v) => patch({ notify_zone_heat: v })}
-                />
-
-                <div className="px-2.5 pt-2">
-                  <div className="flex justify-between text-[12px] text-slate-400 mb-1">
-                    <label htmlFor="alert-radius">Alert radius</label>
-                    <span className="font-bold text-slate-200">{settings.alert_radius_km} km</span>
-                  </div>
-                  <input
-                    id="alert-radius"
-                    type="range"
-                    min={10}
-                    max={500}
-                    step={10}
-                    value={settings.alert_radius_km}
-                    onChange={(e) => patch({ alert_radius_km: Number(e.target.value) })}
-                    className="w-full accent-emerald-500"
-                  />
+              <div className="px-2.5 pt-2">
+                <div className="flex justify-between text-[12px] text-slate-400 mb-1">
+                  <label htmlFor="alert-radius">Alert radius</label>
+                  <span className="font-bold text-slate-200">{settings.alert_radius_km} km</span>
                 </div>
-              </section>
+                <input
+                  id="alert-radius"
+                  type="range"
+                  min={10}
+                  max={500}
+                  step={10}
+                  value={settings.alert_radius_km}
+                  onChange={(e) => patch({ alert_radius_km: Number(e.target.value) })}
+                  className="w-full accent-emerald-500"
+                />
+              </div>
+            </section>
 
+            <section>
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                Privacy
+              </h3>
+              <Toggle
+                icon={Eye}
+                label="Share my position by default"
+                description="Off means Ghost mode. You can still share per session."
+                value={settings.share_presence}
+                onChange={(v) => patch({ share_presence: v })}
+              />
+              <Toggle
+                icon={Shield}
+                label="Contribute road data"
+                description="Uploads anonymised road-surface readings while Scout Mode runs."
+                value={settings.share_telemetry}
+                onChange={(v) => patch({ share_telemetry: v })}
+              />
+            </section>
+
+            <section>
+              <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
+                Display
+              </h3>
+              <Toggle
+                icon={Ruler}
+                label="Metric units"
+                description="Kilometres and Celsius. Off for miles and Fahrenheit."
+                value={settings.use_metric}
+                onChange={(v) => patch({ use_metric: v })}
+              />
+            </section>
+
+            {onOpenLegal && (
               <section>
                 <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
-                  Privacy
+                  Legal
                 </h3>
-                <Toggle
-                  icon={Eye}
-                  label="Share my position by default"
-                  description="Off means Ghost mode. You can still share per session."
-                  value={settings.share_presence}
-                  onChange={(v) => patch({ share_presence: v })}
-                />
-                <Toggle
-                  icon={Shield}
-                  label="Contribute road data"
-                  description="Uploads anonymised road-surface readings while Scout Mode runs."
-                  value={settings.share_telemetry}
-                  onChange={(v) => patch({ share_telemetry: v })}
-                />
-              </section>
-
-              <section>
-                <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
-                  Display
-                </h3>
-                <Toggle
-                  icon={Ruler}
-                  label="Metric units"
-                  description="Kilometres and Celsius. Off for miles and Fahrenheit."
-                  value={settings.use_metric}
-                  onChange={(v) => patch({ use_metric: v })}
-                />
-              </section>
-
-              {onOpenLegal && (
-                <section>
-                  <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400 px-2.5 mb-1">
-                    Legal
-                  </h3>
-                  {LEGAL_LINKS.map(([kind, label]) => (
-                    <button
-                      key={kind}
-                      onClick={() => onOpenLegal(kind)}
-                      className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-slate-800/50 text-left"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-slate-400" />
-                      <span className="text-xs text-slate-300 flex-1">{label}</span>
-                      <ExternalLink className="w-3 h-3 text-slate-500" />
-                    </button>
-                  ))}
-                </section>
-              )}
-
-              <section className="pt-2 border-t border-slate-800">
-                <div className="p-3 rounded-xl bg-slate-800/40 border border-slate-700/60">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <Coffee className="w-3.5 h-3.5 text-amber-400" />
-                    <span className="text-xs font-bold text-slate-200">Support Wandrlust</span>
-                  </div>
-                  <p className="text-[12px] text-slate-400 leading-snug mb-2.5">
-                    Wandrlust is free and has no ads. If it&apos;s useful to you, you can buy
-                    the project a coffee. It buys you nothing in the app — no points, no
-                    tiers, no stealth spots. Those are earned by contributing, and that
-                    isn&apos;t for sale.
-                  </p>
-                  <a
-                    href="https://buymeacoffee.com/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold"
+                {LEGAL_LINKS.map(([kind, label]) => (
+                  <button
+                    key={kind}
+                    onClick={() => onOpenLegal(kind)}
+                    className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-slate-800/50 text-left"
                   >
-                    <Coffee className="w-3 h-3" />
-                    Buy me a coffee
-                    <ExternalLink className="w-2.5 h-2.5" />
-                  </a>
-                </div>
+                    <FileText className="w-3.5 h-3.5 text-slate-400" />
+                    <span className="text-xs text-slate-300 flex-1">{label}</span>
+                    <ExternalLink className="w-3 h-3 text-slate-500" />
+                  </button>
+                ))}
               </section>
-            </>
-          )}
-        </div>
+            )}
+
+            <section className="pt-2 border-t border-slate-800">
+              <div className="p-3 rounded-xl bg-slate-800/40 border border-slate-700/60">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Coffee className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-xs font-bold text-slate-200">Support Wandrlust</span>
+                </div>
+                <p className="text-[12px] text-slate-400 leading-snug mb-2.5">
+                  Wandrlust is free and has no ads. If it&apos;s useful to you, you can buy
+                  the project a coffee. It buys you nothing in the app — no points, no
+                  tiers, no stealth spots. Those are earned by contributing, and that
+                  isn&apos;t for sale.
+                </p>
+                <a
+                  href="https://buymeacoffee.com/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold"
+                >
+                  <Coffee className="w-3 h-3" />
+                  Buy me a coffee
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              </div>
+            </section>
+          </>
+        )}
       </div>
-    </div>
+    </Sheet>
   );
 };

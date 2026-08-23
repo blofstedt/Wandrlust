@@ -1622,6 +1622,16 @@ interface MapComponentProps {
   onCloseFacility?: () => void;
   /** Whether there is somebody to attribute a note to. */
   isSignedIn?: boolean;
+  /**
+   * The app is looking for camping spots on public land right now.
+   *
+   * Said only while the public-land layer is ON, which is why this is a prop
+   * rather than a pill the app floats itself: the layer's switch lives in
+   * here. "Exploring public lands…" over a map with no public land drawn on it
+   * is the app narrating work the camper did not ask to see, and it is the
+   * common case — the layer is off by default.
+   */
+  isSearchingSites?: boolean;
   /** Fired after a note lands, so the layer redraws carrying it. */
   onFacilityNoteSaved?: () => void;
   /**
@@ -1690,7 +1700,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
   facilityState = FACILITY_IDLE, onToggleFacilityKind, onClearFacilityKinds,
   selectedFacility = null, onCloseFacility, isSignedIn = false,
-  onFacilityNoteSaved,
+  onFacilityNoteSaved, isSearchingSites = false,
   facilityRefreshKey = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -6995,6 +7005,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             <span className="text-xs font-semibold text-slate-200 whitespace-nowrap">
               Tap to pick a spot
             </span>
+          </div>
+        )}
+
+        {/*
+          Looking for spots — and only while the layer that draws the land they
+          sit on is switched on. See `isSearchingSites`.
+        */}
+        {isSearchingSites && showBoundaries && (
+          <div className="max-w-full bg-slate-900/95 border border-emerald-500/50 text-emerald-300 px-4 py-2 rounded-full shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2.5 anim-in-down">
+            <Search className="w-4 h-4 text-emerald-400 animate-[bounce_0.6s_infinite]" />
+            <span>Exploring public lands…</span>
           </div>
         )}
 

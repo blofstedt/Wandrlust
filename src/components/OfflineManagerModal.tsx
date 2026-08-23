@@ -22,6 +22,7 @@ import {
   Zap, AlertTriangle, Loader2
 } from 'lucide-react';
 import { ConnectionStatus, CONNECTION_NOTE } from './ui/ConnectionStatus';
+import { Sheet } from './ui/Sheet';
 
 interface OfflineManagerModalProps {
   isOpen: boolean;
@@ -162,27 +163,15 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[2600] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
-      <div className="relative w-full max-w-xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl p-6 text-slate-100 space-y-6">
-        {/* Modal Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-teal-500/20 text-teal-400 border border-teal-500/40">
-              <Download className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="font-['Outfit'] font-bold text-lg">Offline Map Package Manager</h2>
-              <p className="text-xs text-slate-400">Download topographic tiles & campsites for remote wilderness</p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white border border-slate-700"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
+    <Sheet
+      isOpen
+      onClose={onClose}
+      variant="dialog"
+      icon={<Download className="w-4 h-4 text-teal-400" />}
+      title="Offline maps"
+      subtitle="Download an area so the map still works with no bars"
+    >
+      <div className="p-4 space-y-4">
         {/*
           THE CONNECTION, REPORTED — NOT SIMULATED.
 
@@ -461,7 +450,7 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
           )}
         </div>
       </div>
-    </div>
+    </Sheet>
   );
 };
 
