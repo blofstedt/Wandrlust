@@ -1864,10 +1864,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * decides which. Opening any of them closes whatever was open, so there is
    * nothing left to overlap.
    */
-  const [mapPanel, setMapPanel] = useState<'layers' | 'account' | null>(null);
+  const [mapPanel, setMapPanel] = useState<'layers' | 'facilities' | 'account' | null>(null);
   const closePanel = useCallback(() => setMapPanel(null), []);
   const togglePanel = useCallback(
-    (panel: 'layers' | 'account') =>
+    (panel: 'layers' | 'facilities' | 'account') =>
       setMapPanel((open) => (open === panel ? null : panel)),
     []
   );
@@ -1883,13 +1883,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * is a question about THE GROUND ALREADY ON SCREEN, and it never wanted a
    * keyboard at all.
    *
-   * So the magnifier down here kept the second job: it springs a small panel
-   * of facility symbols out of itself, named and in the colours their pins
-   * wear, and folds it away again the moment one is pressed. See
-   * `FacilityPicker`.
+   * So the magnifier down here kept the second job: it opens the facility
+   * symbols, named and in the colours their pins wear, in the same card the
+   * layer menu and the account panel open in. See `FacilityPicker`.
    */
-  const [facilityPickerOpen, setFacilityPickerOpen] = useState(false);
-  const closeFacilityPicker = useCallback(() => setFacilityPickerOpen(false), []);
 
   /** Tile credits, off the map until asked for. See the button that sets it. */
   const [showCredits, setShowCredits] = useState(false);
@@ -7437,6 +7434,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       </MapPanel>
 
       {/*
+        The facility layers, as the same card — because a fourth shape opening
+        in a fourth place is exactly what `ui/MapPanel` was made to stop. Same
+        size, same spot above the control stack, same header; only the tiles
+        inside are allowed their own colour, and only because it is the colour
+        of the pins they switch on. See `FacilityPicker`.
+      */}
+      {onToggleFacilityKind && (
+        <MapPanel
+          isOpen={mapPanel === 'facilities'}
+          onClose={closePanel}
+          title="Facilities"
+          icon={Search}
+          overlayPx={overlayPx}
+        >
+          <FacilityPicker
+            active={facilityKinds}
+            onToggle={onToggleFacilityKind}
+            onClearAll={() => onClearFacilityKinds?.()}
+            onDone={closePanel}
+          />
+        </MapPanel>
+      )}
+
+      {/*
         The account, as the same card — the trophy, the ladder and the way out
         at a size you can read, instead of a 288px dropdown squeezed against
         the right-hand edge of a phone.
@@ -7462,21 +7483,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         box down the right-hand side would otherwise swallow every tap meant
         for the map.
       */}
-      {/*
-        The panel's backstop. Rendered here rather than inside
-        `FacilityPicker` because it has to cover the whole map, and the panel
-        lives inside the control stack — an `inset-0` in there would cover the
-        stack and nothing else. Earlier in the DOM than the stack, at the same
-        z, so the controls and the panel stay above it.
-      */}
-      {facilityPickerOpen && (
-        <div
-          className="absolute inset-0 z-[1000]"
-          onPointerDown={(e) => { e.preventDefault(); closeFacilityPicker(); }}
-          aria-hidden="true"
-        />
-      )}
-
       <div
         className="absolute right-3 top-3 z-[1000] flex flex-col items-end justify-end gap-2 pointer-events-none transition-[bottom] duration-200"
         style={{ bottom: `calc(1.5rem + ${overlayPx}px)` }}
@@ -7521,39 +7527,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {/*
           THE FACILITY SYMBOLS LIVE IN THIS BUTTON.
 
-          It carries a count when layers are on, because a switched-on layer
-          is otherwise invisible as a SETTING: a camper looking at a map with
-          no toilet pins on it has to be able to tell "the layer is off" from
+          It carries a count when layers are on, because a switched-on layer is
+          otherwise invisible as a SETTING: a camper looking at a map with no
+          toilet pins on it has to be able to tell "the layer is off" from
           "nobody has mapped one round here", and those are the same empty
-          screen. The arc itself hangs off the middle of this button, which is
-          why the button is wrapped — see `FacilityPicker`.
+          screen.
         */}
         {onToggleFacilityKind && (
-          <div className="pointer-events-auto relative shrink-0">
-            <FacilityPicker
-              active={facilityKinds}
-              onToggle={onToggleFacilityKind}
-              onClearAll={() => onClearFacilityKinds?.()}
-              open={facilityPickerOpen}
-              onClose={closeFacilityPicker}
-            />
-            <button
-              type="button"
-              onClick={() => { haptic('tap'); setFacilityPickerOpen((open) => !open); }}
-              className={`${STACK_BUTTON} relative ${
-                facilityPickerOpen ? 'text-white ring-2 ring-emerald-400/70' : ''
-              }`}
-              aria-label="Show toilets, water and other facilities on this map"
-              aria-expanded={facilityPickerOpen}
-            >
-              <Search className="w-[18px] h-[18px]" />
-              {facilityKinds.length > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center border border-slate-900">
-                  {facilityKinds.length}
-                </span>
-              )}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => { haptic('tap'); togglePanel('facilities'); }}
+            className={`${STACK_BUTTON} relative ${
+              mapPanel === 'facilities' ? 'text-white ring-2 ring-emerald-400/70' : ''
+            }`}
+            aria-label="Show toilets, water and other facilities on this map"
+            aria-expanded={mapPanel === 'facilities'}
+          >
+            <Search className="w-[18px] h-[18px]" />
+            {facilityKinds.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-extrabold flex items-center justify-center border border-slate-900">
+                {facilityKinds.length}
+              </span>
+            )}
+          </button>
         )}
 
         {/*
