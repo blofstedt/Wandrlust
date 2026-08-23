@@ -7452,7 +7452,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             active={facilityKinds}
             onToggle={onToggleFacilityKind}
             onClearAll={() => onClearFacilityKinds?.()}
-            onDone={closePanel}
           />
         </MapPanel>
       )}

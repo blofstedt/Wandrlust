@@ -30,6 +30,12 @@ import { haptic } from '../utils/animation';
  * app looked before that card existed, and a fourth shape of its own is how it
  * would start looking that way again.
  *
+ * IT STAYS OPEN WHILE YOU PRESS THINGS. Switching on toilets and water is two
+ * taps; a card that shut after the first would make it four, and the second
+ * one would start with hunting for the magnifier again. It closes on the ×, on
+ * the magnifier, on Escape, and on a tap out on the map — the same four ways
+ * every other card here closes.
+ *
  * WHAT DOES NOT MATCH THE REST OF THE APP IS THE COLOUR, deliberately. Every
  * other panel in Wandrlust is slate with one emerald accent. These nine are the
  * exception because the colour is not decoration: it is the same colour the
@@ -52,22 +58,30 @@ interface FacilityPickerProps {
   active: FacilityKind[];
   onToggle: (kind: FacilityKind) => void;
   onClearAll: () => void;
-  /** Closes the card this is sitting in. */
-  onDone: () => void;
 }
 
 export const FacilityPicker: React.FC<FacilityPickerProps> = ({
-  active, onToggle, onClearAll, onDone
+  active, onToggle, onClearAll
 }) => {
   const activeSet = new Set(active);
 
   return (
-    <div className="p-2.5">
-      <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold pb-2">
-        Show on the map
-      </p>
+    /*
+      A FIXED HEIGHT, AND THE NUMBER IS THE LAYER MENU'S.
+      
+      260px is what `ui/MapPanel` gives the layer card's body, measured; with
+      the same header on top the two cards come out the same box, which is the
+      whole point of them being the same card. It is fixed rather than
+      content-sized for a second reason too: without it the card grew 46px
+      taller the moment a layer went on and the "turn them off" button
+      appeared, so pressing a tile moved every tile under the thumb that had
+      just pressed it.
 
-      <div className="grid grid-cols-3 gap-y-2.5 gap-x-1">
+      The grid takes the middle (`my-auto`) so it stays centred whether that
+      button is there or not.
+    */
+    <div className="h-[260px] p-2.5 flex flex-col">
+      <div className="grid grid-cols-3 gap-y-2.5 gap-x-1 my-auto">
         {SEARCHABLE_FACILITY_KINDS.map((kind) => {
           const spec = FACILITY[kind];
           const Icon = spec.icon;
@@ -78,7 +92,7 @@ export const FacilityPicker: React.FC<FacilityPickerProps> = ({
               key={kind}
               type="button"
               aria-pressed={on}
-              onClick={() => { haptic('tap'); onToggle(kind); onDone(); }}
+              onClick={() => { haptic('tap'); onToggle(kind); }}
               className="flex flex-col items-center gap-1 rounded-xl py-1"
             >
               {/* Off, the tile is its outline and its symbol; on, it fills.
@@ -113,18 +127,12 @@ export const FacilityPicker: React.FC<FacilityPickerProps> = ({
       {active.length > 0 && (
         <button
           type="button"
-          onClick={() => { haptic('tap'); onClearAll(); onDone(); }}
-          className="mt-2.5 w-full py-2 rounded-xl border border-slate-700 bg-slate-950/80 text-[12px] font-bold text-slate-300 hover:text-slate-100 hover:border-slate-500"
+          onClick={() => { haptic('tap'); onClearAll(); }}
+          className="shrink-0 w-full py-1.5 rounded-xl border border-slate-700 bg-slate-950/80 text-[12px] font-bold text-slate-300 hover:text-slate-100 hover:border-slate-500"
         >
           Turn {active.length === 1 ? 'it' : 'them all'} off
         </button>
       )}
-
-      <p className="text-[11px] text-slate-500 leading-snug pt-2 px-0.5">
-        Drawn on the piece of map you are looking at. Mapped by volunteers and
-        by campers — an empty result means nobody has mapped one here, not that
-        there is none.
-      </p>
     </div>
   );
 };
