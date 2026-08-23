@@ -52,7 +52,8 @@ question shouldn't rewrite components.
 | Cell signal by carrier | `src/services/cellCoverageService.ts`, `server/cellRoutes.ts` | everything else |
 | Camper hazard reports on the map | `src/config/hazardReports.ts`, `src/components/HazardReportCard.tsx`, `ReportPanel.tsx` | weather |
 | Search (it answers for the app too), filters, view switching | `src/components/Navbar.tsx`, `src/config/appSearch.ts`, `src/App.tsx`, `src/components/FilterDrawer.tsx`, `src/config/filters.ts` | services |
-| Facility layers — toilets, water, propane… | `src/config/facilities.ts`, `src/components/FacilityPicker.tsx`, `src/components/ui/FacilityIcons.tsx` | boundaries |
+| Facility layers — toilets, water, propane… | `src/config/facilities.ts`, `src/components/FacilityPicker.tsx`, `src/components/ui/FacilityIcons.tsx`, `server/facilityRoutes.ts` | boundaries |
+| A facility's card, its notes, "did you find it?" | `src/components/FacilityCard.tsx`, `FacilityCheckSheet.tsx`, `src/utils/facilityCheck.ts`, `supabase_migration_25_poi_notes.sql` | the map layer |
 | The Tools page | `src/components/ToolsView.tsx`, `src/components/MobileTabBar.tsx` | map internals |
 | A campsite's detail view | `src/components/CampsiteBottomSheet.tsx` (map pin), `src/components/CampsiteDetailModal.tsx` (list card), `src/components/CampsiteCard.tsx` | map internals |
 | Submitting a spot, reporting on one | `src/components/SpotReportSheet.tsx`, `src/config/spotReport.ts`, `src/components/ui/ScalePicker.tsx` | boundaries, weather |
@@ -237,7 +238,7 @@ npm run vapid    # generate push notification keys
   answer from an hour before they existed.
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
-- **Migrations must run in order,** `supabase_schema.sql` then 02 through 19.
+- **Migrations must run in order,** `supabase_schema.sql` then 02 through 25.
   `supabase_schema.sql` is destructive — it drops and recreates.
 - **`public_lands` fills itself now, from production, and that is the only
   thing that ever could have filled it.** `npm run seed` needs a machine that

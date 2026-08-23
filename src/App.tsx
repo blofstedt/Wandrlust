@@ -25,6 +25,7 @@ import { shouldAskMapDataChoice } from './services/landOverlayService';
 import { AddHereConfirm } from './components/AddHereConfirm';
 import { AddFacilitySheet } from './components/AddFacilitySheet';
 import { FacilityCard } from './components/FacilityCard';
+import { FacilityCheckSheet } from './components/FacilityCheckSheet';
 import { CampingGuideModal } from './components/CampingGuideModal';
 import { FilterDrawer } from './components/FilterDrawer';
 import { AuthModal } from './components/AuthModal';
@@ -61,6 +62,9 @@ import {
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
 import { mergeCampsites } from './utils/mergeCampsites';
+import {
+  readFacilityCheck, clearFacilityCheck, type PendingFacilityCheck
+} from './utils/facilityCheck';
 import { calculateRoute, type RouteResult } from './services/routingService';
 import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
@@ -69,6 +73,7 @@ import {
   Search, Bookmark, MapPinOff, SlidersHorizontal, Waves
 } from 'lucide-react';
 import { useOnlineStatus } from './utils/useOnlineStatus';
+import { haptic } from './utils/animation';
 
 /** Calgary, AB — the app's home coordinates. */
 const HOME_CENTER: [number, number] = [51.0447, -114.0719];
@@ -610,6 +615,55 @@ export default function App() {
   }, []);
 
   const handleClearFacilityKinds = useCallback(() => setFacilityKinds([]), []);
+
+  /**
+   * THE FACILITY THE CAMPER WAS SENT TO, WAITING TO BE ASKED ABOUT.
+   *
+   * Raised when the app is looked at again after a handoff to Google Maps —
+   * which is the first moment anybody can say whether the toilet was actually
+   * there. `readFacilityCheck` owns the two windows: not before three minutes
+   * (they have not been anywhere), not after twelve hours (nobody should be
+   * asked to remember).
+   *
+   * The buzz is the point of the timing. The phone has been in a pocket, in a
+   * cradle, or face down on a table since the handoff, so the question arrives
+   * with a haptic tap rather than only as something on screen.
+   */
+  const [facilityCheck, setFacilityCheck] = useState<PendingFacilityCheck | null>(null);
+
+  useEffect(() => {
+    const ask = () => {
+      if (document.visibilityState !== 'visible') return;
+      setFacilityCheck((current) => {
+        if (current) return current;
+        const pending = readFacilityCheck();
+        if (pending) haptic('warning');
+        return pending;
+      });
+    };
+
+    // Both, because a phone returning from another app fires `visibilitychange`
+    // and a desktop tab returning from a new window fires `focus`.
+    document.addEventListener('visibilitychange', ask);
+    window.addEventListener('focus', ask);
+    /* And once on mount: the app may have been killed in the background while
+       Google Maps had the screen, in which case coming back is a cold start
+       and neither event ever fires. */
+    ask();
+
+    return () => {
+      document.removeEventListener('visibilitychange', ask);
+      window.removeEventListener('focus', ask);
+    };
+  }, []);
+
+  /* Dismissing is a real answer. The record is cleared either way, because an
+     app that keeps asking until it gets a reply teaches people to tap whatever
+     makes it go away. */
+  const dismissFacilityCheck = useCallback(() => {
+    clearFacilityCheck();
+    setFacilityCheck(null);
+  }, []);
 
   /** Open the facility form on a specific coordinate. */
   const handleAddFacilityAt = useCallback((latitude: number, longitude: number) => {
@@ -1616,6 +1670,21 @@ export default function App() {
         isSignedIn={Boolean(user)}
         onRequireAuth={() => setIsAuthOpen(true)}
         onVoted={() => setFacilityRefreshKey((key) => key + 1)}
+      />
+
+      {/*
+        "DID YOU FIND IT?", ASKED ON THE WAY BACK.
+
+        Not while the camper is looking at the pin deciding whether to go —
+        nobody can answer then, and what that collects is somebody confirming
+        that the pin exists. See `FacilityCheckSheet` and `utils/facilityCheck`.
+      */}
+      <FacilityCheckSheet
+        pending={facilityCheck}
+        onClose={dismissFacilityCheck}
+        isSignedIn={Boolean(user)}
+        onRequireAuth={() => setIsAuthOpen(true)}
+        onRecorded={() => setFacilityRefreshKey((key) => key + 1)}
       />
 
       <AddHereConfirm

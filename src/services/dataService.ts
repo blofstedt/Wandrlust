@@ -1361,6 +1361,77 @@ export const fetchPoisNear = async (
   return ok(data as PoiRecord[], []);
 };
 
+/**
+ * CAMPER NOTES ON FACILITIES, BY AREA.
+ *
+ * A note is directions — "behind the yellow wall, at the back" — not a review
+ * and not a vote. It attaches to a camper's `pois` row OR to an OpenStreetMap
+ * node id, because the thing worth writing down is worth writing down whichever
+ * of the two put the pin on the screen.
+ *
+ * Read by area like every other geometry in this schema, and readable signed
+ * out: somebody with no account is exactly who most needs to be told which door
+ * the tap is behind.
+ */
+export interface PoiNoteRecord {
+  id: string;
+  poi_id: string | null;
+  osm_id: string | null;
+  body: string;
+  author: string;
+  author_name: string;
+  created_at: string;
+}
+
+export const fetchPoiNotesNear = async (
+  latitude: number,
+  longitude: number,
+  radiusKm = 25
+): Promise<PoiNoteRecord[]> => {
+  if (!supabase) return [];
+  const { data, error } = await supabase.rpc('poi_notes_near', {
+    in_lat: latitude,
+    in_lon: longitude,
+    in_radius_km: radiusKm
+  });
+  if (error || !Array.isArray(data)) return [];
+  return ok(data as PoiNoteRecord[], []);
+};
+
+/**
+ * Leave one, or replace your own.
+ *
+ * A second note from the same camper about the same facility is an EDIT —
+ * somebody correcting their own directions — and the function upserts rather
+ * than refusing. Two versions of one person's directions on one pin is a map
+ * arguing with itself.
+ */
+export const addPoiNote = async (note: {
+  poiId?: string | null;
+  osmId?: string | null;
+  lat: number;
+  lon: number;
+  body: string;
+}): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+  const uid = await currentUserId();
+  if (!uid) return failure('Sign in to leave a note');
+
+  const { data, error } = await supabase.rpc('add_poi_note', {
+    in_poi_id: note.poiId ?? null,
+    in_osm_id: note.osmId ?? null,
+    in_lat: note.lat,
+    in_lon: note.lon,
+    in_body: note.body
+  });
+  if (error) return failure(error.message);
+
+  const row = data as { ok?: boolean; message?: string } | null;
+  return row?.ok === true
+    ? success(true, row.message ?? 'Note added.')
+    : failure(row?.message || 'That did not go through.');
+};
+
 /* ------------------------------------------------------------------ */
 /* Rules & hazards at a point                                          */
 /* ------------------------------------------------------------------ */

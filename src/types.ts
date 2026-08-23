@@ -493,6 +493,24 @@ export interface MapFacility {
   detail?: string;
   /** Undefined when nobody recorded whether it costs anything. */
   fee?: boolean;
+  /**
+   * What campers have written about finding it — "behind the yellow wall, at
+   * the back". Attached to a `pois` row or to an OSM node id; see
+   * `supabase_migration_25_poi_notes.sql`.
+   *
+   * Directions, not a review. A note is one camper's words and is attributed
+   * as such; it never changes the pin's standing, because saying where a thing
+   * is is not the same as saying you found it there today.
+   */
+  notes?: FacilityNote[];
+}
+
+/** One camper's note on one facility. */
+export interface FacilityNote {
+  id: string;
+  body: string;
+  authorName: string;
+  createdAt: string;
 }
 
 /* ------------------------------------------------------------------ */

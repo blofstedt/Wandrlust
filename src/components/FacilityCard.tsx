@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Loader2, Navigation, ThumbsDown, X } from 'lucide-react';
+import { Loader2, MessageSquarePlus, Navigation, X } from 'lucide-react';
 import type { MapFacility } from '../types';
 import { FACILITY, facilitySourceStyle } from '../config/facilities';
-import { votePoi } from '../services/dataService';
+import { addPoiNote } from '../services/dataService';
 import { openDirections, directionsAppName } from '../utils/handoff';
+import { rememberFacilityHandoff } from '../utils/facilityCheck';
 import { haptic } from '../utils/animation';
 
 /**
@@ -18,11 +19,16 @@ import { haptic } from '../utils/animation';
  *   what that is not  nobody has been sent to check it, and a mapped toilet
  *                     can be locked, gone, or seasonal
  *
- * The two buttons are the only way anything on this layer improves. Confirming
- * is what moves a camper's pin from hollow to solid; saying it is gone is what
- * eventually takes it off the map. Both are one tap and neither is destructive
- * on its own — three separate campers have to say a thing is gone before it is
- * pruned.
+ * WHERE "IT'S THERE" AND "NOT THERE" WENT. They were here, on the card you read
+ * BEFORE you go — the one moment nobody can answer the question. What that
+ * collects is either silence or, worse, somebody pressing "it's there" to mean
+ * "the pin is there", which is the map confirming itself. The question is asked
+ * now when the camper comes back from being handed to Google Maps, which is the
+ * first moment they know. See `FacilityCheckSheet`.
+ *
+ * What is here instead is what other campers have written about FINDING it —
+ * behind the yellow wall, at the back — and a way to add your own. Those are
+ * directions, not a verdict, and they never change the pin's standing.
  */
 
 interface FacilityCardProps {
@@ -30,7 +36,7 @@ interface FacilityCardProps {
   onClose: () => void;
   isSignedIn: boolean;
   onRequireAuth: () => void;
-  /** Fired after a vote lands, so the layer redraws with the new count. */
+  /** Fired after a note lands, so the layer redraws carrying it. */
   onVoted: () => void;
 }
 
@@ -39,33 +45,43 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
 }) => {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [writing, setWriting] = useState(false);
+  const [body, setBody] = useState('');
 
   // A notice about the last facility must not greet the next one.
-  useEffect(() => { setNotice(null); }, [facility?.id]);
+  useEffect(() => {
+    setNotice(null);
+    setWriting(false);
+    setBody('');
+  }, [facility?.id]);
 
   if (!facility) return null;
 
   const spec = FACILITY[facility.kind];
   const { meaning } = facilitySourceStyle(facility.fromOsm, facility.confirmations);
+  const notes = facility.notes ?? [];
 
-  const vote = async (isUpvote: boolean) => {
-    if (!facility.poiId) {
-      /* An OpenStreetMap node. There is no row of ours to attach a vote to,
-         and inventing one would quietly fork the record — the honest fix is
-         to correct it at the source, which is a thing anybody may do. */
-      setNotice(
-        'This one comes straight from OpenStreetMap, so there is nothing here to vote on. ' +
-        'Anyone can correct it at openstreetmap.org.'
-      );
-      return;
-    }
+  const saveNote = async () => {
     if (!isSignedIn) { onRequireAuth(); return; }
 
     setBusy(true);
-    const result = await votePoi(facility.poiId, isUpvote);
+    const result = await addPoiNote({
+      poiId: facility.poiId ?? null,
+      /* An OSM pin's own id is the key a note hangs on — see migration 25.
+         A note is the one thing that works on both kinds of pin. */
+      osmId: facility.poiId ? null : facility.id,
+      lat: facility.latitude,
+      lon: facility.longitude,
+      body
+    });
     setBusy(false);
     setNotice(result.message);
-    if (result.ok) { haptic(isUpvote ? 'success' : 'warning'); onVoted(); }
+    if (result.ok) {
+      haptic('success');
+      setWriting(false);
+      setBody('');
+      onVoted();
+    }
   };
 
   return (
@@ -115,37 +131,83 @@ export const FacilityCard: React.FC<FacilityCardProps> = ({
         </div>
 
         <div className="px-3.5 pb-3 space-y-2">
+          {/*
+            WHAT OTHER CAMPERS SAID ABOUT FINDING IT.
+
+            The most useful sentence about a pit toilet is rarely that it
+            exists — it is which side of the building the door is on. These are
+            one camper's words each, attributed, and they are directions rather
+            than a verdict: a note never moves the pin up or down the ladder.
+          */}
+          {notes.length > 0 && (
+            <ul className="space-y-1.5">
+              {notes.map((note) => (
+                <li
+                  key={note.id}
+                  className="text-xs text-slate-200 leading-snug border-l-2 border-emerald-700/70 pl-2"
+                >
+                  “{note.body}”
+                  <span className="block text-[11px] text-slate-500 mt-0.5">
+                    — {note.authorName}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
           <div className="flex gap-1.5">
             <button
               type="button"
-              disabled={busy}
-              onClick={() => void vote(true)}
-              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-emerald-600 hover:text-emerald-300 disabled:opacity-60"
+              onClick={() => { haptic('tap'); setWriting((open) => !open); }}
+              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-emerald-600 hover:text-emerald-300"
             >
-              {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-              It&apos;s there
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void vote(false)}
-              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-rose-600 hover:text-rose-300 disabled:opacity-60"
-            >
-              <ThumbsDown className="w-3.5 h-3.5" />
-              Not there
+              <MessageSquarePlus className="w-3.5 h-3.5" />
+              {notes.length > 0 ? 'Add a note' : 'Leave a note'}
             </button>
             <button
               type="button"
               onClick={() => {
                 haptic('tap');
+                /* Remembered so the app can ask whether they found it once
+                   they are back — which is the only moment they know. See
+                   `utils/facilityCheck.ts`. */
+                rememberFacilityHandoff(facility);
                 openDirections(facility.latitude, facility.longitude);
               }}
-              className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 hover:border-slate-500"
+              className="flex-1 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-slate-500"
               aria-label={`Open in ${directionsAppName()}`}
             >
               <Navigation className="w-3.5 h-3.5" />
+              Take me there
             </button>
           </div>
+
+          {writing && (
+            <div className="space-y-1.5">
+              <textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value.slice(0, 400))}
+                rows={3}
+                autoFocus
+                placeholder="You have to look behind the yellow wall, it's way at the back."
+                className="w-full bg-slate-950/90 border border-slate-700/80 rounded-lg px-2.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 resize-none"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-slate-500">
+                  {400 - body.length} left. Directions, not a review.
+                </span>
+                <button
+                  type="button"
+                  disabled={busy || body.trim().length < 2}
+                  onClick={() => void saveNote()}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Save
+                </button>
+              </div>
+            </div>
+          )}
 
           {notice && (
             <p className="text-xs text-slate-200 bg-slate-800/70 border border-slate-700 rounded-lg px-2.5 py-1.5 leading-snug">

@@ -12,9 +12,11 @@ import {
 import { UserMenu, AccountPanelBody } from './UserMenu';
 import { MapPanel } from './ui/MapPanel';
 import { FacilityPicker } from './FacilityPicker';
+import { rememberFacilityHandoff } from '../utils/facilityCheck';
 
 import type {
   Campsite, CellCoverage, DestinationLand, FacilityKind, FacilityLookupState,
+  FacilityNote,
   MapDestination, MapFacility, MapTileLayer, NearbyFacility, BeaconSpot, BackroadScan
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
@@ -28,7 +30,7 @@ import { FACILITY, facilityKindFromDb, facilitySourceStyle } from '../config/fac
 import { landRules } from '../config/landRules';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
 import {
-  fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, HazardRecord
+  fetchHazardsNear, fetchBeaconSpotsNear, fetchPoisNear, fetchPoiNotesNear, HazardRecord
 } from '../services/dataService';
 import {
   fetchBoundaries, requestBoxFor, boxContains,
@@ -4135,7 +4137,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         200
       );
 
-      const [osm, pois] = await Promise.all([
+      const [osm, pois, notes] = await Promise.all([
         fetchFacilitiesInView(
           {
             south: bounds.getSouth(), west: bounds.getWest(),
@@ -4143,7 +4145,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           },
           facilityKinds
         ),
-        fetchPoisNear(centre.lat, centre.lng, Math.max(radiusKm, 1))
+        fetchPoisNear(centre.lat, centre.lng, Math.max(radiusKm, 1)),
+        /* Notes ride along with the same viewport question rather than being
+           fetched when a pin is tapped: a card that opens and THEN grows a
+           paragraph is a card that moves under the thumb, and the whole read
+           is one indexed query over the same box. */
+        fetchPoiNotesNear(centre.lat, centre.lng, Math.max(radiusKm, 1))
       ]);
       if (cancelled) return;
 
@@ -4160,6 +4167,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         .filter((f) => bounds.contains(L.latLng(f.latitude, f.longitude)));
 
       const merged = mergeFacilities(camperAdded, osm.facilities);
+
+      /* Attach each camper's note to the pin it is about. A note keyed to an
+         OSM node and a note keyed to our own row can both land on the same
+         merged pin, which is correct — they are notes about one tap. */
+      if (notes.length > 0) {
+        const byTarget = new Map<string, FacilityNote[]>();
+        for (const row of notes) {
+          const key = row.poi_id ? `poi:${row.poi_id}` : `osm:${row.osm_id}`;
+          const list = byTarget.get(key);
+          const note: FacilityNote = {
+            id: row.id,
+            body: row.body,
+            authorName: row.author_name,
+            createdAt: row.created_at
+          };
+          if (list) list.push(note);
+          else byTarget.set(key, [note]);
+        }
+
+        for (const facility of merged) {
+          const mine = [
+            ...(facility.poiId ? byTarget.get(`poi:${facility.poiId}`) ?? [] : []),
+            ...byTarget.get(`osm:${facility.id}`) ?? []
+          ];
+          if (mine.length > 0) facility.notes = mine;
+        }
+      }
+
       render(merged);
 
       /* `ok: false` means every Overpass mirror failed. Camper-added pins may
@@ -7216,13 +7251,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
             <button
               type="button"
-              onClick={() =>
+              onClick={() => {
+                /* The other way to be handed to Google Maps for a facility.
+                   Both remember, or the app asks "did you find it?" after one
+                   route to a toilet and not the other. */
+                rememberFacilityHandoff(facilityTrip.facility);
                 openDirections(
                   facilityTrip.facility.latitude,
                   facilityTrip.facility.longitude,
                   [readLat, readLon]
-                )
-              }
+                );
+              }}
               className="mt-2 w-full px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2"
             >
               <Navigation className="w-3.5 h-3.5" />
