@@ -322,8 +322,7 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/backroads/, 'backroads'],
   [/^\/api\/facilities/, 'facilities'],
   [/^\/api\/beacon/, 'beacon'],
-  [/^\/api\/spot/, 'spot']
-
+  [/^\/api\/spot/, 'spot'],
   [/^\/api\/road-segments/, 'road-segments'],
 ];
 

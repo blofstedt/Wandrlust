@@ -93,7 +93,16 @@ const geomToLine = (geom: any): [number, number][] | null => {
 };
 
 const fetchSegmentsInBox = async (minLat: number, minLon: number, maxLat: number, maxLon: number): Promise<RoadSegment[]> => {
-  const { data, error } = await supabaseAdmin.from('road_segments').select('id, geom, surface, roughness_index, sample_count, osm_way_id, updated_at').withinBounds(minLat, minLon, maxLat, maxLon).lte('sample_count', 1000).order('updated_at', { ascending: false });
+  // PostGIS bbox overlap on the geometry column. `.withinBounds` is not a
+  // supabase-js method; `st_intersects` with the envelope WKT is the standard
+  // PostgREST way to ask "which linestrings touch this box".
+  const bboxWkt = `SRID=4326;POLYGON((${minLon} ${minLat},${maxLon} ${minLat},${maxLon} ${maxLat},${minLon} ${maxLat},${minLon} ${minLat}))`;
+  const { data, error } = await supabaseAdmin
+    .from('road_segments')
+    .select('id, geom, surface, roughness_index, sample_count, osm_way_id, updated_at')
+    .filter('geom', 'st_intersects', bboxWkt)
+    .lte('sample_count', 1000)
+    .order('updated_at', { ascending: false });
   if (error) { console.error('[road-segments] DB error:', error.message); return []; }
   if (!Array.isArray(data)) return [];
   return data.map(row => {

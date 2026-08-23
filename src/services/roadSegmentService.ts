@@ -1,4 +1,4 @@
-import { TtlCache } from './ttlCache';
+import { TtlCache } from '../utils/ttlCache';
 import type { SurfaceQuality } from './scoutMode';
 
 export interface ScoutRoadSegment {
