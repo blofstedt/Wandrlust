@@ -42,7 +42,8 @@ export interface BoundingBox {
  * there to keep Alaska's panhandle from pulling the box across the
  * Pacific, but the outline still ran out to -139° along the 60th
  * parallel, so the whole northwest corner of British Columbia — Atlin,
- * the Stikine, Haida Gwaii — tested as "outside coverage" and the map
+ * the Stikine, Haida Gwaii — tested as "outside coverage" and 
+the map
  * could never be panned or zoomed far enough west to show it.
  *
  * The west edge now matches the outline's own westernmost point: the
@@ -90,7 +91,8 @@ const inverseMercatorY = (y: number): number =>
 const VIEW_PAD_FRACTION = 0.06;
 
 const viewPad = VIEW_PAD_FRACTION * Math.max(
-  COVERAGE_BBOX.maxLon - COVERAGE_BBOX.minLon,
+  COVERAGE_BBOX.ma
+xLon - COVERAGE_BBOX.minLon,
   mercatorY(COVERAGE_BBOX.maxLat) - mercatorY(COVERAGE_BBOX.minLat)
 );
 
@@ -133,7 +135,8 @@ export const COVERAGE_OUTLINE: [number, number][] = [
   [-103.1, 29.0], [-101.4, 29.8], [-99.1, 26.4], [-97.1, 25.9],
   [-94.0, 29.7], [-89.0, 29.0], [-85.0, 29.7], [-82.9, 24.5], [-80.0, 25.2],
   [-81.0, 31.0], [-75.5, 35.2], [-70.0, 41.5],
-  // Down the Gulf of Maine and AROUND Nova Scotia, which the old straight
+  // Down the Gulf of Maine and AROUND Nova Scotia, which the old str
+aight
   // hop from New Brunswick to Newfoundland sliced clean through — the whole
   // southern half of the province was being greyed out.
   [-67.3, 44.8],   // New Brunswick / Maine coast
@@ -177,7 +180,8 @@ export const COVERAGE_OUTLINE: [number, number][] = [
   [-125.1, 48.5]    // Barkley Sound, closing to Cape Flattery
 ];
 
-/** World ring used as the outer boundary of the grey mask. */
+/** World r
+ing used as the outer boundary of the grey mask. */
 export const WORLD_RING: [number, number][] = [
   [-180, -85], [180, -85], [180, 85], [-180, 85]
 ];
@@ -229,7 +233,8 @@ export const bboxIntersectsCoverage = (box: BoundingBox): boolean =>
 export const clampToCoverage = (box: BoundingBox): BoundingBox => ({
   minLat: Math.max(box.minLat, COVERAGE_BBOX.minLat),
   minLon: Math.max(box.minLon, COVERAGE_BBOX.minLon),
-  maxLat: Math.min(box.maxLat, COVERAGE_BBOX.maxLat),
+  maxLat: Math
+.min(box.maxLat, COVERAGE_BBOX.maxLat),
   maxLon: Math.min(box.maxLon, COVERAGE_BBOX.maxLon)
 });
 
@@ -279,7 +284,8 @@ export const BACKROAD_MIN_ZOOM = 12;
  * WHY PUBLIC LAND USED TO POP IN AND OUT WHILE YOU MOVED THE MAP.
  *
  * The overview used to follow the viewport: a padded box, snapped to a grid
- * derived from the screen, refetched whenever a pan left it. That sounds
+ * derived from the screen, refetched whenever a pan left it. Tha
+t sounds
  * reasonable and it is the whole bug, because of what sits on the other end.
  * Each source has a hard record cap — a couple of hundred parcels per request —
  * and the government services return whatever comes first, not the biggest. So
@@ -316,7 +322,8 @@ export const OVERVIEW_BOX: BoundingBox = { ...COVERAGE_BBOX };
  *
  * ONE NUMBER, NOT A CURVE, and that is deliberate: it is part of the request
  * URL, so a value that changed with zoom would mint a different request at
- * every zoom level and undo everything above. The same answer has to serve
+ * every zoom level and undo eve
+rything above. The same answer has to serve
  * zoom 2 and zoom 6 alike.
  *
  * It is set low because at continental span it barely binds — the server keeps
@@ -352,7 +359,8 @@ export const OVERVIEW_MIN_AREA_SQ_KM = 120;
  */
 export const overviewMinSpanDegrees = (zoom: number): number => {
   if (zoom <= 3) return 0.6;   // ~65 km — the continental blocks
-  if (zoom <= 4) return 0.3;   // ~33 km
+  if (zoom <= 4) return 0.3;   // ~33 k
+m
   if (zoom <= 5) return 0.12;  // ~13 km
   return 0;                    // zoom 6: everything the file holds
 };
@@ -393,7 +401,8 @@ export const midMinSpanDegrees = (zoom: number): number => {
  * publishes instead and why it doesn't qualify.
  *
  * WHY THE VALUE IS NOT JUST `true`. Saskatchewan is mapped for the forested
- * centre and north and nothing else, because the only Crown land the province
+ * centre and north and nothing else, because the on
+ly Crown land the province
  * publishes further south is leases and cottage lots. Manitoba is thinner
  * still as a share of what is really there. (BC is the counter-example: its
  * provincial forest designation covers ~97% of the province, so it is not
@@ -424,7 +433,8 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
   // BC is drawn as the provincial forests, and those are NOT a thin slice:
   // the Forest Act designation covers essentially the whole province —
   // measured 896,418 km² against BC's 925,186 km² of land, about 97% — minus
-  // municipalities, reserves and the alienated agricultural valleys. What the
+  // municipalities, reserves and the alienated a
+gricultural valleys. What the
   // layer does not do is subtract the parks, tenures and recreation sites
   // inside it, so the caveat below says what camping on that land still has
   // to survive, not that the province is barely mapped.
@@ -457,7 +467,8 @@ const MAPPED_CA_PROVINCES = new Map<string, string | null>([
    * is ~95% Crown land and free dispersed camping on it is legal unless
    * posted otherwise, so Crown land is drawn as the province outline minus
    * everything that has been removed from the Crown. The residual is real
-   * Crown land, but its edges are cadastral-derived and the caveat below is
+  
+ * Crown land, but its edges are cadastral-derived and the caveat below is
    * what a camper should read before trusting one.
    */
   ['CA-NL', 'drawn as Crown land minus alienated titles — edges are approximate']
@@ -496,7 +507,8 @@ const UNMAPPED_CA_PROVINCES = new Map<string, string>([]);
  * BC now draws its provincial forests, which is a real answer for nearly all
  * of the province (the designation covers ~97% of it) and still not a clean
  * null — the layer does not subtract parks, tenures and recreation sites — so
- * the caveat below stays exactly as load-bearing as it was: partial coverage
+ * the caveat below stays e
+xactly as load-bearing as it was: partial coverage
  * is the case this function is for, not the case it was fixed by.
  *
  * Pass the ISO code of the state or province under the middle of the screen.
@@ -522,3 +534,7 @@ export const landDataGap = (isoCode: string | null | undefined): string | null =
  */
 export const hasMappedCrownLand = (isoCode: string | null | undefined): boolean =>
   !!isoCode && MAPPED_CA_PROVINCES.has(isoCode);
+
+
+// Minimum zoom level for Scout Paths visualization
+export const SCOUT_PATHS_MIN_ZOOM = 10;
