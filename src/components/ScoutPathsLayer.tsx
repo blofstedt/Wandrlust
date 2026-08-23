@@ -186,7 +186,6 @@ export const ScoutPathsLayer: React.FC<ScoutPathsLayerProps> = ({ bounds, zoom, 
     layerRef.current = L.geoJSON(undefined as any, {
       style: styleFunction,
       onEachFeature,
-      renderer: new L.SVG({ padding: 0.5 }),
     });
     
     layerRef.current.addTo(map);

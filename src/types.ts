@@ -1,26 +1,3 @@
-/**
- * Surface quality types for Scout Paths road surface classification.
- * Based on vertical acceleration variance from phone motion sensors.
- * Matches the surface_quality enum in the database.
- */
-export type SurfaceQuality = 
-  | 'smooth_paved' | 'rough_paved' | 'good_gravel'
-  | 'washboard' | 'rutted_dirt' | 'rock_crawl' | 'impassable';
-
-/**
- * A road segment with crowdsourced surface quality data.
- * Used by the Scout Paths feature.
- */
-export interface ScoutRoadSegment {
-  id: string;
-  line: [number, number][];
-  surface: SurfaceQuality;
-  roughness: number;
-  sampleCount: number;
-  updatedAt: string;
-  osmWayId: number | null;
-}
-
 export type LandType = 'blm' | 'usfs' | 'state_forest' | 'dispersed' | 'crown_land';
 export type RoadAccess = 'paved' | 'gravel' | 'high_clearance' | '4x4_only';
 export type ToiletType = 'none' | 'vault' | 'flush' | 'pack_out';
@@ -81,8 +58,7 @@ export interface Campsite {
   latitude: number;
   longitude: number;
   elevationFt?: number;
-  addre
-ss: {
+  address: {
     nearestCity: string;
     stateProvince: string;
     country: string;
@@ -141,8 +117,7 @@ export interface GeocodedLocation {
   country: string;
   lat: number;
   lon: number;
-  /** [south, north, west, east
-] */
+  /** [south, north, west, east] */
   boundingBox?: [number, number, number, number];
 }
 
@@ -211,8 +186,7 @@ export type AppView = 'map' | 'list' | 'saved' | 'tools';
 export type FacilityLookupState =
   | { status: 'idle' }
   | { status: 'zoomed-out' }
-  | { status: 'l
-oading' }
+  | { status: 'loading' }
   | { status: 'failed' }
   | { status: 'done'; count: number; truncated: boolean };
 
@@ -266,8 +240,7 @@ export interface CarrierCoverage {
   label: string;
   /** 0–5, approximated from the source below. Absent means "no data". */
   bars?: number;
- 
- /** The same estimate in words. Present exactly when `bars` is. */
+  /** The same estimate in words. Present exactly when `bars` is. */
   strength?: SignalStrength;
   /** The nearest tower's generation, when the register recorded one. */
   technology?: CellTechnology;
@@ -323,8 +296,7 @@ export interface DestinationLand {
   designation: string;
   /**
    * Which boundary source this parcel came from — `blm_lands`,
-   * `ontario_clupa_general_use` and
- so on.
+   * `ontario_clupa_general_use` and so on.
    *
    * Carried so the app can fall back to the rule that agency publishes for
    * this whole class of land when the parcel's own record is silent, which is
@@ -383,8 +355,7 @@ export interface TierDefinition {
   color: string;
   /** Second stop for the shine, and the gradient's end on the top tier. */
   colorSoft: string;
-  /** Tailwind classes for the tier chip. Full strings — Tailwin
-d scans text. */
+  /** Tailwind classes for the tier chip. Full strings — Tailwind scans text. */
   ring: string;
   /** The top tier gets a two-colour trophy instead of a metal. */
   isAurora?: boolean;
@@ -446,8 +417,7 @@ export interface GuideSection {
 /**
  * `road` is the odd one out and deliberately so.
  *
- * It is 
-not a facility somebody built; it is the nearest driveable track,
+ * It is not a facility somebody built; it is the nearest driveable track,
  * looked up only for a point sitting in public land, to answer "could I get
  * a vehicle anywhere near here?". It rides in the facility list because it
  * behaves identically once found — a chip on the pin, framed and routed when
@@ -494,7 +464,6 @@ export interface NearbyFacility {
  * the nearest of each kind, and only ever comes from OpenStreetMap. This is
  * the other question — "show me every toilet in view" — and it has to carry
  * where each one came from, because that is the difference between "a
-
  * volunteer mapped this years ago" and "a camper stood here last week".
  *
  * A pin can be BOTH. When an OSM node and a camper's submission of the same
@@ -549,8 +518,7 @@ export interface FacilityNote {
 /* ------------------------------------------------------------------ */
 
 /**
- *
- How much is actually known about a possible overnight spot.
+ * How much is actually known about a possible overnight spot.
  *
  * These are EVIDENCE labels, not confidence labels, and the distinction is the
  * whole design. `lead` means public map data suggested a place and nobody has
@@ -594,8 +562,7 @@ export interface BeaconSpot {
   id: string;
   latitude: number;
   longitude: number;
-  tier:
- BeaconTier;
+  tier: BeaconTier;
   generator: BeaconGenerator;
   /** What the place is, in a camper's words: "Passing place", "Rest area". */
   label: string;
@@ -645,8 +612,7 @@ export interface BeaconSpot {
  * in, saves it or reports on it, it is on their map too and deleting it would
  * throw away their work, not yours.
  *
- * Read BEFORE the button is drawn, never after it is pressed. A remove bu
-tton
+ * Read BEFORE the button is drawn, never after it is pressed. A remove button
  * that turns out to be refused is worse than no button at all: the camper has
  * already decided the spot is gone by the time they read the error.
  */
@@ -694,8 +660,7 @@ export interface SpotRemovalState {
 /**
  * The answer scales.
  *
- * Every one of these is a smal
-l integer with named stops rather than a
+ * Every one of these is a small integer with named stops rather than a
  * free-running 0-100, for two reasons. A continuous slider is hard to land on
  * a phone with one thumb in the dark, and it invents precision nobody has —
  * "crowding 63" means nothing, "half full" means something.
@@ -751,8 +716,7 @@ export interface SpotVisitReport {
   /**
    * Amenities the camper knows about that our own POI sweep missed.
    *
-   * Tri-state on purpose. `true` means they told us ther
-e is one, `false`
+   * Tri-state on purpose. `true` means they told us there is one, `false`
    * means they told us there is not, and `undefined` means we never asked —
    * which is what happens whenever the POI sweep already found one within
    * 5 km, because asking a camper to confirm something we can already see is
@@ -802,8 +766,7 @@ export interface SpotContext {
   nameBasis?: string;
   nearestTown?: string;
   stateProvince?: string;
-  /** Facilities found within 5 km. An empty array means we looked and found
- none. */
+  /** Facilities found within 5 km. An empty array means we looked and found none. */
   pois: NearbyPoi[];
   /**
    * True when the POI sweep could not run at all.
@@ -865,8 +828,7 @@ export interface BeaconModelSummary {
   region: string;
   stays_recorded: number;
   reports_recorded: number;
-  obser
-vations_here: number;
+  observations_here: number;
   trusts_most: string[];
   trusts_least: string[];
 }
