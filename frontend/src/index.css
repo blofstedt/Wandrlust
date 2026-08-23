@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .scale-hover { transform: scale(1.03); }
+  .scale-hover-sm { transform: scale(1.01); }
+  .scale-hover-lg { transform: scale(1.05); }
+  .scale-click { transform: scale(0.95); }
+  .scale-click-sm { transform: scale(0.98); }
+  .transition-smooth { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+  .transition-fast { transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
+  .transition-slow { transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+}
+
+@layer base {
+  html { @apply antialiased; font-feature-settings: "cv02", "cv03", "cv04", "cv11"; }
+  body { @apply bg-light text-light-primary dark:bg-dark dark:text-dark-primary; @apply transition-colors duration-300; }
+  *:focus-visible { @apply outline-none ring-2 ring-offset-2 ring-brand-primary; }
+}
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes pulseSoft { 0%, 100% { opacity: 1; } 50% { opacity: 0.8; } }
+
+@layer utilities {
+  .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+  .animate-slide-up { animation: slideUp 0.4s ease-out; }
+  .animate-pulse-soft { animation: pulseSoft 2s ease-in-out infinite; }
+}
