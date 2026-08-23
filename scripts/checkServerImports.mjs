@@ -102,3 +102,80 @@ if (problems.length > 0) {
 }
 
 console.log(`Server imports OK — ${ROOTS.join(', ')} carry explicit extensions.`);
+
+
+/* ---------------------------------------------------------------------------
+ * PART TWO: A ROUTE REGISTERED IN ONE ENTRY POINT AND NOT THE OTHER
+ * ---------------------------------------------------------------------------
+ *
+ * There are two entry points and they are easy to mistake for one. `server.ts`
+ * is what `npm run dev` runs; `api/index.ts` is the only thing Vercel ever
+ * invokes. A route added to the first and forgotten in the second works
+ * perfectly on the machine it was written on and answers 404 in production —
+ * and because every service in this app degrades politely, a 404 does not look
+ * like a bug. It looks like the feature having nothing to say.
+ *
+ * That has now cost four features. Active fires never drew for a release.
+ * The alert-source panel could not tell anybody whether the feed was live.
+ * Spot context was missing, so every submitted spot was named after its
+ * coordinates and every camper was asked about facilities OpenStreetMap had
+ * already answered for. And the facility layer told every camper it could not
+ * check for toilets, while the route it was calling had never been loaded.
+ *
+ * Each of those was found by a person noticing, weeks later. This finds it in
+ * the build, which is the difference between a typo and a release.
+ * ------------------------------------------------------------------------- */
+
+/** `registerFooRoutes(app)` — the call, not the import. */
+const REGISTER_CALL = /\b(register[A-Za-z0-9_]*Routes)\s*\(/g;
+/** In api/index.ts they are named as a string in `safeRegister(..., 'name')`. */
+const REGISTER_NAME = /['"](register[A-Za-z0-9_]*Routes)['"]/g;
+
+const namesIn = (file, pattern) => {
+  let source;
+  try {
+    source = readFileSync(file, 'utf8');
+  } catch {
+    return null; // A missing entry point is not this script's business.
+  }
+  const found = new Set();
+  source.split('\n').forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('*') || trimmed.startsWith('//')) return;
+    for (const match of line.matchAll(pattern)) found.add(match[1]);
+  });
+  return found;
+};
+
+const devRoutes = namesIn('server.ts', REGISTER_CALL);
+const prodRoutes = namesIn('api/index.ts', REGISTER_NAME);
+
+if (devRoutes && prodRoutes) {
+  /**
+   * Only one direction is a bug worth failing for.
+   *
+   * In `server.ts` and not in `api/index.ts` means the feature is missing from
+   * production, which is the failure this exists to catch. The other way round
+   * is legitimate: `startAlertIngest` is a background timer that has no meaning
+   * in a function torn down between requests, and a route may deliberately
+   * exist only in the deployed entry point.
+   */
+  const missing = [...devRoutes].filter((name) => !prodRoutes.has(name));
+
+  if (missing.length > 0) {
+    console.error(
+      '\nThese routes are registered in server.ts and NOT in api/index.ts.\n' +
+        'They will work in `npm run dev` and answer 404 in production, where\n' +
+        'the client turns that into the feature quietly having nothing to say.\n'
+    );
+    for (const name of missing) {
+      console.error(`  ${name}  →  add a safeRegister(...) call in api/index.ts`);
+    }
+    console.error('');
+    process.exit(1);
+  }
+
+  console.log(
+    `Entry points agree — ${devRoutes.size} route modules in both server.ts and api/index.ts.`
+  );
+}

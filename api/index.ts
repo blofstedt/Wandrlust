@@ -89,7 +89,8 @@ app.get('/api/health', (_req, res) => {
       weather: !loadErrors.weather,
       push: !loadErrors.push,
       cellCoverage: !loadErrors.cellCoverage,
-      routing: !loadErrors.routing
+      routing: !loadErrors.routing,
+      facilities: !loadErrors.facilities
     },
     errors: Object.keys(loadErrors).length > 0 ? loadErrors : undefined,
     env: {
@@ -222,6 +223,29 @@ await safeRegister(
   'registerBackroadRoutes'
 );
 
+/**
+ * Facilities: toilets, water, propane and the rest, from OpenStreetMap.
+ *
+ * AND HERE IS THE FOURTH TIME. Fires, alerts and spot context each shipped
+ * registered in `server.ts` and not here, worked perfectly in `npm run dev`,
+ * and answered 404 in production — where the client turned that into exactly
+ * the degraded behaviour it was designed for, so nothing looked broken except
+ * the feature quietly not existing. This route did it again: the map said
+ * "couldn't check for toilets just now" for every camper, on every screen,
+ * while the route it was calling had never been loaded.
+ *
+ * `scripts/checkServerImports.mjs` now fails the build when a route lives in
+ * one entry point and not the other, so there cannot be a fifth.
+ *
+ * A pure Overpass proxy with an in-memory cache and a CDN cache header; no
+ * keys, nothing to configure.
+ */
+await safeRegister(
+  'facilities',
+  () => import('../server/facilityRoutes.js'),
+  'registerFacilityRoutes'
+);
+
 // Push: needs VAPID keys and the Supabase service role key. Most likely to
 // fail on a fresh deploy, least important to the map working.
 await safeRegister(
@@ -280,6 +304,7 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/alerts/, 'alerts'],
   [/^\/api\/fires/, 'fires'],
   [/^\/api\/backroads/, 'backroads'],
+  [/^\/api\/facilities/, 'facilities'],
   [/^\/api\/beacon/, 'beacon'],
   [/^\/api\/spot/, 'spot']
 ];
