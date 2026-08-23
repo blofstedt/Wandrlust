@@ -92,7 +92,7 @@ RL from it.
   registerRoadSegmentRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
-  // Canada, stores what they publish, and lets the SQL matcher push it.
+  // Canada, stores what they publish,
   registerAlertRoutes(app);
 
   // Active wildfire data, US (WFIGS perimeters) + Canada (FireRadar points).
