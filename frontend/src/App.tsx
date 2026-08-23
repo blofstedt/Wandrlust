@@ -18,6 +18,7 @@ import useThemeClass from './utils/theme-changer';
 import AdminContainer from './components/admin-container';
 import { Role } from './types/role-type.tsx';
 import EditBlog from './pages/edit-blog.tsx';
+import UserProfile from './pages/UserProfile';
 
 function App() {
   useLayoutEffect(() => {
@@ -33,6 +34,7 @@ function App() {
             <Route path="/">
               <Route index element={<HomePage />} />
               <Route path="details-page/:title/:postId" element={<DetailsPage />} />
+              <Route path="profile/:userId" element={<UserProfile />} />
               <Route element={<UnprotectedRoute />}>
                 <Route path="signin" element={<SignIn />} />
                 <Route path="signup" element={<SignUp />} />
