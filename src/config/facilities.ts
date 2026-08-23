@@ -43,6 +43,7 @@ import {
 import {
   DumpStationIcon, PropaneIcon, GroceriesIcon
 } from '../components/ui/FacilityIcons';
+import { OSM_SELECTORS } from '../../shared/facilityOsm';
 import type { FacilityKind } from '../types';
 
 /**
@@ -92,7 +93,14 @@ export interface FacilitySpec {
    */
   icon: FacilityIcon;
   color: string;
-  /** Overpass selectors that mean this kind. Empty = not in OpenStreetMap. */
+  /**
+   * Overpass selectors that mean this kind. Empty = not in OpenStreetMap.
+   *
+   * Read from `shared/facilityOsm.ts`, which the SERVER also reads — it is
+   * what asks Overpass now, and what reads the tags back. A selector list that
+   * disagreed with the tag reader would ask for showers and throw showers
+   * away, and the map would report that nobody has mapped one.
+   */
   osm: string[];
   /** The `poi_kind` value a camper's submission is stored as. */
   dbKind: PoiDbKind | null;
@@ -112,56 +120,44 @@ export interface FacilitySpec {
 export const FACILITY: Record<FacilityKind, FacilitySpec> = {
   toilet: {
     label: 'Toilet', plural: 'Toilets', glyph: '🚻', icon: Toilet, color: '#C084FC',
-    osm: ['node["amenity"="toilets"]', 'way["amenity"="toilets"]'],
+    osm: OSM_SELECTORS.toilet,
     dbKind: 'toilet', searchable: true, addable: true
   },
   water: {
     label: 'Drinking water', plural: 'Water', glyph: '🚰', icon: GlassWater, color: '#38BDF8',
-    osm: [
-      'node["amenity"="drinking_water"]',
-      'node["man_made"="water_tap"]["drinking_water"="yes"]'
-    ],
+    osm: OSM_SELECTORS.water,
     dbKind: 'potable_water', searchable: true, addable: true
   },
   shower: {
     label: 'Shower', plural: 'Showers', glyph: '🚿', icon: ShowerHead, color: '#60A5FA',
-    osm: ['node["amenity"="shower"]', 'way["amenity"="shower"]'],
+    osm: OSM_SELECTORS.shower,
     dbKind: 'shower', searchable: true, addable: true
   },
   dump: {
     label: 'Dump station', plural: 'Dump', glyph: '🚽', icon: DumpStationIcon, color: '#A3E635',
-    osm: [
-      'node["amenity"="sanitary_dump_station"]',
-      'way["amenity"="sanitary_dump_station"]'
-    ],
+    osm: OSM_SELECTORS.dump,
     dbKind: 'dump_station', searchable: true, addable: true
   },
   fuel: {
     label: 'Fuel', plural: 'Fuel', glyph: '⛽', icon: Fuel, color: '#FB7185',
-    osm: ['node["amenity"="fuel"]', 'way["amenity"="fuel"]'],
+    osm: OSM_SELECTORS.fuel,
     dbKind: 'fuel', searchable: true, addable: true
   },
   propane: {
     label: 'Propane', plural: 'Propane', glyph: '🔥', icon: PropaneIcon, color: '#FDBA74',
     /* `fuel:lpg` is on ordinary fuel stations that also sell it; the shop tag
        is the dedicated bottle exchange. Both are somewhere you refill. */
-    osm: [
-      'node["amenity"="fuel"]["fuel:lpg"="yes"]',
-      'node["shop"="gas"]'
-    ],
+    osm: OSM_SELECTORS.propane,
     dbKind: 'propane', searchable: true, addable: true
   },
   laundry: {
     label: 'Laundry', plural: 'Laundry', glyph: '🧺', icon: WashingMachine, color: '#F9A8D4',
-    osm: ['node["shop"="laundry"]', 'node["amenity"="laundry"]'],
+    osm: OSM_SELECTORS.laundry,
     dbKind: 'laundry', searchable: true, addable: true
   },
   groceries: {
     label: 'Groceries', plural: 'Groceries', glyph: '🛒', icon: GroceriesIcon, color: '#F0ABFC',
-    osm: [
-      'node["shop"="supermarket"]', 'way["shop"="supermarket"]',
-      'node["shop"="convenience"]', 'way["shop"="convenience"]'
-    ],
+    osm: OSM_SELECTORS.groceries,
     /* No enum value, and it does not need one: a supermarket is the kind of
        thing OpenStreetMap already has everywhere, and a camper adding one by
        hand adds nothing the map did not know. */
@@ -169,10 +165,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
   },
   waste: {
     label: 'Rubbish disposal', plural: 'Rubbish', glyph: '🗑️', icon: Trash2, color: '#FCD34D',
-    osm: [
-      'node["amenity"="waste_disposal"]', 'way["amenity"="waste_disposal"]',
-      'node["amenity"="recycling"]["recycling_type"="centre"]'
-    ],
+    osm: OSM_SELECTORS.waste,
     dbKind: 'trash', searchable: true, addable: true
   },
   /**
@@ -188,7 +181,7 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
    */
   air: {
     label: 'Air compressor', plural: 'Air', glyph: '💨', icon: Wind, color: '#93C5FD',
-    osm: ['node["amenity"="compressed_air"]'],
+    osm: OSM_SELECTORS.air,
     dbKind: 'air_compressor', searchable: false, addable: false
   },
   /* ---------------------------------------------------------------- *
@@ -199,22 +192,19 @@ export const FACILITY: Record<FacilityKind, FacilitySpec> = {
     /* Where a walk STARTS, rather than the path itself. A hiking route is a
        line hundreds of km long whose nearest point to a campsite is
        meaningless; the head is a place you drive to and park. */
-    osm: [
-      'node["highway"="trailhead"]',
-      'node["information"="guidepost"]["hiking"="yes"]'
-    ],
+    osm: OSM_SELECTORS.trail,
     dbKind: null, searchable: false, addable: false
   },
   fishing: {
     label: 'Fishing spot', plural: 'Fishing', glyph: '🎣', icon: Fish, color: '#67E8F9',
-    osm: ['node["leisure"="fishing"]', 'way["leisure"="fishing"]'],
+    osm: OSM_SELECTORS.fishing,
     dbKind: null, searchable: false, addable: false
   },
   boat: {
     label: 'Boat ramp', plural: 'Boat ramps', glyph: '🛶', icon: Sailboat, color: '#7DD3FC',
     /* A slipway is the ramp itself. Marinas are excluded on purpose: a marina
        is a business with a gate, not somewhere to put a canoe in. */
-    osm: ['node["leisure"="slipway"]', 'way["leisure"="slipway"]'],
+    osm: OSM_SELECTORS.boat,
     dbKind: null, searchable: false, addable: false
   },
   /**

@@ -32,10 +32,21 @@ export { FACILITY_LABEL, FACILITY_GLYPH, FACILITY_COLOR } from '../config/facili
  * as "nothing nearby".
  */
 
+/**
+ * The only Overpass call left in the browser: the road fallback below, for
+ * when our own `/api/roads/nearest` cannot answer.
+ *
+ * `overpass.osm.ch` USED TO BE THE THIRD ENTRY AND IS NOT ANY MORE. It is
+ * Switzerland-only — `server/backroadRoutes.ts` and `server/roadNetwork.ts`
+ * both say so — and it answers for other continents with a fast, confident
+ * zero. A mirror that returns HTTP 200 and nothing is worse than one that
+ * fails: a failure is "couldn't check", and an empty success is this app
+ * saying there is nothing there.
+ */
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 /**
@@ -57,53 +68,8 @@ interface OverpassElement {
   tags?: Record<string, string>;
 }
 
-/**
- * The Overpass selectors for a set of kinds, read off the shared table.
- *
- * The tags used to be duplicated here, in `config/spotReport.ts` and in
- * `server/spotContext.ts`, and they disagreed — which is how a toilet ended
- * up being called a `restroom` in one place and being unstorable in another.
- * `config/facilities.ts` is now the only copy.
- */
-const selectorsFor = (kinds: readonly FacilityKind[]): string[] =>
-  kinds.flatMap((kind) => FACILITY[kind].osm);
-
 /** Every kind that OpenStreetMap can actually answer for. */
 const OSM_KINDS = FACILITY_KINDS.filter((kind) => FACILITY[kind].osm.length > 0);
-
-/**
- * Which kind an element is, from the tags it came back with.
- *
- * Order matters where tags overlap: a fuel station that also sells propane
- * carries `amenity=fuel` AND `fuel:lpg=yes`, and a camper hunting propane
- * wants it to come back as propane rather than disappearing into the fuel
- * pile. So the narrower reading is tested first.
- */
-const kindOf = (tags: Record<string, string>): FacilityKind | null => {
-  if (tags.amenity === 'toilets') return 'toilet';
-  if (tags.amenity === 'shower') return 'shower';
-  if (tags.amenity === 'drinking_water' || tags.man_made === 'water_tap') return 'water';
-  if (tags.amenity === 'sanitary_dump_station') return 'dump';
-  if (tags['fuel:lpg'] === 'yes' || tags.shop === 'gas') return 'propane';
-  if (tags.amenity === 'fuel') return 'fuel';
-  if (tags.shop === 'laundry' || tags.amenity === 'laundry') return 'laundry';
-  if (tags.amenity === 'compressed_air') return 'air';
-  if (tags.shop === 'supermarket' || tags.shop === 'convenience') return 'groceries';
-  if (tags.highway === 'trailhead' || tags.information === 'guidepost') return 'trail';
-  if (tags.leisure === 'fishing') return 'fishing';
-  if (tags.leisure === 'slipway') return 'boat';
-  if (tags.amenity === 'waste_disposal' || tags.amenity === 'recycling') return 'waste';
-  return null;
-};
-
-/**
- * A toilet behind a locked door is not a facility.
- *
- * `access=private` on a shower is somebody's bathroom, and drawing it would
- * send a camper to knock on a stranger's door at 6am.
- */
-const isReachable = (tags: Record<string, string>): boolean =>
-  tags.access !== 'private' && tags.access !== 'no';
 
 export interface NearbyFacilityResult {
   /** False when every mirror failed — "couldn't check", never "nothing here". */
@@ -114,75 +80,102 @@ export interface NearbyFacilityResult {
 
 const EMPTY: NearbyFacilityResult = { ok: false, facilities: [] };
 
+/**
+ * THE SHAPE THE SERVER HANDS BACK. See `server/facilityRoutes.ts`.
+ */
+interface ApiFacility {
+  id: string;
+  kind: string;
+  name: string | null;
+  latitude: number;
+  longitude: number;
+  hours: string | null;
+  fee: boolean | null;
+}
+
+interface ApiFacilityScan {
+  ok?: boolean;
+  facilities?: ApiFacility[];
+  truncated?: boolean;
+}
+
+/**
+ * OUR OWN API, NOT OVERPASS — and this is the fix for "the toilets stopped
+ * working".
+ *
+ * Asking Overpass from the phone was the only OSM read in this app that did
+ * not go through the server, and it cost three things: no `User-Agent` (a
+ * browser cannot set one, and Overpass throttles anonymous traffic first), no
+ * cache anybody else benefits from, and a mirror list ending in
+ * `overpass.osm.ch` — which this repo documents twice over as Switzerland-only,
+ * answering for other continents with a fast, confident zero. When the two good
+ * mirrors were busy, that third one returned HTTP 200 and no elements, and the
+ * app drew it as a complete answer: nobody has mapped a toilet in this town.
+ *
+ * A failure is still `ok: false` and still reads as "couldn't check". What is
+ * gone is the third mirror's version, which read as "there are none".
+ */
+const requestFacilities = async (
+  params: Record<string, string>,
+  signal?: AbortSignal
+): Promise<ApiFacilityScan | null> => {
+  try {
+    const res = await fetch(`/api/facilities?${new URLSearchParams(params)}`, { signal });
+    if (!res.ok) return null;
+    const data = (await res.json()) as ApiFacilityScan;
+    return Array.isArray(data?.facilities) ? data : null;
+  } catch {
+    return null;
+  }
+};
+
 export const fetchNearbyFacilities = async (
   latitude: number,
   longitude: number,
   radiusKm = FACILITY_RADIUS_KM,
   signal?: AbortSignal
 ): Promise<NearbyFacilityResult> => {
-  const metres = Math.round(radiusKm * 1000);
-  const around = `(around:${metres},${latitude.toFixed(5)},${longitude.toFixed(5)})`;
-  const clauses = selectorsFor(OSM_KINDS)
-    .map((selector) => `  ${selector}${around};`)
-    .join('\n');
+  const scan = await requestFacilities({
+    lat: latitude.toFixed(5),
+    lon: longitude.toFixed(5),
+    radiusKm: String(radiusKm),
+    kinds: OSM_KINDS.join(',')
+  }, signal);
 
-  const query = `[out:json][timeout:15];\n(\n${clauses}\n);\nout center 240;`;
+  if (!scan?.ok || !scan.facilities) return EMPTY;
 
-  for (const mirror of OVERPASS_MIRRORS) {
-    try {
-      const res = await fetch(mirror, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `data=${encodeURIComponent(query)}`,
-        signal
-      });
-      if (!res.ok) continue;
+  /* The server answers for a BOX around the point, because that is the one
+     shape Overpass is fast at. The circle is applied here — a facility in the
+     corner of that box can be half again the radius away, and "within 5 km"
+     has to mean it. */
+  const nearest = new Map<NearbyFacilityKind, NearbyFacility>();
 
-      const data = await res.json();
-      if (!Array.isArray(data?.elements)) continue;
+  for (const row of scan.facilities) {
+    const kind = row.kind as NearbyFacilityKind;
+    if (!FACILITY[kind]) continue;
 
-      /** Nearest wins, per kind: one dot each, whatever the mirror sends. */
-      const nearest = new Map<NearbyFacilityKind, NearbyFacility>();
+    const km = distanceKm(latitude, longitude, row.latitude, row.longitude);
+    if (km > radiusKm) continue;
 
-      for (const element of data.elements as OverpassElement[]) {
-        const lat = element.lat ?? element.center?.lat;
-        const lon = element.lon ?? element.center?.lon;
-        const tags = element.tags ?? {};
-        if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+    const existing = nearest.get(kind);
+    if (existing && existing.distanceKm <= km) continue;
 
-        const kind = kindOf(tags);
-        if (!kind) continue;
-        if (!isReachable(tags)) continue;
-
-        const km = distanceKm(latitude, longitude, lat, lon);
-        if (km > radiusKm) continue;
-
-        const existing = nearest.get(kind);
-        if (existing && existing.distanceKm <= km) continue;
-
-        nearest.set(kind, {
-          id: `osm-${element.type}-${element.id}`,
-          kind,
-          name: tags.name?.trim() || undefined,
-          latitude: lat,
-          longitude: lon,
-          distanceKm: Math.round(km * 10) / 10,
-          /** Free unless OSM says otherwise; undefined when nobody said. */
-          fee: tags.fee === undefined ? undefined : tags.fee !== 'no'
-        });
-      }
-
-      return {
-        ok: true,
-        facilities: [...nearest.values()].sort((a, b) => a.distanceKm - b.distanceKm)
-      };
-    } catch {
-      // An abort is the caller changing their mind, not a mirror failing.
-      if (signal?.aborted) return EMPTY;
-    }
+    nearest.set(kind, {
+      id: row.id,
+      kind,
+      name: row.name?.trim() || undefined,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      distanceKm: Math.round(km * 10) / 10,
+      /** Free unless OSM says otherwise; undefined when nobody said. */
+      fee: row.fee ?? undefined
+    });
   }
 
-  return EMPTY;
+  return {
+    ok: true,
+    facilities: [...nearest.values()].sort((a, b) => a.distanceKm - b.distanceKm)
+  };
 };
 
 /* ------------------------------------------------------------------ *
@@ -513,9 +506,6 @@ const EMPTY_VIEW: FacilityViewResult = { ok: false, facilities: [], truncated: f
  */
 const facilityViewCache = new TtlCache<FacilityViewResult>(10 * 60 * 1000, 40);
 
-/** How many we will draw before the map becomes a wall of glyphs. */
-const MAX_IN_VIEW = 250;
-
 export const fetchFacilitiesInView = async (
   bounds: FacilityViewBounds,
   kinds: readonly FacilityKind[],
@@ -524,96 +514,53 @@ export const fetchFacilitiesInView = async (
   const wanted = kinds.filter((kind) => FACILITY[kind].osm.length > 0);
   if (wanted.length === 0) return { ok: true, facilities: [], truncated: false };
 
-  // Clamp around the centre rather than refusing outright: a slightly-too-big
-  // box still answers for the middle of the screen, which is where the camper
-  // is looking. The zoom gate upstream is what stops this happening normally.
-  const midLat = (bounds.south + bounds.north) / 2;
-  const midLon = (bounds.west + bounds.east) / 2;
-  const halfLat = Math.min((bounds.north - bounds.south) / 2, MAX_BOX_DEGREES / 2);
-  const halfLon = Math.min((bounds.east - bounds.west) / 2, MAX_BOX_DEGREES / 2);
-  // The box did not fit, so the answer covers the middle of the screen only.
-  // Said out loud rather than drawn as if it were everything.
-  const clamped =
-    halfLat < (bounds.north - bounds.south) / 2 ||
-    halfLon < (bounds.east - bounds.west) / 2;
-
+  /* The box as asked plus what was asked about: two viewports that round to
+     the same box want the same answer, and a different set of kinds does not.
+     The clamp for an over-wide box now happens on the server, which is also
+     what decides `truncated`. */
   const box = [
-    (midLat - halfLat).toFixed(5), (midLon - halfLon).toFixed(5),
-    (midLat + halfLat).toFixed(5), (midLon + halfLon).toFixed(5)
+    bounds.south.toFixed(4), bounds.west.toFixed(4),
+    bounds.north.toFixed(4), bounds.east.toFixed(4)
   ].join(',');
-
-  // The box as asked plus what was asked about: two viewports that round to
-  // the same box want the same answer, and a different set of kinds does not.
   const cacheKey = `${box}|${[...wanted].sort().join(',')}`;
   const cached = facilityViewCache.get(cacheKey);
   if (cached) return cached;
 
-  const clauses = selectorsFor(wanted)
-    .map((selector) => `  ${selector}(${box});`)
-    .join('\n');
+  const scan = await requestFacilities({
+    minLat: bounds.south.toFixed(5),
+    minLon: bounds.west.toFixed(5),
+    maxLat: bounds.north.toFixed(5),
+    maxLon: bounds.east.toFixed(5),
+    kinds: wanted.join(',')
+  }, signal);
 
-  const query = `[out:json][timeout:20];\n(\n${clauses}\n);\nout center ${MAX_IN_VIEW + 1};`;
+  // "Couldn't check", never "nothing here".
+  if (!scan?.ok || !scan.facilities) return EMPTY_VIEW;
 
-  for (const mirror of OVERPASS_MIRRORS) {
-    try {
-      const res = await fetch(mirror, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `data=${encodeURIComponent(query)}`,
-        signal
-      });
-      if (!res.ok) continue;
+  const wantedSet = new Set<string>(wanted);
+  const facilities: MapFacility[] = [];
 
-      const data = await res.json();
-      if (!Array.isArray(data?.elements)) continue;
-
-      const wantedSet = new Set(wanted);
-      /* Keyed by id so a node and the way describing the same building do not
-         both draw. OSM ids are unique per type, so the type is in the key. */
-      const found = new Map<string, MapFacility>();
-
-      for (const element of data.elements as OverpassElement[]) {
-        const lat = element.lat ?? element.center?.lat;
-        const lon = element.lon ?? element.center?.lon;
-        const tags = element.tags ?? {};
-        if (typeof lat !== 'number' || typeof lon !== 'number') continue;
-
-        const kind = kindOf(tags);
-        // A selector can drag in a neighbouring tag — `amenity=fuel` matches
-        // the propane query too. Only keep what was actually asked for.
-        if (!kind || !wantedSet.has(kind)) continue;
-        if (!isReachable(tags)) continue;
-
-        const id = `osm-${element.type}-${element.id}`;
-        if (found.has(id)) continue;
-
-        found.set(id, {
-          id,
-          kind,
-          name: tags.name?.trim() || undefined,
-          latitude: lat,
-          longitude: lon,
-          fromOsm: true,
-          /* Nobody using this app has confirmed an OSM node. That is not a
-             criticism of it — it is the difference the pin has to show. */
-          confirmations: 0,
-          fee: tags.fee === undefined ? undefined : tags.fee !== 'no'
-        });
-      }
-
-      const facilities = [...found.values()];
-      const result: FacilityViewResult = {
-        ok: true,
-        facilities: facilities.slice(0, MAX_IN_VIEW),
-        truncated: clamped || facilities.length > MAX_IN_VIEW
-      };
-      facilityViewCache.set(cacheKey, result);
-      return result;
-    } catch {
-      // An abort is the caller changing their mind, not a mirror failing.
-      if (signal?.aborted) return EMPTY_VIEW;
-    }
+  for (const row of scan.facilities) {
+    if (!wantedSet.has(row.kind)) continue;
+    facilities.push({
+      id: row.id,
+      kind: row.kind as FacilityKind,
+      name: row.name?.trim() || undefined,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      fromOsm: true,
+      /* Nobody using this app has confirmed an OSM node. That is not a
+         criticism of it — it is the difference the pin has to show. */
+      confirmations: 0,
+      fee: row.fee ?? undefined
+    });
   }
 
-  return EMPTY_VIEW;
+  const result: FacilityViewResult = {
+    ok: true,
+    facilities,
+    truncated: scan.truncated === true
+  };
+  facilityViewCache.set(cacheKey, result);
+  return result;
 };

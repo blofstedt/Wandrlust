@@ -68,6 +68,18 @@ interface MapPanelProps {
    */
   liftAboveKeyboard?: boolean;
   /**
+   * A control that belongs in the HEADER rather than in the body.
+   *
+   * There is exactly one so far: "Turn off" on the facilities card. It lived
+   * under the grid, where it had to appear and disappear with the state of the
+   * layers — which meant the card either changed height or reserved a strip of
+   * empty space for a button that is usually not there, and on a card whose
+   * height is fixed to match the layer menu's, a body that grows is a body
+   * that scrolls. Up here it costs nothing when it is absent: the header is
+   * already the right height for it, and the row is mostly empty.
+   */
+  headerAction?: React.ReactNode;
+  /**
    * Let the caller decide what gets focus. The search panel focuses its own
    * input inside the tap that opened it — the only way iOS raises the keyboard
    * — and this stops the panel taking it straight back for the close button.
@@ -78,7 +90,7 @@ interface MapPanelProps {
 
 export const MapPanel: React.FC<MapPanelProps> = ({
   isOpen, onClose, title, icon: Icon, overlayPx = 0, anchor = 'bottom',
-  liftAboveKeyboard = false, autoFocus = true, children
+  liftAboveKeyboard = false, autoFocus = true, headerAction, children
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const keyboardPx = useKeyboardInset(liftAboveKeyboard && isOpen);
@@ -149,14 +161,17 @@ export const MapPanel: React.FC<MapPanelProps> = ({
             <Icon className="w-4 h-4 text-emerald-400 shrink-0" />
             <span className="truncate">{title}</span>
           </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="tap-safe p-1.5 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800 shrink-0"
-            aria-label={`Close ${title.toLowerCase()}`}
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <span className="flex items-center gap-1 shrink-0">
+            {headerAction}
+            <button
+              type="button"
+              onClick={onClose}
+              className="tap-safe p-1.5 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800 shrink-0"
+              aria-label={`Close ${title.toLowerCase()}`}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </span>
         </header>
 
         {/* `min-h-0` is what lets this scroll instead of overflowing the card

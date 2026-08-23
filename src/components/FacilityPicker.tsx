@@ -57,11 +57,10 @@ import { haptic } from '../utils/animation';
 interface FacilityPickerProps {
   active: FacilityKind[];
   onToggle: (kind: FacilityKind) => void;
-  onClearAll: () => void;
 }
 
 export const FacilityPicker: React.FC<FacilityPickerProps> = ({
-  active, onToggle, onClearAll
+  active, onToggle
 }) => {
   const activeSet = new Set(active);
 
@@ -119,20 +118,6 @@ export const FacilityPicker: React.FC<FacilityPickerProps> = ({
         })}
       </div>
 
-      {/*
-        Only when there is something to clear. A permanent "clear" under a grid
-        of nine is a tenth control that does nothing nine times out of ten — and
-        its absence is itself a useful signal that no layer is on.
-      */}
-      {active.length > 0 && (
-        <button
-          type="button"
-          onClick={() => { haptic('tap'); onClearAll(); }}
-          className="shrink-0 w-full py-1.5 rounded-xl border border-slate-700 bg-slate-950/80 text-[12px] font-bold text-slate-300 hover:text-slate-100 hover:border-slate-500"
-        >
-          Turn {active.length === 1 ? 'it' : 'them all'} off
-        </button>
-      )}
     </div>
   );
 };

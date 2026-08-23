@@ -7447,11 +7447,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           title="Facilities"
           icon={Search}
           overlayPx={overlayPx}
+          headerAction={
+            /* One word, and it does not change with the count. "Turn it off"
+               and "turn them all off" are the same button doing the same
+               thing, and a label that rewrites itself under the thumb reads
+               as a control that might do something different this time. */
+            facilityKinds.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => { haptic('tap'); onClearFacilityKinds?.(); }}
+                className="px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-950/80 text-[11px] font-bold text-slate-300 hover:text-slate-100 hover:border-slate-500"
+              >
+                Turn off
+              </button>
+            ) : null
+          }
         >
           <FacilityPicker
             active={facilityKinds}
             onToggle={onToggleFacilityKind}
-            onClearAll={() => onClearFacilityKinds?.()}
           />
         </MapPanel>
       )}

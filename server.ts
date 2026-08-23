@@ -10,6 +10,7 @@ import { registerPushRoutes } from './server/pushRoutes';
 import { registerCellRoutes } from './server/cellRoutes';
 import { registerRouteRoutes } from './server/routeRoutes';
 import { registerBackroadRoutes } from './server/backroadRoutes';
+import { registerFacilityRoutes } from './server/facilityRoutes';
 import { registerAlertRoutes, startAlertIngest } from './server/alertIngest';
 import { registerFireRoutes } from './server/fireRoutes';
 import { registerBeaconRoutes } from './server/beaconRoutes';
@@ -68,6 +69,11 @@ const startServer = async (): Promise<void> => {
   // The backroads overlay: unpaved, gravel, dirt and two-track roads from
   // OpenStreetMap, for the viewport. No keys.
   registerBackroadRoutes(app);
+
+  /* Toilets, water, propane and the rest, from OpenStreetMap — through here
+     rather than from the phone, so the request carries a User-Agent, skips the
+     Switzerland-only mirror, and is cached once for everybody. */
+  registerFacilityRoutes(app);
 
   // Beacon: scans public map data for places you might legally sleep, and
   // ranks them with a model trained on what campers report back. Works with
