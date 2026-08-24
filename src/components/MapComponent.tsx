@@ -6,15 +6,15 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.vectorgrid';
 import {
-  AlertTriangle, Crosshair, Eye, Info, Layers, Loader2, MapPin,
+  AlertTriangle, Coffee, Crosshair, Eye, Info, Layers, Loader2, MapPin,
   MousePointerClick, Navigation, Search, User as UserIcon, X
 } from 'lucide-react';
 import { UserMenu, AccountPanelBody } from './UserMenu';
+import { BuyMeACoffeeButton, SupportPanelBody } from './ui/BuyMeACoffeeButton';
 import { MapPanel } from './ui/MapPanel';
 import { FacilityPicker } from './FacilityPicker';
 import { FacilityCard } from './FacilityCard';
 import { rememberFacilityHandoff } from '../utils/facilityCheck';
-import { BuyMeACoffeeButton } from './ui/BuyMeACoffeeButton';
 
 import type {
   Campsite, CellCoverage, DestinationLand, FacilityKind, FacilityLookupState,
@@ -1896,10 +1896,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * decides which. Opening any of them closes whatever was open, so there is
    * nothing left to overlap.
    */
-  const [mapPanel, setMapPanel] = useState<'layers' | 'facilities' | 'account' | null>(null);
+  const [mapPanel, setMapPanel] = useState<'layers' | 'facilities' | 'account' | 'support' | null>(null);
   const closePanel = useCallback(() => setMapPanel(null), []);
   const togglePanel = useCallback(
-    (panel: 'layers' | 'facilities' | 'account') =>
+    (panel: 'layers' | 'facilities' | 'account' | 'support') =>
       setMapPanel((open) => (open === panel ? null : panel)),
     []
   );
@@ -7601,6 +7601,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         <AccountPanelBody onDone={closePanel} />
       </MapPanel>
 
+      {/* Buy Me a Coffee, as the same card: the pitch, and one yellow button
+          that actually leaves the app. It is a thank-you, not a pop-up —
+          closed by default, opened from the yellow cup just above the layer
+          menu, and closed by the same tap that opened it. */}
+      <MapPanel
+        isOpen={mapPanel === 'support'}
+        onClose={closePanel}
+        title="Support Wandrlust"
+        icon={Coffee}
+        overlayPx={overlayPx}
+      >
+        <SupportPanelBody />
+      </MapPanel>
+
       {/*
         The column is full-height and bottom-aligned. The buttons sit at the
         bottom of it; the space above them is empty and stays that way — the
@@ -7640,6 +7654,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             />
           </div>
         )}
+
+        {/* Buy Me a Coffee — the round yellow cup just above the layer menu.
+            One tap opens the support card; it never sails straight off to a
+            website. A supporter shouldn't have to hunt for the way to keep
+            the project alive, but the ask stays polite — see
+            `SupportPanelBody`. */}
+        <BuyMeACoffeeButton
+          onClick={() => { haptic('tap'); togglePanel('support'); }}
+          open={mapPanel === 'support'}
+        />
 
         <button
           type="button"
@@ -7778,14 +7802,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             }}
           />
         )}
-
-        {/* Buy Me a Coffee — the round yellow button. Lives bottom-left on the
-            map itself, not buried in the settings sheet; a supporter shouldn't
-            have to hunt for the way to keep the project alive. */}
-        <BuyMeACoffeeButton />
       </div>
-
-
 
       {/*
         Everything known about a dropped pin, as a card rather than as a stack
