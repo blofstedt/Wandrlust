@@ -14,6 +14,7 @@ import { MapPanel } from './ui/MapPanel';
 import { FacilityPicker } from './FacilityPicker';
 import { FacilityCard } from './FacilityCard';
 import { rememberFacilityHandoff } from '../utils/facilityCheck';
+import { BuyMeACoffeeButton } from './ui/BuyMeACoffeeButton';
 
 import type {
   Campsite, CellCoverage, DestinationLand, FacilityKind, FacilityLookupState,
@@ -7777,6 +7778,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             }}
           />
         )}
+
+        {/* Buy Me a Coffee — the round yellow button. Lives bottom-left on the
+            map itself, not buried in the settings sheet; a supporter shouldn't
+            have to hunt for the way to keep the project alive. */}
+        <BuyMeACoffeeButton />
       </div>
 
 
