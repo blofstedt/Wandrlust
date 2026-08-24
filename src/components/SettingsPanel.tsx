@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Settings, Flame, Waves, CloudLightning, Bell, Eye, Ruler,
-  Coffee, Loader2, Check, ExternalLink, Shield, FileText, RefreshCw
+  Loader2, Check, ExternalLink, Shield, FileText, RefreshCw
 } from 'lucide-react';
 import { fetchSettings, saveSettings, UserSettings } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
@@ -323,31 +323,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 ))}
               </section>
             )}
-
-            <section className="pt-2 border-t border-slate-800">
-              <div className="p-3 rounded-xl bg-slate-800/40 border border-slate-700/60">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <Coffee className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="text-xs font-bold text-slate-200">Support Wandrlust</span>
-                </div>
-                <p className="text-[12px] text-slate-400 leading-snug mb-2.5">
-                  Wandrlust is free and has no ads. If it&apos;s useful to you, you can buy
-                  the project a coffee. It buys you nothing in the app — no points, no
-                  tiers, no stealth spots. Those are earned by contributing, and that
-                  isn&apos;t for sale.
-                </p>
-                <a
-                  href="https://buymeacoffee.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold"
-                >
-                  <Coffee className="w-3 h-3" />
-                  Buy me a coffee
-                  <ExternalLink className="w-2.5 h-2.5" />
-                </a>
-              </div>
-            </section>
           </>
         )}
       </div>
