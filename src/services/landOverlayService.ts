@@ -41,7 +41,17 @@ import type { BoundaryCollection, BoundaryFeature } from './boundaryService';
 /* Types                                                                       */
 /* -------------------------------------------------------------------------- */
 
-/** Which map data a camper chose. `null` means they have not chosen yet. */
+/**
+ * Which map data a camper ASKED FOR. `null` means they have not chosen yet.
+ *
+ * This is an intent and nothing more. It records that the question was put to
+ * them and answered, which is what stops the first-run gate reappearing; it
+ * never means the device holds the data. `getPackStatus` is the only thing
+ * that knows that, and every screen describing what is on the phone reads it
+ * rather than this — a camper who chose "full" on a train and lost signal
+ * halfway through has chosen full and holds part of a pack, and the app has
+ * to be able to say both.
+ */
 export type MapDataChoice = 'quick' | 'full' | null;
 
 export type OverlayGroup = 'campable' | 'access_only';
@@ -99,7 +109,29 @@ export interface PackStatus {
   downloadedAt: string | null;
   /** A source withheld parcels somewhere in the pack. */
   truncated: boolean;
+  /**
+   * Every cell in the grid came back. Recorded rather than inferred, because
+   * the two counts above can agree for the wrong reason — a run that never
+   * saw a manifest has 0 of 0 — and the difference decides whether the app
+   * tells a camper they are carrying the whole continent.
+   */
+  complete: boolean;
 }
+
+/**
+ * Is there ground the pack was supposed to cover and does not?
+ *
+ * Kept as one function so every screen answers it the same way. A partial
+ * pack is not broken — the cells it holds are exact, and the map falls back
+ * to the quick outline and the network everywhere else — but it must never
+ * be described as full detail for the whole region.
+ */
+export const packIsPartial = (status: PackStatus | null): boolean =>
+  status !== null && status.downloadedAt !== null && !status.complete;
+
+/** Cells the pack is still missing, or 0 when it is whole or unknown. */
+export const packCellsMissing = (status: PackStatus | null): number =>
+  status && status.cellsTotal > 0 ? Math.max(status.cellsTotal - status.cellsStored, 0) : 0;
 
 /* -------------------------------------------------------------------------- */
 /* Storage                                                                     */
@@ -148,19 +180,60 @@ const OVERLAY_VERSION = 1;
 /* The choice                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export const getMapDataChoice = async (): Promise<MapDataChoice> => {
+/**
+ * The choice is written TWICE, to two different stores.
+ *
+ * IndexedDB is where it belongs — it sits beside the pack it describes. But
+ * IndexedDB is also the store that fails: it is unavailable in a private
+ * window, it throws under a full disk, and Safari drops it wholesale. Every
+ * one of those turns into the blocking first-run screen appearing again for
+ * somebody who answered it weeks ago and is standing in a car park watching
+ * a continent download for the second time.
+ *
+ * `localStorage` is a worse store in every way except the one that matters
+ * here: it is two dozen bytes, it is synchronous, and it survives cases
+ * IndexedDB does not. So the answer goes in both and either one is enough to
+ * remember it. Neither is ever used to claim the camper HAS data — that is
+ * `getPackStatus`, and it is read from the pack itself.
+ */
+const readLocalChoice = (): MapDataChoice => {
   try {
-    const value = await metaStore.getItem<MapDataChoice>(CHOICE_KEY);
+    const value = window.localStorage.getItem(CHOICE_KEY);
     return value === 'quick' || value === 'full' ? value : null;
   } catch {
-    /*
-     * No storage means we cannot remember a choice, so we must not claim one.
-     * Returning null shows the picker again, which is mildly annoying and
-     * strictly honest — the alternative silently assumes "quick" and lets a
-     * camper believe they are carrying detailed maps they never downloaded.
-     */
     return null;
   }
+};
+
+const writeLocalChoice = (choice: Exclude<MapDataChoice, null>): void => {
+  try {
+    window.localStorage.setItem(CHOICE_KEY, choice);
+  } catch {
+    // Disabled or full. The IndexedDB copy still answers.
+  }
+};
+
+export const getMapDataChoice = async (): Promise<MapDataChoice> => {
+  const local = readLocalChoice();
+
+  try {
+    const value = await metaStore.getItem<MapDataChoice>(CHOICE_KEY);
+    if (value === 'quick' || value === 'full') {
+      // Heal the cheap copy if it was cleared or never written.
+      if (local !== value) writeLocalChoice(value);
+      return value;
+    }
+  } catch {
+    // Fall through to whatever localStorage remembered.
+  }
+
+  /*
+   * No storage means we cannot remember a choice, so we must not claim one.
+   * Returning null shows the picker again, which is mildly annoying and
+   * strictly honest — the alternative silently assumes "quick" and lets a
+   * camper believe they are carrying detailed maps they never downloaded.
+   */
+  return local;
 };
 
 /**
@@ -189,6 +262,24 @@ export const getMapDataChoice = async (): Promise<MapDataChoice> => {
 export const shouldAskMapDataChoice = async (): Promise<boolean> => {
   if ((await getMapDataChoice()) !== null) return false;
 
+  /*
+   * ASKED ONCE MEANS ASKED ONCE.
+   *
+   * A device holding downloaded cells has unambiguously been through this
+   * screen — nothing else puts them there. If the recorded answer is missing
+   * anyway (both stores wiped, a write that failed at the time), the pack on
+   * disk is the better evidence and it wins. Blocking somebody in front of a
+   * "download the map" screen while the map is already on their phone is the
+   * worst version of this screen there is.
+   *
+   * Whatever the pack turns out to hold, the answer is repaired here so the
+   * question is not re-derived on every launch.
+   */
+  if (await hasLandPack()) {
+    await setMapDataChoice('full');
+    return false;
+  }
+
   // The cheap local check first — it settles the common case with no network.
   if (await loadLandOverlay()) return true;
 
@@ -196,10 +287,11 @@ export const shouldAskMapDataChoice = async (): Promise<boolean> => {
 };
 
 export const setMapDataChoice = async (choice: Exclude<MapDataChoice, null>): Promise<void> => {
+  writeLocalChoice(choice);
   try {
     await metaStore.setItem(CHOICE_KEY, choice);
   } catch {
-    // Non-fatal: the session continues with the choice held in React state.
+    // Non-fatal: localStorage has it, and the session continues regardless.
   }
 };
 
@@ -413,13 +505,28 @@ const emptyStatus: PackStatus = {
   parcelCount: 0,
   sizeMb: 0,
   downloadedAt: null,
-  truncated: false
+  truncated: false,
+  complete: false
 };
 
 export const getPackStatus = async (): Promise<PackStatus> => {
   try {
     const stored = await metaStore.getItem<PackStatus>(PACK_STATUS_KEY);
-    return stored && typeof stored === 'object' ? { ...emptyStatus, ...stored } : emptyStatus;
+    if (!stored || typeof stored !== 'object') return emptyStatus;
+
+    const status = { ...emptyStatus, ...stored };
+
+    /*
+     * Statuses written before `complete` existed get it derived from the two
+     * counts, which is precisely what the old code compared. Defaulting them
+     * to false instead would tell every camper who already holds the whole
+     * continent that their pack is short, and offer to download it again.
+     */
+    if (typeof (stored as any).complete !== 'boolean') {
+      status.complete = status.cellsTotal > 0 && status.cellsStored >= status.cellsTotal;
+    }
+
+    return status;
   } catch {
     return emptyStatus;
   }
@@ -431,22 +538,82 @@ interface StoredCell {
   features: any[];
 }
 
-/** `{ cellId: bounds }` for every cell held on this device. */
-type PackIndex = Record<string, BoundingBox>;
+/**
+ * What this device knows about one cell of the grid.
+ *
+ * It carries the ground covered AND what came back, because a resumed
+ * download has to answer two questions per cell without opening it: have we
+ * already asked about this ground, and how much did it contribute to the
+ * totals we report. Without the second, finishing a half-done pack would
+ * report only the parcels of the half it just fetched.
+ *
+ * `empty` is a real answer, not a gap. Most of a continental grid is ocean or
+ * private land, and a cell that genuinely holds nothing must be remembered as
+ * asked — otherwise every resume re-downloads the sea.
+ */
+interface PackCellMeta {
+  bounds: BoundingBox;
+  parcels: number;
+  bytes: number;
+  empty?: boolean;
+}
+
+/** `{ cellId: meta }` for every cell this device has an answer for. */
+type PackIndex = Record<string, PackCellMeta>;
+
+/**
+ * Indexes written before cells carried counts hold a bare `BoundingBox`.
+ * Those are still perfectly good for deciding what to READ — the bounds are
+ * right there — so they are kept and simply reported as unknown, which makes
+ * a resume re-fetch them rather than quietly totalling them as zero.
+ */
+const asCellMeta = (value: any): PackCellMeta | null => {
+  if (!value || typeof value !== 'object') return null;
+  if (typeof value.parcels === 'number' && value.bounds) return value as PackCellMeta;
+  if (typeof value.minLat === 'number') {
+    return { bounds: value as BoundingBox, parcels: -1, bytes: 0 };
+  }
+  if (value.bounds && typeof value.bounds.minLat === 'number') {
+    return { bounds: value.bounds, parcels: -1, bytes: 0 };
+  }
+  return null;
+};
+
+/** True once a cell's contribution to the totals is known. */
+const cellCounted = (meta: PackCellMeta): boolean => meta.parcels >= 0;
 
 /** Read once per session; rewritten by a download or a delete. */
 let packIndexCache: PackIndex | null = null;
 
 const readPackIndex = async (): Promise<PackIndex> => {
   if (packIndexCache) return packIndexCache;
+
+  const index: PackIndex = {};
   try {
-    const stored = await metaStore.getItem<PackIndex>(PACK_INDEX_KEY);
-    packIndexCache = stored && typeof stored === 'object' ? stored : {};
+    const stored = await metaStore.getItem<Record<string, any>>(PACK_INDEX_KEY);
+    if (stored && typeof stored === 'object') {
+      for (const [id, value] of Object.entries(stored)) {
+        const meta = asCellMeta(value);
+        if (meta) index[id] = meta;
+      }
+    }
   } catch {
-    packIndexCache = {};
+    // An unreadable index is an empty one — the pack is best-effort storage.
   }
+
+  packIndexCache = index;
   return packIndexCache;
 };
+
+/**
+ * Does this device hold a downloaded pack at all?
+ *
+ * Deliberately "has this ground been asked about", not "does it hold
+ * parcels": an index of nothing but empty cells still proves a download ran,
+ * and that is what the first-run gate needs to know.
+ */
+export const hasLandPack = async (): Promise<boolean> =>
+  Object.keys(await readPackIndex()).length > 0;
 
 const writePackIndex = async (index: PackIndex): Promise<void> => {
   packIndexCache = index;
@@ -483,9 +650,28 @@ export interface PackResult {
  * downloaded three quarters of the pack in a car park should not lose it to a
  * dropped connection at the end.
  */
+export interface PackDownloadOptions {
+  /**
+   * Keep the cells this device already has an answer for and ask only for
+   * the rest.
+   *
+   * This is what "finish the download" means, and it is the difference
+   * between a resume that takes a minute and one that re-downloads a
+   * continent to fill in the last twenty cells. Off by default, because
+   * "Refresh" means exactly the opposite: go and get today's copy.
+   *
+   * Cells whose stored record predates per-cell counts are re-fetched even
+   * here — see `cellCounted`. Skipping them would leave their parcels out of
+   * the totals, and a pack that under-reports itself is a pack that looks
+   * short forever.
+   */
+  resume?: boolean;
+}
+
 export const downloadLandPack = async (
   onProgress?: (progress: PackProgress) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: PackDownloadOptions = {}
 ): Promise<PackResult> => {
   const manifest = await fetchPackManifest();
 
@@ -511,6 +697,24 @@ export const downloadLandPack = async (
 
   for (const cell of manifest.cells) {
     if (signal?.aborted) break;
+
+    /*
+     * Already answered, and we know what it contributed. Count it and move
+     * on — this is the whole point of resuming.
+     */
+    const held = index[cell.id];
+    if (options.resume && held && cellCounted(held)) {
+      parcels += held.parcels;
+      bytes += held.bytes;
+      done += 1;
+      onProgress?.({
+        cellsDone: done,
+        cellsTotal: manifest.cells.length,
+        parcels,
+        sizeMb: Number((bytes / (1024 * 1024)).toFixed(1))
+      });
+      continue;
+    }
 
     try {
       const params = new URLSearchParams({
@@ -546,12 +750,27 @@ export const downloadLandPack = async (
             maxLon: cell.maxLon
           };
           await packStore.setItem<StoredCell>(cell.id, { bounds, features });
-          index[cell.id] = bounds;
+          index[cell.id] = { bounds, parcels: features.length, bytes: text.length };
         } else {
-          // An empty cell is a real answer — most of the grid is ocean or
-          // private land. Clear any stale copy so a re-download shrinks.
+          /*
+           * An empty cell is a real answer — most of the grid is ocean or
+           * private land. Clear any stale copy so a re-download shrinks, but
+           * KEEP the index entry, marked empty: it is the record that this
+           * ground has been asked about, and without it every resume goes
+           * back and re-downloads the sea.
+           */
           await packStore.removeItem(cell.id).catch(() => undefined);
-          delete index[cell.id];
+          index[cell.id] = {
+            bounds: {
+              minLat: cell.minLat,
+              minLon: cell.minLon,
+              maxLat: cell.maxLat,
+              maxLon: cell.maxLon
+            },
+            parcels: 0,
+            bytes: text.length,
+            empty: true
+          };
         }
       } else {
         failures += 1;
@@ -570,13 +789,16 @@ export const downloadLandPack = async (
     });
   }
 
+  const complete = done === manifest.cells.length && failures === 0;
+
   const status: PackStatus = {
     cellsStored: done - failures,
     cellsTotal: manifest.cells.length,
     parcelCount: parcels,
     sizeMb: Number((bytes / (1024 * 1024)).toFixed(1)),
     downloadedAt: new Date().toISOString(),
-    truncated
+    truncated,
+    complete
   };
 
   await writePackIndex(index);
@@ -586,8 +808,6 @@ export const downloadLandPack = async (
   } catch {
     // The pack is on disk even if the bookkeeping is not.
   }
-
-  const complete = done === manifest.cells.length && failures === 0;
 
   return {
     ok: complete,
@@ -612,7 +832,8 @@ export const packParcelsIn = async (box: BoundingBox): Promise<any[]> => {
   const index = await readPackIndex();
 
   const needed = Object.entries(index)
-    .filter(([, bounds]) => intersects(bounds, box))
+    // Empty cells are answers, not records — there is nothing to open.
+    .filter(([, meta]) => !meta.empty && intersects(meta.bounds, box))
     .map(([id]) => id);
 
   if (needed.length === 0) return [];
