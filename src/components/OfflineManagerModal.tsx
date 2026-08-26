@@ -15,7 +15,9 @@ import {
   setMapDataChoice,
   getPackStatus,
   downloadLandPack,
-  deleteLandPack
+  deleteLandPack,
+  packIsPartial,
+  packCellsMissing
 } from '../services/landOverlayService';
 import {
   Download, Wifi, WifiOff, Trash2, CheckCircle2, HardDrive, X,
@@ -34,6 +36,39 @@ interface OfflineManagerModalProps {
    *  ui/ConnectionStatus for why this stopped being a switch. */
   isOnline: boolean;
 }
+
+/**
+ * The land-pack progress bar, shared by the two states that can show it.
+ *
+ * Same markup either way — a camper who starts a download from the "quick
+ * map" state and one who is topping up a partial pack are watching the same
+ * thing happen, and it should not shift under them when the state flips.
+ */
+const PackProgressBar: React.FC<{ progress: PackProgress | null }> = ({ progress }) => (
+  <div className="space-y-1.5">
+    <div className="flex items-baseline justify-between gap-3 text-xs font-bold text-sky-300">
+      <span className="flex items-center gap-1.5 min-w-0">
+        <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+        Downloading full detail…
+      </span>
+      <span className="shrink-0 tabular-nums">
+        {progress
+          ? `${progress.cellsDone}/${progress.cellsTotal} · ${progress.sizeMb} MB`
+          : 'starting'}
+      </span>
+    </div>
+    <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-sky-900">
+      <div
+        className="bg-gradient-to-r from-sky-500 to-cyan-400 h-full"
+        style={{
+          width: progress
+            ? `${Math.round((progress.cellsDone / Math.max(progress.cellsTotal, 1)) * 100)}%`
+            : '0%'
+        }}
+      />
+    </div>
+  </div>
+);
 
 export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
   isOpen,
@@ -73,19 +108,27 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
     }
   }, [isOpen]);
 
-  const handleDownloadPack = async () => {
+  /**
+   * Fetch the pack.
+   *
+   * `resume` keeps every section this device already has and asks only for
+   * the rest — that is "finish the download". Without it the run re-fetches
+   * the whole grid, which is what "Refresh" means and is not what somebody
+   * twelve sections short of a continent is asking for.
+   *
+   * The setting is recorded either way. It says what the camper asked for,
+   * not what arrived: how much actually arrived is `packStatus`, and it is
+   * spelled out on screen below rather than implied by a badge. Withholding
+   * the setting on a short download is what used to send the blocking
+   * first-run screen back on the next launch.
+   */
+  const handleDownloadPack = async (resume = false) => {
     setPackBusy(true);
     setPackMessage(null);
 
-    const result = await downloadLandPack((p) => setPackProgress(p));
+    const result = await downloadLandPack((p) => setPackProgress(p), undefined, { resume });
 
-    /*
-     * Only a COMPLETE download flips the setting to "full". A partial one
-     * leaves the device on the quick map and says how far it got — telling a
-     * camper they hold detailed maps for a continent when they hold two thirds
-     * of one is a lie they would discover by driving into the missing third.
-     */
-    if (result.ok) await setMapDataChoice('full');
+    await setMapDataChoice('full');
 
     setPackMessage(result.message);
     setPackBusy(false);
@@ -160,6 +203,18 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
     await loadRegions();
   };
 
+  /*
+   * What this phone actually holds, measured from the pack rather than from
+   * the camper's setting. `hasPack` is deliberately "there are sections on
+   * the disk", not "the download reported success": a run that saved four
+   * fifths of a continent and then lost signal leaves four fifths of a
+   * continent, and the map uses every bit of it.
+   */
+  const hasPack = (packStatus?.cellsStored ?? 0) > 0 && packStatus?.downloadedAt !== null;
+  const packPartial = packIsPartial(packStatus);
+  const packWhole = hasPack && !packPartial;
+  const missingCells = packCellsMissing(packStatus);
+
   if (!isOpen) return null;
 
   return (
@@ -213,33 +268,43 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
           they have.
         */}
         <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
               <h4 className="font-bold text-xs text-slate-200">Public land boundaries</h4>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-400 leading-snug">
                 Which BLM / National Forest / Crown land data this phone carries
               </p>
             </div>
-            {choice === 'full' ? (
-              <span className="px-2.5 py-1 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/40 text-[12px] font-bold shrink-0">
-                FULL DETAIL
-              </span>
-            ) : (
-              <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 text-[12px] font-bold shrink-0">
-                QUICK MAP
-              </span>
-            )}
+            {/*
+              THE BADGE REPORTS THE PACK, NOT THE SETTING.
+
+              It used to read the camper's choice, so a download that stopped
+              two thirds of the way through still said FULL DETAIL. The three
+              states below are measured from what is actually on the disk.
+            */}
+            <span
+              className={`px-2.5 py-1 rounded-lg border text-[12px] font-bold shrink-0 ${
+                packWhole
+                  ? 'bg-sky-500/15 text-sky-300 border-sky-500/40'
+                  : packPartial
+                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                    : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+              }`}
+            >
+              {packWhole ? 'FULL DETAIL' : packPartial ? 'PARTIAL' : 'QUICK MAP'}
+            </span>
           </div>
 
-          {choice === 'full' && packStatus?.downloadedAt ? (
+          {hasPack ? (
             <div className="space-y-2">
-              <div className="flex items-start gap-2 p-2.5 rounded-xl bg-sky-950/40 border border-sky-800/50">
-                <CheckCircle2 className="w-4 h-4 text-sky-400 shrink-0 mt-px" />
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-sky-950/40 border border-sky-800/50">
+                <CheckCircle2 className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-sky-100/90 leading-relaxed">
                   Real boundaries stored on this phone —{' '}
-                  {packStatus.parcelCount.toLocaleString()} areas, {packStatus.sizeMb} MB.
-                  These work with no signal.
-                  {packStatus.truncated && (
+                  {packStatus!.parcelCount.toLocaleString()} areas, {packStatus!.sizeMb} MB.
+                  These work with no signal, and nothing re-downloads them: public land
+                  boundaries change about as slowly as anything on this map.
+                  {packStatus!.truncated && (
                     <>
                       {' '}
                       <span className="text-amber-300">
@@ -250,28 +315,64 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
                   )}
                 </p>
               </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleDownloadPack}
-                  disabled={packBusy}
-                  className="flex-1 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-bold text-xs transition-colors"
-                >
-                  Refresh
-                </button>
-                <button
-                  onClick={handleDeletePack}
-                  disabled={packBusy}
-                  className="px-3 py-2 rounded-xl bg-rose-950/50 hover:bg-rose-900/50 disabled:opacity-40 text-rose-300 font-bold text-xs flex items-center gap-1.5 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  Remove
-                </button>
-              </div>
+
+              {/*
+                A SHORT PACK SAYS SO, AND SAYS WHAT THE GAPS DO.
+
+                The sections that downloaded are exact. The ones that did not
+                fall back to the quick outline and the network — which is
+                fine with bars and is precisely the thing that is not fine
+                without them. Both halves get said.
+              */}
+              {packPartial && (
+                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-950/40 border border-amber-800/50">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <p className="text-xs text-amber-200/90 leading-relaxed">
+                    {missingCells > 0
+                      ? `${missingCells.toLocaleString()} of ${packStatus!.cellsTotal.toLocaleString()} sections didn’t download.`
+                      : 'This download didn’t finish.'}{' '}
+                    Those areas fall back to the rough outline — edges up to about a
+                    kilometre out.{' '}
+                    <strong className="text-amber-100">
+                      With no signal they won’t tell you where a boundary really is.
+                    </strong>
+                  </p>
+                </div>
+              )}
+
+              {packBusy ? (
+                <PackProgressBar progress={packProgress} />
+              ) : (
+                <div className="flex gap-2">
+                  {packPartial && (
+                    <button
+                      onClick={() => handleDownloadPack(true)}
+                      className="flex-1 h-9 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Finish it
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleDownloadPack(false)}
+                    className="flex-1 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center transition-colors"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={handleDeletePack}
+                    className="h-9 px-3 rounded-xl bg-rose-950/50 hover:bg-rose-900/50 text-rose-300 font-bold text-xs flex items-center justify-center gap-1.5 shrink-0 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Remove
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-2">
-              <div className="flex items-start gap-2 p-2.5 rounded-xl bg-amber-950/40 border border-amber-800/50">
-                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-px" />
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-950/40 border border-amber-800/50">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-amber-200/90 leading-relaxed">
                   You’re on the quick map: edges are approximate — up to about a
                   kilometre out — and small areas are missing.{' '}
@@ -282,47 +383,27 @@ export const OfflineManagerModal: React.FC<OfflineManagerModalProps> = ({
               </div>
 
               {packBusy ? (
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs font-bold text-sky-300">
-                    <span className="flex items-center gap-1.5">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Downloading full detail…
-                    </span>
-                    <span>
-                      {packProgress
-                        ? `${packProgress.cellsDone}/${packProgress.cellsTotal} · ${packProgress.sizeMb} MB`
-                        : 'starting'}
-                    </span>
-                  </div>
-                  <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-sky-900">
-                    <div
-                      className="bg-gradient-to-r from-sky-500 to-cyan-400 h-full"
-                      style={{
-                        width: packProgress
-                          ? `${Math.round((packProgress.cellsDone / Math.max(packProgress.cellsTotal, 1)) * 100)}%`
-                          : '0%'
-                      }}
-                    />
-                  </div>
-                </div>
+                <PackProgressBar progress={packProgress} />
               ) : (
-                <button
-                  onClick={handleDownloadPack}
-                  className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-2 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  Download full detail (large — use wifi)
-                </button>
-              )}
+                <>
+                  <button
+                    onClick={() => handleDownloadPack(true)}
+                    className="w-full h-11 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download full detail (large — use wifi)
+                  </button>
 
-              {choice === null && !packBusy && (
-                <button
-                  onClick={handleUseQuick}
-                  className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  Stay on the quick map
-                </button>
+                  {choice === null && (
+                    <button
+                      onClick={handleUseQuick}
+                      className="w-full h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      Stay on the quick map
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}
