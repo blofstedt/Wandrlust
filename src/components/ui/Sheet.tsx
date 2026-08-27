@@ -87,6 +87,19 @@ export interface SheetProps {
    * it behind the very panel that opened it.
    */
   zIndexClass?: string;
+  /**
+   * Let a `dialog` size itself to its content instead of taking the fixed
+   * 78vh/40rem height every other dialog in the app uses.
+   *
+   * That fixed height is deliberate for the Tools panels — Settings, Beacon,
+   * Scout Mode — because switching between panels of different heights reads
+   * as jumping between different screens rather than one app. Sign-in is not
+   * one of those: it's a one-off interruption that can appear over almost
+   * anything, and forcing its short form into the same tall box just leaves
+   * empty space under it. Only reach for this on a dialog that isn't part of
+   * that Tools-panel rhythm.
+   */
+  fitContent?: boolean;
 }
 
 /**
@@ -123,7 +136,8 @@ export const useKeyboardInset = (active: boolean): number => {
 export const Sheet: React.FC<SheetProps> = ({
   isOpen, onClose, title, subtitle, icon, children, footer,
   variant = 'sheet', maxWidthClass = 'sm:max-w-md', interactiveBehind = false,
-  liftAboveKeyboard = false, autoFocus = true, zIndexClass = 'z-[1800]'
+  liftAboveKeyboard = false, autoFocus = true, zIndexClass = 'z-[1800]',
+  fitContent = false
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -254,8 +268,14 @@ export const Sheet: React.FC<SheetProps> = ({
                 different screen every time rather than one app. Short content
                 leaves room at the bottom; long content scrolls inside. One
                 box, always.
+
+                `fitContent` opts out of that for the dialogs that aren't part
+                of the Tools-panel rhythm — sign-in is the one today — so a
+                short form isn't stretched into a mostly-empty box.
               */
-              : 'h-[min(78vh,40rem)] border rounded-2xl anim-expand'
+              : fitContent
+                ? 'max-h-[85vh] border rounded-2xl anim-expand'
+                : 'h-[min(78vh,40rem)] border rounded-2xl anim-expand'
         }`}
       >
         {isSheet && (

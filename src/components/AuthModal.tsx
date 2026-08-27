@@ -97,6 +97,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
        * lands on top of those, so it asks for a higher stacking order.
        */
       zIndexClass="z-[2000]"
+      /**
+       * Sign-in isn't part of the Tools-panel rhythm the fixed dialog height
+       * exists for (see Sheet.tsx) — it's a short, one-off interruption, and
+       * the fixed height just left a mostly-empty box under it.
+       */
+      fitContent
     >
       {!isConfigured ? (
         <div className="p-5">
