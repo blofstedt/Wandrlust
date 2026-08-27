@@ -1460,7 +1460,7 @@ export default function App() {
                     zoom={zoom}
                     userLocation={userLocation}
                     isOfflineMode={isOfflineMode}
-                    onOpenDetailModal={setSheetSite}
+                    onOpenBottomSheet={setSheetSite}
                     onLocateUser={handleLocateUser}
                     isLocating={isLocating}
                     destination={destination}

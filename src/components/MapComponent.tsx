@@ -1503,7 +1503,13 @@ interface MapComponentProps {
   zoom: number;
   userLocation: [number, number] | null;
   isOfflineMode: boolean;
-  onOpenDetailModal: (site: Campsite) => void;
+  /**
+   * Fired on a pin double-click: opens the quick-glance CampsiteBottomSheet,
+   * not the full CampsiteDetailModal (that's CampsiteCard's onOpenDetail).
+   * Named onOpenDetailModal until it was found to open the wrong one of the
+   * app's two campsite surfaces — renamed so the mix-up can't repeat.
+   */
+  onOpenBottomSheet: (site: Campsite) => void;
   onLocateUser?: () => void;
   isLocating?: boolean;
 
@@ -1697,7 +1703,7 @@ const clusterView = (map: L.Map): L.Map =>
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation, weather,
   coverage, route, onOpenDirections, onClearDestination, onAddSpotHere, onAddFacilityHere,
-  isOfflineMode, onOpenDetailModal, onLocateUser,
+  isOfflineMode, onOpenBottomSheet, onLocateUser,
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport,
   onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0, topNotice = null,
@@ -1869,8 +1875,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      which must not be re-run just because connectivity flickered. */
   const canBeaconRef = useRef(canBeacon);
   canBeaconRef.current = canBeacon;
-  const detailRef = useRef(onOpenDetailModal);
-  detailRef.current = onOpenDetailModal;
+  const bottomSheetRef = useRef(onOpenBottomSheet);
+  bottomSheetRef.current = onOpenBottomSheet;
   const destinationRef = useRef(destination);
   destinationRef.current = destination;
 
@@ -5626,7 +5632,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (peekSwallowClickRef.current) return;
         onSelectCampsite(site);
       });
-      marker.on('dblclick', () => onOpenDetailModal(site));
+      marker.on('dblclick', () => onOpenBottomSheet(site));
       markersRef.current.set(site.id, marker);
       return marker;
     });
@@ -5637,7 +5643,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     (clusterViewRef.current ?? map).addLayer(cluster);
     clusterRef.current = cluster;
-  }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenDetailModal, iconForId]);
+  }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenBottomSheet, iconForId]);
 
   /**
    * Press and hold a pin to peek at its chips.
@@ -6850,7 +6856,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           clearDestinationRef.current();
           return;
         case 'details':
-          if (destinationRef.current?.campsite) detailRef.current(destinationRef.current.campsite);
+          if (destinationRef.current?.campsite) bottomSheetRef.current(destinationRef.current.campsite);
           return;
         // The "i" under a dropped pin. It used to unfurl every chip in place,
         // above a pin that might be anywhere on the screen; now it opens the

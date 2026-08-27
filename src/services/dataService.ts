@@ -11,6 +11,7 @@
  */
 import { supabase } from '../lib/supabase';
 import { campsiteIdKind } from '../utils/campsiteId';
+import { TtlCache } from '../utils/ttlCache';
 import type {
   Campsite, CamperReview,
   BeaconSpot, BeaconDwellState, BeaconOutcome, BeaconVerificationAnswers,
@@ -357,7 +358,9 @@ const mapCampsiteRow = (row: any, uid: string | null): Campsite[] => {
  * Returns null only when there is nothing to say — no Supabase, no id, or the
  * lookup failed. The caller draws no byline at all rather than inventing one.
  */
-const authorCache = new Map<string, string | null>();
+// A day-long TTL and a capped size — this app is a PWA people leave open for
+// days, and an unbounded Map here would grow for as long as the tab does.
+const authorCache = new TtlCache<string | null>(24 * 60 * 60 * 1000, 300);
 
 export const fetchSpotAuthor = async (userId: string): Promise<string | null> => {
   if (!supabase || !userId) return null;
