@@ -139,7 +139,19 @@ export const MapDataChoiceScreen: React.FC<MapDataChoiceScreenProps> = ({ onChos
       aria-labelledby="map-data-title"
       className="fixed inset-0 z-[3000] bg-slate-950 overflow-y-auto anim-fade"
     >
-      <div className="min-h-full flex items-center justify-center p-5">
+      {/*
+        Its own cut-out padding. This screen is `fixed inset-0`, so it is laid
+        out against the viewport and never sees the app shell's insets — on a
+        notched phone a tall enough card would otherwise run its heading up
+        under the clock.
+      */}
+      <div
+        className="min-h-full flex items-center justify-center p-5"
+        style={{
+          paddingTop: 'calc(1.25rem + env(safe-area-inset-top))',
+          paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom))'
+        }}
+      >
         <div className="w-full max-w-lg space-y-4">
           <header className="text-center space-y-2 anim-in-up">
             <h1

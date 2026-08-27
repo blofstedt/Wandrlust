@@ -1377,10 +1377,28 @@ export default function App() {
      * The padding is for display cut-outs: index.html sets `viewport-fit=cover`
      * so an installed app fills the whole screen, which means the notch and the
      * home indicator are ours to avoid.
+     *
+     * ---------------------------------------------------------------------
+     * THE TOP INSET IS NOT HERE. IT BELONGS TO THE HEADER.
+     * ---------------------------------------------------------------------
+     *
+     * It used to be, and it made the installed app look like a browser. This
+     * shell is slate-950 and the header is slate-900 with its own border and
+     * shadow, so padding the SHELL left an empty slate-950 strip the height
+     * of the status bar sitting above a visibly separate darker bar — two
+     * stacked bars, the top one blank, in exactly the place Safari draws its
+     * address bar. On a phone that reads as browser chrome, which is the one
+     * thing an installed app must not look like.
+     *
+     * So the header absorbs the top inset into its own padding instead, and
+     * its background runs up behind the clock and the battery. One bar, the
+     * app's own, the way a native title bar looks. Anything else drawn
+     * against the viewport rather than inside this box — the first-run map
+     * data screen — has to do the same for itself.
      */
     <div
       className="h-[100dvh] bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]
-                 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]
+                 pb-[env(safe-area-inset-bottom)]
                  pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
     >
       {/*
