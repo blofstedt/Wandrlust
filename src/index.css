@@ -278,6 +278,14 @@
   100% { opacity: 0; }
 }
 
+/* Applied to the warning polygon's own SVG path — see runAlertTour in
+   MapComponent. `--wl-glow-color` is set inline per tour, in that alert
+   family's colour. */
+.wl-alert-tour-glow {
+  filter: drop-shadow(0 0 10px var(--wl-glow-color, currentColor));
+  animation: wl-warning-glow 2400ms ease-in-out both;
+}
+
 /* ====================================================================
    Utilities
    ==================================================================== */
@@ -964,33 +972,6 @@
 /* Room for it, so a long forest name never runs under the button. */
 .wl-tour-stop-label-closable { padding-right: 26px; }
 
-/* The tracker that runs one lap around a warned area — see `orbit` in
-   MapComponent. A cloud has no edge to flash, so "this one" is said with a
-   moving light instead of an outline. Neon because it has to read over a
-   pale wash of its own colour: a solid dot in the family hue would vanish
-   into the cloud it is pointing at. The dot is the light source, the ring
-   around it is the bloom, and the whole thing is gone in two seconds. */
-.wl-tour-tracker-dot {
-  display: block;
-  width: 10px;
-  height: 10px;
-  margin: 3px;
-  border-radius: 9999px;
-  background: #fff;
-  /* Two shadows: a tight core in the family colour, and a wide soft bloom.
-     Together they read as a light rather than a sticker. */
-  box-shadow:
-    0 0 4px 1px var(--wl-tracker-color),
-    0 0 12px 4px color-mix(in srgb, var(--wl-tracker-color) 70%, transparent),
-    0 0 26px 10px color-mix(in srgb, var(--wl-tracker-color) 35%, transparent);
-  animation: tracker-breathe 0.9s var(--ease-standard) infinite;
-}
-
-@keyframes tracker-breathe {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50%      { transform: scale(1.35); opacity: 0.82; }
-}
-
 /* The far end of a facility hop: the toilet, tap or pump itself, in the
    same colour as its chip and the line drawn to it. */
 .wl-facility-dot {
@@ -1084,10 +1065,9 @@
     box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.7),
                 0 12px 20px -6px rgba(2, 6, 23, 0.55);
   }
-  /* The tracker still appears and still glows — it just stops breathing.
-     `orbit` separately skips the lap, so it holds still at the top of the
-     ring instead of travelling. */
-  .wl-tour-tracker-dot { animation: none; }
+  /* The shape still carries the answer without pulsing — a steady
+     highlight instead of two breaths and a fade. */
+  .wl-alert-tour-glow { animation: none; opacity: 0.85; }
   /* The chips' stagger is a delay, not a duration, so shortening the
      animation above would still leave a chip blank for half a second. */
   .wl-chip-in, .wl-chip-out { animation-delay: 0ms !important; }

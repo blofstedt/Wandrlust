@@ -4607,10 +4607,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         /** Give the camper an × to stop the tour early. Long labels only. */
         closable?: boolean;
       }) => void;
-      /**
-       * Run a glowing tracker once along this path. Resolves at the end of it.
-       */
-      trace: (path: [number, number][], color: string, ms: number) => Promise<void>;
       /** False once this tour has been torn down — check it after every await. */
       alive: () => boolean;
     }) => Promise<void>
@@ -4722,89 +4718,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             else map.flyTo(centre, z, { duration: 0.8 });
           } catch { /* degenerate bounds */ }
         },
-        /**
-         * A LITTLE NEON TRACKER, ONCE AROUND THE THING YOU ASKED ABOUT.
-         *
-         * It runs along the EDGE OF THE SHADING that is already on the map.
-         * It used to run around a plain ellipse drawn outside the bounding box
-         * instead, on the reasoning that a path hugging the cloud would read
-         * as the boundary of the weather — but an ellipse round a bounding box
-         * is not a smaller claim, it is a bigger one: on a long diagonal area
-         * it flung the dot hundreds of kilometres off the shape, over ground
-         * the warning had nothing to do with, and it never once looked like it
-         * was pointing at the cloud.
-         *
-         * Following the shading claims nothing new. That soft edge is drawn on
-         * the map already, it is the forecast region and not the weather, and
-         * the tracker leaves no stroke behind it — it is a moving glow, gone in
-         * two seconds, that says "this shape, this one" and nothing else.
-         *
-         * Under `prefers-reduced-motion` there is no lap: the tracker simply
-         * appears at the start of the path, holds, and goes.
-         */
-        trace: (path, color, ms) => new Promise<void>((resolve) => {
-          if (path.length < 2) { resolve(); return; }
-
-          // Distance along the path, in degrees. Crude next to a great-circle
-          // measure and exactly right for the job: it only has to pace a dot
-          // evenly over a shape a few degrees across.
-          const run: number[] = [0];
-          for (let i = 1; i < path.length; i += 1) {
-            run.push(run[i - 1] + Math.hypot(
-              path[i][0] - path[i - 1][0],
-              path[i][1] - path[i - 1][1]
-            ));
-          }
-          const total = run[run.length - 1];
-          if (total <= 0) { resolve(); return; }
-
-          // `p` only ever moves forward, so the segment search carries on from
-          // where the last frame left it rather than starting over.
-          let seg = 1;
-          const at = (p: number): L.LatLngExpression => {
-            const want = p * total;
-            while (seg < run.length - 1 && run[seg] < want) seg += 1;
-            const span = run[seg] - run[seg - 1];
-            const k = span > 0 ? (want - run[seg - 1]) / span : 0;
-            const a = path[seg - 1];
-            const b = path[seg];
-            return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
-          };
-
-          const tracker = L.marker(at(0), {
-            icon: L.divIcon({
-              className: 'wl-tour-tracker',
-              html: `<span class="wl-tour-tracker-dot" style="--wl-tracker-color:${color}"></span>`,
-              iconSize: [16, 16],
-              iconAnchor: [8, 8]
-            }),
-            interactive: false,
-            zIndexOffset: 900
-          }).addTo(layer);
-
-          const done = () => {
-            try { tracker.remove(); } catch { /* layer already torn down */ }
-            resolve();
-          };
-
-          // Through `wait` rather than a bare timer, so a cancelled tour is
-          // not held open by a lap nobody is watching any more.
-          if (reduced) { void wait(ms).then(done); return; }
-
-          const t0 = performance.now();
-          const step = (now: number) => {
-            // The tour was torn down under us — stop moving a dead marker.
-            if (tourLayerRef.current !== layer) { done(); return; }
-            const p = Math.min(1, (now - t0) / ms);
-            // Ease the lap so it leaves and arrives softly instead of
-            // snapping into motion at full speed.
-            const eased = p < 0.5 ? 2 * p * p : 1 - ((-2 * p + 2) ** 2) / 2;
-            try { tracker.setLatLng(at(eased)); } catch { done(); return; }
-            if (p >= 1) { done(); return; }
-            requestAnimationFrame(step);
-          };
-          requestAnimationFrame(step);
-        }),
         label: (at, {
           title, sub, lines = [], detail, glyph, color, atPin = false, closable = false
         }) => {
@@ -4988,34 +4901,42 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       .extend([point.lat, point.lon]);
 
     /**
-     * A LIMIT ON HOW FAR OUT THIS IS ALLOWED TO GO.
+     * THE WHOLE SHAPE, NOT A WINDOW ONTO PART OF IT.
      *
-     * Warning areas run from a single valley to most of a province, and fitting
-     * the big ones threw the camera to a map of the west coast — the shading a
-     * smear across it, the pin a speck, and no way to tell what ground any of
-     * it was over. Past roughly zoom 7 there is nothing left to recognise, and
-     * seven levels out is already further than anyone means by "zoom out a bit".
-     * Beyond that the tour shows part of the area properly instead of all of it
-     * uselessly, with the pin held in the middle.
+     * This used to floor the zoom seven levels out from wherever the camper
+     * already was — a warning bigger than that floor allowed was shown
+     * part-framed, on the reasoning that the shape should read against
+     * recognisable ground rather than shrink to a smear at continental
+     * zoom. In practice a tap meant to answer "where is this" instead
+     * pulled the camera IN on a warning bigger than the floor, which is
+     * backwards from what the tour is for. So the fit is unclamped: whatever
+     * zoom shows the entire shape is the one the tour goes to.
      */
-    const floor = Math.max(t.map.getZoom() - 7, 7);
-    t.frame(bounds, 11, floor, L.latLng(point.lat, point.lon));
-    // Longer than the other tours wait: the camera is flying, and the tracker
-    // has to set off along an edge that has stopped moving.
+    t.frame(bounds, 11);
+    // Longer than the other tours wait: the camera is flying, and the glow
+    // has to start once it has actually arrived.
     await t.wait(1000);
     if (!t.alive()) return;
 
     /*
-     * NO LABEL OVER THE PIN ANY MORE.
+     * THE SHAPE GLOWS AT ITS OWN EDGE, INSTEAD OF A DOT LAPPING IT.
      *
-     * There used to be a bubble here naming the warning and carrying its
-     * caveat. It landed on top of the shape it was describing, at the exact
-     * moment the camper was trying to look at that shape, and the caveat it
-     * carried is not a thing to read in the two seconds a tour lasts. Both now
-     * live where they can be read properly: on the chip itself, and in the
-     * card the "i" opens.
+     * There used to be a small tracker running one lap around the outline.
+     * A moving dot reads as pointing at a shape; the shape itself glowing at
+     * its own boundary reads as being the answer, and it does that without
+     * a label sitting on top of the thing it is naming — see the note that
+     * used to be here about the removed caveat bubble, which still holds:
+     * both the name and the caveat live on the chip and in the "i" card.
+     * `wl-alert-tour-glow` is the CSS side of this, including its own
+     * reduced-motion hold — see index.css.
      */
-    await t.trace(edge, color, 2400);
+    shapes.eachLayer((layer) => {
+      const el = (layer as L.Path).getElement() as SVGElement | undefined;
+      if (!el) return;
+      el.style.setProperty('--wl-glow-color', color);
+      el.classList.add('wl-alert-tour-glow');
+    });
+    await t.wait(2400);
     await t.wait(500);
   }), [runTour]);
 
