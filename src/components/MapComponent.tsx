@@ -102,10 +102,10 @@ import {
 import {
   escapeHtml, outerRing, flipRow, patchChipRow, PEEK_HOLD_MS, PEEK_SLOP_PX,
   openPeek, closePeek, retractChipRow, createChipBatcher, freshChipKeys,
-  CLOSE_SVG, withNavChip, NO_FACILITY_KINDS, FACILITY_IDLE, STACK_BUTTON,
-  buildCampsiteIcon, buildHazardReportIcon, buildBeaconIcon, buildFacilityIcon,
-  PIN_LIFT_PX, buildDestinationIcon, bboxExtent, featureMinDimPx,
-  parcelFingerprint, landFromFeature, landSubtitle
+  setChipsLoading, CLOSE_SVG, withNavChip, NO_FACILITY_KINDS, FACILITY_IDLE,
+  STACK_BUTTON, buildCampsiteIcon, buildHazardReportIcon, buildBeaconIcon,
+  buildFacilityIcon, PIN_LIFT_PX, buildDestinationIcon, bboxExtent,
+  featureMinDimPx, parcelFingerprint, landFromFeature, landSubtitle
 } from './mapPinRendering';
 
 interface MapComponentProps {
@@ -753,6 +753,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * query per spot and most spots are never opened.
    */
   const [facilities, setFacilities] = useState<NearbyFacility[]>([]);
+  /**
+   * True for exactly as long as the open pin's facility/road lookup below is
+   * in flight — drives the "more is coming" placeholder chip. See
+   * `setChipsLoading` in mapPinRendering.ts.
+   */
+  const [facilitiesLoading, setFacilitiesLoading] = useState(false);
   /** The facility whose chip was tapped: what it is, and how you'd get there. */
   const [facilityTrip, setFacilityTrip] = useState<{
     facility: NearbyFacility;
@@ -3303,23 +3309,41 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * it was at before, which is the wide view the camper was browsing in
    * rather than some fixed "zoomed out" level we picked for them.
    *
-   * Only when there is something to undo. A dropped pin that never triggered
-   * the fly-in leaves `preFocusViewRef` empty, and closing it moves nothing.
+   * That is only possible when there IS a borrowed view to hand back —
+   * `preFocusViewRef` is set once, the first time a CAMPSITE pin flies in.
+   * Everything else that closes a pin — a dropped pin that never zoomed
+   * anything, a facility, a second tap on a spot already focused — used to
+   * leave the camera exactly where it was, which reads as the tap having
+   * done nothing at all. So when there is nothing to restore, the camera
+   * instead steps back a touch from wherever the pin just was: not the
+   * precise old view, just enough motion to say "that closed".
    */
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapReady || destination) return;
 
     const previous = preFocusViewRef.current;
+    const lastPoint = focusedDestRef.current;
     preFocusViewRef.current = null;
     focusedDestRef.current = null;
-    if (!previous) return;
 
     try {
+      if (previous) {
+        if (prefersReducedMotion()) {
+          map.setView(previous.center, previous.zoom, { animate: false });
+        } else {
+          map.flyTo(previous.center, previous.zoom, { duration: 0.7 });
+        }
+        return;
+      }
+
+      if (!lastPoint) return;
+      const centre = L.latLng(lastPoint.latitude, lastPoint.longitude);
+      const zoomOut = Math.max(map.getMinZoom(), map.getZoom() - 1);
       if (prefersReducedMotion()) {
-        map.setView(previous.center, previous.zoom, { animate: false });
+        map.setView(centre, zoomOut, { animate: false });
       } else {
-        map.flyTo(previous.center, previous.zoom, { duration: 0.7 });
+        map.flyTo(centre, zoomOut, { duration: 0.6 });
       }
     } catch { /* map torn down */ }
   }, [destination, isMapReady]);
@@ -4454,9 +4478,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     setFacilityTrip(null);
     if (readLat === null || readLon === null || isOfflineMode) {
       setFacilities([]);
+      setFacilitiesLoading(false);
       return;
     }
 
+    setFacilitiesLoading(true);
     const controller = new AbortController();
     let cancelled = false;
 
@@ -4484,6 +4510,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // Road first: the chip row is capped, and "can I get a vehicle in" beats
       // a bin two kilometres away for somebody looking at empty land.
       setFacilities(road ? [road, ...result.facilities] : result.facilities);
+      setFacilitiesLoading(false);
     }, 300);
 
     return () => {
@@ -4491,6 +4518,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       controller.abort();
       clearTimeout(timer);
       setFacilities([]);
+      setFacilitiesLoading(false);
     };
   }, [readLat, readLon, isOfflineMode]);
 
@@ -4516,6 +4544,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     if (!id) return;
     refreshIcon(id);
   }, [conditions, refreshIcon]);
+
+  /**
+   * "More is coming" — a tiny placeholder at the top of whichever pin is
+   * open, for as long as its facility lookup is still in flight.
+   *
+   * A freshly tapped pin usually has NOTHING in its chip row yet — the
+   * facility answer is the slowest of the lookups that fill it, an Overpass
+   * query with real network latency — and with no signal that anything is
+   * still coming, that empty beat reads as the tap having done nothing.
+   */
+  useEffect(() => {
+    const marker =
+      destinationMarkerRef.current ??
+      (selectedIdRef.current ? markersRef.current.get(selectedIdRef.current) ?? null : null);
+    setChipsLoading(marker?.getElement() as HTMLElement | undefined, facilitiesLoading);
+  }, [facilitiesLoading]);
 
   /**
    * Tapping the fire chip: go and look, then come back.

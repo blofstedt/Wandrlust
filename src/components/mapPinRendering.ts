@@ -411,6 +411,50 @@ export const patchChipRow = (
 };
 
 /**
+ * Show or hide the "more is coming" placeholder at the top of a pin's chip
+ * stack, while its nearby-facility lookup is still in flight.
+ *
+ * Deliberately separate from `patchChipRow`'s own row: that one is rebuilt
+ * and sometimes torn down entirely whenever `dots` is empty (`target.remove()`
+ * above), which is exactly the moment this placeholder needs to survive — a
+ * freshly opened pin usually HAS no chips yet, that's the whole reason to
+ * show it. So this manages its own element, keyed by class rather than by
+ * `data-key`, which is also what keeps `patchChipRow`'s key-diffing cleanup
+ * from ever seeing — and removing — it.
+ */
+export const setChipsLoading = (
+  root: HTMLElement | null | undefined, loading: boolean
+): void => {
+  const wrap = root?.firstElementChild;
+  if (!wrap) return;
+
+  let row = wrap.querySelector(':scope > .wl-chips');
+  const existing = row?.querySelector(':scope > .wl-chip-loading') ?? null;
+
+  if (!loading) {
+    existing?.remove();
+    // Nothing left in a row that only ever held this placeholder.
+    if (row && row.children.length === 0) row.remove();
+    return;
+  }
+  if (existing) return;
+
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'wl-chips';
+    wrap.insertBefore(row, wrap.firstChild);
+  }
+  const chip = document.createElement('span');
+  chip.className = 'wl-chip-loading';
+  chip.setAttribute('aria-hidden', 'true');
+  chip.innerHTML =
+    '<span class="wl-chip-loading-dot"></span>' +
+    '<span class="wl-chip-loading-dot"></span>' +
+    '<span class="wl-chip-loading-dot"></span>';
+  row.insertBefore(chip, row.firstChild);
+};
+
+/**
  * Take a stack away, top chip first, and say how long that will take.
  *
  * The wave came up from the pin outwards, so it leaves from the loose end
