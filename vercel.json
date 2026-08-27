@@ -3,6 +3,32 @@
   "buildCommand": "npm run build:client",
   "outputDirectory": "dist",
   "framework": "vite",
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "www.wandrlust.dev" }],
+      "destination": "https://wandrlust.dev/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "wandrlust-blofstedts-projects.vercel.app" }],
+      "destination": "https://wandrlust.dev/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "wandrlust-topaz.vercel.app" }],
+      "destination": "https://wandrlust.dev/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "wandrlust-git-main-blofstedts-projects.vercel.app" }],
+      "destination": "https://wandrlust.dev/:path*",
+      "permanent": false
+    }
+  ],
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
@@ -49,4 +75,4 @@
   "functions": {
     "api/index.ts": { "maxDuration": 30 }
   }
-}
+}
