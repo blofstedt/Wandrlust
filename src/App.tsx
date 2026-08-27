@@ -1656,7 +1656,6 @@ export default function App() {
         onClose={() => { setIsAddModalOpen(false); setAddSpotAt(null); }}
         mode="create"
         at={addSpotAt ?? center}
-        onRequireAuth={() => setIsAuthOpen(true)}
         onSubmit={handleSubmitNewSpot}
       />
 

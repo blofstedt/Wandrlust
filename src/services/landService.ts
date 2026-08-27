@@ -130,6 +130,3 @@ export const isOnLand = (lat: number, lon: number): boolean => {
   const index = row * mask.width + col;
   return (mask.bits[index >> 3] & (1 << (index & 7))) !== 0;
 };
-
-/** True only when we positively know the point is open water. */
-export const isOnWater = (lat: number, lon: number): boolean => !isOnLand(lat, lon);

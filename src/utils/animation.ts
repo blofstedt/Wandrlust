@@ -33,14 +33,6 @@ export const prefersReducedMotion = (): boolean => {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 };
 
-export const onReducedMotionChange = (cb: (reduced: boolean) => void): (() => void) => {
-  if (typeof window === 'undefined' || !window.matchMedia) return () => undefined;
-  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const handler = (e: MediaQueryListEvent) => cb(e.matches);
-  mq.addEventListener('change', handler);
-  return () => mq.removeEventListener('change', handler);
-};
-
 /* ------------------------------------------------------------------ */
 /* Durations — Pebble's 250 ms baseline                                */
 /* ------------------------------------------------------------------ */
@@ -110,8 +102,6 @@ export const moookSoft = (t: number): number => {
   const v = moook(t);
   return v > 1 ? 1 + (v - 1) * 0.45 : v;
 };
-
-export const moookSecondHalf = (t: number): number => moook(0.5 + t * 0.5);
 
 /* ------------------------------------------------------------------ */
 /* CSS timing functions                                                */
@@ -209,18 +199,6 @@ export const animate = ({
     cancelAnimationFrame(raf);
   };
 };
-
-export const animateNumber = (
-  from: number,
-  to: number,
-  onUpdate: (value: number) => void,
-  ms = DURATION.scene
-): (() => void) =>
-  animate({
-    duration: ms,
-    easing: moookSoft,
-    onUpdate: (p) => onUpdate(Math.round(from + (to - from) * p))
-  });
 
 /* ------------------------------------------------------------------ */
 /* Haptics                                                             */

@@ -83,11 +83,6 @@ const writeList = async <T>(key: string, value: T[]): Promise<boolean> => {
 
 export const getSavedCampsites = (): Promise<Campsite[]> => readList<Campsite>(SAVED_KEY);
 
-export const isCampsiteSaved = async (id: string): Promise<boolean> => {
-  const saved = await getSavedCampsites();
-  return saved.some((site) => site.id === id);
-};
-
 /** @returns `true` if the site is saved after the call, `false` if removed. */
 export const toggleSaveCampsite = async (campsite: Campsite): Promise<boolean> => {
   const saved = await getSavedCampsites();
@@ -154,10 +149,6 @@ export const mergeSavedCampsites = async (remote: Campsite[]): Promise<Campsite[
   const merged = [...byId.values()];
   await writeList(SAVED_KEY, merged);
   return merged;
-};
-
-export const clearSavedCampsites = async (): Promise<void> => {
-  await writeList(SAVED_KEY, []);
 };
 
 /* ------------------------------------------------------------------ */
@@ -508,15 +499,4 @@ export const deleteOfflineRegion = async (id: string): Promise<void> => {
       .map((key) => tileStore.removeItem(key).catch(() => undefined))
   );
 };
-
-export const getTileCacheSizeMb = async (): Promise<number> => {
-  let bytes = 0;
-  try {
-    await tileStore.iterate<Blob, void>((blob) => {
-      if (blob) bytes += blob.size;
-    });
-  } catch {
-    return 0;
-  }
-  return Number((bytes / (1024 * 1024)).toFixed(1));
-};
+

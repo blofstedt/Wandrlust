@@ -64,9 +64,5 @@ export const newUserCampsiteId = (): string => {
   return `user-${uuid}`;
 };
 
-/** The id Overpass results are keyed by. */
-export const osmCampsiteId = (type: string, id: number | string): string =>
-  `osm-${type}-${id}`;
-
 /** True when this site can carry a check-in, review or report at all. */
 export const canReferenceCampsite = (id: string): boolean => campsiteIdKind(id) !== 'user';

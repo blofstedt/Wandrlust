@@ -68,7 +68,4 @@ export const bestCellSignal = (a: CampsiteAmenities | undefined): number | undef
   );
   return values.length ? Math.max(...values) : undefined;
 };
-
-/** `true`/`false`/unknown rendered as words, never as a silently-off icon. */
-export const yesNoUnknown = (value: boolean | undefined): string =>
-  value === undefined ? UNKNOWN_LABEL : value ? 'Yes' : 'No';
+

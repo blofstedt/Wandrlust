@@ -745,14 +745,6 @@ export const submitCampsiteReview = async (
   return success(true);
 };
 
-/** Remove your own review. The policy allows no other. */
-export const deleteMyReview = async (reviewId: string): Promise<Result<boolean>> => {
-  if (!supabase) return failure('Not connected');
-  const { error } = await supabase.from('campsite_reviews').delete().eq('id', reviewId);
-  if (error) return failure(error.message);
-  return success(true);
-};
-
 /** The site's rating and count after the trigger has recomputed them. */
 export const fetchCampsiteRating = async (
   campsiteId: string
