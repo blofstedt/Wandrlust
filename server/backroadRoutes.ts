@@ -38,6 +38,7 @@
  */
 import type { Express, Request, Response } from 'express';
 import { USER_AGENT } from './alertSources.js';
+import { TtlCache } from '../shared/ttlCache.js';
 
 /* Same three mirrors, same reasoning, as server/roadNetwork.ts:
    overpass.osm.ch is Switzerland-only and answers for other continents with a
@@ -301,10 +302,9 @@ const simplify = (
  * instance that hoards forty of them is a serverless instance being killed
  * for memory.
  */
-interface CacheEntry { at: number; scan: BackroadScan; }
-const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 24;
+const cache = new TtlCache<BackroadScan>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
 /* ------------------------------------------------------------------ */
 
@@ -321,7 +321,7 @@ const scanBox = async (
 
   const key = [minLat, minLon, maxLat, maxLon].map((n) => n.toFixed(3)).join(',');
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.scan;
+  if (hit) return hit;
 
   const bbox = `${minLat.toFixed(5)},${minLon.toFixed(5)},${maxLat.toFixed(5)},${maxLon.toFixed(5)}`;
 
@@ -449,11 +449,7 @@ const scanBox = async (
 
   const scan: BackroadScan = { ok: true, tooWide: false, truncated, roads };
 
-  if (cache.size >= CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  cache.set(key, { at: Date.now(), scan });
+  cache.set(key, scan);
 
   return scan;
 };

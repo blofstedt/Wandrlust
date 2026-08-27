@@ -30,6 +30,7 @@
  */
 import type { Express, Request, Response } from 'express';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { TtlCache } from '../shared/ttlCache.js';
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
 const SUPABASE_ANON = process.env.VITE_SUPABASE_ANON_KEY;
@@ -66,22 +67,15 @@ export interface RoadSegmentScan {
 
 const EMPTY: RoadSegmentScan = { ok: false, segments: [], truncated: false };
 
-interface CacheEntry { at: number; scan: RoadSegmentScan; }
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 60;
-const cache = new Map<string, CacheEntry>();
+const cache = new TtlCache<RoadSegmentScan>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
-const cacheGet = (key: string): RoadSegmentScan | null => {
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > CACHE_TTL_MS) { cache.delete(key); return null; }
-  return hit.scan;
-};
+const cacheGet = (key: string): RoadSegmentScan | null => cache.get(key) ?? null;
 
 const cacheSet = (key: string, scan: RoadSegmentScan): void => {
   if (!scan.ok) return;
-  if (cache.size >= CACHE_MAX_ENTRIES) { const oldest = cache.keys().next().value; if (oldest) cache.delete(oldest); }
-  cache.set(key, { at: Date.now(), scan });
+  cache.set(key, scan);
 };
 
 const varianceToSurface = (variance: number): SurfaceQuality => {

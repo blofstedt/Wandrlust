@@ -63,6 +63,7 @@
  */
 import { findApproachRoads, type ApproachRoad } from './roadNetwork.js';
 import { haversineKm } from '../shared/geoMath.js';
+import { TtlCache } from '../shared/ttlCache.js';
 // `Response` is aliased: express exports one and `fetch` returns another, and
 // an unaliased import silently shadows the fetch type in every helper below.
 import type { Express, Request, Response as ExpressResponse } from 'express';
@@ -759,10 +760,9 @@ const improveApproach = async (
 
 /* ------------------------------------------------------------------ */
 
-interface CacheEntry { at: number; body: RouteBody; }
-const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 200;
+const cache = new TtlCache<RouteBody>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
 const readRig = (req: Request): Rig => {
   const num = (key: string): number | undefined => {
@@ -894,7 +894,7 @@ export const registerRouteRoutes = (app: Express): void => {
       .join(';');
     const cacheKey = `${nums.map((n) => n.toFixed(5)).join(',')}|${rigKey}`;
     const hit = cache.get(cacheKey);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return res.json(hit.body);
+    if (hit) return res.json(hit);
 
     const orsKey = process.env.ORS_API_KEY || process.env.VITE_ORS_API_KEY;
 
@@ -928,11 +928,7 @@ export const registerRouteRoutes = (app: Express): void => {
         ? await improveApproach(first, from, to, rig, orsKey, msLeft())
         : first;
 
-    if (cache.size >= CACHE_MAX_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest) cache.delete(oldest);
-    }
-    cache.set(cacheKey, { at: Date.now(), body });
+    cache.set(cacheKey, body);
 
     return res.json(body);
   });

@@ -29,29 +29,23 @@ import {
 } from './alertSources.js';
 import { fetchOpenMeteo } from './openMeteo.js';
 import { statesInBbox, stateDistanceRank } from './usStates.js';
+import { TtlCache } from '../shared/ttlCache.js';
 
 const POINT_TTL_MS = 24 * 60 * 60 * 1000;
 const FORECAST_TTL_MS = 10 * 60 * 1000;
 const ALERTS_TTL_MS = 5 * 60 * 1000;
 const MAX_ENTRIES = 500;
 
-interface CacheEntry { at: number; body: unknown; }
-const cache = new Map<string, CacheEntry>();
-
-const cached = <T>(key: string, ttlMs: number): T | null => {
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > ttlMs) { cache.delete(key); return null; }
-  return hit.body as T;
-};
-
-const store = (key: string, body: unknown): void => {
-  if (cache.size >= MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  cache.set(key, { at: Date.now(), body });
-};
+/**
+ * Three separate caches, not one shared Map keyed by prefix — each answer
+ * type has its own honest lifetime (a grid assignment is good for a day, a
+ * forecast for ten minutes, an alert sweep for five), and a burst of one kind
+ * evicting another kind's still-fresh entries was never the intent of the
+ * shared MAX_ENTRIES ceiling this replaces.
+ */
+const pointCache = new TtlCache<unknown>(POINT_TTL_MS, MAX_ENTRIES);
+const forecastCache = new TtlCache<unknown>(FORECAST_TTL_MS, MAX_ENTRIES);
+const alertsCache = new TtlCache<unknown>(ALERTS_TTL_MS, MAX_ENTRIES);
 
 /**
  * Does an alert's area overlap the requested viewport?
@@ -159,11 +153,11 @@ type FeedState = 'ok' | 'unreachable' | 'skipped';
 
 const fetchNwsPoint = async (lat: number, lon: number) => {
   const key = `nws:point:${lat.toFixed(3)},${lon.toFixed(3)}`;
-  const hit = cached<any>(key, POINT_TTL_MS);
+  const hit = pointCache.get(key);
   if (hit) return hit;
 
   const data = await getJson(`${NWS_BASE}/points/${lat.toFixed(4)},${lon.toFixed(4)}`);
-  if (data) store(key, data);
+  if (data) pointCache.set(key, data);
   return data;
 };
 
@@ -247,7 +241,7 @@ export const registerWeatherRoutes = (app: Express): void => {
     const [lat, lon] = coords;
 
     const key = `weather:${lat.toFixed(3)},${lon.toFixed(3)}`;
-    const hit = cached<any>(key, FORECAST_TTL_MS);
+    const hit = forecastCache.get(key);
     if (hit) return res.json(hit);
 
     const isUS = looksUS(lat, lon);
@@ -342,7 +336,7 @@ export const registerWeatherRoutes = (app: Express): void => {
      * could not check for warnings" after the feed has come back.
      */
     if (!(payload as { alertsUnavailable?: boolean })?.alertsUnavailable) {
-      store(key, payload);
+      forecastCache.set(key, payload);
     }
     return res.json(payload);
   });
@@ -356,7 +350,7 @@ export const registerWeatherRoutes = (app: Express): void => {
 
     const key = `alerts:${[box.minLat, box.minLon, box.maxLat, box.maxLon]
       .map((n) => n.toFixed(1)).join(',')}`;
-    const hit = cached<any>(key, ALERTS_TTL_MS);
+    const hit = alertsCache.get(key);
     if (hit) return res.json(hit);
 
     const centreLat = (box.minLat + box.maxLat) / 2;
@@ -530,7 +524,7 @@ export const registerWeatherRoutes = (app: Express): void => {
 
     // A partial answer is never cached. Five minutes of serving one feed's
     // silence to every camper in the region is how a blip becomes an outage.
-    if (!partial) store(key, payload);
+    if (!partial) alertsCache.set(key, payload);
     return res.json(payload);
   });
 };

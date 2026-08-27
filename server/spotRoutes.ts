@@ -17,6 +17,7 @@
 import type { Express, Request, Response } from 'express';
 // `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
 import { fetchSpotContext, type SpotContextResult } from './spotContext.js';
+import { TtlCache } from '../shared/ttlCache.js';
 
 /**
  * A small warm-instance cache.
@@ -31,37 +32,19 @@ import { fetchSpotContext, type SpotContextResult } from './spotContext.js';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 200;
 
-interface CacheEntry {
-  at: number;
-  value: SpotContextResult;
-}
-
-const cache = new Map<string, CacheEntry>();
+const cache = new TtlCache<SpotContextResult>(CACHE_TTL_MS, CACHE_MAX);
 
 /** ~110 m of latitude. Finer than this and the cache never hits. */
 const cacheKey = (lat: number, lon: number) =>
   `${lat.toFixed(3)},${lon.toFixed(3)}`;
 
-const readCache = (key: string): SpotContextResult | null => {
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > CACHE_TTL_MS) {
-    cache.delete(key);
-    return null;
-  }
-  return hit.value;
-};
+const readCache = (key: string): SpotContextResult | null => cache.get(key) ?? null;
 
 const writeCache = (key: string, value: SpotContextResult): void => {
   // A failed lookup is not worth remembering — the next request should get a
   // real attempt rather than ten minutes of cached pessimism.
   if (!value.ok) return;
-
-  if (cache.size >= CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
-  }
-  cache.set(key, { at: Date.now(), value });
+  cache.set(key, value);
 };
 
 /** Rough CONUS + Canada, matching the coverage the rest of the app claims. */

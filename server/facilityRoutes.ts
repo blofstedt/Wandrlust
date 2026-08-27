@@ -34,6 +34,7 @@
  */
 import type { Express, Request, Response } from 'express';
 import { USER_AGENT } from './alertSources.js';
+import { TtlCache } from '../shared/ttlCache.js';
 import {
   selectorsFor, kindFromTags, isReachable
 } from '../shared/facilityOsm.js';
@@ -96,24 +97,15 @@ const EMPTY: FacilityScan = { ok: false, facilities: [], truncated: false };
  */
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 120;
-const cache = new Map<string, { at: number; scan: FacilityScan }>();
+const cache = new TtlCache<FacilityScan>(CACHE_TTL_MS, CACHE_MAX);
 
-const cacheGet = (key: string): FacilityScan | null => {
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > CACHE_TTL_MS) { cache.delete(key); return null; }
-  return hit.scan;
-};
+const cacheGet = (key: string): FacilityScan | null => cache.get(key) ?? null;
 
 const cacheSet = (key: string, scan: FacilityScan): void => {
   // Only real answers. Caching an outage turns a minute of Overpass being
   // busy into ten minutes of the map claiming there is nothing here.
   if (!scan.ok) return;
-  if (cache.size >= CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  cache.set(key, { at: Date.now(), scan });
+  cache.set(key, scan);
 };
 
 const parseKinds = (raw: unknown): string[] => {
