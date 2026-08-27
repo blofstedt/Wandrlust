@@ -255,16 +255,16 @@
 }
 
 /**
- * The glow that swells over a warning's area when the user taps its chip
- * in the legend. Two breaths in 2.4s: up, part-way down, up again, then
- * out. Only `opacity` moves — the coloured halo itself is a static
- * drop-shadow filter set on the path in MapComponent, because animating
- * a blur radius repaints the whole shape every frame and a warning
- * polygon can cover half the screen.
+ * The glow that swells over a SINGLE shape — a weather warning, a public-land
+ * parcel — when a tour tap sends the camera to it. Two breaths in 2.4s: up,
+ * part-way down, up again, then out. Only `opacity` moves — the coloured
+ * halo itself is a static drop-shadow filter set on the path in
+ * MapComponent, because animating a blur radius repaints the whole shape
+ * every frame and either kind of shape can cover half the screen.
  *
  * The keyframes stop at 0, so if the layer outlives its removal timeout
  * for a frame or two the user never sees it snap back to full strength.
- * MapComponent removes the layer at 2.4s regardless.
+ * MapComponent removes the layer once the tour ends regardless.
  *
  * Under prefers-reduced-motion MapComponent skips this animation and
  * holds the area at a steady highlight instead — the shape is what
@@ -278,10 +278,11 @@
   100% { opacity: 0; }
 }
 
-/* Applied to the warning polygon's own SVG path — see runAlertTour in
-   MapComponent. `--wl-glow-color` is set inline per tour, in that alert
-   family's colour. */
-.wl-alert-tour-glow {
+/* Applied to a tour's own shape — the warning polygon in runAlertTour, the
+   parcel in runLandTour — never to anything else on the map, so the pulse
+   marks exactly the one thing the tap asked about. `--wl-glow-color` is set
+   inline per tour, in that shape's own colour. */
+.wl-tour-shape-glow {
   filter: drop-shadow(0 0 10px var(--wl-glow-color, currentColor));
   animation: wl-warning-glow 2400ms ease-in-out both;
 }
@@ -1067,7 +1068,7 @@
   }
   /* The shape still carries the answer without pulsing — a steady
      highlight instead of two breaths and a fade. */
-  .wl-alert-tour-glow { animation: none; opacity: 0.85; }
+  .wl-tour-shape-glow { animation: none; opacity: 0.85; }
   /* The chips' stagger is a delay, not a duration, so shortening the
      animation above would still leave a chip blank for half a second. */
   .wl-chip-in, .wl-chip-out { animation-delay: 0ms !important; }

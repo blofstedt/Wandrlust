@@ -4780,6 +4780,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, []);
 
   /**
+   * Mark a tour's own shape with the pulsing edge glow — the warning polygon
+   * in `runAlertTour`, the parcel in `runLandTour`. Never anything else on
+   * the map: `group` is always the shape a tour drew into its own `t.layer`
+   * for exactly this tap, so the pulse can only ever land on the one thing
+   * being answered about. See `.wl-tour-shape-glow` in index.css.
+   */
+  const glowShape = (group: L.GeoJSON, color: string): void => {
+    group.eachLayer((layer) => {
+      const el = (layer as L.Path).getElement() as SVGElement | undefined;
+      if (!el) return;
+      el.style.setProperty('--wl-glow-color', color);
+      el.classList.add('wl-tour-shape-glow');
+    });
+  };
+
+  /**
    * Tapping the fire chip: go and look, then come back.
    *
    * The chip says "3 active fires, nearest 21 km away", and the next question
@@ -4927,15 +4943,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * a label sitting on top of the thing it is naming — see the note that
      * used to be here about the removed caveat bubble, which still holds:
      * both the name and the caveat live on the chip and in the "i" card.
-     * `wl-alert-tour-glow` is the CSS side of this, including its own
-     * reduced-motion hold — see index.css.
+     * `glowShape` is the shared helper both this tour and the land tour use
+     * — see its own comment and `.wl-tour-shape-glow` in index.css.
      */
-    shapes.eachLayer((layer) => {
-      const el = (layer as L.Path).getElement() as SVGElement | undefined;
-      if (!el) return;
-      el.style.setProperty('--wl-glow-color', color);
-      el.classList.add('wl-alert-tour-glow');
-    });
+    glowShape(shapes, color);
     await t.wait(2400);
     await t.wait(500);
   }), [runTour]);
@@ -4966,16 +4977,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
     if (!best) return;
 
+    const LAND_COLOR = '#A78BFA';
     const shape = L.geoJSON(best.feature as any, {
       style: {
-        color: '#A78BFA', weight: 2.5, opacity: 0.95,
-        fillColor: '#A78BFA', fillOpacity: 0.2
+        color: LAND_COLOR, weight: 2.5, opacity: 0.95,
+        fillColor: LAND_COLOR, fillOpacity: 0.2
       }
     }).addTo(t.layer);
 
     t.frame(shape.getBounds(), 12);
     await t.wait(700);
     if (!t.alive()) return;
+
+    /**
+     * THE PARCEL GLOWS, THE SAME WAY A WARNING DOES.
+     *
+     * A named forest or district is one shape, same as a warning is, and
+     * "which one is this" deserves the same answer: the parcel itself
+     * pulsing at its own edge, not a separate mark drawn near it. Only this
+     * one shape ever carries it — `best.feature` is already the single
+     * smallest matching parcel, exactly as it is when a pin is dropped.
+     */
+    glowShape(shape, LAND_COLOR);
 
     /*
      * MAKE ROOM ABOVE THE PIN FOR A CARD THIS TALL.
@@ -5012,7 +5035,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       detail: (card?.basis ? `${card.basis}. ` : '') +
         'Boundary approximate — the edge can be hundreds of metres out',
       glyph: LAND_GLYPH,
-      color: '#A78BFA',
+      color: LAND_COLOR,
       // The dropped pin is standing on this exact point: climb over it, and
       // don't draw a second mark on top of it.
       atPin: true,
