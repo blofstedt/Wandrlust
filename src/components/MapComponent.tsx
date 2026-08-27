@@ -3218,8 +3218,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           .distanceTo(map.getSize().divideBy(2));
         if (shift < 8 && zoomTo === map.getZoom()) return;
 
-        // Remember where we were, once per focus, immediately before moving.
-        if (first && !preFocusViewRef.current) {
+        // Remember where we were, but only for the zoom-in "borrow" a campsite
+        // does — an ordinary POI pan just nudges the pin into view and should
+        // recenter on the pin when it closes, not rewind to the old view.
+        if (first && zoomTo !== map.getZoom() && !preFocusViewRef.current) {
           preFocusViewRef.current = { center: map.getCenter(), zoom: map.getZoom() };
         }
 
