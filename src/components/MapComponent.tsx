@@ -46,6 +46,11 @@ import {
 import {
   fetchBackroads, backroadRequestBox, backroadBoxCovers
 } from '../services/backroadService';
+import { tracesIn, onTracesChanged, type ScoutTrace } from '../services/scoutTraceStore';
+import {
+  PASS_ALPHA, SCOUT_WEIGHT, SCOUT_CASING, SCOUT_MIN_ZOOM,
+  roughnessColor, ROUGHNESS_BANDS
+} from '../config/scoutRoughness';
 import {
   fetchActiveFires, findFiresNear, boxAround, isUnderControl, FIRE_ALERT_RADIUS_KM, ActiveFire
 } from '../services/fireService';
@@ -1716,6 +1721,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const underlayLayerRef = useRef<L.TileLayer | null>(null);
   const boundaryLayerRef = useRef<L.LayerGroup | null>(null);
+  const scoutLayerRef = useRef<L.LayerGroup | null>(null);
+  const scoutRendererRef = useRef<L.Canvas | null>(null);
   const backroadLayerRef = useRef<L.LayerGroup | null>(null);
   const backroadRendererRef = useRef<L.Canvas | null>(null);
   /** The padded, grid-snapped box the drawn roads were fetched for. */
@@ -1946,6 +1953,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * caveat sitting under the switch.
    */
   const [showBackroads, setShowBackroads] = useState(false);
+
+  /**
+   * The roads this phone has driven. OFF by default, like the backroads.
+   *
+   * `scoutState` is what the layer can currently say — held so an empty map
+   * can explain WHICH silence it is. "You have not driven anything here" and
+   * "you are too far out to draw it" are different sentences, and neither of
+   * them is "there are no roads".
+   */
+  const [showScout, setShowScout] = useState(false);
+  const [scoutState, setScoutState] = useState<{
+    tooFar: boolean; traces: number;
+  }>({ tooFar: false, traces: 0 });
+
+  /**
+   * Bumped when a drive is stored or erased, so the layer redraws without
+   * waiting for the camper to pan. Recording happens while the map sits
+   * still — that is the whole point of Scout Mode — so "redraw on moveend"
+   * alone would leave the road you just drove missing until you touched
+   * the map.
+   */
+  const [scoutRefreshKey, setScoutRefreshKey] = useState(0);
+  useEffect(() => onTracesChanged(() => setScoutRefreshKey((n) => n + 1)), []);
   /**
    * What the backroads layer is currently able to say. `scan` is the last
    * answer, `tooFar` means the map is zoomed out past where it asks at all,
@@ -3558,6 +3588,192 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     };
   }, [isMapReady, showBoundaries, isOfflineMode]);
+
+  /* -------------------------------------------------------------------- */
+  /* Scout: the roads THIS PHONE has driven, and how rough they were       */
+  /* -------------------------------------------------------------------- */
+  /**
+   * One line per recorded drive, coloured span by span.
+   *
+   * WHAT A COLOUR MEANS is in `config/scoutRoughness.ts`, and it is one
+   * thing only: how rough the ride was. Not what the road is made of — an
+   * accelerometer cannot know that, and the backroads layer above already
+   * answers it from OpenStreetMap.
+   *
+   * ---------------------------------------------------------------------
+   * THE GRADIENT IS MANY SHORT SEGMENTS, NOT ONE LINE
+   * ---------------------------------------------------------------------
+   *
+   * Leaflet cannot paint a gradient along a polyline, and it does not need
+   * to: the data is already a string of readings about a second apart, so
+   * each consecutive pair is drawn as its own two-point segment in its own
+   * colour. At driving speed that is a new colour every ten to twenty
+   * metres, which is fine enough to fade smoothly and — the point — fine
+   * enough that one bad twenty metres shows up as its own red stripe
+   * instead of being averaged into the road around it. That is why there
+   * are no pothole markers in this app.
+   *
+   * ---------------------------------------------------------------------
+   * NOTHING HERE COUNTS PASSES
+   * ---------------------------------------------------------------------
+   *
+   * Every trace is drawn at `PASS_ALPHA`, and where drives overlap the alpha
+   * compounds on its own: one pass is a whisper, five is solid. A road you
+   * have driven once LOOKS like a road you have driven once, which is the
+   * honest rendering of a single vehicle's single opinion. GPS scatter puts
+   * repeat passes a few metres apart, so they read as a braid — which is
+   * what a track log has always looked like, and is a truer picture than one
+   * confident line down the middle.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    let cancelled = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+
+    const clear = () => {
+      if (!scoutLayerRef.current) return;
+      try { map.removeLayer(scoutLayerRef.current); } catch { /* detached */ }
+      scoutLayerRef.current = null;
+    };
+
+    if (!showScout) {
+      clear();
+      setScoutState({ tooFar: false, traces: 0 });
+      return;
+    }
+
+    /**
+     * Just above the backroads (410), so a road you have driven paints over
+     * the generic line for the same road rather than under it. Pointer
+     * events off: a tap here must still drop a destination pin.
+     */
+    const pane = (): void => {
+      if (!map.getPane('scoutPane')) {
+        map.createPane('scoutPane');
+        const created = map.getPane('scoutPane');
+        if (created) {
+          created.style.zIndex = '412';
+          created.style.pointerEvents = 'none';
+        }
+      }
+    };
+
+    // One canvas for the life of the effect — see the backroads note below
+    // for why minting one per redraw orphans a renderer on every pan.
+    const renderer = (): L.Canvas => {
+      if (!scoutRendererRef.current) {
+        pane();
+        scoutRendererRef.current = L.canvas({ pane: 'scoutPane', padding: 0.3 });
+      }
+      return scoutRendererRef.current;
+    };
+
+    const draw = (traces: ScoutTrace[]) => {
+      clear();
+      if (traces.length === 0) return;
+
+      const canvas = renderer();
+      const group = L.layerGroup([], { pane: 'scoutPane' });
+
+      /*
+       * Casings first, then colour — the same two passes the backroads use.
+       * Drawn trace by trace instead, one drive's dark outline paints over
+       * the previous drive's colour wherever they cross, and a junction you
+       * have driven twice comes out chewed.
+       */
+      for (const trace of traces) {
+        group.addLayer(L.polyline(
+          trace.points.map((p) => [p.lat, p.lon] as [number, number]),
+          {
+            renderer: canvas,
+            pane: 'scoutPane',
+            interactive: false,
+            color: SCOUT_CASING.color,
+            opacity: SCOUT_CASING.opacity,
+            weight: SCOUT_WEIGHT + SCOUT_CASING.extraWeight,
+            lineCap: 'round',
+            lineJoin: 'round'
+          }
+        ));
+      }
+
+      for (const trace of traces) {
+        for (let i = 1; i < trace.points.length; i += 1) {
+          const from = trace.points[i - 1];
+          const to = trace.points[i];
+
+          /*
+           * The WORSE of the two ends, not the mean. A span is only as good
+           * as its bad half: averaging a smooth reading with the pothole
+           * next to it paints the pothole half as bad as it is, which is
+           * the one direction this layer must never round in.
+           */
+          group.addLayer(L.polyline(
+            [[from.lat, from.lon], [to.lat, to.lon]] as [number, number][],
+            {
+              renderer: canvas,
+              pane: 'scoutPane',
+              interactive: false,
+              color: roughnessColor(Math.max(from.r, to.r)),
+              opacity: PASS_ALPHA,
+              weight: SCOUT_WEIGHT,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }
+          ));
+        }
+      }
+
+      group.addTo(map);
+      scoutLayerRef.current = group;
+    };
+
+    const run = async () => {
+      if (cancelled) return;
+
+      /*
+       * Too far out. Cleared rather than left showing the last close-up's
+       * strands floating over a county — and the notice says which silence
+       * this is, so an empty map never reads as "you have driven nothing".
+       */
+      if (map.getZoom() < SCOUT_MIN_ZOOM) {
+        clear();
+        setScoutState({ tooFar: true, traces: 0 });
+        return;
+      }
+
+      const b = map.getBounds();
+      const traces = await tracesIn({
+        minLat: b.getSouth(), minLon: b.getWest(),
+        maxLat: b.getNorth(), maxLon: b.getEast()
+      });
+      if (cancelled) return;
+
+      setScoutState({ tooFar: false, traces: traces.length });
+      draw(traces);
+    };
+
+    const load = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(run, 200);
+    };
+
+    load();
+    map.on('moveend zoomend', load);
+
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend zoomend', load);
+      clear();
+      if (scoutRendererRef.current) {
+        try { map.removeLayer(scoutRendererRef.current); } catch { /* detached */ }
+        scoutRendererRef.current = null;
+      }
+    };
+  }, [isMapReady, showScout, scoutRefreshKey]);
 
   /* ------------------------------------------------------------------ */
   /* Backroads: the little unpaved roads nothing else draws              */
@@ -7422,6 +7638,66 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                has stopped knowing". It hasn't — only the paint is gone. */
             <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
               Off — a tap still names the land, its limits and its fire ban.
+            </p>
+          )}
+
+          {/* ------------------------------------------------------- */}
+          {/* Roads this phone has driven                              */}
+          {/* ------------------------------------------------------- */}
+          <label className="flex items-center justify-between gap-2 px-1 py-1.5 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-800 cursor-pointer">
+            <span>Roads I&apos;ve driven</span>
+            <input
+              type="checkbox"
+              checked={showScout}
+              onChange={(e) => setShowScout(e.target.checked)}
+              className="accent-emerald-500 w-4 h-4 shrink-0"
+            />
+          </label>
+          {showScout ? (
+            <div className="px-1 pb-1 space-y-1.5">
+              {/*
+                THE RAMP, AND THE FOUR WORDS FOR IT.
+
+                The line itself is continuous — these names exist so the bar
+                can be read, not because the drawing is bucketed. They are
+                phrased as decisions rather than textures: "washboard" is a
+                description, "slow down" is what to do about it.
+              */}
+              <div
+                className="h-2 rounded-full mt-1"
+                style={{
+                  background: `linear-gradient(90deg, ${ROUGHNESS_BANDS
+                    .map((_, i) => roughnessColor(i / (ROUGHNESS_BANDS.length - 1)))
+                    .join(', ')})`
+                }}
+                aria-hidden="true"
+              />
+              <div className="flex justify-between gap-1">
+                {ROUGHNESS_BANDS.map((band) => (
+                  <span key={band.label} className="text-[11px] text-slate-400 leading-tight">
+                    {band.label}
+                  </span>
+                ))}
+              </div>
+
+              {/*
+                WHICH SILENCE THIS IS.
+
+                An empty layer has three meanings and only one of them is
+                "this road is fine". Saying nothing would let the other two
+                be read as the first.
+              */}
+              <p className="text-[11px] text-slate-500 leading-snug">
+                {scoutState.tooFar
+                  ? 'Zoom in to draw your recorded drives.'
+                  : scoutState.traces === 0
+                    ? 'Nothing recorded in this view. That means you haven’t driven it with Scout Mode on — not that the roads here are good.'
+                    : 'Faint means you drove it once. It firms up as you drive it again. Roughness only — the surface itself is the backroads layer.'}
+              </p>
+            </div>
+          ) : (
+            <p className="px-1 pb-1 text-[11px] text-slate-500 leading-snug">
+              Off — your drives are still recorded and kept on this phone.
             </p>
           )}
 
