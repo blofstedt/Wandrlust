@@ -32,6 +32,7 @@ import {
   currentAccessToken
 } from './dataService';
 import type { BeaconQueryResult, BeaconDwellState } from '../types';
+import { supabase } from '../lib/supabase';
 
 /* ------------------------------------------------------------------ */
 /* The scan                                                            */
@@ -73,6 +74,55 @@ const TIMED_OUT: BeaconQueryResult = {
 const GATEWAY_TIMEOUT = new Set([408, 502, 503, 504]);
 
 /**
+ * The session is gone, whatever the rest of the app believes.
+ *
+ * `needsAuth` rather than a note, because the panel has to DO something about
+ * this — open the sign-in sheet — and a sentence cannot.
+ */
+const SIGNED_OUT: BeaconQueryResult = {
+  ok: false,
+  spots: [],
+  cached: false,
+  disclaimer: DISCLAIMER,
+  needsAuth: true,
+  note:
+    'Your sign-in has expired, so this beacon was not sent. Sign in again and ' +
+    'it will go out — ground somebody has already swept stays free either way.'
+};
+
+/**
+ * Make the app agree with the server about whether anybody is signed in.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS EXISTS FOR
+ * ---------------------------------------------------------------------------
+ *
+ * `AuthContext` sets `user` from the session it read at startup. If that
+ * session later dies and the refresh cannot save it, Supabase hands back no
+ * session — but nothing had told the React tree, so `user` stayed truthy for
+ * the rest of the app's life. The Beacon panel checks `user`, believed the
+ * camper was signed in, and sent a request with no token on it. The server
+ * answered 401 "sign in to send out a beacon", the panel printed that
+ * sentence, and a camper who was looking at their own name in the account
+ * menu read it as the feature being broken and pressed the button again.
+ * Seven times in fifteen seconds, in the logs that found this.
+ *
+ * Signing out for real is what fixes it: it fires `onAuthStateChange`,
+ * `AuthContext` clears `user`, and every gate in the app starts telling the
+ * same story. The camper is signed out either way — this only stops the app
+ * pretending otherwise.
+ */
+const reconcileDeadSession = async (): Promise<void> => {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (!data?.session) await supabase.auth.signOut();
+  } catch {
+    // Best effort. A failure here leaves the app exactly as it was.
+  }
+};
+
+/**
  * Drop a beacon and see what comes back.
  *
  * The access token rides along because the server claims the rate-limit token
@@ -104,6 +154,19 @@ export const queryBeacon = async (
     // would throw into the catch and be reported as an unreachable server —
     // see TIMED_OUT.
     if (GATEWAY_TIMEOUT.has(res.status)) return TIMED_OUT;
+
+    /*
+     * 401 IS ABOUT THE SESSION, NOT ABOUT THE GROUND.
+     *
+     * The server only sends it when no usable token arrived, which means this
+     * device thinks it is signed in and is not. Say so as something the panel
+     * can act on, and put the app's own idea of who is signed in back in step
+     * with the server's — see `reconcileDeadSession`.
+     */
+    if (res.status === 401) {
+      await reconcileDeadSession();
+      return SIGNED_OUT;
+    }
 
     const data = (await res.json().catch(() => null)) as BeaconQueryResult | null;
     if (!data || typeof data !== 'object') return UNREACHABLE;
