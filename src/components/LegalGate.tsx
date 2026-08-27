@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { Markdown } from './ui/Markdown';
 
 /**
  * First-run legal acceptance.
@@ -286,9 +287,13 @@ export const LegalDocumentModal: React.FC<{
               <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
             </div>
           ) : (
-            <pre className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap font-sans">
-              {body}
-            </pre>
+            /*
+              Rendered, not dumped. This modal used to print the raw file, so
+              a camper reading the terms saw `## 4. Your account` and
+              `**bold**` as literal characters. Same document, same renderer
+              the /privacy and /terms pages use.
+            */
+            <Markdown source={body} />
           )}
         </div>
       </div>
