@@ -4918,9 +4918,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * is coming from. The ping is decoration earning its keep: three rings
    * expanding out from the mast read as a transmitter even to someone who has
    * never seen a cell tower icon before.
+   *
+   * The label's own icon is lucide's `radio-tower` glyph, drawn as an inline
+   * SVG rather than an emoji — the same line weight and stroke language as
+   * every other icon in this app, instead of whatever a phone's own emoji
+   * font happens to render a satellite dish as.
    */
   const runSignalTour = useCallback(() => runTour(async (t) => {
     const SIGNAL_COLOR = '#22D3EE';
+    const RADIO_TOWER_SVG =
+      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ` +
+      `stroke-linecap="round" stroke-linejoin="round" ` +
+      `style="width:19px;height:19px;color:${SIGNAL_COLOR}">` +
+      '<path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9"/>' +
+      '<path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5"/>' +
+      '<circle cx="12" cy="9" r="2"/>' +
+      '<path d="M16.2 4.8c2 2 2.26 5.11.8 7.47"/>' +
+      '<path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1"/>' +
+      '<path d="M9.5 18h5"/>' +
+      '<path d="m8 22 4-11 4 11"/>' +
+      '</svg>';
     const point = readPointRef.current;
     const tower = coverageRef.current.towers?.[0];
     if (!point || !tower) return;
@@ -4958,7 +4975,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       title: tower.operator?.trim() || 'Nearest mast',
       detail: `${away} away, straight line — terrain isn't part of this estimate` +
         (tower.technology ? `, recorded as ${tower.technology}` : ''),
-      glyph: '\u{1F4E1}',
+      glyph: RADIO_TOWER_SVG,
       color: SIGNAL_COLOR
     });
 

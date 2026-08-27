@@ -720,6 +720,67 @@
 }
 .wl-chip-glyph { font-size: 10px; line-height: 1; }
 
+/*
+ * The weather chip's sky icon, built in `skyGlyph` (amenityDots.ts) as a
+ * stack of tiny SVGs — one shape per layer, so a raindrop can fall or a
+ * snowflake can drift without disturbing the cloud it sits under. Every
+ * layer is a full 24x24 svg positioned over the same box; only the shape
+ * actually drawn on that layer is visible, so animating the whole svg
+ * element only moves that one piece.
+ */
+.wl-wx-icon {
+  position: relative;
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+}
+.wl-wx-icon svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  transform-origin: center;
+}
+@keyframes wl-wx-spin { to { transform: rotate(360deg); } }
+@keyframes wl-wx-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-1px); }
+}
+@keyframes wl-wx-drift {
+  0%, 100% { transform: translateX(-0.6px); }
+  50%      { transform: translateX(0.9px); }
+}
+@keyframes wl-wx-drop-fall {
+  0%   { transform: translateY(-2px); opacity: 0; }
+  35%  { opacity: 1; }
+  100% { transform: translateY(3px); opacity: 0; }
+}
+@keyframes wl-wx-flake-drift {
+  0%, 100% { transform: translateY(0); opacity: 0.55; }
+  50%      { transform: translateY(1.5px); opacity: 1; }
+}
+@keyframes wl-wx-bolt-flicker {
+  0%, 40%, 58%, 100% { opacity: 1; }
+  48%                { opacity: 0.2; }
+}
+@keyframes wl-wx-fog-drift {
+  0%, 100% { transform: translateX(-1.2px); opacity: 0.5; }
+  50%      { transform: translateX(1.2px); opacity: 1; }
+}
+.wl-wx-spin    { animation: wl-wx-spin 8s linear infinite; }
+.wl-wx-bob     { animation: wl-wx-bob 3000ms ease-in-out infinite; }
+.wl-wx-drift   { animation: wl-wx-drift 3400ms ease-in-out infinite; }
+.wl-wx-drop    { animation: wl-wx-drop-fall 1000ms ease-in infinite; }
+.wl-wx-drop-2  { animation-delay: 260ms; }
+.wl-wx-drop-3  { animation-delay: 520ms; }
+.wl-wx-flake   { animation: wl-wx-flake-drift 2200ms ease-in-out infinite; }
+.wl-wx-flake-2 { animation-delay: 500ms; }
+.wl-wx-flake-3 { animation-delay: 1000ms; }
+.wl-wx-bolt    { animation: wl-wx-bolt-flicker 2600ms ease-in-out infinite; }
+.wl-wx-fogline { animation: wl-wx-fog-drift 2800ms ease-in-out infinite; }
+.wl-wx-fogline-2 { animation-delay: 550ms; }
+
 /* "More is on the way" — sits at the top of a pin's chip stack while its
    nearby-facility lookup is still in flight. See setChipsLoading in
    mapPinRendering.ts: managed entirely apart from the keyed chips
@@ -1147,6 +1208,9 @@
   }
   .wl-tower-ping-wrap .wl-radio-ping-2,
   .wl-tower-ping-wrap .wl-radio-ping-3 { display: none; }
+  /* The sky icon still shows which condition it is — a still sun, cloud,
+     drop or flake — without the loop that makes it read as weather. */
+  .wl-wx-icon svg { animation: none !important; }
   /* Still says "more is coming" without the three dots taking turns. */
   .wl-chip-loading-dot { animation: none; opacity: 0.85; }
   /* The chips' stagger is a delay, not a duration, so shortening the

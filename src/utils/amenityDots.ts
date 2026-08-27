@@ -291,20 +291,86 @@ const SIGNAL_SHORT: Record<string, string> = {
 };
 
 /**
- * The sky in one character, so the chip beside it only has to carry the
- * temperature. Matched loosely on the forecast wording because every feed
- * words it differently; anything unrecognised falls back to the thermometer,
- * which claims nothing about the sky at all.
+ * The sky in one small animated icon, so the chip beside it only has to carry
+ * the temperature. Matched loosely on the forecast wording because every feed
+ * words it differently; anything unrecognised falls back to a plain
+ * thermometer emoji, which claims nothing about the sky at all.
+ *
+ * Each condition is a stack of tiny SVGs, one shape per layer, so a piece can
+ * animate on its own \u2014 a raindrop falling, a snowflake drifting \u2014 without
+ * disturbing the cloud it sits under. Animating the WHOLE svg element per
+ * layer (rather than a path inside one shared svg) sidesteps SVG's patchy
+ * support for `transform-origin` on nested shapes: a plain HTML box rotates
+ * and translates the ordinary, reliable way. The rays layer in "clear" and
+ * "partly cloudy" spins the sun's core circle along with them \u2014 imperceptible
+ * on its own, since a circle rotated around its own centre looks unchanged.
  */
+const WX_STROKE = 'fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round"';
+
+const wxLayer = (cls: string, paths: string): string =>
+  `<svg viewBox="0 0 24 24" ${WX_STROKE}${cls ? ` class="${cls}"` : ''}>${paths}</svg>`;
+
+const wxIcon = (...layers: string[]): string =>
+  `<span class="wl-wx-icon" aria-hidden="true">${layers.join('')}</span>`;
+
+const CLOUD_PATH = '<path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>';
+
 const skyGlyph = (forecast: string): string => {
   const f = forecast.toLowerCase();
-  if (/thunder|storm/.test(f)) return '\u26C8\uFE0F';
-  if (/snow|flurr|ice|freezing/.test(f)) return '\u{1F328}\uFE0F';
-  if (/rain|shower|drizzle/.test(f)) return '\u{1F327}\uFE0F';
-  if (/fog|haze|mist|smoke/.test(f)) return '\u{1F32B}\uFE0F';
-  if (/partly|mostly sunny|few clouds/.test(f)) return '\u26C5';
-  if (/cloud|overcast/.test(f)) return '\u2601\uFE0F';
-  if (/clear|sunny|fair/.test(f)) return '\u2600\uFE0F';
+
+  if (/thunder|storm/.test(f)) {
+    return wxIcon(
+      wxLayer('', CLOUD_PATH),
+      wxLayer('wl-wx-bolt', '<path d="m13 12-3 5h4l-3 5"/>')
+    );
+  }
+  if (/snow|flurr|ice|freezing/.test(f)) {
+    return wxIcon(
+      wxLayer('', CLOUD_PATH),
+      wxLayer('wl-wx-flake', '<path d="M8 15h.01"/>'),
+      wxLayer('wl-wx-flake wl-wx-flake-2', '<path d="M12 17h.01"/>'),
+      wxLayer('wl-wx-flake wl-wx-flake-3', '<path d="M16 19h.01"/>')
+    );
+  }
+  if (/rain|shower|drizzle/.test(f)) {
+    return wxIcon(
+      wxLayer('', CLOUD_PATH),
+      wxLayer('wl-wx-drop', '<path d="M8 14v6"/>'),
+      wxLayer('wl-wx-drop wl-wx-drop-2', '<path d="M12 16v6"/>'),
+      wxLayer('wl-wx-drop wl-wx-drop-3', '<path d="M16 14v6"/>')
+    );
+  }
+  if (/fog|haze|mist|smoke/.test(f)) {
+    return wxIcon(
+      wxLayer('', CLOUD_PATH),
+      wxLayer('wl-wx-fogline', '<path d="M16 17H7"/>'),
+      wxLayer('wl-wx-fogline wl-wx-fogline-2', '<path d="M17 21H9"/>')
+    );
+  }
+  if (/partly|mostly sunny|few clouds/.test(f)) {
+    return wxIcon(
+      wxLayer('wl-wx-spin',
+        '<path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/>' +
+        '<path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/>'),
+      wxLayer('wl-wx-drift',
+        '<path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/>' +
+        '<path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/>')
+    );
+  }
+  if (/cloud|overcast/.test(f)) {
+    return wxIcon(wxLayer('wl-wx-bob', CLOUD_PATH));
+  }
+  if (/clear|sunny|fair/.test(f)) {
+    return wxIcon(wxLayer('wl-wx-spin',
+      '<circle cx="12" cy="12" r="4"/>' +
+      '<path d="M12 2v2"/><path d="M12 20v2"/>' +
+      '<path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/>' +
+      '<path d="M2 12h2"/><path d="M20 12h2"/>' +
+      '<path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>'));
+  }
+  // Genuinely don't know what this forecast means \u2014 a plain thermometer
+  // claims nothing about the sky, unlike every icon above.
   return '\u{1F321}\uFE0F';
 };
 
