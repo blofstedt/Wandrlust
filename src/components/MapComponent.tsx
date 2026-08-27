@@ -5052,6 +5052,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * is a long time to be made to wait, the label carries its own way out.
      */
     await t.wait(10000);
+
+    /**
+     * READING THE CARD IS THE WHOLE ERRAND — SO FINISHING IT PUTS THE PIN AWAY TOO.
+     *
+     * Every other chip's tour borrows the camera for a couple of seconds and
+     * hands it straight back, leaving the pin exactly as open as it was. This
+     * one is different: the × and the ten-second timeout are both ways of
+     * saying "I'm done reading", and this parcel card was the reason the pin
+     * was open in the first place. Leaving it selected after either exit made
+     * the answer outlive the question. `t.wait` above resolves on both paths
+     * — a real ten seconds, or `cancel()` waking it early — so one call here
+     * covers both.
+     */
+    clearDestinationRef.current();
   }), [runTour]);
 
   /**
@@ -5364,8 +5378,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         case 'gap': void runGapTour(); return;
         case 'road': void runRoadTour(facility ?? null); return;
         case 'directions': directionsRef.current(); return;
-        // The × on a tour label. Stops the tour and nothing else — the pin it
-        // was launched from stays open, because you asked about one chip.
+        // The × on a tour label. This dispatcher only ever stops the tour —
+        // for most chips that's the whole story, and the pin stays open. The
+        // land tour is the one exception: it deselects the pin itself too,
+        // as a follow-on inside runLandTour once the wait this cancels
+        // resolves. See the comment there.
         case 'tour-close': endTour(); return;
         /*
          * The × under the pin means "put all of this away".
