@@ -1,3 +1,10 @@
+import type { CarrierId, SignalStrength, CellTechnology } from '../shared/cellTypes';
+import type {
+  BackroadSurface, BackroadAccess, BackroadWay, BackroadScan
+} from '../shared/backroadTypes';
+export type { CarrierId, SignalStrength, CellTechnology };
+export type { BackroadSurface, BackroadAccess, BackroadWay, BackroadScan };
+
 export type LandType = 'blm' | 'usfs' | 'state_forest' | 'dispersed' | 'crown_land';
 export type RoadAccess = 'paved' | 'gravel' | 'high_clearance' | '4x4_only';
 export type ToiletType = 'none' | 'vault' | 'flush' | 'pack_out';
@@ -201,19 +208,6 @@ export type FacilityLookupState =
  * `basis` is the sentence shown under the bars saying how the number was
  * arrived at. Nothing renders coverage without it.
  * ------------------------------------------------------------------ */
-
-export type CarrierId = 'verizon' | 'att' | 'tmobile' | 'rogers' | 'telus' | 'bell';
-
-/** The word a camper reads. Bars are the drawing; this is the answer. */
-export type SignalStrength = 'strong' | 'good' | 'weak' | 'none';
-
-/**
- * Which generation the nearest transmitter serves.
- *
- * Absent whenever nobody recorded it, which is most masts. It is never
- * inferred from the carrier or the era — an untagged mast gets no label.
- */
-export type CellTechnology = '5G' | '4G LTE' | '3G' | '2G';
 
 /**
  * One transmitter, positioned.
@@ -843,43 +837,6 @@ export interface BeaconModelSummary {
 }
 
 /* ------------------------------------------------------------------ *
- * Backroads
- *
- * The unpaved and minor roads drawn as an overlay on the map. Sourced from
- * OpenStreetMap, which means a line here is a road SOMEBODY RECORDED — not a
- * road that is passable, maintained, ungated or legal to drive.
- *
- * `surface` has three states on purpose. OSM leaves the surface tag off far
- * more often than it fills it in, so "nobody wrote it down" is the common
- * case and it must never be rendered as either paved or unpaved.
+ * Backroads — see shared/backroadTypes.ts, which both this client bundle
+ * and server/backroadRoutes.ts import.
  * ------------------------------------------------------------------ */
-
-export type BackroadSurface = 'unpaved' | 'paved' | 'unrecorded';
-
-/** What OSM says about driving it. `open` means nothing says otherwise. */
-export type BackroadAccess = 'open' | 'permit' | 'private';
-
-/**
- * Four fields, because four fields are what the map draws. What OSM knows
- * and this deliberately does not carry — the name, the gate, `4wd_only`,
- * seasonal access — is listed in `server/backroadRoutes.ts`, along with
- * where to pick it back up.
- */
-export interface BackroadWay {
-  /** The raw `highway` value — `track`, `service`, `unclassified`… */
-  kind: string;
-  surface: BackroadSurface;
-  access: BackroadAccess;
-  /** [lat, lon] pairs, simplified for drawing. */
-  line: [number, number][];
-}
-
-export interface BackroadScan {
-  /** False means we could not check — never "there are no roads here". */
-  ok: boolean;
-  /** The box asked about was too big to answer. */
-  tooWide: boolean;
-  /** Roads were dropped to keep the answer drawable. */
-  truncated: boolean;
-  roads: BackroadWay[];
-}

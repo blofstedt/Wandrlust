@@ -44,14 +44,12 @@
  */
 import { USER_AGENT } from './alertSources.js';
 import { haversineKm } from '../shared/geoMath.js';
+import type { CarrierId, CellTechnology, SignalStrength } from '../shared/cellTypes.js';
+export type { CarrierId, CellTechnology, SignalStrength };
 
 /* ------------------------------------------------------------------ */
 /* Shared vocabulary                                                   */
 /* ------------------------------------------------------------------ */
-
-export type CarrierId = 'verizon' | 'att' | 'tmobile' | 'rogers' | 'telus' | 'bell';
-export type CellTechnology = '5G' | '4G LTE' | '3G' | '2G';
-export type SignalStrength = 'strong' | 'good' | 'weak' | 'none';
 
 export interface CarrierNetwork {
   id: CarrierId;
