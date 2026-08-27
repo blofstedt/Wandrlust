@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowLeft, Map as MapIcon } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { BrandMark } from './ui/BrandMark';
 
 /**
@@ -56,25 +56,23 @@ export const PublicPage: React.FC<PublicPageProps> = ({
         The header owns the cut-out, the same way the app's own does — its
         background runs up behind the clock instead of leaving a blank strip
         above it. See the note in Navbar.tsx.
+
+        Logo only — no "Open the map" here. The landing page already puts one
+        clear version of that button in its hero, and a second copy up here
+        competed with it instead of reinforcing it. `/privacy` and `/terms`
+        keep a way back to the app too: the footer's "The map" link below,
+        and `BackHome` at the foot of the document itself.
       */}
       <header
         className="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-md border-b border-slate-800
                    px-4 sm:px-6 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))]"
       >
-        <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
+        <div className="max-w-3xl mx-auto flex items-center gap-3">
           <a href="/home" className="flex items-center gap-2.5 min-w-0">
             <BrandMark size={34} className="shrink-0 rounded-xl shadow-lg shadow-emerald-900/40" />
             <span className="font-['Outfit'] font-extrabold text-lg tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-amber-300 bg-clip-text text-transparent">
               Wandrlust
             </span>
-          </a>
-
-          <a
-            href="/"
-            className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors"
-          >
-            <MapIcon className="w-3.5 h-3.5" />
-            Open the map
           </a>
         </div>
       </header>
