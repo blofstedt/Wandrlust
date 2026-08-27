@@ -21,32 +21,6 @@
 }
 
 /* ====================================================================
-   How far down the map's own overlays have to start.
-
-   On a phone the map view has no header bar — the search field floats over
-   the map instead, and the map runs to the top edge of the screen behind it
-   (see the long note in Navbar.tsx). So the map's notice column, which is
-   the map talking rather than a control, has to begin below that field
-   instead of at the top of its container, or the first thing it says lands
-   under the search.
-
-   Kept here rather than as a number copied into MapComponent, because it is
-   one measurement shared by two files: the floating field's own height plus
-   the phone's cut-out, plus a gap. From `md` up the header is an ordinary
-   bar again and the map starts underneath it, so this goes back to the
-   plain inset it always was.
-   ==================================================================== */
-:root {
-  --map-overlay-top: calc(env(safe-area-inset-top) + 4rem);
-}
-
-@media (min-width: 768px) {
-  :root {
-    --map-overlay-top: 0.75rem;
-  }
-}
-
-/* ====================================================================
    Wandrlust motion system — inspired by PebbleOS
 
    The house curve is "moook": a short ramp, linear travel, then an
