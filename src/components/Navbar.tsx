@@ -262,26 +262,110 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
    * sheets at 1800. At an equal z-index the map controls won the tie and
    * punched holes through the header's own dropdowns.
    */
+
+  /**
+   * ON THE MAP, ON A PHONE, THIS STOPS BEING A BAR.
+   *
+   * A bar across the top of a map is a bar across the top of the thing you
+   * came to look at. It cost about a sixth of the screen, and — sitting in
+   * the exact place a browser puts its address bar, in a slightly different
+   * shade to the shell behind it — it made an installed app look like a web
+   * page in Safari. Which is what it was told, twice.
+   *
+   * So on the map view the header leaves the layout entirely: it is
+   * positioned over the map, it has no background, no border and no shadow,
+   * and the map runs edge to edge behind it, all the way to the top of the
+   * screen. What is left up there is the search field alone, floating as a
+   * rounded pill, and the connection light beside it — the way every maps
+   * app on a phone does it.
+   *
+   * Two things this must not do, both of which it did in some draft:
+   *
+   *  - SWALLOW TAPS. The header still spans the full width, so it is
+   *    `pointer-events-none` and only the search and the light take input.
+   *    An invisible strip across the top eating taps meant for the ground is
+   *    a bug this codebase has fixed more than once.
+   *  - LEAVE THE CLOCK UNREADABLE. With no bar behind it, the phone's status
+   *    bar sits directly on the map, and a map is often pale. A soft scrim
+   *    fades from the top edge so white text stays legible over snow or
+   *    desert without drawing a hard line anybody would read as chrome.
+   *
+   * The map's own overlays have to start below all this — see
+   * `--map-overlay-top` in index.css.
+   *
+   * Everywhere else — the list, saved, tools, and every screen wide enough
+   * for a real header — the ordinary bar is right and comes back unchanged.
+   */
+  const overMap = activeView === 'map';
+
+  const headerClass = overMap
+    ? [
+        'absolute inset-x-0 top-0 z-[1400] pointer-events-none text-slate-100',
+        'px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]',
+        'md:static md:pointer-events-auto md:bg-slate-900/95 md:backdrop-blur-md',
+        'md:border-b md:border-slate-800 md:shadow-xl',
+        'md:px-6 md:pb-2.5 md:pt-[calc(0.625rem+env(safe-area-inset-top))]'
+      ].join(' ')
+    : [
+        'sticky top-0 z-[1400] bg-slate-900/95 backdrop-blur-md',
+        'border-b border-slate-800 text-slate-100 shadow-xl',
+        'px-3 sm:px-6 pb-2 sm:pb-2.5',
+        'pt-[calc(0.5rem+env(safe-area-inset-top))] sm:pt-[calc(0.625rem+env(safe-area-inset-top))]'
+      ].join(' ');
+
+  const rowClass = overMap
+    ? 'max-w-7xl mx-auto flex items-center gap-2 md:flex-wrap md:justify-between md:gap-3'
+    : 'max-w-7xl mx-auto flex flex-col md:flex-row md:flex-wrap items-center justify-between gap-2 md:gap-3';
+
+  /*
+   * Over the map the brand is hidden and only the connection light is left,
+   * so this block sits beside the search rather than on a row above it.
+   *
+   * On the LEFT, deliberately. The right-hand edge of the map belongs to the
+   * map's own control stack — account, support, layers, locate, zoom — which
+   * is a full-height bottom-aligned column. Put the light on that side and
+   * the two share an edge, which is fine on a tall phone and collides the
+   * moment the viewport is short (a phone in landscape). The left edge has
+   * nothing in it.
+   */
+  const brandBlockClass = overMap
+    ? 'flex items-center gap-3 pointer-events-auto md:w-auto md:justify-between'
+    : 'flex items-center justify-between w-full md:w-auto gap-3';
+
+  const searchWrapClass = overMap
+    ? 'flex-1 min-w-0 pointer-events-auto md:flex-1 md:min-w-[16rem] md:max-w-md'
+    : 'w-full md:flex-1 md:min-w-[16rem] md:max-w-md';
+
   return (
     <>
     {/*
-      The header owns the status-bar area on an installed app.
-
-      `env(safe-area-inset-top)` is added to this element's own top padding
-      rather than to the app shell around it, so the header's background runs
-      all the way up behind the clock and the battery. Padding the shell
-      instead left a blank strip above the header — a second bar, right where
-      a browser draws its address bar — and made the installed app look like
-      a web page in Safari. On any screen without a cut-out the inset is zero
-      and this is just `py-2`.
+      Wherever this IS still a bar, it owns the status-bar area itself:
+      `env(safe-area-inset-top)` goes into its own top padding rather than
+      into the app shell around it, so its background runs up behind the
+      clock and the battery. Padding the shell instead left a blank strip
+      above the header — a second bar, exactly where a browser draws its
+      address bar. On a screen with no cut-out the inset is zero and this is
+      just `py-2`.
     */}
-    <header className="sticky top-0 z-[1400] bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-slate-100 px-3 sm:px-6 pb-2 sm:pb-2.5 pt-[calc(0.5rem+env(safe-area-inset-top))] sm:pt-[calc(0.625rem+env(safe-area-inset-top))] shadow-xl">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:flex-wrap items-center justify-between gap-2 md:gap-3">
+    <header className={headerClass}>
+      {/*
+        The scrim, phone-and-map only. It keeps the phone's clock readable
+        where the map underneath is pale, and fades out rather than ending on
+        an edge — an edge is the very thing that reads as browser chrome.
+      */}
+      {overMap && (
+        <div
+          aria-hidden="true"
+          className="absolute inset-x-0 top-0 -z-10 h-[calc(100%+2rem)] pointer-events-none bg-gradient-to-b from-slate-950/90 via-slate-950/50 to-transparent md:hidden"
+        />
+      )}
+
+      <div className={rowClass}>
         {/* Brand */}
-        <div className="flex items-center justify-between w-full md:w-auto gap-3">
+        <div className={brandBlockClass}>
           <button
             onClick={() => setActiveView('map')}
-            className="flex items-center gap-2.5 no-press text-left"
+            className={`${overMap ? 'hidden md:flex' : 'flex'} items-center gap-2.5 no-press text-left`}
           >
             {/* The app's own icon, not an approximation of it. Same geometry
                 the home-screen tile is baked from — see ui/BrandMark.tsx. */}
@@ -343,11 +427,17 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           × was colliding with — and the map already has a locate button of
           its own, in the stack where a thumb is.
         */}
-        <div className="w-full md:flex-1 md:min-w-[16rem] md:max-w-md" ref={dropdownRef}>
+        <div className={searchWrapClass} ref={dropdownRef}>
           <div className="relative w-full">
             <div className="relative flex items-center">
+              {/*
+                `z-10` so the glyph sits ON the field rather than under it.
+                The input is painted after this icon and carries a
+                translucent background, which over the map is only 85%
+                opaque — enough to wash a slate-400 magnifier out to a smudge.
+              */}
               <Search
-                className={`absolute left-3.5 w-4 h-4 pointer-events-none ${
+                className={`absolute left-3.5 z-10 w-4 h-4 pointer-events-none ${
                   isSearching ? 'text-emerald-400 animate-[bounce_0.6s_infinite]' : 'text-slate-400'
                 }`}
               />
@@ -380,7 +470,13 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
                   edge, which is what "the x is cut off" was. It is a plain
                   absolutely-positioned 36px target now, inset from the edge.
                 */
-                className="w-full bg-slate-950/90 border border-slate-700/80 rounded-xl pl-10 pr-11 py-2 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 shadow-inner"
+                className={`w-full border pl-10 pr-11 py-2 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 ${
+                  overMap
+                    ? // Floating over the map: a pill that reads as a control
+                      // sitting ON the map, not as a strip cut out of it.
+                      'rounded-full bg-slate-900/85 backdrop-blur-md border-slate-700/70 shadow-xl md:rounded-xl md:bg-slate-950/90 md:shadow-inner'
+                    : 'rounded-xl bg-slate-950/90 border-slate-700/80 shadow-inner'
+                }`}
               />
               {query && (
                 <button
