@@ -347,14 +347,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    *
    * Tapping a POI chip fits the pin and the facility on screen together, which
    * necessarily pushes the pin off to one side. Closing that trip has to put
-   * the pin back in the middle — it is still the open pin, and leaving it
-   * parked in a corner reads as the X having done nothing.
+   * the pin back in the middle — it is still the open pin, and a camper who
+   * tapped a POI is interested in exactly this spot, at exactly the zoom they
+   * were just looking at it — so only the centring is undone, never the zoom
+   * fitBounds chose.
    *
-   * The pin it was saved for is kept with it: moving straight to another pin
-   * closes the trip too, and that pin is doing its own aiming — handing this
-   * one back over the top of it is the two-restores-in-one-frame problem.
+   * Just the pin it belongs to, not a view: moving straight to another pin
+   * closes the trip too, and that pin is doing its own aiming — recentring
+   * this one over the top of it is the two-restores-in-one-frame problem.
    */
-  const preTripViewRef = useRef<{ zoom: number; lat: number; lon: number } | null>(null);
+  const preTripPinRef = useRef<{ lat: number; lon: number } | null>(null);
   /** Facilities near the selected spot, for the tappable chips. */
   const facilitiesRef = useRef<NearbyFacility[]>([]);
   /** Fires near the open point, read by the icon builders. */
@@ -5560,28 +5562,27 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      *
      * Framing the pin with a facility necessarily pushes the pin off to one
      * side, so closing the trip has to undo that: the pin is still open, and
-     * leaving it parked in a corner reads as the X having done nothing. It
-     * goes back to the zoom it was at before the two were framed together,
-     * centred on the pin itself rather than on the old centre — the pin is
-     * what the camper is still looking at.
+     * leaving it parked in a corner reads as the X having done nothing. Only
+     * the centring is undone, at whatever zoom fitBounds landed on — a camper
+     * who tapped a POI is interested in exactly this spot, not being pulled
+     * back out. Zooming back out is what the pin's OWN close does, not this.
      *
      * Nothing to do once the pin itself has gone: closing a pin runs its own
      * restore, and two of those on one frame land somewhere neither meant.
      */
     if (!tripFacility) {
-      const previous = preTripViewRef.current;
-      preTripViewRef.current = null;
+      const previous = preTripPinRef.current;
+      preTripPinRef.current = null;
       if (!previous || readLat === null || readLon === null) return;
       // A different pin now: that one is aiming the camera itself.
       if (previous.lat !== readLat || previous.lon !== readLon) return;
       try {
+        const zoomNow = map.getZoom();
         const centre = centreLeavingRoom(
-          map, L.latLng(readLat, readLon), overlayPxRef.current, previous.zoom
+          map, L.latLng(readLat, readLon), overlayPxRef.current, zoomNow
         );
         if (prefersReducedMotion()) {
-          map.setView(centre, previous.zoom, { animate: false });
-        } else if (previous.zoom !== map.getZoom()) {
-          map.flyTo(centre, previous.zoom, { duration: 0.6 });
+          map.setView(centre, zoomNow, { animate: false });
         } else {
           map.panTo(centre, { animate: true, duration: 0.45 });
         }
@@ -5591,10 +5592,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     if (readLat === null || readLon === null) return;
 
-    // The view the trip is about to borrow, kept once so that hopping from one
-    // facility straight to another still gives back the view the first one took.
-    if (!preTripViewRef.current) {
-      preTripViewRef.current = { zoom: map.getZoom(), lat: readLat, lon: readLon };
+    // Which pin the trip is about, kept once so that hopping from one
+    // facility straight to another still recentres on the same pin.
+    if (!preTripPinRef.current) {
+      preTripPinRef.current = { lat: readLat, lon: readLon };
     }
 
     const bounds = L.latLngBounds(
