@@ -118,14 +118,6 @@ export const EMPTY_WEATHER: WeatherSnapshot = {
   source: 'none'
 };
 
-/** Named so the UI can credit the forecast without a lookup table inline. */
-export const SOURCE_LABEL: Record<WeatherSnapshot['source'], string> = {
-  nws: 'US National Weather Service',
-  eccc: 'Environment Canada',
-  'open-meteo': 'Open-Meteo (Environment Canada model data in Canada)',
-  none: 'no source'
-};
-
 /**
  * The colours here are the SAME hexes the map draws each family in
  * (`BADGE_COLOR` in src/utils/alertOverlay.ts). A camper who taps a teal pin

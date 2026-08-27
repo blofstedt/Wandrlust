@@ -36,11 +36,6 @@ const BADGE_ORDER: AlertBadge[] = [
   'fire', 'smoke', 'flood', 'rain', 'storm', 'winter', 'heat', 'wind'
 ];
 
-export const BADGE_LABEL: Record<AlertBadge, string> = {
-  fire: 'Fire', smoke: 'Smoke', flood: 'Flood', rain: 'Heavy rain',
-  storm: 'Storm', winter: 'Cold', heat: 'Heat', wind: 'Wind'
-};
-
 /**
  * ONE COLOUR PER EVENT KIND, AND IT MEANS THE SAME THING EVERYWHERE.
  *
@@ -155,25 +150,9 @@ export const alertBadge = (alert: HazardAlert): AlertBadge | null => {
   }
 };
 
-const order = (set: Set<AlertBadge>): AlertBadge[] => BADGE_ORDER.filter((b) => set.has(b));
-
 /* ------------------------------------------------------------------ */
 /* Points                                                              */
 /* ------------------------------------------------------------------ */
-
-/** Distinct badges whose alert polygon contains the point. */
-export const badgesForPoint = (
-  lat: number, lon: number, alerts: HazardAlert[]
-): AlertBadge[] => {
-  const found = new Set<AlertBadge>();
-  for (const alert of alerts) {
-    if (!alert.geometry) continue;
-    if (!pointInGeometry(lat, lon, alert.geometry)) continue;
-    const badge = alertBadge(alert);
-    if (badge) found.add(badge);
-  }
-  return order(found);
-};
 
 /**
  * ONE WARNING OVER THIS POINT, READY TO BE A CHIP.
@@ -265,53 +244,6 @@ export const warningsForPoint = (
 /* ------------------------------------------------------------------ */
 
 type Geometry = unknown;
-
-/** Centre of a geometry's bounding box, as [lat, lon]. */
-const bboxCentre = (geometry: Geometry): [number, number] | null => {
-  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-  const walk = (node: unknown): void => {
-    if (!Array.isArray(node)) return;
-    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
-      const [lon, lat] = node as [number, number];
-      if (lon < minLon) minLon = lon;
-      if (lon > maxLon) maxLon = lon;
-      if (lat < minLat) minLat = lat;
-      if (lat > maxLat) maxLat = lat;
-      return;
-    }
-    node.forEach(walk);
-  };
-  walk((geometry as { coordinates?: unknown })?.coordinates);
-  if (minLon === Infinity) return null;
-  return [(minLat + maxLat) / 2, (minLon + maxLon) / 2];
-};
-
-/**
- * Distinct badges affecting a parcel.
- *
- * Cheap and approximate on purpose — this drives a subtle fill, not a safety
- * decision. A parcel counts as affected when its centre falls inside an alert,
- * or an alert's centre falls inside it. That catches both "small parcel inside a
- * big warning" and "big parcel under a small warning" without a full polygon
- * intersection on every pan.
- */
-export const badgesForParcel = (
-  geometry: Geometry, alerts: HazardAlert[]
-): AlertBadge[] => {
-  const centre = bboxCentre(geometry);
-  const found = new Set<AlertBadge>();
-  for (const alert of alerts) {
-    if (!alert.geometry) continue;
-    const hit =
-      (centre !== null && pointInGeometry(centre[0], centre[1], alert.geometry)) ||
-      (Array.isArray(alert.centroid) &&
-        pointInGeometry(alert.centroid[0], alert.centroid[1], geometry));
-    if (!hit) continue;
-    const badge = alertBadge(alert);
-    if (badge) found.add(badge);
-  }
-  return order(found);
-};
 
 /* ------------------------------------------------------------------ */
 /* Dissolving internal borders                                         */
@@ -774,10 +706,6 @@ export const LOCALIZED_COLOR: Record<LocalizedKind, string> = {
   flood: BADGE_COLOR.flood, // teal
   infrastructure: '#475569', // dark grey — a closure is not a weather event
   other: '#EAB308'           // amber — everything else a camper flags
-};
-
-export const LOCALIZED_LABEL: Record<LocalizedKind, string> = {
-  fire: 'Fire', flood: 'Flood', infrastructure: 'Road blocked', other: 'Hazard'
 };
 
 /**
@@ -1483,8 +1411,3 @@ export const cloudPieces = (geometries: unknown[]): CloudPiece[] => {
     .sort((a, b) => b.extent - a.extent);
 };
 
-/** The active alerts whose drawn area contains a point — for the bottom card. */
-export const alertsCoveringPoint = (
-  lat: number, lon: number, alerts: HazardAlert[]
-): HazardAlert[] =>
-  alerts.filter((a) => a.geometry && pointInGeometry(lat, lon, a.geometry));

@@ -1460,7 +1460,7 @@ export default function App() {
                     zoom={zoom}
                     userLocation={userLocation}
                     isOfflineMode={isOfflineMode}
-                    onOpenDetailModal={setSheetSite}
+                    onOpenBottomSheet={setSheetSite}
                     onLocateUser={handleLocateUser}
                     isLocating={isLocating}
                     destination={destination}
@@ -1656,7 +1656,6 @@ export default function App() {
         onClose={() => { setIsAddModalOpen(false); setAddSpotAt(null); }}
         mode="create"
         at={addSpotAt ?? center}
-        onRequireAuth={() => setIsAuthOpen(true)}
         onSubmit={handleSubmitNewSpot}
       />
 

@@ -43,6 +43,7 @@
  */
 import { metresBetween } from './beaconSources.js';
 import { USER_AGENT } from './alertSources.js';
+import { TtlCache } from '../shared/ttlCache.js';
 
 /* One User-Agent for the whole server, with a contact somebody can
    actually reach. See USER_AGENT in alertSources.ts. */
@@ -203,10 +204,9 @@ const trimLine = (
  * resource that rate-limit people who forget that. Roads change on a timescale
  * of years, so six hours is conservative.
  */
-interface CacheEntry { at: number; scan: RoadScan; }
-const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 300;
+const cache = new TtlCache<RoadScan>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
 /* ------------------------------------------------------------------ */
 
@@ -229,7 +229,7 @@ export const findApproachRoads = async (
   const key = `${lat.toFixed(3)},${lon.toFixed(3)},${metres}`;
 
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.scan;
+  if (hit) return hit;
 
   const around = `(around:${metres},${lat.toFixed(5)},${lon.toFixed(5)})`;
   // `out geom` and not `out center`: a road is a line, and the centre of a
@@ -321,11 +321,7 @@ export const findApproachRoads = async (
 
   const scan: RoadScan = { ok: true, roads };
 
-  if (cache.size >= CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  cache.set(key, { at: Date.now(), scan });
+  cache.set(key, scan);
 
   return scan;
 };

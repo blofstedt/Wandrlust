@@ -11,6 +11,7 @@
  */
 import { supabase } from '../lib/supabase';
 import { campsiteIdKind } from '../utils/campsiteId';
+import { TtlCache } from '../utils/ttlCache';
 import type {
   Campsite, CamperReview,
   BeaconSpot, BeaconDwellState, BeaconOutcome, BeaconVerificationAnswers,
@@ -357,7 +358,9 @@ const mapCampsiteRow = (row: any, uid: string | null): Campsite[] => {
  * Returns null only when there is nothing to say — no Supabase, no id, or the
  * lookup failed. The caller draws no byline at all rather than inventing one.
  */
-const authorCache = new Map<string, string | null>();
+// A day-long TTL and a capped size — this app is a PWA people leave open for
+// days, and an unbounded Map here would grow for as long as the tab does.
+const authorCache = new TtlCache<string | null>(24 * 60 * 60 * 1000, 300);
 
 export const fetchSpotAuthor = async (userId: string): Promise<string | null> => {
   if (!supabase || !userId) return null;
@@ -741,14 +744,6 @@ export const submitCampsiteReview = async (
       { onConflict: 'campsite_id,user_id' }
     );
 
-  if (error) return failure(error.message);
-  return success(true);
-};
-
-/** Remove your own review. The policy allows no other. */
-export const deleteMyReview = async (reviewId: string): Promise<Result<boolean>> => {
-  if (!supabase) return failure('Not connected');
-  const { error } = await supabase.from('campsite_reviews').delete().eq('id', reviewId);
   if (error) return failure(error.message);
   return success(true);
 };
@@ -1539,6 +1534,65 @@ export const saveSettings = async (
 };
 
 /* ------------------------------------------------------------------ */
+/* Push subscriptions                                                  */
+/* ------------------------------------------------------------------ */
+
+export const upsertPushSubscription = async (subscription: {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent: string;
+}): Promise<Result<boolean>> => {
+  if (!supabase) return failure('Not connected');
+  const uid = await currentUserId();
+  if (!uid) return failure('Sign in to receive alerts');
+
+  const { error } = await supabase.from('push_subscriptions').upsert(
+    {
+      user_id: uid,
+      endpoint: subscription.endpoint,
+      p256dh: subscription.p256dh,
+      auth: subscription.auth,
+      user_agent: subscription.userAgent,
+      last_seen_at: new Date().toISOString(),
+      failure_count: 0
+    },
+    { onConflict: 'endpoint' }
+  );
+
+  return error ? failure(error.message) : success(true, 'Subscribed');
+};
+
+export const removePushSubscription = async (endpoint: string): Promise<void> => {
+  if (!supabase) return;
+  await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint);
+};
+
+/**
+ * Keep the server's idea of where a signed-in camper roughly is, so
+ * location-scoped alerts can be targeted without tracking anyone
+ * continuously. `pushService.ts` rounds the coordinates to ~1 km before they
+ * ever reach here.
+ */
+export const updateAlertLocation = async (coarseLat: number, coarseLon: number): Promise<void> => {
+  if (!supabase) return;
+  const uid = await currentUserId();
+  if (!uid) return;
+
+  await supabase
+    .from('user_settings')
+    .upsert(
+      {
+        user_id: uid,
+        alert_lat: coarseLat,
+        alert_lon: coarseLon,
+        alert_location_updated_at: new Date().toISOString()
+      },
+      { onConflict: 'user_id' }
+    );
+};
+
+/* ------------------------------------------------------------------ */
 /* Beacon                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1910,4 +1964,36 @@ export const currentAccessToken = async (): Promise<string | null> => {
   if (!supabase) return null;
   const { data } = await supabase.auth.getSession();
   return data?.session?.access_token ?? null;
+};
+
+/**
+ * Make the app agree with the server about whether anybody is signed in.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUG THIS EXISTS FOR
+ * ---------------------------------------------------------------------------
+ *
+ * `AuthContext` sets `user` from the session it read at startup. If that
+ * session later dies and the refresh cannot save it, Supabase hands back no
+ * session — but nothing had told the React tree, so `user` stayed truthy for
+ * the rest of the app's life. Beacon's panel checks `user`, believed the
+ * camper was signed in, and sent a request with no token on it. The server
+ * answered 401 "sign in to send out a beacon", the panel printed that
+ * sentence, and a camper who was looking at their own name in the account
+ * menu read it as the feature being broken and pressed the button again.
+ * Seven times in fifteen seconds, in the logs that found this.
+ *
+ * Signing out for real is what fixes it: it fires `onAuthStateChange`,
+ * `AuthContext` clears `user`, and every gate in the app starts telling the
+ * same story. The camper is signed out either way — this only stops the app
+ * pretending otherwise.
+ */
+export const signOutStaleSession = async (): Promise<void> => {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (!data?.session) await supabase.auth.signOut();
+  } catch {
+    // Best effort. A failure here leaves the app exactly as it was.
+  }
 };

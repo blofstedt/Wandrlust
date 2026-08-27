@@ -38,6 +38,11 @@
  */
 import type { Express, Request, Response } from 'express';
 import { USER_AGENT } from './alertSources.js';
+import { TtlCache } from '../shared/ttlCache.js';
+import type {
+  BackroadSurface, BackroadAccess, BackroadWay, BackroadScan
+} from '../shared/backroadTypes.js';
+export type { BackroadSurface, BackroadAccess, BackroadWay, BackroadScan };
 
 /* Same three mirrors, same reasoning, as server/roadNetwork.ts:
    overpass.osm.ch is Switzerland-only and answers for other continents with a
@@ -103,17 +108,13 @@ const MAX_POINTS = 26_000;
 /** Shorter than this is a driveway stub or a digitising artefact. */
 const MIN_LENGTH_M = 45;
 
-export type BackroadSurface = 'unpaved' | 'paved' | 'unrecorded';
-export type BackroadAccess = 'open' | 'permit' | 'private';
-
 /**
- * Four fields, because four fields are what the map draws.
- *
- * OSM knows plenty more about these ways — a name, a gate, `4wd_only`,
- * seasonal access, the exact surface word — and none of it is sent, because
- * the layer draws unlabelled, non-interactive lines and there is nowhere for
- * any of it to appear. Measured on a real viewport, those extras were an
- * eighth of the payload, paid for on a phone with one bar.
+ * OSM knows plenty more about these ways than the four fields in
+ * `shared/backroadTypes.ts` — a name, a gate, `4wd_only`, seasonal access,
+ * the exact surface word — and none of it is sent, because the layer draws
+ * unlabelled, non-interactive lines and there is nowhere for any of it to
+ * appear. Measured on a real viewport, those extras were an eighth of the
+ * payload, paid for on a phone with one bar.
  *
  * They are not carried "in case", either — a field nothing reads is a field
  * nobody notices has gone wrong. The day a camper can tap a road and be told
@@ -122,27 +123,6 @@ export type BackroadAccess = 'open' | 'permit' | 'private';
  * `seasonal`/`snowplowing` for a winter closure, `4wd_only` and `smoothness`
  * for whether a van has any business on it.
  */
-export interface BackroadWay {
-  /** The raw `highway` value — `track`, `service`, `unclassified`… */
-  kind: string;
-  /** What OSM records about the surface. `unrecorded` is a real answer. */
-  surface: BackroadSurface;
-  /** OSM says a permit or permission is needed, or that it is private. */
-  access: BackroadAccess;
-  /** [lat, lon] pairs, simplified for drawing. */
-  line: [number, number][];
-}
-
-export interface BackroadScan {
-  /** False means we could not check — never "there are no roads here". */
-  ok: boolean;
-  /** True when the box was too big to ask about. */
-  tooWide: boolean;
-  /** True when roads were dropped to keep the answer drawable. */
-  truncated: boolean;
-  roads: BackroadWay[];
-}
-
 const EMPTY: BackroadScan = { ok: false, tooWide: false, truncated: false, roads: [] };
 
 interface OverpassWay {
@@ -301,10 +281,9 @@ const simplify = (
  * instance that hoards forty of them is a serverless instance being killed
  * for memory.
  */
-interface CacheEntry { at: number; scan: BackroadScan; }
-const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 24;
+const cache = new TtlCache<BackroadScan>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
 /* ------------------------------------------------------------------ */
 
@@ -321,7 +300,7 @@ const scanBox = async (
 
   const key = [minLat, minLon, maxLat, maxLon].map((n) => n.toFixed(3)).join(',');
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.scan;
+  if (hit) return hit;
 
   const bbox = `${minLat.toFixed(5)},${minLon.toFixed(5)},${maxLat.toFixed(5)},${maxLon.toFixed(5)}`;
 
@@ -449,11 +428,7 @@ const scanBox = async (
 
   const scan: BackroadScan = { ok: true, tooWide: false, truncated, roads };
 
-  if (cache.size >= CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  cache.set(key, { at: Date.now(), scan });
+  cache.set(key, scan);
 
   return scan;
 };

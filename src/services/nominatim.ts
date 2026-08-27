@@ -145,34 +145,3 @@ export const geocodeSearch = async (
   }
 };
 
-export const reverseGeocode = async (
-  latitude: number,
-  longitude: number
-): Promise<string | null> => {
-  const params = new URLSearchParams({
-    lat: String(latitude),
-    lon: String(longitude),
-    format: 'jsonv2',
-    zoom: '10'
-  });
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?${params.toString()}`,
-      { headers: { Accept: 'application/json' }, signal: controller.signal }
-    );
-    clearTimeout(timeout);
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    const addr = data?.address ?? {};
-    const city = addr.city || addr.town || addr.village || addr.county;
-    const region = addr.state || addr.province;
-    if (city && region) return `${city}, ${region}`;
-    return data?.display_name ?? null;
-  } catch {
-    return null;
-  }
-};

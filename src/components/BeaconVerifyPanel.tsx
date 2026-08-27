@@ -494,7 +494,6 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
         mode="report"
         at={[spot.latitude, spot.longitude]}
         existingName={spot.label}
-        onRequireAuth={onRequireAuth}
         onSubmit={handleSubmit}
         overnight={reportIsOvernight}
       />

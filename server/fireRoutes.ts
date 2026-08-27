@@ -62,13 +62,13 @@ import type { Express, Request, Response } from 'express';
 // at load time, which takes the whole fire endpoint down with it.
 import { bboxIntersectsCoverage } from '../src/config/coverage.js';
 import { distanceKm } from './cellSources.js';
+import { TtlCache } from '../shared/ttlCache.js';
 
-interface CacheEntry { at: number; body: unknown; }
-const cache = new Map<string, CacheEntry>();
 /** 6h — fire data updates within hours; 6h keeps the network quiet without
  *  serving a stale answer through a full day of a camper's trip. */
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 80;
+const cache = new TtlCache<unknown>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
 const WFIGS_PERIMETERS =
   'https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/' +
@@ -513,8 +513,8 @@ export const registerFireRoutes = (app: Express): void => {
     // because fire perimeters can be huge.
     const cacheKey = `fires:${minLon.toFixed(2)},${minLat.toFixed(2)},${maxLon.toFixed(2)},${maxLat.toFixed(2)}`;
     const hit = cache.get(cacheKey);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
-      return res.json(hit.body);
+    if (hit) {
+      return res.json(hit);
     }
 
     // Fire the two feeds in parallel. If either fails, the other still
@@ -546,11 +546,7 @@ export const registerFireRoutes = (app: Express): void => {
       }
     };
 
-    if (cache.size >= CACHE_MAX_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest) cache.delete(oldest);
-    }
-    cache.set(cacheKey, { at: Date.now(), body });
+    cache.set(cacheKey, body);
 
     return res.json(body);
   });

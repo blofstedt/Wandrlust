@@ -62,6 +62,8 @@
  * CORS, caching, and the User-Agent that FOSSGIS asks public users to send.
  */
 import { findApproachRoads, type ApproachRoad } from './roadNetwork.js';
+import { haversineKm } from '../shared/geoMath.js';
+import { TtlCache } from '../shared/ttlCache.js';
 // `Response` is aliased: express exports one and `fetch` returns another, and
 // an unaliased import silently shadows the fetch type in every helper below.
 import type { Express, Request, Response as ExpressResponse } from 'express';
@@ -157,17 +159,7 @@ interface Rig {
 /* Geometry helpers                                                    */
 /* ------------------------------------------------------------------ */
 
-const EARTH_RADIUS_KM = 6371;
-const toRad = (deg: number): number => (deg * Math.PI) / 180;
-
-const distanceKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(a)));
-};
+const distanceKm = haversineKm;
 
 /**
  * Google's encoded polyline, at whatever precision the engine used.
@@ -768,10 +760,9 @@ const improveApproach = async (
 
 /* ------------------------------------------------------------------ */
 
-interface CacheEntry { at: number; body: RouteBody; }
-const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 200;
+const cache = new TtlCache<RouteBody>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
 const readRig = (req: Request): Rig => {
   const num = (key: string): number | undefined => {
@@ -903,7 +894,7 @@ export const registerRouteRoutes = (app: Express): void => {
       .join(';');
     const cacheKey = `${nums.map((n) => n.toFixed(5)).join(',')}|${rigKey}`;
     const hit = cache.get(cacheKey);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return res.json(hit.body);
+    if (hit) return res.json(hit);
 
     const orsKey = process.env.ORS_API_KEY || process.env.VITE_ORS_API_KEY;
 
@@ -937,11 +928,7 @@ export const registerRouteRoutes = (app: Express): void => {
         ? await improveApproach(first, from, to, rig, orsKey, msLeft())
         : first;
 
-    if (cache.size >= CACHE_MAX_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest) cache.delete(oldest);
-    }
-    cache.set(cacheKey, { at: Date.now(), body });
+    cache.set(cacheKey, body);
 
     return res.json(body);
   });

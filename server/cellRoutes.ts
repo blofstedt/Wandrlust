@@ -36,9 +36,10 @@ import type { Express, Request, Response } from 'express';
 import {
   CARRIERS, distanceKm, barsForKm, strengthForBars, bestTechnology,
   fetchOsmMastsNear, fetchOpenCellIdFor,
-  type CellTower, type CellTechnology, type SignalStrength
+  type RawCellTower, type CellTechnology, type SignalStrength
 } from './cellSources.js';
 import { looksUS } from './alertSources.js';
+import { TtlCache } from '../shared/ttlCache.js';
 
 /**
  * How far out to look, in km.
@@ -55,27 +56,11 @@ const OPENCELLID_SPAN_DEG = 0.5;
 /* Cache                                                               */
 /* ------------------------------------------------------------------ */
 
-interface CacheEntry { at: number; body: unknown; }
-const cache = new Map<string, CacheEntry>();
 // Positions are static and 4G/5G changes are months-scale, so a 30-day
 // cache is well within what the answer can support. See the file header.
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 600;
-
-const cached = (key: string): unknown | null => {
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > CACHE_TTL_MS) { cache.delete(key); return null; }
-  return hit.body;
-};
-
-const store = (key: string, body: unknown): void => {
-  if (cache.size >= CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  cache.set(key, { at: Date.now(), body });
-};
+const cache = new TtlCache<unknown>(CACHE_TTL_MS, CACHE_MAX_ENTRIES);
 
 /* ------------------------------------------------------------------ */
 /* Shaping                                                             */
@@ -90,8 +75,8 @@ const store = (key: string, body: unknown): void => {
  * decimal places (about 11 m) merges everything mounted on one structure, and
  * the merged record keeps the newest generation any of its sectors reported.
  */
-const dedupe = (towers: CellTower[]): CellTower[] => {
-  const bySite = new Map<string, CellTower>();
+const dedupe = (towers: RawCellTower[]): RawCellTower[] => {
+  const bySite = new Map<string, RawCellTower>();
 
   for (const tower of towers) {
     const key =
@@ -134,7 +119,7 @@ interface Verdict {
  * perfectly good answer; a generation borrowed from a tower you cannot reach
  * is not.
  */
-const verdictFrom = (towers: CellTower[], lat: number, lon: number): Verdict | null => {
+const verdictFrom = (towers: RawCellTower[], lat: number, lon: number): Verdict | null => {
   if (towers.length === 0) return null;
 
   const ranked = towers
@@ -165,7 +150,7 @@ const verdictFrom = (towers: CellTower[], lat: number, lon: number): Verdict | n
 };
 
 /** Towers as the client wants them: positioned, named, and with a distance. */
-const shapeTowers = (towers: CellTower[], lat: number, lon: number) =>
+const shapeTowers = (towers: RawCellTower[], lat: number, lon: number) =>
   towers
     .map((tower) => ({
       latitude: Number(tower.latitude.toFixed(5)),
@@ -196,7 +181,7 @@ export const registerCellRoutes = (app: Express): void => {
     // Two decimal places is about a kilometre — far finer than this estimate
     // deserves, and it means a whole valley shares one cached answer.
     const cacheKey = `cell:${lat.toFixed(2)},${lon.toFixed(2)}`;
-    const hit = cached(cacheKey);
+    const hit = cache.get(cacheKey);
     if (hit) return res.json(hit);
 
     const key = process.env.OPENCELLID_API_KEY;
@@ -209,8 +194,8 @@ export const registerCellRoutes = (app: Express): void => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12_000);
 
-    let masts: CellTower[] | null = null;
-    let perCarrier: { carrier: typeof CARRIERS[number]; towers: CellTower[] | null }[] = [];
+    let masts: RawCellTower[] | null = null;
+    let perCarrier: { carrier: typeof CARRIERS[number]; towers: RawCellTower[] | null }[] = [];
 
     try {
       /**
@@ -328,7 +313,7 @@ export const registerCellRoutes = (app: Express): void => {
         : undefined
     };
 
-    store(cacheKey, body);
+    cache.set(cacheKey, body);
     return res.json(body);
   });
 };

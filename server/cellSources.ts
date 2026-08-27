@@ -43,14 +43,13 @@
  * also two different facts.
  */
 import { USER_AGENT } from './alertSources.js';
+import { haversineKm } from '../shared/geoMath.js';
+import type { CarrierId, CellTechnology, SignalStrength } from '../shared/cellTypes.js';
+export type { CarrierId, CellTechnology, SignalStrength };
 
 /* ------------------------------------------------------------------ */
 /* Shared vocabulary                                                   */
 /* ------------------------------------------------------------------ */
-
-export type CarrierId = 'verizon' | 'att' | 'tmobile' | 'rogers' | 'telus' | 'bell';
-export type CellTechnology = '5G' | '4G LTE' | '3G' | '2G';
-export type SignalStrength = 'strong' | 'good' | 'weak' | 'none';
 
 export interface CarrierNetwork {
   id: CarrierId;
@@ -98,14 +97,22 @@ export const CARRIERS: CarrierNetwork[] = [
 ];
 
 /**
- * One transmitter we have a position for.
+ * One transmitter we have a position for, before a distance has been worked
+ * out from any particular point.
  *
  * `carrier` absent means the register did not say whose it is — which is the
  * common case for an OSM mast. Such a tower still tells a camper something
  * real ("there is a mast 6 km away") and is drawn on the map, but it is never
  * allowed to fill in a named carrier's row.
+ *
+ * This is deliberately a different shape from the client's `CellTower` (see
+ * `src/types.ts`), which additionally carries `distanceKm` once `shapeTowers`
+ * in `cellRoutes.ts` has measured it against the point that was asked about.
+ * The two used to share the name `CellTower`, which let the client's required
+ * `distanceKm` field silently drift out of sync with this one — renamed to
+ * make the two stages of the pipeline unambiguous.
  */
-export interface CellTower {
+export interface RawCellTower {
   latitude: number;
   longitude: number;
   carrier?: CarrierId;
@@ -119,19 +126,7 @@ export interface CellTower {
 /* Geometry                                                            */
 /* ------------------------------------------------------------------ */
 
-const EARTH_RADIUS_KM = 6371;
-const toRad = (deg: number): number => (deg * Math.PI) / 180;
-
-export const distanceKm = (
-  lat1: number, lon1: number, lat2: number, lon2: number
-): number => {
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(a)));
-};
+export const distanceKm = haversineKm;
 
 /**
  * Distance to the nearest transmitter, turned into bars.
@@ -252,10 +247,10 @@ const MAST_FILTERS = [
   '["communication:mobile_phone"="yes"]'
 ];
 
-const parseElements = (elements: unknown): CellTower[] => {
+const parseElements = (elements: unknown): RawCellTower[] => {
   if (!Array.isArray(elements)) return [];
 
-  const towers: CellTower[] = [];
+  const towers: RawCellTower[] = [];
   for (const raw of elements as OverpassElement[]) {
     const lat = raw.lat ?? raw.center?.lat;
     const lon = raw.lon ?? raw.center?.lon;
@@ -276,7 +271,7 @@ const parseElements = (elements: unknown): CellTower[] => {
   return towers;
 };
 
-const runOverpass = async (query: string, timeoutMs: number): Promise<CellTower[] | null> => {
+const runOverpass = async (query: string, timeoutMs: number): Promise<RawCellTower[] | null> => {
   /*
    * `timeoutMs` is the budget for the WHOLE call, not for each mirror.
    *
@@ -336,7 +331,7 @@ export const fetchOsmMastsNear = async (
   lon: number,
   radiusKm: number,
   timeoutMs = 12_000
-): Promise<CellTower[] | null> => {
+): Promise<RawCellTower[] | null> => {
   const radius = Math.round(radiusKm * 1000);
   const around = `(around:${radius},${lat.toFixed(5)},${lon.toFixed(5)})`;
 
@@ -386,13 +381,13 @@ export const fetchOpenCellIdFor = async (
   spanDeg: number,
   key: string,
   signal: AbortSignal
-): Promise<CellTower[] | null> => {
+): Promise<RawCellTower[] | null> => {
   const bbox = [
     lon - spanDeg, lat - spanDeg,
     lon + spanDeg, lat + spanDeg
   ].map((n) => n.toFixed(4)).join(',');
 
-  const towers: CellTower[] = [];
+  const towers: RawCellTower[] = [];
   let anyResponse = false;
 
   for (const mnc of carrier.mncs) {

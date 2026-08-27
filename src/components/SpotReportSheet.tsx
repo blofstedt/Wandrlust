@@ -68,7 +68,6 @@ interface SpotReportSheetProps {
   at: [number, number] | null;
   /** Shown as the title in `report` mode, where the name already exists. */
   existingName?: string;
-  onRequireAuth: () => void;
   /**
    * Does the actual write. The sheet owns the form, the photos and the
    * position; the caller owns which RPC that becomes, because creating a spot
@@ -89,7 +88,7 @@ interface PendingPhoto {
 }
 
 export const SpotReportSheet: React.FC<SpotReportSheetProps> = ({
-  isOpen, onClose, mode, at, existingName, onRequireAuth, onSubmit, overnight = false
+  isOpen, onClose, mode, at, existingName, onSubmit, overnight = false
 }) => {
   const toast = useToast();
 
