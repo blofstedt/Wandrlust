@@ -47,6 +47,7 @@
  */
 // `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
 import { USER_AGENT } from './alertSources.js';
+import { haversineM } from '../shared/geoMath.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared vocabulary                                                   */
@@ -100,19 +101,14 @@ const UA = USER_AGENT;
 /* Geometry                                                            */
 /* ------------------------------------------------------------------ */
 
-const EARTH_RADIUS_M = 6_371_000;
 const toRad = (deg: number): number => (deg * Math.PI) / 180;
 
-export const metresBetween = (
-  lat1: number, lon1: number, lat2: number, lon2: number
-): number => {
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(a)));
-};
+/**
+ * The formula itself now lives in `shared/geoMath.ts` alongside every other
+ * copy this codebase had of it — see that file. `toRad` stays local because
+ * the point-in-polygon ray casting below also needs it.
+ */
+export const metresBetween = haversineM;
 
 type Ring = { lat: number; lon: number }[];
 

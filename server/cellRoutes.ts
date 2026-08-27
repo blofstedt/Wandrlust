@@ -36,7 +36,7 @@ import type { Express, Request, Response } from 'express';
 import {
   CARRIERS, distanceKm, barsForKm, strengthForBars, bestTechnology,
   fetchOsmMastsNear, fetchOpenCellIdFor,
-  type CellTower, type CellTechnology, type SignalStrength
+  type RawCellTower, type CellTechnology, type SignalStrength
 } from './cellSources.js';
 import { looksUS } from './alertSources.js';
 
@@ -90,8 +90,8 @@ const store = (key: string, body: unknown): void => {
  * decimal places (about 11 m) merges everything mounted on one structure, and
  * the merged record keeps the newest generation any of its sectors reported.
  */
-const dedupe = (towers: CellTower[]): CellTower[] => {
-  const bySite = new Map<string, CellTower>();
+const dedupe = (towers: RawCellTower[]): RawCellTower[] => {
+  const bySite = new Map<string, RawCellTower>();
 
   for (const tower of towers) {
     const key =
@@ -134,7 +134,7 @@ interface Verdict {
  * perfectly good answer; a generation borrowed from a tower you cannot reach
  * is not.
  */
-const verdictFrom = (towers: CellTower[], lat: number, lon: number): Verdict | null => {
+const verdictFrom = (towers: RawCellTower[], lat: number, lon: number): Verdict | null => {
   if (towers.length === 0) return null;
 
   const ranked = towers
@@ -165,7 +165,7 @@ const verdictFrom = (towers: CellTower[], lat: number, lon: number): Verdict | n
 };
 
 /** Towers as the client wants them: positioned, named, and with a distance. */
-const shapeTowers = (towers: CellTower[], lat: number, lon: number) =>
+const shapeTowers = (towers: RawCellTower[], lat: number, lon: number) =>
   towers
     .map((tower) => ({
       latitude: Number(tower.latitude.toFixed(5)),
@@ -209,8 +209,8 @@ export const registerCellRoutes = (app: Express): void => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12_000);
 
-    let masts: CellTower[] | null = null;
-    let perCarrier: { carrier: typeof CARRIERS[number]; towers: CellTower[] | null }[] = [];
+    let masts: RawCellTower[] | null = null;
+    let perCarrier: { carrier: typeof CARRIERS[number]; towers: RawCellTower[] | null }[] = [];
 
     try {
       /**

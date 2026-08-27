@@ -75,6 +75,18 @@ export interface SheetProps {
    * raise the keyboard — and this stops the panel taking it straight back.
    */
   autoFocus?: boolean;
+  /**
+   * Override the backdrop's stacking order. Default `z-[1800]`, same as
+   * every other sheet, so siblings stack by DOM order.
+   *
+   * Only reach for this when a panel must appear above OTHER open sheets
+   * regardless of where it sits in the tree — the sign-in dialog is the one
+   * case today: it can be triggered from inside almost any other sheet
+   * ("save this spot" while signed out), and several of those sheets are
+   * mounted after it in `App.tsx`, so DOM order alone would sometimes bury
+   * it behind the very panel that opened it.
+   */
+  zIndexClass?: string;
 }
 
 /**
@@ -111,7 +123,7 @@ export const useKeyboardInset = (active: boolean): number => {
 export const Sheet: React.FC<SheetProps> = ({
   isOpen, onClose, title, subtitle, icon, children, footer,
   variant = 'sheet', maxWidthClass = 'sm:max-w-md', interactiveBehind = false,
-  liftAboveKeyboard = false, autoFocus = true
+  liftAboveKeyboard = false, autoFocus = true, zIndexClass = 'z-[1800]'
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -200,7 +212,7 @@ export const Sheet: React.FC<SheetProps> = ({
          `anim-backdrop`: under `prefers-reduced-motion` that animation does not
          run, and the blur is not decoration — it is what separates a card from
          the busy map behind it. */
-      className={`fixed inset-0 z-[1800] flex justify-center bg-slate-950/70 backdrop-blur-sm anim-backdrop ${overlayClass}`}
+      className={`fixed inset-0 ${zIndexClass} flex justify-center bg-slate-950/70 backdrop-blur-sm anim-backdrop ${overlayClass}`}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={keyboardInset ? { paddingBottom: keyboardInset } : undefined}
     >

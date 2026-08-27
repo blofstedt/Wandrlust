@@ -62,6 +62,7 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
   onRequireAuth
 }) => {
   const { user } = useAuth();
+  const cardRef = React.useRef<HTMLDivElement | null>(null);
   const [copiedCoords, setCopiedCoords] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [imageMode, setImageMode] = useState<'photo' | 'aerial'>('photo');
@@ -93,6 +94,28 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
     });
     return () => { cancelled = true; };
   }, [campsite.id]);
+
+  // Escape closes the modal and background scroll is locked while it's open,
+  // matching every other dialog in the app (see ui/Sheet.tsx).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+
+    const originalOverflow = document.body.style.overflow;
+    const scrollY = window.scrollY;
+    document.body.style.overflow = 'hidden';
+
+    const t = setTimeout(() => cardRef.current?.focus(), 40);
+
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = originalOverflow;
+      window.scrollTo(0, scrollY);
+      clearTimeout(t);
+    };
+  }, [onClose]);
 
   const reviews = serverReviews && serverReviews.length > 0
     ? serverReviews
@@ -148,8 +171,18 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[2000] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-in fade-in duration-200">
-      <div className="relative w-full max-w-3xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden text-slate-100 max-h-[90vh] flex flex-col">
+    <div
+      className="fixed inset-0 z-[2000] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto anim-backdrop"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${campsite.name} details`}
+        tabIndex={-1}
+        className="relative w-full max-w-3xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden text-slate-100 max-h-[90vh] flex flex-col outline-none anim-expand"
+      >
         {/* Modal Header Bar */}
         <div className="sticky top-0 z-20 bg-slate-900/95 border-b border-slate-800 px-5 py-3.5 flex items-center justify-between backdrop-blur-md">
           {/* min-w-0 so the manager's name gives way to the buttons rather

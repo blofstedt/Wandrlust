@@ -68,6 +68,7 @@
  */
 
 import { collapseRoughness } from '../config/scoutRoughness';
+import { haversineM } from '../../shared/geoMath';
 
 export interface MotionSample {
   t: number;
@@ -323,16 +324,8 @@ export const isDashMounted = (samples: MotionSample[]): boolean => {
 };
 
 /** Haversine distance in metres. */
-const distanceM = (a: GeoSample, b: GeoSample): number => {
-  const R = 6371000;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLon = ((b.lon - a.lon) * Math.PI) / 180;
-  const la1 = (a.lat * Math.PI) / 180;
-  const la2 = (b.lat * Math.PI) / 180;
-  const h =
-    Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-};
+const distanceM = (a: GeoSample, b: GeoSample): number =>
+  haversineM(a.lat, a.lon, b.lat, b.lon);
 
 /**
  * Turn raw sensor buffers into an upload-ready batch.

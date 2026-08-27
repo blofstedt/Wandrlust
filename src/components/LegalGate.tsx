@@ -229,6 +229,7 @@ export const LegalDocumentModal: React.FC<{
   useEffect(() => {
     if (!kind) return;
     setLoading(true);
+    let cancelled = false;
 
     // Documents ship as static markdown so they're readable offline.
     const file =
@@ -241,13 +242,19 @@ export const LegalDocumentModal: React.FC<{
     fetch(file)
       .then((r) => (r.ok ? r.text() : 'Document unavailable.'))
       .then((t) => {
+        if (cancelled) return;
         setBody(t);
         setLoading(false);
       })
       .catch(() => {
+        if (cancelled) return;
         setBody('Document unavailable offline.');
         setLoading(false);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [kind]);
 
   if (!kind) return null;
