@@ -84,6 +84,22 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
      */
     onScanComplete();
 
+    /*
+     * A DEAD SESSION OPENS THE SIGN-IN SHEET INSTEAD OF PRINTING A SENTENCE.
+     *
+     * The server refuses a beacon it cannot attribute to somebody, and it says
+     * "sign in to send out a beacon". Shown as a note, that sentence is
+     * baffling to a camper whose account menu still has their name in it —
+     * and there is nothing on screen to press. See `reconcileDeadSession` in
+     * beaconService for how the app got into that state; this is the half
+     * that gets them out of it.
+     */
+    if (data.needsAuth) {
+      toast.info('Sign in again', data.note ?? 'Your sign-in has expired.');
+      onRequireAuth();
+      return;
+    }
+
     // The panel already shows the note; the toast is for the two cases a
     // camper needs to notice even if they are looking at the map.
     if (!data.ok && data.note) {
@@ -93,7 +109,7 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
       const region = data.spots[0].region;
       setModel(await fetchBeaconModelSummary(region));
     }
-  }, [at, toast, onScanComplete]);
+  }, [at, toast, onScanComplete, onRequireAuth]);
 
   const handleSend = () => {
     if (!user) { onRequireAuth(); return; }

@@ -794,6 +794,15 @@ export interface BeaconQueryResult {
   disclaimer: string;
   note?: string;
   signageNote?: string;
+  /**
+   * The server would not accept the caller as signed in.
+   *
+   * Distinct from `ok: false`, which means the scan ran and turned nothing up.
+   * This one means the scan never happened, and the camper has to sign in
+   * again before it can — so the panel offers that rather than printing a
+   * sentence telling somebody who believes they are signed in to sign in.
+   */
+  needsAuth?: boolean;
 }
 
 /** Where a camper is in the four-hour dwell, as the server sees it. */
