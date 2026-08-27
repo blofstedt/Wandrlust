@@ -283,16 +283,6 @@ export const LandingPage: React.FC = () => {
           </p>
         )}
       </section>
-
-      <section className="mt-8">
-        <a
-          href="/"
-          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 h-12 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition-colors"
-        >
-          <MapIcon className="w-4 h-4" />
-          Open the map
-        </a>
-      </section>
     </PublicPage>
   );
 };
