@@ -264,7 +264,18 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
    */
   return (
     <>
-    <header className="sticky top-0 z-[1400] bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-slate-100 px-3 sm:px-6 py-2 sm:py-2.5 shadow-xl">
+    {/*
+      The header owns the status-bar area on an installed app.
+
+      `env(safe-area-inset-top)` is added to this element's own top padding
+      rather than to the app shell around it, so the header's background runs
+      all the way up behind the clock and the battery. Padding the shell
+      instead left a blank strip above the header — a second bar, right where
+      a browser draws its address bar — and made the installed app look like
+      a web page in Safari. On any screen without a cut-out the inset is zero
+      and this is just `py-2`.
+    */}
+    <header className="sticky top-0 z-[1400] bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-slate-100 px-3 sm:px-6 pb-2 sm:pb-2.5 pt-[calc(0.5rem+env(safe-area-inset-top))] sm:pt-[calc(0.625rem+env(safe-area-inset-top))] shadow-xl">
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:flex-wrap items-center justify-between gap-2 md:gap-3">
         {/* Brand */}
         <div className="flex items-center justify-between w-full md:w-auto gap-3">
