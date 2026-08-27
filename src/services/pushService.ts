@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { upsertPushSubscription, removePushSubscription, updateAlertLocation as saveAlertLocation } from './dataService';
 
 /**
  * Web Push subscription management.
@@ -231,12 +231,6 @@ export const unsubscribeFromPush = async (): Promise<SubscribeResult> => {
 const persistSubscription = async (
   subscription: PushSubscription
 ): Promise<{ ok: boolean; message: string }> => {
-  if (!supabase) return { ok: false, message: 'Not connected' };
-
-  const { data: userData } = await supabase.auth.getUser();
-  const uid = userData?.user?.id;
-  if (!uid) return { ok: false, message: 'Sign in to receive alerts' };
-
   const json = subscription.toJSON() as {
     endpoint?: string;
     keys?: { p256dh?: string; auth?: string };
@@ -246,26 +240,18 @@ const persistSubscription = async (
     return { ok: false, message: 'Browser returned an incomplete subscription' };
   }
 
-  const { error } = await supabase.from('push_subscriptions').upsert(
-    {
-      user_id: uid,
-      endpoint: json.endpoint,
-      p256dh: json.keys.p256dh,
-      auth: json.keys.auth,
-      user_agent: navigator.userAgent.slice(0, 300),
-      last_seen_at: new Date().toISOString(),
-      failure_count: 0
-    },
-    { onConflict: 'endpoint' }
-  );
+  const result = await upsertPushSubscription({
+    endpoint: json.endpoint,
+    p256dh: json.keys.p256dh,
+    auth: json.keys.auth,
+    userAgent: navigator.userAgent.slice(0, 300)
+  });
 
-  if (error) return { ok: false, message: error.message };
-  return { ok: true, message: 'Subscribed' };
+  return { ok: result.ok, message: result.ok ? 'Subscribed' : result.message };
 };
 
 const removeSubscription = async (endpoint: string): Promise<void> => {
-  if (!supabase) return;
-  await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint);
+  await removePushSubscription(endpoint);
 };
 
 /**
@@ -280,25 +266,9 @@ export const updateAlertLocation = async (
   lat: number,
   lon: number
 ): Promise<void> => {
-  if (!supabase) return;
-  const { data: userData } = await supabase.auth.getUser();
-  const uid = userData?.user?.id;
-  if (!uid) return;
-
   const coarseLat = Math.round(lat * 100) / 100;
   const coarseLon = Math.round(lon * 100) / 100;
-
-  await supabase
-    .from('user_settings')
-    .upsert(
-      {
-        user_id: uid,
-        alert_lat: coarseLat,
-        alert_lon: coarseLon,
-        alert_location_updated_at: new Date().toISOString()
-      },
-      { onConflict: 'user_id' }
-    );
+  await saveAlertLocation(coarseLat, coarseLon);
 };
 
 /** Local test notification — verifies the SW without a server round trip. */

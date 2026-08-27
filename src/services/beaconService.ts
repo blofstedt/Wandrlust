@@ -29,10 +29,10 @@
 import localforage from 'localforage';
 import {
   recordBeaconPing,
-  currentAccessToken
+  currentAccessToken,
+  signOutStaleSession
 } from './dataService';
 import type { BeaconQueryResult, BeaconDwellState } from '../types';
-import { supabase } from '../lib/supabase';
 
 /* ------------------------------------------------------------------ */
 /* The scan                                                            */
@@ -91,38 +91,6 @@ const SIGNED_OUT: BeaconQueryResult = {
 };
 
 /**
- * Make the app agree with the server about whether anybody is signed in.
- *
- * ---------------------------------------------------------------------------
- * THE BUG THIS EXISTS FOR
- * ---------------------------------------------------------------------------
- *
- * `AuthContext` sets `user` from the session it read at startup. If that
- * session later dies and the refresh cannot save it, Supabase hands back no
- * session — but nothing had told the React tree, so `user` stayed truthy for
- * the rest of the app's life. The Beacon panel checks `user`, believed the
- * camper was signed in, and sent a request with no token on it. The server
- * answered 401 "sign in to send out a beacon", the panel printed that
- * sentence, and a camper who was looking at their own name in the account
- * menu read it as the feature being broken and pressed the button again.
- * Seven times in fifteen seconds, in the logs that found this.
- *
- * Signing out for real is what fixes it: it fires `onAuthStateChange`,
- * `AuthContext` clears `user`, and every gate in the app starts telling the
- * same story. The camper is signed out either way — this only stops the app
- * pretending otherwise.
- */
-const reconcileDeadSession = async (): Promise<void> => {
-  if (!supabase) return;
-  try {
-    const { data } = await supabase.auth.getSession();
-    if (!data?.session) await supabase.auth.signOut();
-  } catch {
-    // Best effort. A failure here leaves the app exactly as it was.
-  }
-};
-
-/**
  * Drop a beacon and see what comes back.
  *
  * The access token rides along because the server claims the rate-limit token
@@ -161,10 +129,10 @@ export const queryBeacon = async (
      * The server only sends it when no usable token arrived, which means this
      * device thinks it is signed in and is not. Say so as something the panel
      * can act on, and put the app's own idea of who is signed in back in step
-     * with the server's — see `reconcileDeadSession`.
+     * with the server's — see `signOutStaleSession` in dataService.ts.
      */
     if (res.status === 401) {
-      await reconcileDeadSession();
+      await signOutStaleSession();
       return SIGNED_OUT;
     }
 
