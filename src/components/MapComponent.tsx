@@ -342,6 +342,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * borrowed without disturbing the wider one the pin borrowed first.
    */
   const preSheetViewRef = useRef<{ center: L.LatLng; zoom: number } | null>(null);
+  /**
+   * And where it was before a facility trip framed the pin next to a toilet.
+   *
+   * Tapping a POI chip fits the pin and the facility on screen together, which
+   * necessarily pushes the pin off to one side. Closing that trip has to put
+   * the pin back in the middle — it is still the open pin, and leaving it
+   * parked in a corner reads as the X having done nothing.
+   *
+   * The pin it was saved for is kept with it: moving straight to another pin
+   * closes the trip too, and that pin is doing its own aiming — handing this
+   * one back over the top of it is the two-restores-in-one-frame problem.
+   */
+  const preTripViewRef = useRef<{ zoom: number; lat: number; lon: number } | null>(null);
   /** Facilities near the selected spot, for the tappable chips. */
   const facilitiesRef = useRef<NearbyFacility[]>([]);
   /** Fires near the open point, read by the icon builders. */
@@ -5540,7 +5553,49 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isMapReady || !tripFacility || readLat === null || readLon === null) return;
+    if (!map || !isMapReady) return;
+
+    /*
+     * The trip closed — put the pin back in the middle of the screen.
+     *
+     * Framing the pin with a facility necessarily pushes the pin off to one
+     * side, so closing the trip has to undo that: the pin is still open, and
+     * leaving it parked in a corner reads as the X having done nothing. It
+     * goes back to the zoom it was at before the two were framed together,
+     * centred on the pin itself rather than on the old centre — the pin is
+     * what the camper is still looking at.
+     *
+     * Nothing to do once the pin itself has gone: closing a pin runs its own
+     * restore, and two of those on one frame land somewhere neither meant.
+     */
+    if (!tripFacility) {
+      const previous = preTripViewRef.current;
+      preTripViewRef.current = null;
+      if (!previous || readLat === null || readLon === null) return;
+      // A different pin now: that one is aiming the camera itself.
+      if (previous.lat !== readLat || previous.lon !== readLon) return;
+      try {
+        const centre = centreLeavingRoom(
+          map, L.latLng(readLat, readLon), overlayPxRef.current, previous.zoom
+        );
+        if (prefersReducedMotion()) {
+          map.setView(centre, previous.zoom, { animate: false });
+        } else if (previous.zoom !== map.getZoom()) {
+          map.flyTo(centre, previous.zoom, { duration: 0.6 });
+        } else {
+          map.panTo(centre, { animate: true, duration: 0.45 });
+        }
+      } catch { /* map torn down */ }
+      return;
+    }
+
+    if (readLat === null || readLon === null) return;
+
+    // The view the trip is about to borrow, kept once so that hopping from one
+    // facility straight to another still gives back the view the first one took.
+    if (!preTripViewRef.current) {
+      preTripViewRef.current = { zoom: map.getZoom(), lat: readLat, lon: readLon };
+    }
 
     const bounds = L.latLngBounds(
       [readLat, readLon],
