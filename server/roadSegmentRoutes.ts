@@ -1,14 +1,50 @@
+/**
+ * `/api/road-segments` — recorded road surface, per viewport.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS FILE MUST NOT THROW WHEN IT LOADS
+ * ---------------------------------------------------------------------------
+ *
+ * It used to. Two lines checked for Supabase credentials at module scope and
+ * threw if they were missing — and `server.ts` imports this module at startup,
+ * so the throw did not disable road segments, it killed the entire process.
+ * One unset variable and there was no map, no boundaries, no weather, no
+ * anything: `npm run dev` exited before it had listened on a port, which is
+ * flatly at odds with this project's promise that a fresh clone runs with zero
+ * API keys.
+ *
+ * Every other route module here builds its client lazily and degrades to an
+ * honest empty answer. This one now does too. No credentials means the scout
+ * paths layer reports itself unavailable and the rest of the app is untouched.
+ *
+ * ---------------------------------------------------------------------------
+ * AND WHY IT READS ON THE ANON KEY
+ * ---------------------------------------------------------------------------
+ *
+ * `road_segments` is world-readable: migration 02 grants `select` to `anon`
+ * and its RLS policy is `using (true)`. Reading it is a public read, so the
+ * public key is the honest key for the job — the same reasoning as
+ * `landPackRoutes`. Holding the service key here bought nothing but the power
+ * to bypass RLS on every other table in the database, and it was the reason
+ * the module demanded a secret it did not need.
+ */
 import type { Express, Request, Response } from 'express';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const SUPABASE_ANON = process.env.VITE_SUPABASE_ANON_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  throw new Error('roadSegmentRoutes requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
-}
+let client: SupabaseClient | null | undefined;
 
-const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+/** Read-only, on the public key. Null when this deployment has no Supabase. */
+const getClient = (): SupabaseClient | null => {
+  if (client !== undefined) return client;
+  client =
+    SUPABASE_URL && SUPABASE_ANON
+      ? createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false } })
+      : null;
+  return client;
+};
 
 export type SurfaceQuality = 'smooth_paved' | 'rough_paved' | 'good_gravel' | 'washboard' | 'rutted_dirt' | 'rock_crawl' | 'impassable';
 
@@ -96,8 +132,11 @@ const fetchSegmentsInBox = async (minLat: number, minLon: number, maxLat: number
   // PostGIS bbox overlap on the geometry column. `.withinBounds` is not a
   // supabase-js method; `st_intersects` with the envelope WKT is the standard
   // PostgREST way to ask "which linestrings touch this box".
+  const supabase = getClient();
+  if (!supabase) return [];
+
   const bboxWkt = `SRID=4326;POLYGON((${minLon} ${minLat},${maxLon} ${minLat},${maxLon} ${maxLat},${minLon} ${maxLat},${minLon} ${minLat}))`;
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await supabase
     .from('road_segments')
     .select('id, geom, surface, roughness_index, sample_count, osm_way_id, updated_at')
     .filter('geom', 'st_intersects', bboxWkt)
@@ -122,6 +161,23 @@ const MAX_SEGMENTS = 500;
 
 export const registerRoadSegmentRoutes = (app: Express): void => {
   app.get('/api/road-segments', async (req: Request, res: Response) => {
+    /*
+     * NOT CONFIGURED IS NOT THE SAME AS NO ROADS.
+     *
+     * An empty `ok: true` would be this endpoint claiming nobody has ever
+     * recorded a surface out here. Said before the box is even parsed, so a
+     * developer curling it gets the reason rather than a silent blank.
+     */
+    if (!getClient()) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(503).json({
+        ...EMPTY,
+        message:
+          'Road segments need Supabase credentials (VITE_SUPABASE_URL and ' +
+          'VITE_SUPABASE_ANON_KEY). This server is running without them.'
+      });
+    }
+
     const nums = ['minLat', 'minLon', 'maxLat', 'maxLon'].map(k => parseFloat(req.query[k] as string));
     if (nums.some(n => !Number.isFinite(n))) return res.status(400).json({ ...EMPTY, message: 'minLat, minLon, maxLat and maxLon are required numeric query params.' });
     const [minLat, minLon, maxLat, maxLon] = nums;
