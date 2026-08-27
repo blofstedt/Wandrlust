@@ -309,6 +309,15 @@ export const registerBeaconRoutes = (app: Express): void => {
     let scannedRadius = RADIUS_LADDER[0];
     /** How many rungs of the ladder actually ran. Zero means nothing was asked. */
     let rungsRun = 0;
+    /**
+     * Whether the agency boundary layer actually answered on the last rung.
+     *
+     * Public land is a REQUIREMENT in `buildCandidates`, not a bonus — a
+     * candidate the government polygons cannot place on public land is dropped
+     * outright. So when this is false, "nothing cleared the bar" is not a fact
+     * about the ground; it is the test never having been run.
+     */
+    let landConfirmable = false;
 
     /** Milliseconds left before anything upstream has to be finished. */
     const remaining = () => DEADLINE_MS - RESERVE_MS - (Date.now() - startedAt);
@@ -409,6 +418,7 @@ export const registerBeaconRoutes = (app: Express): void => {
       sources.publicLand = publicLand.ok
         ? `ok (${publicLand.features.length} parcels in range)`
         : 'unavailable — public land could not be confirmed from agency data';
+      landConfirmable = publicLand.ok;
 
       found = buildCandidates(scan, signs, { lat, lon }, publicLand)
         .filter((c) => c.ruleScore >= REMEMBER_SCORE);
@@ -423,8 +433,35 @@ export const registerBeaconRoutes = (app: Express): void => {
      */
     const ranOutOfTime = rungsRun === 0;
     const couldNotAsk = !ranOutOfTime && sources.openstreetmap !== 'ok';
+
+    /**
+     * A FOURTH FACT, AND IT USED TO BE SPELLED AS THE FIRST ONE.
+     *
+     * OpenStreetMap answering is not the whole test. `buildCandidates` drops
+     * every candidate the agency boundary layer cannot place on public land —
+     * that is deliberate and it is the rule that stopped Beacon returning
+     * supermarket car parks. But it means the government layer timing out and
+     * the ground genuinely being empty produce the SAME empty list, and the
+     * empty list was being reported with NOTHING_FOUND: "Nothing on public
+     * land here cleared the bar."
+     *
+     * That sentence claims a test was run. When the boundary layer was down,
+     * it was not — no candidate could have survived that filter no matter what
+     * Overpass found. So the camper was told there is nowhere to sleep here on
+     * the strength of a check that never happened, which is the one thing this
+     * app does not do. Worse, it was told for free to everybody afterwards:
+     * the scan row went in, and `beacon_scan_is_fresh` then served that
+     * unchecked "nothing" to the next two days of campers looking at the same
+     * ground.
+     *
+     * Only counted when the answer is EMPTY. If OpenStreetMap's own tagging
+     * carried a lead through anyway, the scan did its job and keeps its token.
+     */
+    const landWentUnchecked =
+      !ranOutOfTime && !couldNotAsk && !landConfirmable && found.length === 0;
+
     /** Ground was actually swept, whether or not anything was standing on it. */
-    const sweptGround = !ranOutOfTime && !couldNotAsk;
+    const sweptGround = !ranOutOfTime && !couldNotAsk && !landWentUnchecked;
 
     /* ---- Persist. Scores are recomputed with the learned model in SQL. ---- */
     /*
@@ -449,6 +486,13 @@ export const registerBeaconRoutes = (app: Express): void => {
      * result to remember, and recording one would suppress the real scan for
      * the next two days.
      */
+    /**
+     * The write is what turns a scan into an answer — `readSpots` reads BACK
+     * what was just stored. So a persist that fails produces an empty list
+     * from ground that may have been full of leads, and that empty list must
+     * never be spelled as "nothing here".
+     */
+    let persistFailed = false;
     if (service && sweptGround) {
       const { error } = await service.rpc('beacon_persist_spots', {
         in_spots: found.map((c) => ({
@@ -461,7 +505,10 @@ export const registerBeaconRoutes = (app: Express): void => {
         in_radius_m: scannedRadius,
         in_sources: sources
       });
-      if (error) console.warn('[beacon] persist failed:', error.message);
+      if (error) {
+        console.warn('[beacon] persist failed:', error.message);
+        persistFailed = true;
+      }
     }
 
     const spots = await readSpots(scannedRadius);
@@ -487,7 +534,7 @@ export const registerBeaconRoutes = (app: Express): void => {
     let refunded = false;
     let beaconsLeft = claim.remaining;
     let resetsAt = claim.resets_at;
-    if (ranOutOfTime || couldNotAsk) {
+    if (ranOutOfTime || couldNotAsk || landWentUnchecked || persistFailed) {
       const { data: back, error: refundError } = await caller.rpc('refund_beacon_token');
       if (refundError) {
         console.warn('[beacon] refund failed:', refundError.message);
@@ -517,10 +564,27 @@ export const registerBeaconRoutes = (app: Express): void => {
           `Nothing below has been ruled out — try again in a moment.${kept}`
         : couldNotAsk
         ? `Could not reach OpenStreetMap just now, so nothing was scanned.${kept}`
+        : landWentUnchecked
+        ? 'The government land boundaries could not be reached just now, and Beacon ' +
+          'only suggests ground an agency names as public — so it had nothing to ' +
+          `check against and ruled nothing out. Try again in a moment.${kept}`
+        : persistFailed
+        ? 'The scan ran, but its results could not be saved, so nothing can be ' +
+          `shown for it. Nothing here has been ruled out — try again shortly.${kept}`
         : NOTHING_FOUND,
       signageNote: sources.mapillary?.startsWith('ok')
         ? undefined
-        : 'Street-level signage was not checked here, so no spot below can be treated as sign-free.'
+        : 'Street-level signage was not checked here, so no spot below can be treated as sign-free.',
+      /*
+       * Said whenever the agency layer was down, INCLUDING when OpenStreetMap
+       * tagging still carried a lead through. A spot resting on a volunteer's
+       * `landuse=forest` is a weaker claim than one inside a named BLM parcel,
+       * and the camper is the one who has to decide whether to drive there.
+       */
+      landNote: landConfirmable
+        ? undefined
+        : 'Agency land boundaries could not be reached, so nothing below is ' +
+          'confirmed to sit on public land from the managing agency\'s own data.'
     });
   });
 };

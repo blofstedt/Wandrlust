@@ -183,6 +183,17 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
         )}
 
         {/*
+          Only over a list. With an empty list the same fact IS the note above,
+          and saying it twice reads like two separate problems.
+        */}
+        {result?.landNote && result.spots.length > 0 && (
+          <div className="flex items-start gap-2 text-[12px] text-slate-400 leading-snug">
+            <ShieldQuestion className="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span>{result.landNote}</span>
+          </div>
+        )}
+
+        {/*
           Where the rest of them went.
 
           The panel lists the best three; the scan usually persists more than

@@ -789,6 +789,15 @@ export interface BeaconQueryResult {
   note?: string;
   signageNote?: string;
   /**
+   * Set when the agency boundary layer could not be reached for this scan.
+   *
+   * Public land is a requirement, not a bonus — so this is the difference
+   * between "nothing here" and "we could not check", and it has to reach the
+   * screen either way: as the whole answer when the list is empty, and as a
+   * caveat over the list when OpenStreetMap tagging carried one through.
+   */
+  landNote?: string;
+  /**
    * The server would not accept the caller as signed in.
    *
    * Distinct from `ok: false`, which means the scan ran and turned nothing up.
