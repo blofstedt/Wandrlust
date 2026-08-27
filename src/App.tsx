@@ -1395,9 +1395,16 @@ export default function App() {
      * app's own, the way a native title bar looks. Anything else drawn
      * against the viewport rather than inside this box — the first-run map
      * data screen — has to do the same for itself.
+     *
+     * ON THE MAP VIEW ON A PHONE THERE IS NO BAR AT ALL. The header takes
+     * itself out of this column and floats over the map, so the map runs to
+     * the top edge of the screen — which is why this box is `relative`: it
+     * is what the header positions against, and it is what keeps the header
+     * inside the left and right cut-out insets in landscape. See the long
+     * note in Navbar.tsx.
      */
     <div
-      className="h-[100dvh] bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]
+      className="relative h-[100dvh] bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]
                  pb-[env(safe-area-inset-bottom)]
                  pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
     >
