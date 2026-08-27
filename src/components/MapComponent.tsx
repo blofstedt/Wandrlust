@@ -481,6 +481,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const routeRef = useRef(route);
   routeRef.current = route;
 
+  /** The towers behind the signal estimate, for the chip's own tour. */
+  const coverageRef = useRef(coverage);
+  coverageRef.current = coverage;
+
   /** Weather, signal and land for the open point, as chips. */
   const conditions = React.useMemo(
     () => conditionDots(weather, coverage, destination?.land, route),
@@ -4901,6 +4905,67 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }), [runTour]);
 
   /**
+   * Tapping the signal chip: where is the estimate actually coming from?
+   *
+   * "Weak signal" is a distance to a mast with the terrain ignored — the chip
+   * already says so once it unfurls, but a distance is easier to trust once
+   * you have seen the thing it is a distance FROM. `coverage.towers` is
+   * sorted nearest first, so the head of the list is the one the estimate is
+   * keyed to.
+   *
+   * Unlike the facility trip, this never asks for a route — a transmitter is
+   * not a place to drive to, it is just where the signal a phone would catch
+   * is coming from. The ping is decoration earning its keep: three rings
+   * expanding out from the mast read as a transmitter even to someone who has
+   * never seen a cell tower icon before.
+   */
+  const runSignalTour = useCallback(() => runTour(async (t) => {
+    const SIGNAL_COLOR = '#22D3EE';
+    const point = readPointRef.current;
+    const tower = coverageRef.current.towers?.[0];
+    if (!point || !tower) return;
+
+    const bounds = L.latLngBounds(
+      [point.lat, point.lon] as L.LatLngExpression,
+      [tower.latitude, tower.longitude] as L.LatLngExpression
+    );
+    t.frame(bounds, 14);
+    await t.wait(700);
+    if (!t.alive()) return;
+
+    L.marker([tower.latitude, tower.longitude], {
+      interactive: false,
+      zIndexOffset: -100,
+      icon: L.divIcon({
+        className: 'wl-tower-ping',
+        html:
+          `<div class="wl-tower-ping-wrap" style="--wl-signal-color:${SIGNAL_COLOR}">` +
+          '<span class="wl-radio-ping"></span>' +
+          '<span class="wl-radio-ping wl-radio-ping-2"></span>' +
+          '<span class="wl-radio-ping wl-radio-ping-3"></span>' +
+          '<span class="wl-radio-dot"></span>' +
+          '</div>',
+        iconSize: [46, 46],
+        iconAnchor: [23, 23]
+      })
+    }).addTo(t.layer);
+
+    const away = tower.distanceKm < 1
+      ? `${Math.round(tower.distanceKm * 1000)} m`
+      : `${tower.distanceKm.toFixed(1)} km`;
+
+    t.label([tower.latitude, tower.longitude], {
+      title: tower.operator?.trim() || 'Nearest mast',
+      detail: `${away} away, straight line — terrain isn't part of this estimate` +
+        (tower.technology ? `, recorded as ${tower.technology}` : ''),
+      glyph: '\u{1F4E1}',
+      color: SIGNAL_COLOR
+    });
+
+    await t.wait(2600);
+  }), [runTour]);
+
+  /**
    * Tapping a warning chip: where does this actually apply?
    *
    * The chip says "Heatwave" and the honest follow-up is "over what?" — a
@@ -5439,6 +5504,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         case 'gap': void runGapTour(); return;
         case 'road': void runRoadTour(facility ?? null); return;
         case 'directions': directionsRef.current(); return;
+        case 'signal': void runSignalTour(); return;
         // The × on a tour label. This dispatcher only ever stops the tour —
         // for most chips that's the whole story, and the pin stays open. The
         // land tour is the one exception: it deselects the pin itself too,
@@ -5502,7 +5568,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     return () => container.removeEventListener('click', onTap, true);
   }, [
     isMapReady, runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour,
-    unfurlChip, endTour
+    runSignalTour, unfurlChip, endTour
   ]);
 
   /**
@@ -5535,13 +5601,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         case 'gap': void runGapTour(); return;
         case 'road': void runRoadTour(dot.facility ?? null); return;
         case 'directions': directionsRef.current(); return;
+        case 'signal': void runSignalTour(); return;
         default:
           if (dot.facility) {
             setFacilityTrip({ facility: dot.facility, route: null, loading: true });
           }
       }
     }, 380);
-  }, [runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour]);
+  }, [runFireTour, runAlertTour, runLandTour, runGapTour, runRoadTour, runSignalTour]);
 
   /**
    * Frame the spot and the facility together, then ask for a route.

@@ -114,8 +114,10 @@ export interface MarkerDot {
    *   gap        where the router's road stops, and the walk left after it
    *   directions hands off to the phone's own maps app — this is the car chip,
    *              and it is why there is no longer a separate "Go" button
+   *   signal     the nearest mast the estimate is keyed to — a look, not a
+   *              route: nobody drives to a tower
    */
-  action?: 'fires' | 'alert' | 'land' | 'road' | 'gap' | 'directions';
+  action?: 'fires' | 'alert' | 'land' | 'road' | 'gap' | 'directions' | 'signal';
   /**
    * Which warning family this chip stands for, on hazard chips only.
    *
@@ -445,6 +447,9 @@ export const conditionDots = (
       full: `${SIGNAL_COPY[overall.strength]} \u2014 nearest mast ` +
         `${overall.nearestTowerKm} km, terrain ignored`,
       glyph: '\u{1F4F6}',
+      // Only when there is an actual mast to go and look at \u2014 the estimate
+      // can exist with none in range, and "show me" has nothing to show then.
+      action: coverage.towers?.length ? 'signal' : undefined,
       tone: overall.strength === 'none' ? 'bad'
         : overall.strength === 'weak' ? 'neutral' : 'good'
     });
