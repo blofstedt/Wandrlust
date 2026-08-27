@@ -6987,18 +6987,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         screen eating taps meant for the ground under it is exactly the bug
         this app has fixed twice already.
       */}
-      <div
-        /*
-          `--map-overlay-top`, not `top-3`. On a phone this map has no header
-          above it — the search field floats over the map and the tiles run to
-          the top of the screen — so the first notice has to start below that
-          field rather than under it. index.css holds the measurement, and
-          puts it back to a plain inset on a wide screen where the header is
-          an ordinary bar again.
-        */
-        style={{ top: 'var(--map-overlay-top)' }}
-        className="absolute left-1/2 -translate-x-1/2 z-[998] w-[min(22rem,calc(100%-1.5rem))] flex flex-col items-center gap-1.5 pointer-events-none"
-      >
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[998] w-[min(22rem,calc(100%-1.5rem))] flex flex-col items-center gap-1.5 pointer-events-none">
         {/*
           THE ONE INSTRUCTION ON THE MAP.
 
