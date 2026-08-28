@@ -392,8 +392,7 @@ interface Settlement { lat: number; lon: number; kind: string }
 const SETTLEMENT_RINGS: Record<string, [number, number]> = {
   city: [5000, 20000],
   town: [2500, 10000],
-  village: [1200, 5000],
-  hamlet: [800, 3000]
+  village: [1200, 5000]
 };
 
 /**
@@ -415,7 +414,6 @@ const settlementsQuery = (box: string, timeoutS: number): string =>
   `node["place"="city"](${box});` +
   `node["place"="town"](${box});` +
   `node["place"="village"](${box});` +
-  `node["place"="hamlet"](${box});` +
   // `);out;` — the semicolon after the group is required. Without it Overpass
   // answers HTTP 400, which is what the per-mirror log caught.
   ');out;';
@@ -905,6 +903,23 @@ export const registerRecSiteRoutes = (app: Express): void => {
 
     const startedAt = Date.now();
 
+    /**
+     * AN EXPLICIT CELL BEATS A CLEVER BATCH.
+     *
+     * Sorting by latitude made each batch a band — but a band across British
+     * Columbia is still nineteen degrees of longitude, and Overpass timed out
+     * on it at six seconds and again at twelve. The area was always the
+     * problem and no ordering of the rows fixes that.
+     *
+     * So the caller may name the box. Small cells are queries Overpass answers
+     * in a second, and the work becomes a loop of reliable requests instead of
+     * one unreliable request. Without a cell it still falls back to the band,
+     * which is fine where the remaining rows are few.
+     */
+    const cell = ['minLat', 'minLon', 'maxLat', 'maxLon']
+      .map((k) => parseFloat(String(req.query[k] ?? '')));
+    const hasCell = cell.every((n) => Number.isFinite(n));
+
     /*
      * Ordered by latitude so a batch is a BAND rather than a scatter.
      *
@@ -919,6 +934,10 @@ export const registerRecSiteRoutes = (app: Express): void => {
       .eq('source', 'agency_dataset')
       .is('setting', null)
       .eq('setting_is_derived', true)
+      .gte('latitude', hasCell ? cell[0] : -90)
+      .gte('longitude', hasCell ? cell[1] : -180)
+      .lte('latitude', hasCell ? cell[2] : 90)
+      .lte('longitude', hasCell ? cell[3] : 180)
       .order('latitude', { ascending: true })
       .limit(limit);
 
