@@ -152,7 +152,15 @@ const fetchRegion = async (
     `out center tags;`;
 
   const startedAll = Date.now();
-  const perMirrorMs = Math.max(6_000, Math.floor(timeoutMs / 2));
+  /*
+   * Nine seconds each, not half the budget. The first run of this gave each
+   * mirror six and every one of them timed out on the big boxes — measured,
+   * from production, not guessed. Overpass answers a state in a second or two
+   * once the query is index-served; when it needs longer than that it is
+   * because the box is genuinely large, and six seconds turns "slow" into
+   * "nothing at all".
+   */
+  const perMirrorMs = Math.max(9_000, Math.floor(timeoutMs / 2));
   const tried: string[] = [];
 
   for (const mirror of OVERPASS_MIRRORS) {
@@ -301,6 +309,23 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
      * spend a step of the budget fetching.
      */
     const regions: Admin1Region[] = admin1Regions()
+      /*
+       * IN, BY ITS MIDDLE — not by whether a corner of it grazes the coverage
+       * box. Clipping alone kept Nunavut and Alaska in: Nunavut survived as a
+       * 60°-wide band along the top edge and Alaska as a strip down its
+       * eastern side, and both are enormous, empty, and timed out every
+       * mirror on the first production run. A territory whose centre is
+       * outside what this app answers for has nothing here worth a step of
+       * the budget.
+       */
+      .filter((r) => {
+        const midLat = (r.bbox.minLat + r.bbox.maxLat) / 2;
+        const midLon = (r.bbox.minLon + r.bbox.maxLon) / 2;
+        return midLat >= COVERAGE.minLat && midLat <= COVERAGE.maxLat &&
+               midLon >= COVERAGE.minLon && midLon <= COVERAGE.maxLon;
+      })
+      // Still clipped, so a state straddling the edge is only asked about the
+      // part of itself this app draws.
       .map((r) => ({
         ...r,
         bbox: {
@@ -330,10 +355,10 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
        * and the next run would have no way to tell that from a region with
        * genuinely few campgrounds.
        */
-      if (spent > budgetMs - 7_000) break;
+      if (spent > budgetMs - 11_000) break;
 
       const region = regions[index];
-      const perRegionMs = Math.min(12_000, budgetMs - spent - 2_000);
+      const perRegionMs = Math.min(16_000, budgetMs - spent - 1_500);
       const answer = await fetchRegion(region.bbox, perRegionMs);
 
       if (!answer.ok) {
