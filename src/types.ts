@@ -777,6 +777,14 @@ export interface SpotContext {
 export interface BeaconQueryResult {
   ok: boolean;
   spots: BeaconSpot[];
+  /**
+   * Leads that were found and stored but are too weak to recommend.
+   *
+   * These are drawn on the map either way, so leaving them out of the answer
+   * was how the panel came to say "nothing found" while a pin appeared under
+   * it. Shown in their own group, below the real results and never mixed in.
+   */
+  weakerSpots?: BeaconSpot[];
   /** True when this was answered from ground somebody already swept — free. */
   cached: boolean;
   /** Beacons left in the current 12-hour window, when the server said. */

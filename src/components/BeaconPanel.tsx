@@ -175,6 +175,38 @@ export const BeaconPanel: React.FC<BeaconPanelProps> = ({
           </div>
         )}
 
+        {/*
+          ---- THE WEAKER LEADS, SAID OUT LOUD ----
+
+          These are stored and drawn on the map whatever happens, so leaving
+          them out of the panel did not hide them — it just meant the panel
+          said "nothing here" while a pin quietly appeared on the map behind
+          it. Both statements true, together, contradicting each other.
+
+          They sit BELOW the results and under their own heading, never mixed
+          in, because the bar between them is a real judgement: these are
+          places a vehicle would fit that nobody has ever looked at.
+        */}
+        {result && !busy && (result.weakerSpots?.length ?? 0) > 0 && (
+          <div className="pt-1 anim-in-up">
+            <p className="text-[12px] font-bold text-slate-400 mb-1.5">
+              Weaker leads, on the map
+            </p>
+            <p className="text-[12px] text-slate-500 leading-snug mb-2">
+              Not strong enough to recommend — a vehicle would fit and nothing
+              says you cannot, which is all anybody knows about them.
+            </p>
+            {result.weakerSpots?.map((spot, i) => (
+              <BeaconSpotCard
+                key={spot.id}
+                spot={spot}
+                index={i}
+                onNavigate={() => onNavigate(spot.latitude, spot.longitude, spot.label)}
+              />
+            ))}
+          </div>
+        )}
+
         {result?.signageNote && (
           <div className="flex items-start gap-2 text-[12px] text-slate-400 leading-snug">
             <ShieldQuestion className="w-3.5 h-3.5 shrink-0 mt-px" />

@@ -289,6 +289,34 @@ export const BeaconVerifyPanel: React.FC<BeaconVerifyPanelProps> = ({
             </div>
           )}
 
+          {/*
+            ---- WHERE THIS PIN CAME FROM ----
+
+            A Beacon lead and a spot a camper submitted look identical once
+            they are on the map, and they are not remotely the same claim. One
+            is a person saying "I slept here"; the other is this app reading
+            OpenStreetMap and guessing that a vehicle would fit. The tier says
+            "nobody has been here", which is true but easy to skim past — it
+            reads as a status on a real place rather than as "no human has ever
+            looked at this".
+
+            So the provenance is stated outright, above the tier, and only
+            while nobody has verified it. Once a camper has actually been here
+            the tier is the honest headline again and this line would just be
+            noise.
+          */}
+          {spot.verifyCount === 0 && !flagged && (
+            <div className="flex items-start gap-2 rounded-2xl border border-slate-700 bg-slate-800/40 p-3">
+              <Radar className="w-3.5 h-3.5 shrink-0 mt-px text-sky-400" />
+              <p className="text-[12px] text-slate-300 leading-snug">
+                <span className="font-bold text-slate-200">Found by a Beacon scan, not by a camper.</span>{' '}
+                Nobody has submitted, visited or checked this place — the app
+                worked it out from public map data alone, and it may be
+                fenced, occupied or nothing at all.
+              </p>
+            </div>
+          )}
+
           {/* ---- The tier, in its own words ---- */}
           <div
             className="rounded-2xl border p-3"

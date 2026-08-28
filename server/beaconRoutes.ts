@@ -264,6 +264,18 @@ const DISCLAIMER =
  * about the ground — public land whose boundary nobody has drawn in
  * OpenStreetMap is invisible to this scan and very common.
  */
+/**
+ * Something was found, and none of it is worth recommending.
+ *
+ * A different fact from "nothing is here", and the panel used to spell both
+ * the same way while quietly dropping pins on the map for the first one.
+ */
+const weakThinNote = (count: number): string =>
+  `Nothing here is strong enough to recommend, but ${count} weaker ` +
+  `${count === 1 ? 'lead is' : 'leads are'} below and on the map. ` +
+  'They are places a vehicle would fit that nobody has ever checked — ' +
+  'read what each one says before driving to it.';
+
 const NOTHING_FOUND =
   'Nothing here cleared the bar. Beacon looks for places you could actually ' +
   'pull up — pullouts, rest areas, business car parks, clearings — and drops ' +
@@ -307,16 +319,34 @@ export const registerBeaconRoutes = (app: Express): void => {
 
     const startedAt = Date.now();
 
-    /** Read whatever is already known about this ground, ranked by the model. */
+    /**
+     * Read whatever is already known about this ground, ranked by the model.
+     *
+     * BOTH SIDES OF THE BAR COME BACK, AND THAT IS THE POINT.
+     *
+     * Two bars have always existed: leads above REMEMBER are stored and drawn
+     * on the map, leads above SURFACE are put in front of a human. Only the
+     * second group was ever returned, so a scan that found one weak lead
+     * pinned it to the map and told the camper it had found nothing — the two
+     * statements sitting on screen at the same time, contradicting each other.
+     * Reported from the road, and fairly: "it did find a spot, and added it to
+     * the map, but then said it found nothing."
+     *
+     * The bar itself is right — a turning circle nobody has ever seen is not
+     * something to recommend. Hiding it is what was wrong. So the weaker ones
+     * come back too, in their own group, and the panel can say what they are
+     * instead of pretending they do not exist.
+     */
     const readSpots = async (radiusM: number) => {
       const { data, error } = await anon.rpc('beacon_spots_near', {
         in_lat: lat, in_lon: lon, in_radius_km: radiusM / 1000
       });
-      if (error || !Array.isArray(data)) return [];
-      return (data as SpotRow[])
-        .map((row) => shape(row, lat, lon))
-        .filter((spot) => spot.score >= SURFACE_SCORE)
-        .slice(0, WANTED);
+      if (error || !Array.isArray(data)) return { spots: [], weaker: [] };
+      const shaped = (data as SpotRow[]).map((row) => shape(row, lat, lon));
+      return {
+        spots: shaped.filter((s) => s.score >= SURFACE_SCORE).slice(0, WANTED),
+        weaker: shaped.filter((s) => s.score < SURFACE_SCORE).slice(0, WANTED)
+      };
     };
 
     /* ---- Cache first. A hit costs the camper nothing. ---- */
@@ -325,14 +355,17 @@ export const registerBeaconRoutes = (app: Express): void => {
     });
 
     if (fresh === true) {
-      const spots = await readSpots(RADIUS_LADDER[RADIUS_LADDER.length - 1]);
+      const { spots, weaker } = await readSpots(RADIUS_LADDER[RADIUS_LADDER.length - 1]);
       return res.json({
         ok: spots.length > 0,
         spots,
+        weakerSpots: weaker,
         cached: true,
         disclaimer: DISCLAIMER,
         note: spots.length > 0
           ? 'Someone already swept this ground in the last two days, so this one was free.'
+          : weaker.length > 0
+          ? weakThinNote(weaker.length)
           : NOTHING_FOUND
       });
     }
@@ -625,7 +658,7 @@ export const registerBeaconRoutes = (app: Express): void => {
       }
     }
 
-    const spots = await readSpots(scannedRadius);
+    const { spots, weaker } = await readSpots(scannedRadius);
 
     /**
      * NOTHING WAS SCANNED, SO THE BEACON GOES BACK.
@@ -665,6 +698,7 @@ export const registerBeaconRoutes = (app: Express): void => {
     return res.json({
       ok: spots.length > 0,
       spots,
+      weakerSpots: weaker,
       cached: false,
       remaining: beaconsLeft,
       resetsAt,
