@@ -125,6 +125,34 @@ export const settingGlyph = (setting: CampsiteSettingGlyph): string => {
 };
 
 /**
+ * The tapped glyph, with a white halo behind it — built WITHOUT `filter`.
+ *
+ * A `filter: drop-shadow()` halo shipped here earlier and made the glyph
+ * WORSE than before on a real phone: reported back as the pentagon rendering
+ * completely empty, no icon at all, where it had previously been merely hard
+ * to read. That is the signature of a real WebKit bug class — `filter` on an
+ * SVG whose ancestor is mid CSS-animation (`.wl-pin-on`'s `moook-pop` scale)
+ * can make Safari drop the filtered content's paint entirely rather than
+ * just glow it, and there is no reliable way to detect that from here to
+ * work around it in code.
+ *
+ * So this does not use `filter` at all. It draws the SAME glyph TWICE,
+ * stacked with plain absolute positioning: a wide white copy behind, forced
+ * white with a CSS rule on ITS OWN paths rather than through `currentColor`
+ * so it cannot be knocked out by whatever the ink copy's colour is doing, and
+ * the normal dark copy in front. Two `<svg>`s and a z-order is something
+ * every browser has painted correctly for twenty years — there is no
+ * compositing feature here for anything to get wrong.
+ *
+ * Only built for the SELECTED pin — the one place the halo was ever needed,
+ * since a resting pin's light glyph already reads fine on its dark ring —
+ * so the extra markup never touches the hundreds of pins that are not open.
+ */
+const haloedGlyph = (setting: CampsiteSettingGlyph): string =>
+  `<span class="wl-glyph-halo" aria-hidden="true">${settingGlyph(setting)}</span>` +
+  `<span class="wl-glyph-ink">${settingGlyph(setting)}</span>`;
+
+/**
  * A spot a camper added themselves.
  *
  * TWO STATES, AND THE WHOLE INTERFACE HANGS OFF THE DIFFERENCE.
@@ -1068,7 +1096,8 @@ export const buildCampsiteIcon = (
       row +
       `<div class="wl-pin${official ? ' wl-pin-official' : ''}${isSelected ? ' wl-pin-on' : ''}">` +
       `${official ? PENTAGON_PLAQUE : ''}` +
-      `<span class="wl-pin-glyph">${settingGlyph(setting)}</span></div>` +
+      `<span class="wl-pin-glyph">` +
+      `${isSelected ? haloedGlyph(setting) : settingGlyph(setting)}</span></div>` +
       `${isSelected ? pinActionsRow([INFO_ACTION_SPOT]) : ''}` +
       `</div>`,
     iconSize: [32, 32],

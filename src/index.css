@@ -638,23 +638,41 @@
   animation: moook-pop var(--dur-base) var(--ease-moook);
 }
 /*
- * A WHITE HALO BEHIND THE TAPPED GLYPH, ON TOP OF THE DARKER COLOUR ABOVE.
+ * A WHITE HALO BEHIND THE TAPPED GLYPH — NO `filter`, ON PURPOSE.
  *
- * Belt and braces: darkening the glyph raises the number on paper, but nothing
- * about the number guarantees a specific phone, in specific light, renders
- * a 2.4px stroke crisply enough to read at a glance against a bright fill.
- * A halo does not depend on the glyph's own colour being exactly right — it
- * carves a light ring around every stroke regardless of what is drawn inside
- * it, so the glyph reads as a dark mark ON something rather than risking
- * blending INTO it. Four zero-blur, near-zero-spread shadows rather than one
- * blurred one, because a blurred halo would soften the icon's own edges along
- * with adding contrast; stamping it from four directions keeps the strokes
- * sharp and still closes the gaps a single offset shadow would leave at the
- * stroke ends.
+ * The first version of this halo used `filter: drop-shadow(...)` on the
+ * glyph's own `<svg>`. Reported back from a real phone: the icon went from
+ * hard-to-read to COMPLETELY GONE — worse than doing nothing. That is the
+ * signature of a real WebKit bug, not a tuning problem: `filter` on an SVG
+ * whose ancestor (`.wl-pin-on`) is mid CSS-animation can make Safari drop
+ * the filtered paint entirely rather than glow it, and that cannot be
+ * detected or guarded against from here.
+ *
+ * So there is no filter anywhere in this rule. `haloedGlyph` in
+ * `mapPinRendering.ts` draws the glyph TWICE for a selected pin — a wide
+ * white copy stacked exactly behind a normal dark copy, both plain absolutely
+ * positioned elements. Two SVGs and a z-order is something every browser has
+ * painted correctly for decades; there is no compositing feature left for
+ * anything to get wrong.
+ *
+ * The halo copy is forced white on ITS OWN paths (`stroke` set directly, not
+ * through `currentColor`), so it cannot be knocked out by whatever the ink
+ * copy's colour is doing, or by anything upstream of `.wl-pin`'s `color`.
  */
-.wl-pin-on .wl-pin-glyph svg {
-  filter: drop-shadow(0.6px 0 0 #ffffff) drop-shadow(-0.6px 0 0 #ffffff)
-          drop-shadow(0 0.6px 0 #ffffff) drop-shadow(0 -0.6px 0 #ffffff);
+.wl-glyph-halo,
+.wl-glyph-ink {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The ink copy also sets this span's own size — the halo is purely visual
+   and must never affect where anything else in the row lays out. */
+.wl-glyph-ink { position: relative; }
+.wl-glyph-halo svg path {
+  stroke: #ffffff;
+  stroke-width: 4.6px;
 }
 /* A selected pin's chips must sit over its neighbours, not under them. */
 .wl-pin-wrap-on { z-index: 5; }
