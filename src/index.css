@@ -637,6 +637,35 @@
   stroke-width: 8.5;
 }
 
+/* ---------------------------------------------------------------------
+   THE SETTING GLYPH, DRAWN INSIDE THE PENTAGON'S OWN SVG.
+
+   Four builds in a row it was a separate element beside the pentagon, and
+   four builds in a row it did not paint on iOS — the pentagon's opaque
+   selected fill landing on top of it. It is a `<g>` in the same SVG now,
+   after the pentagon's paths, so paint order is document order and there is
+   no sibling left that could cover it. See `PENTAGON_PLAQUE`.
+
+   Only the COLOUR is set here. `stroke-width` stays a presentation attribute
+   on the group, because it is tuned per glyph (2.2–2.5) for even ink weight
+   and a CSS declaration here would flatten all of them to one number.
+   --------------------------------------------------------------------- */
+.wl-plaque-glyph-ink path {
+  stroke: #6ee7b7;
+}
+.wl-pin-official.wl-pin-on .wl-plaque-glyph-ink path {
+  /* Near-black on the flooded emerald. Green-on-green is the one pairing a
+     contrast number lies about, so this does not stay in the green family. */
+  stroke: #030f0a;
+}
+/* Behind the ink, and only ever built when selected: a fat white copy, so the
+   dark glyph reads on the bright fill without depending on the fill's exact
+   brightness. Overriding the group's per-glyph width IS wanted here. */
+.wl-plaque-glyph-halo path {
+  stroke: #ffffff;
+  stroke-width: 4.6;
+}
+
 /* Tapped: the ring floods, and pops once so the choice is unmistakable. */
 .wl-pin-on {
   background: #10b981;

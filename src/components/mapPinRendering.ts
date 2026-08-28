@@ -24,12 +24,18 @@ import { directionsAppName } from '../utils/handoff';
 import { localizedPinHtml } from '../utils/alertOverlay';
 import { MarkerDot, FACILITY_COLOR } from '../utils/amenityDots';
 
-export const TENT_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M19 20 12 4 5 20"/><path d="M12 4v16"/><path d="M2 20h20"/></svg>';
-
 /**
+ * ---------------------------------------------------------------------------
+ * THE SETTING GLYPHS, AS PATH DATA RATHER THAN FINISHED `<svg>` STRINGS
+ * ---------------------------------------------------------------------------
+ *
+ * They are kept as raw paths because each one has to be drawn TWO ways: as a
+ * standalone `<svg>` inside a camper's circular pin, and as a `<g>` INSIDE the
+ * pentagon's own SVG for a government campground. See `plaqueWithGlyph` for
+ * why the second one exists — briefly, a glyph that is a separate element
+ * beside the pentagon can be covered by it, and one that is a group inside it
+ * cannot be. Same numbers either way, so the two can never drift apart.
+ *
  * ---------------------------------------------------------------------------
  * THE SECOND AXIS: WHAT KIND OF PLACE, NOT WHO SAYS SO
  * ---------------------------------------------------------------------------
@@ -43,66 +49,70 @@ export const TENT_SVG =
  * owns grey through green as a scale and red means somebody was moved on. A
  * silhouette carries this for free and survives sunlight and greyscale.
  *
- * All three are drawn in the same 24-unit box at the same stroke weight, so
- * they read as one family at 15px rather than three borrowed icons. They also
- * differ in HEIGHT on purpose — trees fill the box, houses sit low with sky
- * above them, towers fill it again but flat-topped — so the three are still
- * telling them apart when the roof pitch and the trunks are a pixel wide.
+ * All are drawn in the same 24-unit box at the same stroke weight, so they
+ * read as one family at 15px rather than four borrowed icons. They also differ
+ * in HEIGHT on purpose — trees fill the box, houses sit low with sky above
+ * them, towers fill it again but flat-topped — so the three are still telling
+ * themselves apart when the roof pitch and the trunks are a pixel wide.
+ *
+ * TENT is the fallback for a spot whose setting nobody has recorded. It is the
+ * neutral "this is a campsite" mark the app has always used.
+ *
+ * WILDERNESS is two conifers, not one: a single fir at fifteen pixels reads as
+ * an arrow, a spike or a pine-tree air freshener depending on the eye, and a
+ * pair reads as forest because trees come in groups. Unequal heights for the
+ * same reason — two matching triangles read as a pattern, two mismatched ones
+ * read as a place.
+ *
+ * SUBURBAN is a ROW of little pitched-roof houses. One house on its own is a
+ * farmhouse, a cabin, a homestead — the most rural thing on this map — so it
+ * was carrying the opposite of its meaning. What makes somewhere suburban is
+ * that the houses REPEAT, so the glyph repeats. It shares its grammar with the
+ * skyline deliberately, and differs only in the two ways a suburb differs from
+ * a downtown: SHORT, with open sky above, and PITCHED where towers are flat.
  */
+interface GlyphShape {
+  /** Stroke weight in the 24-unit box. Tuned per glyph for even ink. */
+  weight: number;
+  paths: string[];
+}
 
-/**
- * WILDERNESS: TWO CONIFERS.
- *
- * This slot used to hold the tent, and the tent was wrong for it. A tent
- * means "a campsite", which every pin on this map already means — so the
- * wilderness pin said nothing its neighbours were not also saying, and the
- * three settings collapsed into two. Trees say the thing a camper actually
- * wants to know at a glance: there is nothing out here but trees.
- *
- * Two of them, not one. A single fir at fifteen pixels reads as an arrow, a
- * spike or a pine-tree air freshener depending on the eye; a pair reads as
- * forest, because trees come in groups and one does not. Unequal heights for
- * the same reason — two matching triangles read as a pattern, two mismatched
- * ones read as a place.
- *
- * No ground line, unlike the tent. Four strokes is the ceiling at this size,
- * and two trunks ending level draw the ground for free.
- */
-const TREES_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M7.5 3.5 12.5 16.5h-10z"/><path d="M7.5 16.5v4"/>' +
-  '<path d="M17.5 8.5 21.5 18h-8z"/><path d="M17.5 18v2.5"/></svg>';
+const GLYPHS: Record<'tent' | 'trees' | 'houses' | 'towers', GlyphShape> = {
+  tent: {
+    weight: 2.5,
+    paths: ['M19 20 12 4 5 20', 'M12 4v16', 'M2 20h20']
+  },
+  trees: {
+    weight: 2.4,
+    paths: [
+      'M7.5 3.5 12.5 16.5h-10z', 'M7.5 16.5v4',
+      'M17.5 8.5 21.5 18h-8z', 'M17.5 18v2.5'
+    ]
+  },
+  houses: {
+    weight: 2.2,
+    paths: [
+      'M2 11 7 7.5l5 3.5', 'M3.6 9.9V16.5h6.8v-6.6',
+      'M12 12 17 8.5l5 3.5', 'M13.6 10.9V16.5h6.8v-5.6',
+      'M2 16.5h20'
+    ]
+  },
+  towers: {
+    weight: 2.5,
+    paths: ['M4 19.5V8.5l6-4v15', 'M10 19.5v-8l8-3v11', 'M2 19.5h20']
+  }
+};
 
-/**
- * SUBURBAN: A ROW OF LITTLE PITCHED-ROOF HOUSES.
- *
- * One house was not suburban. One house on its own is a farmhouse, a cabin,
- * a homestead — the most rural thing on this map — and it was carrying the
- * opposite of its meaning. What makes somewhere suburban is that the houses
- * REPEAT, so the glyph repeats: two of them, side by side, same shape, at the
- * same modest height.
- *
- * It shares its grammar with the skyline on purpose. Both are a row of
- * buildings on a ground line, and the only differences are the two that
- * actually separate a suburb from a downtown — these are SHORT, leaving open
- * sky across the top of the box, and they have PITCHED roofs where the towers
- * are flat. That contrast survives being four pixels tall; a difference of
- * detail would not.
- */
-const HOUSES_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M2 11 7 7.5l5 3.5"/><path d="M3.6 9.9V16.5h6.8v-6.6"/>' +
-  '<path d="M12 12 17 8.5l5 3.5"/><path d="M13.6 10.9V16.5h6.8v-5.6"/>' +
-  '<path d="M2 16.5h20"/></svg>';
+const glyphPaths = (g: GlyphShape): string =>
+  g.paths.map((d) => `<path d="${d}"/>`).join('');
 
-/** URBAN: two towers on the same ground line. Tall, and flat on top. */
-const SKYLINE_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M4 19.5V8.5l6-4v15"/><path d="M10 19.5v-8l8-3v11"/>' +
-  '<path d="M2 19.5h20"/></svg>';
+/** The standalone form, for a camper's circular pin. */
+const glyphSvg = (g: GlyphShape): string =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+  `stroke-width="${g.weight}" stroke-linecap="round" stroke-linejoin="round" ` +
+  `style="width:15px;height:15px">${glyphPaths(g)}</svg>`;
+
+export const TENT_SVG = glyphSvg(GLYPHS.tent);
 
 /** Urban, suburban, wilderness — or nothing said, which keeps the tent. */
 export type CampsiteSettingGlyph = 'urban' | 'suburban' | 'wilderness' | null;
@@ -115,14 +125,17 @@ export type CampsiteSettingGlyph = 'urban' | 'suburban' | 'wilderness' | null;
  * A distinct glyph for "unknown" would put a claim on the map where there is
  * none, and the card is where the absence gets said in words.
  */
-export const settingGlyph = (setting: CampsiteSettingGlyph): string => {
+const glyphFor = (setting: CampsiteSettingGlyph): GlyphShape => {
   switch (setting) {
-    case 'urban': return SKYLINE_SVG;
-    case 'suburban': return HOUSES_SVG;
-    case 'wilderness': return TREES_SVG;
-    default: return TENT_SVG;
+    case 'urban': return GLYPHS.towers;
+    case 'suburban': return GLYPHS.houses;
+    case 'wilderness': return GLYPHS.trees;
+    default: return GLYPHS.tent;
   }
 };
+
+export const settingGlyph = (setting: CampsiteSettingGlyph): string =>
+  glyphSvg(glyphFor(setting));
 
 /**
  * The tapped glyph, with a white halo behind it — built WITHOUT `filter`.
@@ -1042,31 +1055,71 @@ const PENTAGON_PATH =
   'L3.75 16.88Q2.54 13.17 5.7 10.88Z';
 
 /**
- * THE SAME SHAPE DRAWN TWICE: A WIDE SOFT EDGE BEHIND, THE PLAQUE IN FRONT.
+ * THE PENTAGON AND ITS GLYPH, AS ONE SVG. NOT TWO ELEMENTS, NOT A FILTER.
  *
- * This used to be one path plus `filter: drop-shadow(...)` on the `<svg>` —
- * for the resting shadow, and again, three-deep, for the selected glow. That
- * filter is why the setting glyph never appeared inside a selected pentagon
- * on iOS. Proven, not guessed: a pixel dump of the reported screenshot shows
- * the interior perfectly uniform green with ZERO glyph pixels, across three
- * different builds in which the glyph was dark green, then near-black, then
- * near-black wrapped in its own white halo. The glyph's colour was never the
- * variable. The plaque's `filter` was the only thing constant across all
- * three, and it is the only compositing construct anywhere in this pin: a
- * filtered element is promoted to its own layer, and Safari ordering that
- * layer above a `z-index` sibling paints the opaque pentagon fill straight
- * over the glyph.
+ * ---------------------------------------------------------------------------
+ * WHY THE GLYPH IS INSIDE THE PLAQUE NOW
+ * ---------------------------------------------------------------------------
  *
- * So there is no filter here any more, in either state. The soft edge is just
- * a second, fatter, semi-transparent copy of the same path painted behind the
- * real one — plain SVG stroke painting, which cannot be promoted, reordered
- * or dropped. It also follows the pentagon exactly, where the old
- * `box-shadow`-style ring never could.
+ * The setting glyph did not appear inside a selected pentagon on iOS across
+ * FOUR builds, and the glyph itself was different in every one of them: dark
+ * green, then near-black, then near-black wrapped in a white halo, then the
+ * same again with every `filter` in the pin removed. A pixel dump of the
+ * reported screenshot shows the pentagon's interior perfectly uniform green
+ * with ZERO glyph pixels — not faint, not low-contrast, absent.
+ *
+ * Every one of those attempts changed what the glyph LOOKED like, and the
+ * common thread was never the glyph's appearance: it was that the glyph was a
+ * SEPARATE ELEMENT sitting beside a 34px absolutely-positioned pentagon whose
+ * fill goes fully opaque on selection, with paint order between the two
+ * decided by stacking rules. That is a thing a browser can get wrong, and
+ * arguing about which rule it got wrong is how four rounds went by.
+ *
+ * So the argument is removed rather than won. The glyph is now a `<g>` INSIDE
+ * the pentagon's own `<svg>`, painted after the pentagon's paths. Within one
+ * SVG, paint order is document order — there is no z-index, no stacking
+ * context, no compositing layer, and no sibling that could ever be drawn over
+ * it. The pentagon cannot cover the glyph because the glyph is part of the
+ * pentagon.
+ *
+ * ---------------------------------------------------------------------------
+ * THE REST OF THE DRAWING
+ * ---------------------------------------------------------------------------
+ *
+ * `edge` is the same outline again, fatter and semi-transparent, behind the
+ * body — the soft edge that used to be a `drop-shadow`, and the selected glow
+ * that used to be three of them stacked. Plain stroke painting, which follows
+ * the pentagon exactly where a `box-shadow` ring never could.
+ *
+ * `halo` is the glyph drawn twice: a wide white copy behind a normal one, so
+ * a dark glyph stays legible against the bright fill a selected pin floods
+ * with. Only built when selected — a resting pentagon's pale glyph on a dark
+ * middle needs no help.
+ *
+ * The glyph is authored in a 24-unit box and the pentagon in a 34-unit one,
+ * so it is scaled by 15/24 and offset to put its centre on the pentagon's:
+ * 17 − (24 × 0.625)/2 = 9.5. That renders it at exactly the 15px it is drawn
+ * at inside a camper's circular pin, so the two kinds of pin stay a family.
  */
-const PENTAGON_PLAQUE =
-  '<svg class="wl-pin-plaque" viewBox="0 0 34 34" aria-hidden="true">' +
-  `<path class="wl-plaque-edge" d="${PENTAGON_PATH}"/>` +
-  `<path class="wl-plaque-body" d="${PENTAGON_PATH}"/></svg>`;
+const PENTAGON_PLAQUE = (setting: CampsiteSettingGlyph, isSelected: boolean): string => {
+  const g = glyphFor(setting);
+  const paths = glyphPaths(g);
+  const glyph =
+    `<g class="wl-plaque-glyph" transform="translate(9.5 9.5) scale(0.625)" ` +
+    `fill="none" stroke-width="${g.weight}" ` +
+    `stroke-linecap="round" stroke-linejoin="round">` +
+    (isSelected ? `<g class="wl-plaque-glyph-halo">${paths}</g>` : '') +
+    `<g class="wl-plaque-glyph-ink">${paths}</g>` +
+    `</g>`;
+
+  return (
+    `<svg class="wl-pin-plaque" viewBox="0 0 34 34" aria-hidden="true">` +
+    `<path class="wl-plaque-edge" d="${PENTAGON_PATH}"/>` +
+    `<path class="wl-plaque-body" d="${PENTAGON_PATH}"/>` +
+    glyph +
+    `</svg>`
+  );
+};
 
 /**
  * A campground somebody's government runs, drawn as a pentagon rather than a
@@ -1121,9 +1174,18 @@ export const buildCampsiteIcon = (
       `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
       `<div class="wl-pin${official ? ' wl-pin-official' : ''}${isSelected ? ' wl-pin-on' : ''}">` +
-      `${official ? PENTAGON_PLAQUE : ''}` +
-      `<span class="wl-pin-glyph">` +
-      `${isSelected ? haloedGlyph(setting) : settingGlyph(setting)}</span></div>` +
+      /*
+       * A pentagon carries its glyph INSIDE its own SVG; a circle wears it as
+       * a sibling span. The two are deliberately not unified: a circle's glyph
+       * is the only thing in the pin and has nothing that could cover it,
+       * while the pentagon's had a 34px opaque shape beside it and spent four
+       * rounds being painted over. See the note on `PENTAGON_PLAQUE`.
+       */
+      (official
+        ? PENTAGON_PLAQUE(setting, isSelected)
+        : `<span class="wl-pin-glyph">` +
+          `${isSelected ? haloedGlyph(setting) : settingGlyph(setting)}</span>`) +
+      `</div>` +
       `${isSelected ? pinActionsRow([INFO_ACTION_SPOT]) : ''}` +
       `</div>`,
     iconSize: [32, 32],
