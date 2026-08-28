@@ -565,9 +565,18 @@
    follow a shape it does not know about. */
 .wl-pin-plaque {
   position: absolute;
-  inset: -3px;
+  /* CENTRED ON THE PIN, NOT INSET FROM IT — and the difference is not
+     pedantry. `inset` on an absolutely positioned child resolves against the
+     PADDING box, and `.wl-pin` carries a 2.5px border, so `inset: -3px` put
+     the pentagon two and a half pixels lower than the circle it replaces.
+     That threw the glyph high inside every plaque, and moved the pin's mark
+     off the coordinate it is anchored to. Percentages resolve against the
+     padding box too, but a symmetric border makes its centre the real one. */
+  left: 50%;
+  top: 50%;
   width: 34px;
   height: 34px;
+  transform: translate(-50%, -50%);
   overflow: visible;
   filter: drop-shadow(0 1px 4px rgba(2, 6, 23, 0.55));
 }

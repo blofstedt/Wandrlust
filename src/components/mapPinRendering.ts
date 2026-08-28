@@ -71,8 +71,8 @@ export const TENT_SVG =
 const TREES_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" ' +
   'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M7.5 3 12.5 16h-10z"/><path d="M7.5 16v4"/>' +
-  '<path d="M17.5 8 21.5 17.5h-8z"/><path d="M17.5 17.5V20"/></svg>';
+  '<path d="M7.5 3.5 12.5 16.5h-10z"/><path d="M7.5 16.5v4"/>' +
+  '<path d="M17.5 8.5 21.5 18h-8z"/><path d="M17.5 18v2.5"/></svg>';
 
 /**
  * SUBURBAN: A ROW OF LITTLE PITCHED-ROOF HOUSES.
@@ -93,15 +93,16 @@ const TREES_SVG =
 const HOUSES_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
   'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M2 14.5 7 11l5 3.5"/><path d="M3.6 13.4V20h6.8v-6.6"/>' +
-  '<path d="M12 15.5 17 12l5 3.5"/><path d="M13.6 14.4V20h6.8v-5.6"/>' +
-  '<path d="M2 20h20"/></svg>';
+  '<path d="M2 11 7 7.5l5 3.5"/><path d="M3.6 9.9V16.5h6.8v-6.6"/>' +
+  '<path d="M12 12 17 8.5l5 3.5"/><path d="M13.6 10.9V16.5h6.8v-5.6"/>' +
+  '<path d="M2 16.5h20"/></svg>';
 
 /** URBAN: two towers on the same ground line. Tall, and flat on top. */
 const SKYLINE_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
   'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M4 20V9l6-4v15"/><path d="M10 20v-8l8-3v11"/><path d="M2 20h20"/></svg>';
+  '<path d="M4 19.5V8.5l6-4v15"/><path d="M10 19.5v-8l8-3v11"/>' +
+  '<path d="M2 19.5h20"/></svg>';
 
 /** Urban, suburban, wilderness — or nothing said, which keeps the tent. */
 export type CampsiteSettingGlyph = 'urban' | 'suburban' | 'wilderness' | null;
@@ -995,6 +996,12 @@ export const BEACON_ACTION: PinAction = {
  * which is the opposite of true. Drawn at 34 units and hung 3px outside the
  * box, the two carry the same weight.
  *
+ * IT SITS HALF A PIXEL ABOVE ITS OWN BOX, and that is not a typo. Rounding
+ * the apex pulls the drawn peak down by 0.58 units while the flat bottom edge
+ * does not move, so a pentagon whose CORNERS are centred draws its INK low.
+ * The path is shifted up by that much, which puts the shape a camper actually
+ * sees on the coordinate the marker is anchored to.
+ *
  * IT IS DRAWN, NOT CLIPPED. `clip-path` would cut the border off along with
  * the box and leave a shape with no outline; a stroked path keeps the same
  * 2.5px emerald ring the camper pin has, which is what makes the two read as
@@ -1003,9 +1010,9 @@ export const BEACON_ACTION: PinAction = {
  */
 const PENTAGON_PLAQUE =
   '<svg class="wl-pin-plaque" viewBox="0 0 34 34" aria-hidden="true">' +
-  '<path d="M13.84 5.54Q17 3.25 20.16 5.54L28.3 11.46Q31.46 13.75 30.25 17.46' +
-  'L27.14 27.04Q25.93 30.75 22.03 30.75L11.97 30.75Q8.07 30.75 6.86 27.04' +
-  'L3.75 17.46Q2.54 13.75 5.7 11.46Z"/></svg>';
+  '<path d="M13.84 4.96Q17 2.67 20.16 4.96L28.3 10.88Q31.46 13.17 30.25 16.88' +
+  'L27.14 26.46Q25.93 30.17 22.03 30.17L11.97 30.17Q8.07 30.17 6.86 26.46' +
+  'L3.75 16.88Q2.54 13.17 5.7 10.88Z"/></svg>';
 
 /**
  * A campground somebody's government runs, drawn as a pentagon rather than a
