@@ -184,9 +184,19 @@ const fetchFreeCampsites = async (
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  /*
+   * What each mirror said. The lesson is already written down at
+   * `fetchOverpassScan` in beaconSources.ts: a refusal, a rate limit, a
+   * timeout and a rejected query all read as "no mirror answered", and
+   * without this line the only way to tell them apart is to guess. The first
+   * run of this route did exactly that and cost a deploy.
+   */
+  const tried: string[] = [];
 
   try {
     for (const mirror of OVERPASS_MIRRORS) {
+      const host = new URL(mirror).host;
+      const at = Date.now();
       try {
         const r = await fetch(mirror, {
           method: 'POST',
@@ -197,17 +207,27 @@ const fetchFreeCampsites = async (
           body: `data=${encodeURIComponent(query)}`,
           signal: controller.signal
         });
-        if (!r.ok) continue;
+        if (!r.ok) {
+          const why = await r.text().catch(() => '');
+          tried.push(
+            `${host}: HTTP ${r.status}${why ? ` ${why.slice(0, 120).replace(/\s+/g, ' ').trim()}` : ''}`
+          );
+          continue;
+        }
         const data = (await r.json()) as {
           elements?: { lat?: number; lon?: number; center?: { lat: number; lon: number };
                        tags?: Record<string, string> }[];
           remark?: string;
         };
-        if (!Array.isArray(data.elements)) continue;
+        if (!Array.isArray(data.elements)) {
+          tried.push(`${host}: answered without an element list`);
+          continue;
+        }
         // A 200 that is really a failure — see overpassFailureRemark in
         // beaconSources.ts. An empty list with a runtime error in it is NOT
         // "no free campsites here", and must never be read as one.
         if (data.elements.length === 0 && /error|timed out|timeout/i.test(data.remark ?? '')) {
+          tried.push(`${host}: 200 but failed — ${String(data.remark).slice(0, 120)}`);
           continue;
         }
         const sites: FreeCampsite[] = [];
@@ -217,15 +237,54 @@ const fetchFreeCampsites = async (
           if (typeof lat !== 'number' || typeof lon !== 'number') continue;
           sites.push({ lat, lon, name: el.tags?.name });
         }
+        console.info(
+          `[rec-sites] Overpass answered — ${host}: ${sites.length} free campsites ` +
+          `in ${Date.now() - at} ms`
+        );
         return { ok: true, sites };
-      } catch {
+      } catch (err: any) {
+        tried.push(
+          `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 120)}` +
+          ` after ${Date.now() - at} ms`
+        );
         if (controller.signal.aborted) break;
       }
     }
-    return { ok: false, sites: [], note: 'No Overpass mirror answered.' };
+    console.warn(`[rec-sites] every Overpass mirror refused — ${tried.join(' | ')}`);
+    return { ok: false, sites: [], note: `No Overpass mirror answered — ${tried.join('; ')}` };
   } finally {
     clearTimeout(timer);
   }
+};
+
+/**
+ * Every free-tagged campsite in British Columbia, fetched once.
+ *
+ * The first version asked Overpass for the bounding box of each PAGE of
+ * recreation sites. Pages are sorted by `FOREST_FILE_ID`, which is an
+ * administrative number and not a place, so every page was scattered across
+ * the province and every box was therefore province-sized anyway — the same
+ * enormous query, run once per page, five times over.
+ *
+ * So it is asked once, for the province, and held. Campsites are sparse
+ * enough that the whole answer is small, and every page after the first
+ * matches against memory for nothing.
+ */
+const BC_BBOX = { minLat: 48.2, minLon: -139.1, maxLat: 60.1, maxLon: -114.0 };
+const BC_FREE_TTL_MS = 30 * 60 * 1000;
+let bcFreeCache: { at: number; result: { ok: boolean; sites: FreeCampsite[]; note?: string } } | null = null;
+
+const freeCampsitesInBC = async (
+  timeoutMs: number
+): Promise<{ ok: boolean; sites: FreeCampsite[]; note?: string }> => {
+  if (bcFreeCache && Date.now() - bcFreeCache.at < BC_FREE_TTL_MS && bcFreeCache.result.ok) {
+    return bcFreeCache.result;
+  }
+  const result = await fetchFreeCampsites(BC_BBOX, timeoutMs);
+  // Only a good answer is held. Caching a failure would turn one bad minute
+  // into half an hour of "nothing here is free".
+  if (result.ok) bcFreeCache = { at: Date.now(), result };
+  return result;
 };
 
 export const registerRecSiteRoutes = (app: Express): void => {
@@ -415,17 +474,9 @@ export const registerRecSiteRoutes = (app: Express): void => {
         });
       }
 
-      // One Overpass call for the whole page's footprint, padded so a site on
-      // the edge still has its OSM node inside the box.
-      const pad = MATCH_RADIUS_M / 111_000;
-      const bbox = {
-        minLat: Math.min(...candidates.map((c) => c.point.lat)) - pad,
-        maxLat: Math.max(...candidates.map((c) => c.point.lat)) + pad,
-        minLon: Math.min(...candidates.map((c) => c.point.lon)) - pad,
-        maxLon: Math.max(...candidates.map((c) => c.point.lon)) + pad
-      };
-
-      const free = await fetchFreeCampsites(bbox, 15_000);
+      // One province-wide lookup, held between pages. See `freeCampsitesInBC`
+      // for why per-page boxes were the wrong shape.
+      const free = await freeCampsitesInBC(20_000);
       if (!free.ok) {
         /*
          * Overpass being down is NOT "none of these are free". Refusing to
