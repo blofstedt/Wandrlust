@@ -489,6 +489,79 @@ export default function App() {
     [isOfflineMode, filterState.maxDistanceMiles]
   );
 
+  /**
+   * ---------------------------------------------------------------------
+   * THE BLUE DOT IS ALWAYS ON THE MAP, FROM THE MOMENT THE APP OPENS.
+   * ---------------------------------------------------------------------
+   *
+   * `userLocation` used to be set only by the locate button, so until you
+   * pressed it the map had no idea where you were and drew nothing. That is
+   * backwards for a driving app: knowing where you are is the baseline, and
+   * the button is for bringing the CAMERA back to you — which is why nothing
+   * in here ever moves the map. It only keeps the dot true.
+   *
+   * WHY THIS DOES NOT PROMPT ON A COLD OPEN. Calling `watchPosition`
+   * unprompted throws a permission dialog at somebody who has just opened the
+   * app and asked for nothing, and a prompt with no context is a prompt that
+   * gets denied — after which the dot is gone for good. So the watch starts
+   * only when permission has ALREADY been granted, or the moment the camper
+   * grants it by pressing locate. Where the Permissions API is missing, it
+   * waits for the button rather than guessing.
+   */
+  const watchIdRef = useRef<number | null>(null);
+
+  const startLocationWatch = useCallback(() => {
+    if (watchIdRef.current !== null) return;
+    if (!('geolocation' in navigator)) return;
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
+      (err) => {
+        // Never fatal, and never a dialog. A dot that cannot be drawn is the
+        // app knowing slightly less, not the app being broken.
+        console.warn('Location watch unavailable:', err.message);
+      },
+      // High accuracy because this dot is read while driving a backroad, and
+      // a fix that is two streets out is worse than none. `maximumAge` lets
+      // the platform answer from a recent fix instead of waking the GPS for
+      // every update, which is most of the battery cost back.
+      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 20_000 }
+    );
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let permission: PermissionStatus | null = null;
+
+    const armIfAlreadyAllowed = async () => {
+      try {
+        permission = await navigator.permissions?.query({
+          name: 'geolocation' as PermissionName
+        });
+        if (!permission || cancelled) return;
+        if (permission.state === 'granted') startLocationWatch();
+        // Granting it in the browser's own UI, rather than through our button,
+        // should light the dot up too.
+        permission.onchange = () => {
+          if (!cancelled && permission?.state === 'granted') startLocationWatch();
+        };
+      } catch {
+        // No Permissions API. The locate button is the way in.
+      }
+    };
+
+    void armIfAlreadyAllowed();
+
+    return () => {
+      cancelled = true;
+      if (permission) permission.onchange = null;
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+    };
+  }, [startLocationWatch]);
+
   const handleLocateUser = useCallback(() => {
     setIsLocating(true);
 
@@ -514,7 +587,12 @@ export default function App() {
     }
 
     navigator.geolocation.getCurrentPosition(
-      (pos) => apply(pos.coords.latitude, pos.coords.longitude, 'My current position'),
+      (pos) => {
+        // Permission has just been granted, or was already there. Either way
+        // the dot can now stay live for the rest of the session.
+        startLocationWatch();
+        apply(pos.coords.latitude, pos.coords.longitude, 'My current position');
+      },
       (err) => {
         // Denied, or blocked inside an iframe. Fall back home rather than
         // leaving the user staring at a spinner.
@@ -523,7 +601,7 @@ export default function App() {
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
-  }, [handleSelectLocation]);
+  }, [handleSelectLocation, startLocationWatch]);
 
   // Stable identity: MapComponent rebuilds its marker cluster whenever this
   // changes, so an inline arrow here would rebuild every pin on every render.

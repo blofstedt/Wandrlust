@@ -1000,10 +1000,26 @@ export const BEACON_RUNG: Partial<Record<BeaconSpot['tier'], number>> = {
  */
 export const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
   const style = beaconTierStyle(spot.tier);
-  const size = 30;
   const isLead = spot.tier === 'lead';
   const isFlagged = spot.tier === 'flagged';
   const rung = BEACON_RUNG[spot.tier] ?? 0;
+
+  /**
+   * A LEAD SITS BACK; A KNOCK DOES NOT.
+   *
+   * Beacon can put a lot of pins on a map, and every one of them means "the
+   * map data suggests this and nobody has ever been here". At full size and
+   * full strength they read as landmarks and crowd out the things that are
+   * actually known — campsites, facilities, warnings. Smaller and half
+   * transparent puts them where they belong: visible, clearly secondary,
+   * and still tappable.
+   *
+   * `flagged` is deliberately exempt from both. A red pin means a camper was
+   * woken up or moved on here, and fading a warning to half strength to
+   * reduce clutter is the one trade this app does not make.
+   */
+  const size = isFlagged ? 30 : 22;
+  const fade = isFlagged ? 1 : 0.5;
 
   // The progress ring, drawn with a conic gradient behind the hollow centre.
   // Cheap enough to put on 200 markers; no SVG, no extra DOM. A lead has no
@@ -1012,10 +1028,12 @@ export const buildBeaconIcon = (spot: BeaconSpot): L.DivIcon => {
     ? `background:conic-gradient(${style.color} ${rung * 360}deg, rgba(15,23,42,0.92) ${rung * 360}deg);`
     : `background:rgba(15,23,42,0.92);`;
 
-  const inner = isFlagged ? 12 : isLead ? 9 : 11;
+  // Scaled with the ring rather than fixed, so a smaller pin keeps the same
+  // proportions instead of turning into a thick donut with a pinhole.
+  const inner = isFlagged ? 12 : isLead ? 7 : 8;
 
   const html =
-    `<div style="width:${size}px;height:${size}px;border-radius:9999px;` +
+    `<div style="width:${size}px;height:${size}px;border-radius:9999px;opacity:${fade};` +
     // Solid, not dashed, and at full opacity. The dash was the single biggest
     // reason a lead vanished into gravel.
     `border:2px solid ${style.color};${progress}` +
