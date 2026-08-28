@@ -293,6 +293,13 @@ await safeRegister(
   'registerRoadSegmentRoutes'
 );
 
+// BC Recreation Sites — read-only proxy of the DataBC layer.
+await safeRegister(
+  'rec-sites',
+  () => import('../server/recSiteRoutes.js'),
+  'registerRecSiteRoutes'
+);
+
   /**
    * Scout Paths: user-recorded road surface data from Scout Mode.
    * Closes the loop: recordings are now stored AND displayed on the map.

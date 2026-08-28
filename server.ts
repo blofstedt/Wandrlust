@@ -16,6 +16,7 @@ import { registerFireRoutes } from './server/fireRoutes';
 import { registerBeaconRoutes } from './server/beaconRoutes';
 import { registerSpotRoutes } from './server/spotRoutes';
 import { registerRoadSegmentRoutes } from './server/roadSegmentRoutes';
+import { registerRecSiteRoutes } from './server/recSiteRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -89,6 +90,9 @@ const startServer = async (): Promise<void> => {
 
   // Scout Paths: user-recorded road surface data.
   registerRoadSegmentRoutes(app);
+
+  // BC Recreation Sites, read-only. See server/recSiteRoutes.ts.
+  registerRecSiteRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.
