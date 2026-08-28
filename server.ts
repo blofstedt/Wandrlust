@@ -18,6 +18,7 @@ import { registerSpotRoutes } from './server/spotRoutes';
 import { registerRoadSegmentRoutes } from './server/roadSegmentRoutes';
 import { registerRecSiteRoutes } from './server/recSiteRoutes';
 import { registerOsmCampsiteRoutes } from './server/osmCampsiteRoutes';
+import { registerFreeCampgroundRoutes } from './server/freeCampgroundRoutes';
 
 /**
  * One process serves both the API and the client.
@@ -97,6 +98,7 @@ const startServer = async (): Promise<void> => {
 
   // OSM campsites, swept once and cached for ninety days.
   registerOsmCampsiteRoutes(app);
+  registerFreeCampgroundRoutes(app);
 
   // The connection to the issuing agencies: polls NWS and Environment
   // Canada, stores what they publish, and lets the SQL matcher push it.

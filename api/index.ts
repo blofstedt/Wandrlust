@@ -307,6 +307,13 @@ await safeRegister(
   'registerOsmCampsiteRoutes'
 );
 
+// Free, officially-run campgrounds across the rest of Canada and the lower 48.
+await safeRegister(
+  'free-campgrounds',
+  () => import('../server/freeCampgroundRoutes.js'),
+  'registerFreeCampgroundRoutes'
+);
+
   /**
    * Scout Paths: user-recorded road surface data from Scout Mode.
    * Closes the loop: recordings are now stored AND displayed on the map.
@@ -338,6 +345,9 @@ const FEATURE_FOR_PATH: [RegExp, string][] = [
   [/^\/api\/beacon/, 'beacon'],
   [/^\/api\/spot/, 'spot'],
   [/^\/api\/road-segments/, 'road-segments'],
+  [/^\/api\/rec-sites/, 'rec-sites'],
+  [/^\/api\/osm-campsites/, 'osm-campsites'],
+  [/^\/api\/free-campgrounds/, 'free-campgrounds'],
 ];
 
 // Unknown /api routes return JSON, not the SPA's HTML. A typo in a fetch URL

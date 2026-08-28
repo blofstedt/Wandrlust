@@ -532,12 +532,55 @@ export default function App() {
    */
   const watchIdRef = useRef<number | null>(null);
 
+  /**
+   * THE FIRST FIX MOVES THE CAMERA. NOTHING AFTER IT EVER DOES.
+   *
+   * The map used to open on Calgary and stay there until the locate button
+   * was pressed, which is the wrong way round for a driving app: where you
+   * ARE is the obvious place to start, and a camper who opens the app in
+   * Nevada should not have to ask it to look at Nevada.
+   *
+   * Strictly once, though, and that is what this flag is for. The watch runs
+   * for the whole session and reports every few seconds; recentring on each
+   * fix would drag the map back under the camper's thumb every time they
+   * panned away from themselves, which is the single most infuriating thing
+   * a map can do.
+   */
+  const centredOnUserRef = useRef(false);
+  /** Read inside the watch callback, which is created once and never re-made. */
+  const centerRef = useRef(center);
+  centerRef.current = center;
+
   const startLocationWatch = useCallback(() => {
     if (watchIdRef.current !== null) return;
     if (!('geolocation' in navigator)) return;
 
     watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
+      (pos) => {
+        const here: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setUserLocation(here);
+
+        if (centredOnUserRef.current) return;
+        centredOnUserRef.current = true;
+        /*
+         * ONLY IF NOBODY HAS CLAIMED THE CAMERA YET.
+         *
+         * A fix can take several seconds, and a camper who has already
+         * searched somewhere, opened a saved spot or tapped a pin in that
+         * time has told us where they want to be looking far more clearly
+         * than their GPS has. `center` still being the home coordinates is
+         * the whole test — every other thing that moves the map moves it off
+         * them — so no flag has to be threaded through five call sites.
+         */
+        const claimed =
+          centerRef.current[0] !== HOME_CENTER[0] ||
+          centerRef.current[1] !== HOME_CENTER[1];
+        if (claimed) return;
+
+        setCenter(here);
+        setZoom(12);
+        setCurrentLocationName('My current position');
+      },
       (err) => {
         // Never fatal, and never a dialog. A dot that cannot be drawn is the
         // app knowing slightly less, not the app being broken.
@@ -644,6 +687,9 @@ export default function App() {
     setIsLocating(true);
 
     const apply = (lat: number, lon: number, label: string) => {
+      // The button has moved the camera deliberately; the watch's first fix
+      // must not then treat this as an unclaimed camera and move it again.
+      centredOnUserRef.current = true;
       setUserLocation([lat, lon]);
       setCenter([lat, lon]);
       setZoom(12);
