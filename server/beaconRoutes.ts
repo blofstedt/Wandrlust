@@ -143,6 +143,30 @@ const getServiceClient = (): SupabaseClient | null => {
   return serviceClient;
 };
 
+/**
+ * WHY A REFUSAL SAYS WHAT IT SAW.
+ *
+ * A 401 from this route has exactly one cause — no usable Bearer arrived — and
+ * for the whole life of the feature that was indistinguishable from four very
+ * different faults: the camper genuinely signed out, a dead session the app
+ * had not noticed, the header stripped in transit (a cross-origin redirect
+ * drops it, and every browser does that silently), or the app never attaching
+ * it. Diagnosing that by elimination cost a full session and could not be
+ * settled at all without the camper's own device.
+ *
+ * So the refusal is logged with what actually arrived. No token value is ever
+ * written — the scheme and the length are enough to tell "nothing came" from
+ * "something came in the wrong shape", and the forwarded host is what betrays
+ * a redirect having eaten it.
+ */
+const describeAuth = (req: Request): string => {
+  const header = req.headers.authorization;
+  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? 'unknown');
+  if (!header) return `no Authorization header at all, host=${host}`;
+  const [scheme] = header.split(' ');
+  return `Authorization present: scheme=${scheme} length=${header.length}, host=${host}`;
+};
+
 /** A client that acts as the signed-in caller, for the quota claim. */
 const getCallerClient = (req: Request): SupabaseClient | null => {
   const header = req.headers.authorization;
@@ -287,6 +311,7 @@ export const registerBeaconRoutes = (app: Express): void => {
     /* ---- A real scan. This is what costs a token. ---- */
     const caller = getCallerClient(req);
     if (!caller) {
+      console.warn(`[beacon] refused, no usable sign-in — ${describeAuth(req)}`);
       return res.status(401).json({
         ok: false, spots: [], cached: false, disclaimer: DISCLAIMER,
         note: 'Sign in to send out a beacon. Ground somebody has already scanned stays free.'

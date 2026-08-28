@@ -5,27 +5,27 @@
   "framework": "vite",
   "redirects": [
     {
-      "source": "/:path*",
+      "source": "/:path((?!api/).*)",
       "has": [{ "type": "host", "value": "www.wandrlust.dev" }],
-      "destination": "https://wandrlust.dev/:path*",
+      "destination": "https://wandrlust.dev/:path",
       "permanent": false
     },
     {
-      "source": "/:path*",
+      "source": "/:path((?!api/).*)",
       "has": [{ "type": "host", "value": "wandrlust-blofstedts-projects.vercel.app" }],
-      "destination": "https://wandrlust.dev/:path*",
+      "destination": "https://wandrlust.dev/:path",
       "permanent": false
     },
     {
-      "source": "/:path*",
+      "source": "/:path((?!api/).*)",
       "has": [{ "type": "host", "value": "wandrlust-topaz.vercel.app" }],
-      "destination": "https://wandrlust.dev/:path*",
+      "destination": "https://wandrlust.dev/:path",
       "permanent": false
     },
     {
-      "source": "/:path*",
+      "source": "/:path((?!api/).*)",
       "has": [{ "type": "host", "value": "wandrlust-git-main-blofstedts-projects.vercel.app" }],
-      "destination": "https://wandrlust.dev/:path*",
+      "destination": "https://wandrlust.dev/:path",
       "permanent": false
     }
   ],

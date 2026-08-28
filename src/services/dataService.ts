@@ -1962,8 +1962,40 @@ export const uploadBeaconProof = async (
  */
 export const currentAccessToken = async (): Promise<string | null> => {
   if (!supabase) return null;
-  const { data } = await supabase.auth.getSession();
-  return data?.session?.access_token ?? null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token ?? null;
+  } catch {
+    // `getSession` can reject rather than resolve empty — it takes a lock and
+    // may refresh under it. A throw here used to escape into beaconService's
+    // catch, which reports "could not reach the server": a network verdict on
+    // something that never touched the network.
+    return null;
+  }
+};
+
+/**
+ * One more try at a token, forcing the refresh rather than waiting for one.
+ *
+ * `getSession()` returning nothing is not proof the camper is signed out. It
+ * also happens when the access token has expired and the refresh has not run
+ * yet, or lost a race with the auto-refresh already in flight — and the cost
+ * of believing it the first time is a camper with a live session being told
+ * their sign-in expired, which is the complaint this whole path exists for.
+ *
+ * So the token is asked for a second time, the hard way, before anything
+ * concludes anybody is signed out. Returns null when the refresh genuinely
+ * fails, which IS the real answer, and the caller can act on it honestly.
+ */
+export const refreshedAccessToken = async (): Promise<string | null> => {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error) return null;
+    return data?.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
 };
 
 /**

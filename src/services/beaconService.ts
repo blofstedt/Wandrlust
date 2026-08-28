@@ -30,6 +30,7 @@ import localforage from 'localforage';
 import {
   recordBeaconPing,
   currentAccessToken,
+  refreshedAccessToken,
   signOutStaleSession
 } from './dataService';
 import type { BeaconQueryResult, BeaconDwellState } from '../types';
@@ -73,6 +74,34 @@ const TIMED_OUT: BeaconQueryResult = {
 /** Status codes a gateway returns when it gave up waiting on the function. */
 const GATEWAY_TIMEOUT = new Set([408, 502, 503, 504]);
 
+/** The server answered, and what came back was not the answer. */
+const UNREADABLE: BeaconQueryResult = {
+  ok: false,
+  spots: [],
+  cached: false,
+  disclaimer: DISCLAIMER,
+  note:
+    'The server answered with something this app could not read, so nothing ' +
+    'here was scanned or ruled out. Try again in a moment.'
+};
+
+/**
+ * The server refused, in words it did not explain.
+ *
+ * The status is carried because "500" and "403" send whoever is helping to
+ * two completely different places, and a camper reporting "it just says it
+ * failed" has nothing anybody can act on.
+ */
+const serverSaidNo = (status: number): BeaconQueryResult => ({
+  ok: false,
+  spots: [],
+  cached: false,
+  disclaimer: DISCLAIMER,
+  note:
+    `The beacon service refused this request (error ${status}) and gave no ` +
+    'reason, so nothing here was scanned or ruled out. Try again shortly.'
+});
+
 /**
  * The session is gone, whatever the rest of the app believes.
  *
@@ -103,16 +132,36 @@ export const queryBeacon = async (
   longitude: number,
   signal?: AbortSignal
 ): Promise<BeaconQueryResult> => {
-  try {
-    const token = await currentAccessToken();
+  const url = `/api/beacon/query?lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`;
+  const send = (token: string | null) =>
+    fetch(url, {
+      signal,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined
+    });
 
-    const res = await fetch(
-      `/api/beacon/query?lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`,
-      {
-        signal,
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined
-      }
-    );
+  try {
+    let res = await send(await currentAccessToken());
+
+    /*
+     * ONE 401 IS NOT PROOF OF BEING SIGNED OUT.
+     *
+     * The server refuses when no usable token reached it, and the commonest
+     * reason for that is not a camper who signed out — it is an access token
+     * that expired while the app sat in a background tab, with the refresh not
+     * yet run. Measured against the real account: a session refreshed seven
+     * seconds before the request, and the request still arrived with nothing
+     * on it. Believing the first 401 turned that into "your sign-in has
+     * expired" and a sign-in sheet, for somebody who was signed in the whole
+     * time and only wanted a beacon.
+     *
+     * So a refusal buys exactly one forced refresh and one retry. If the
+     * second attempt is refused too, the session really is gone and the
+     * existing path below is right.
+     */
+    if (res.status === 401) {
+      const fresh = await refreshedAccessToken();
+      if (fresh) res = await send(fresh);
+    }
 
     // 429 and 401 carry a real body with a real explanation in it. Reading the
     // JSON rather than the status is what lets the panel say "that is all three
@@ -137,7 +186,17 @@ export const queryBeacon = async (
     }
 
     const data = (await res.json().catch(() => null)) as BeaconQueryResult | null;
-    if (!data || typeof data !== 'object') return UNREACHABLE;
+    /*
+     * A REPLY WE COULD NOT READ IS NOT A SERVER WE COULD NOT REACH.
+     *
+     * Both used to print "Could not reach the server to send out a beacon",
+     * which sends a camper looking for signal they already have — and sent
+     * this investigation after a network fault that was never there. If bytes
+     * came back, say that.
+     */
+    if (!data || typeof data !== 'object') {
+      return res.ok ? UNREADABLE : serverSaidNo(res.status);
+    }
     return data;
   } catch {
     return UNREACHABLE;
