@@ -32,8 +32,58 @@
  * real answer.
  */
 import type { Express, Request, Response } from 'express';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 // `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
 import { USER_AGENT } from './alertSources.js';
+
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+/**
+ * The writer. Same arrangement `public_lands` uses and for the same reason:
+ * no browser may author one of these rows, because the whole value of the
+ * record is that a government published it and a second source corroborated
+ * the fee. Storing on read is the documented pattern in this codebase — see
+ * the ingest note in boundaryRoutes.ts.
+ */
+let writeClient: SupabaseClient | null | undefined;
+const getWriteClient = (): SupabaseClient | null => {
+  if (writeClient !== undefined) return writeClient;
+  writeClient = SUPABASE_URL && SERVICE_KEY
+    ? createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } })
+    : null;
+  if (!writeClient) console.info('[rec-sites] no service key — read-only, nothing will be stored.');
+  return writeClient;
+};
+
+/**
+ * `FRANCIS LAKE` reads as shouting next to `Eaton Creek`.
+ *
+ * Only touched when the whole string is upper case, so `McCall Flats`,
+ * `Owen Flats "A" & "B"` and `Bob's Lake` are left exactly as published.
+ */
+const tidyName = (raw: string): string => {
+  const name = raw.replace(/\s+/g, ' ').trim();
+  if (name !== name.toUpperCase()) return name;
+  return name.toLowerCase().replace(/(^|[\s('"\-\/])([a-z])/g, (_m, lead, ch) => lead + ch.toUpperCase());
+};
+
+/**
+ * What this app actually knows about a recreation site, said plainly.
+ *
+ * Three claims and three admissions, in that order. The admissions are not
+ * boilerplate: the province publishes no amenity or fee data in this layer at
+ * all, so anything the row's amenity columns say is a schema default rather
+ * than a fact, and a camper reading the card deserves to know which is which.
+ */
+const describeSite = (campsites: number): string =>
+  `Recreation site managed by Recreation Sites and Trails BC` +
+  (campsites > 0 ? `, with ${campsites} defined campsite${campsites === 1 ? '' : 's'}` : '') +
+  '. Free to camp according to OpenStreetMap contributors — the province does ' +
+  'not publish fee status, so that is corroboration rather than proof. Check ' +
+  'the board when you arrive. Facilities here are not recorded by anybody: ' +
+  'most recreation sites have a pit toilet and a fire ring, none has drinking ' +
+  'water or power, and nobody from this app has been to confirm it.';
 
 /** DataBC's public OGC endpoint — the same host `bc_provincial_forest` uses. */
 const DATABC_OWS = 'https://openmaps.gov.bc.ca/geo/pub/ows';
@@ -571,10 +621,51 @@ export const registerRecSiteRoutes = (app: Express): void => {
         });
       }
 
+      /*
+       * ---- Stored on read, like every other government layer here. ----
+       *
+       * Idempotent on a namespaced id, so re-running a page corrects drift
+       * rather than duplicating. Only the columns this source can actually
+       * speak for are written: name, place, land type, fee and the
+       * description. Ratings, reviews and anything a camper contributes are
+       * NOT in the payload, so an upsert leaves them untouched — a re-run
+       * must never reset what people have added.
+       */
+      let stored = 0;
+      const writer = getWriteClient();
+      if (writer && sites.length > 0) {
+        const rows = sites.map((s) => ({
+          id: `rstbc-${s.fileId}`,
+          name: tidyName(s.name) || 'Recreation site',
+          land_type: 'crown_land',
+          land_manager: 'Recreation Sites and Trails BC',
+          latitude: s.lat,
+          longitude: s.lon,
+          nearest_city: tidyName(s.nearestTown),
+          state_province: 'British Columbia',
+          country: 'Canada',
+          description: describeSite(s.campsites),
+          is_free: true,
+          // BC's standard limit at a recreation site. Published policy, not
+          // a per-site fact — a site with its own posted limit overrides it.
+          stay_limit_days: 14,
+          permit_required: false,
+          source: 'agency_dataset',
+          updated_at: new Date().toISOString()
+        }));
+
+        const { error } = await writer.from('campsites').upsert(rows, { onConflict: 'id' });
+        if (error) {
+          console.warn(`[rec-sites/free] store failed: ${error.message}`);
+        } else {
+          stored = rows.length;
+        }
+      }
+
       console.info(
         `[rec-sites/free] offset ${offset}: ${candidates.length} campgrounds considered, ` +
-        `${sites.length} confirmed free by OSM, ${candidates.length - sites.length} unconfirmed ` +
-        `(${Date.now() - startedAt} ms)`
+        `${sites.length} confirmed free by OSM, ${candidates.length - sites.length} unconfirmed, ` +
+        `${stored} stored (${Date.now() - startedAt} ms)`
       );
 
       /*
@@ -591,6 +682,7 @@ export const registerRecSiteRoutes = (app: Express): void => {
         total: data.numberMatched ?? null,
         considered: candidates.length,
         confirmedFree: sites.length,
+        stored,
         /** Not "these charge" — "nobody has told us either way". */
         unconfirmed: candidates.length - sites.length,
         attribution: `${ATTRIBUTION}; fee status from OpenStreetMap contributors (ODbL)`,
