@@ -561,8 +561,12 @@
    same weight. `overflow: visible` on the marker already lets a chip sit
    outside the pin, so the overhang costs nothing.
 
-   The drop-shadow stands in for the circle's `box-shadow`, which cannot
-   follow a shape it does not know about. */
+   NO `filter` ANYWHERE ON THIS ELEMENT — see the note on `PENTAGON_PLAQUE`
+   in mapPinRendering.ts. A drop-shadow here is what stopped the setting glyph
+   painting inside a selected pentagon on iOS: a filtered element gets its own
+   composited layer, and that layer landing above the `z-index` sibling next
+   to it paints the opaque pentagon straight over the glyph. The soft edge is
+   a second stroked copy of the same path instead. */
 .wl-pin-plaque {
   position: absolute;
   /* CENTRED ON THE PIN, NOT INSET FROM IT — and the difference is not
@@ -577,10 +581,14 @@
   width: 34px;
   height: 34px;
   transform: translate(-50%, -50%);
+  /* The wide edge stroke below reaches slightly past the 34-unit viewBox. */
   overflow: visible;
-  filter: drop-shadow(0 1px 4px rgba(2, 6, 23, 0.55));
+  /* Explicit, rather than relying on `auto` and tree order to sit below the
+     glyph. The whole bug this file keeps re-learning is about paint order. */
+  z-index: 0;
 }
-.wl-pin-plaque path {
+/* The plaque proper: dark middle so the terrain reads, emerald ring. */
+.wl-plaque-body {
   fill: rgba(2, 6, 23, 0.34);
   stroke: #34d399;
   stroke-width: 2.5;
@@ -588,23 +596,31 @@
   transition: fill var(--dur-base) var(--ease-standard),
               stroke var(--dur-base) var(--ease-standard);
 }
+/* Behind it: the same outline, fatter and semi-transparent, standing in for
+   the circle's `box-shadow` — an edge so the pin reads over pale gravel as
+   well as dark canopy. Unlike a box-shadow it follows the pentagon exactly. */
+.wl-plaque-edge {
+  fill: none;
+  stroke: rgba(2, 6, 23, 0.5);
+  stroke-width: 5.5;
+  stroke-linejoin: round;
+  transition: stroke var(--dur-base) var(--ease-standard),
+              stroke-width var(--dur-base) var(--ease-standard);
+}
 
 /* The glyph rides above the plaque. It is a span for both kinds of pin, so
    the two share one stacking rule rather than two that can drift apart. */
 .wl-pin-glyph {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: flex;
 }
 
 /* Tapped: the pentagon floods, exactly as the circle does. The circle's
-   selected halo is a 5px box-shadow ring, which cannot follow a shape it does
-   not know about — so the halo is stacked drop-shadows on the alpha of the
-   drawn path instead. `drop-shadow` has no spread, hence two of them: one
-   glow on top of another builds the density a single blur cannot.
-
-   The filter goes on the SVG and not on the pin, so the glyph sitting above
-   it stays sharp. */
+   selected halo is a 5px `box-shadow` ring, which cannot follow a shape it
+   does not know about — so the pentagon's halo is the edge path widening and
+   turning emerald. Same idea, no filter: see the note on `.wl-pin-plaque`
+   above for why a filter here is the one thing this pin may not use. */
 .wl-pin-official.wl-pin-on {
   background: transparent;
   /* Without this the circle's white selected border draws AROUND the
@@ -612,14 +628,13 @@
   border-color: transparent;
   box-shadow: none;
 }
-.wl-pin-official.wl-pin-on .wl-pin-plaque {
-  filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.55))
-          drop-shadow(0 0 3px rgba(16, 185, 129, 0.45))
-          drop-shadow(0 4px 9px rgba(2, 6, 23, 0.6));
-}
-.wl-pin-official.wl-pin-on .wl-pin-plaque path {
+.wl-pin-official.wl-pin-on .wl-plaque-body {
   fill: #10b981;
   stroke: #ffffff;
+}
+.wl-pin-official.wl-pin-on .wl-plaque-edge {
+  stroke: rgba(16, 185, 129, 0.42);
+  stroke-width: 8.5;
 }
 
 /* Tapped: the ring floods, and pops once so the choice is unmistakable. */

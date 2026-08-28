@@ -1036,11 +1036,37 @@ export const BEACON_ACTION: PinAction = {
  * the same family of thing — both are free places to sleep — differing only
  * in who is claiming it.
  */
+const PENTAGON_PATH =
+  'M13.84 4.96Q17 2.67 20.16 4.96L28.3 10.88Q31.46 13.17 30.25 16.88' +
+  'L27.14 26.46Q25.93 30.17 22.03 30.17L11.97 30.17Q8.07 30.17 6.86 26.46' +
+  'L3.75 16.88Q2.54 13.17 5.7 10.88Z';
+
+/**
+ * THE SAME SHAPE DRAWN TWICE: A WIDE SOFT EDGE BEHIND, THE PLAQUE IN FRONT.
+ *
+ * This used to be one path plus `filter: drop-shadow(...)` on the `<svg>` —
+ * for the resting shadow, and again, three-deep, for the selected glow. That
+ * filter is why the setting glyph never appeared inside a selected pentagon
+ * on iOS. Proven, not guessed: a pixel dump of the reported screenshot shows
+ * the interior perfectly uniform green with ZERO glyph pixels, across three
+ * different builds in which the glyph was dark green, then near-black, then
+ * near-black wrapped in its own white halo. The glyph's colour was never the
+ * variable. The plaque's `filter` was the only thing constant across all
+ * three, and it is the only compositing construct anywhere in this pin: a
+ * filtered element is promoted to its own layer, and Safari ordering that
+ * layer above a `z-index` sibling paints the opaque pentagon fill straight
+ * over the glyph.
+ *
+ * So there is no filter here any more, in either state. The soft edge is just
+ * a second, fatter, semi-transparent copy of the same path painted behind the
+ * real one — plain SVG stroke painting, which cannot be promoted, reordered
+ * or dropped. It also follows the pentagon exactly, where the old
+ * `box-shadow`-style ring never could.
+ */
 const PENTAGON_PLAQUE =
   '<svg class="wl-pin-plaque" viewBox="0 0 34 34" aria-hidden="true">' +
-  '<path d="M13.84 4.96Q17 2.67 20.16 4.96L28.3 10.88Q31.46 13.17 30.25 16.88' +
-  'L27.14 26.46Q25.93 30.17 22.03 30.17L11.97 30.17Q8.07 30.17 6.86 26.46' +
-  'L3.75 16.88Q2.54 13.17 5.7 10.88Z"/></svg>';
+  `<path class="wl-plaque-edge" d="${PENTAGON_PATH}"/>` +
+  `<path class="wl-plaque-body" d="${PENTAGON_PATH}"/></svg>`;
 
 /**
  * A campground somebody's government runs, drawn as a pentagon rather than a
