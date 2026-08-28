@@ -4061,17 +4061,29 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   /* Markers                                                             */
   /* ------------------------------------------------------------------ */
   /**
-   * Only camper-submitted spots get a pin.
+   * Which sources are real enough to earn a pin.
    *
-   * The curated rows and the OpenStreetMap nodes are still in the app — they
-   * fill the list view, they are searchable, and they are still the thing the
-   * filters filter. They just don't put a marker on the map any more, because
-   * a marker asserts "somebody was here" and those two sources assert
-   * "a database says there is public land around here", which the boundary
-   * polygons already say, more honestly, at their true resolution.
+   * The original rule was `user_submitted` only, and the reasoning was sound
+   * for the sources that existed then: a marker asserts "there is a place
+   * here", while a curated row or an OpenStreetMap node inferred from tagging
+   * asserts "a database says there is public land around here" — which the
+   * boundary polygons already say, more honestly, at their true resolution.
+   *
+   * `agency_dataset` breaks that symmetry and has to be pinned. These are not
+   * inferences about land: they are named campgrounds that a government
+   * operates and publishes, with a defined number of sites. Marble River is
+   * not "public land near Port McNeill", it is a campground with 35 pitches
+   * run by Recreation Sites and Trails BC. Withholding a pin from that is not
+   * caution, it is hiding a campsite from somebody looking for one — 832 of
+   * them went into the database and none appeared on the map.
+   *
+   * The curated rows and OpenStreetMap nodes stay unpinned, for exactly the
+   * original reason. They still fill the list, are searchable, and are still
+   * what the filters filter.
    */
+  const PINNED_SOURCES = new Set(['user_submitted', 'agency_dataset']);
   const pinnedCampsites = React.useMemo(
-    () => campsites.filter((site) => site.source === 'user_submitted'),
+    () => campsites.filter((site) => PINNED_SOURCES.has(site.source)),
     [campsites]
   );
 
@@ -4262,7 +4274,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     const markers = pinnedCampsites.map((site) => {
       const marker = L.marker([site.latitude, site.longitude], {
         icon: iconForId(site.id),
-        title: `${site.name} — added by a camper`
+        /*
+         * The title has to match the source. Every pin used to say "added by
+         * a camper" because every pin was, and saying it over a government
+         * campground would be the app inventing a witness who does not exist.
+         */
+        title: site.source === 'agency_dataset'
+          ? `${site.name} — published by ${site.landManager || 'a government agency'}, not yet visited by anyone here`
+          : `${site.name} — added by a camper`
       });
       marker.on('click', () => {
         // A hold that showed the peek must not also open the spot. Without

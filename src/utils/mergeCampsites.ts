@@ -42,8 +42,22 @@ import { distanceMiles } from './geo';
  * does not have.
  */
 const PRECEDENCE: Record<CampsiteSource, number> = {
-  verified: 3,
-  user_submitted: 2,
+  verified: 4,
+  user_submitted: 3,
+  /*
+   * Between the two, and the reasoning is about what each source KNOWS.
+   *
+   * A government campground beats a bare OpenStreetMap node easily: it brings
+   * a real name, the managing agency, and a count of pitches, where the node
+   * is often a dot with a label. It loses to a camper, because a camper has
+   * been there — they can say what the road was like and whether the tap
+   * works, and an agency spreadsheet cannot. Ranked below `user_submitted`
+   * for that reason alone, not because the data is worse.
+   *
+   * The loser still donates every field the winner lacks, so a merge of the
+   * two keeps the agency's description AND the camper's amenities.
+   */
+  agency_dataset: 2,
   overpass: 1
 };
 
@@ -203,4 +217,4 @@ export const mergeCampsites = (...groups: Campsite[][]): Campsite[] => {
   }
 
   return merged;
-};
+};

@@ -10,7 +10,18 @@ export type RoadAccess = 'paved' | 'gravel' | 'high_clearance' | '4x4_only';
 export type ToiletType = 'none' | 'vault' | 'flush' | 'pack_out';
 export type WaterType = 'none' | 'potable' | 'natural_stream' | 'seasonal_creek';
 export type ShadeType = 'full' | 'partial' | 'none';
-export type CampsiteSource = 'verified' | 'overpass' | 'user_submitted';
+/**
+ * Mirrors the `campsite_source` enum in Postgres, minus `gemini_discovered`,
+ * which belongs to the removed AI endpoint and must never come back.
+ *
+ * `agency_dataset` is a campground a government publishes — authoritative for
+ * its location and name, and no evidence at all that anybody has been there.
+ */
+export type CampsiteSource =
+  | 'verified'
+  | 'overpass'
+  | 'user_submitted'
+  | 'agency_dataset';
 
 export interface CellSignal {
   verizon: number; // 0 to 5 bars
