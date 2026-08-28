@@ -626,9 +626,35 @@
 .wl-pin-on {
   background: #10b981;
   border-color: #ffffff;
-  color: #022c22;
+  /* Near-black rather than the dark green this was: a same-hue pair is the
+     one combination where a computed contrast number lies. #022c22 measured
+     fine on paper but is still GREEN-on-GREEN, and a truck-cab windshield in
+     daylight is not a contrast checker — hue similarity reads as "the icon
+     is gone" well before luminance alone would predict it. Black keeps the
+     glyph legible on the fill regardless of exactly how bright the green
+     renders on a given screen. */
+  color: #030f0a;
   box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.26), 0 5px 16px rgba(2, 6, 23, 0.6);
   animation: moook-pop var(--dur-base) var(--ease-moook);
+}
+/*
+ * A WHITE HALO BEHIND THE TAPPED GLYPH, ON TOP OF THE DARKER COLOUR ABOVE.
+ *
+ * Belt and braces: darkening the glyph raises the number on paper, but nothing
+ * about the number guarantees a specific phone, in specific light, renders
+ * a 2.4px stroke crisply enough to read at a glance against a bright fill.
+ * A halo does not depend on the glyph's own colour being exactly right — it
+ * carves a light ring around every stroke regardless of what is drawn inside
+ * it, so the glyph reads as a dark mark ON something rather than risking
+ * blending INTO it. Four zero-blur, near-zero-spread shadows rather than one
+ * blurred one, because a blurred halo would soften the icon's own edges along
+ * with adding contrast; stamping it from four directions keeps the strokes
+ * sharp and still closes the gaps a single offset shadow would leave at the
+ * stroke ends.
+ */
+.wl-pin-on .wl-pin-glyph svg {
+  filter: drop-shadow(0.6px 0 0 #ffffff) drop-shadow(-0.6px 0 0 #ffffff)
+          drop-shadow(0 0.6px 0 #ffffff) drop-shadow(0 -0.6px 0 #ffffff);
 }
 /* A selected pin's chips must sit over its neighbours, not under them. */
 .wl-pin-wrap-on { z-index: 5; }
