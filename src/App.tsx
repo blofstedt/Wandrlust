@@ -562,6 +562,62 @@ export default function App() {
     };
   }, [startLocationWatch]);
 
+  /**
+   * ---------------------------------------------------------------------
+   * WHERE THE MAP IS LOOKING, WHICH IS NOT THE SAME AS WHERE YOU SEARCHED
+   * ---------------------------------------------------------------------
+   *
+   * Campsites were fetched in exactly one place — `handleSelectLocation` —
+   * so the app only ever held the sites within `maxDistanceMiles` of the last
+   * place somebody SEARCHED for. Pan the map to another region and nothing
+   * loaded, and the distance filter then discarded anything that had, because
+   * it measured from that same stale point.
+   *
+   * It went unnoticed while the table held twenty-two curated sites. Adding
+   * eight hundred BC recreation sites made it obvious: they were in the
+   * database, the RPC served ninety of them around Campbell River, and the
+   * map showed none, because nothing had ever asked about that ground.
+   *
+   * So the map now reports where it settles and the sites follow the view.
+   * `center` is left alone — it is the fly-to instruction App sends, and
+   * writing to it from the map's own movement would fight the camera.
+   */
+  const [exploreCentre, setExploreCentre] = useState<[number, number] | null>(null);
+
+  const handleExploreCentre = useCallback((lat: number, lon: number) => {
+    setExploreCentre((prev) => {
+      // A refetch per pan would hammer the API for an answer that barely
+      // changes. A quarter of the default radius is far enough to be new
+      // ground and close enough that the edge of the list stays populated.
+      if (prev && distanceMiles(prev[0], prev[1], lat, lon) < 25) return prev;
+      return [lat, lon];
+    });
+  }, []);
+
+  /** Guards against a slower earlier view landing after a newer one. */
+  const exploreSeq = useRef(0);
+
+  useEffect(() => {
+    if (!exploreCentre || isOfflineMode) return;
+    const [lat, lon] = exploreCentre;
+    const seq = ++exploreSeq.current;
+
+    void (async () => {
+      try {
+        const [shared, live] = await Promise.all([
+          fetchCampsitesNear(lat, lon, filterState.maxDistanceMiles),
+          fetchOverpassCampsites(lat, lon, filterState.maxDistanceMiles)
+        ]);
+        if (seq !== exploreSeq.current) return;
+        // Same precedence as a search: the server's copy wins, and anything
+        // held only on this device survives untouched.
+        setCampsites((prev) => mergeCampsites(shared, prev, live));
+      } catch (err) {
+        console.warn('Campsite lookup for the visible map failed:', err);
+      }
+    })();
+  }, [exploreCentre, isOfflineMode, filterState.maxDistanceMiles]);
+
   const handleLocateUser = useCallback(() => {
     setIsLocating(true);
 
@@ -1255,7 +1311,13 @@ export default function App() {
    * (which ran Haversine O(n log n) extra times on every keystroke).
    */
   const filteredCampsites = useMemo(() => {
-    const [lat, lon] = center;
+    /*
+     * Measured from what is on screen, falling back to the searched centre
+     * before the map has reported in. Distance here decides what is listed
+     * and how it sorts, so pinning it to a stale search point is what made
+     * sites load and then immediately get filtered away again.
+     */
+    const [lat, lon] = exploreCentre ?? center;
 
     const withDistance = campsites.map((site) => ({
       site,
@@ -1331,7 +1393,7 @@ export default function App() {
     });
 
     return matches;
-  }, [campsites, center, filterState]);
+  }, [campsites, center, exploreCentre, filterState]);
 
   const distanceById = useMemo(() => {
     const map = new Map<string, number>();
@@ -1568,6 +1630,7 @@ export default function App() {
                     onToggleFacilityKind={handleToggleFacilityKind}
                     onClearFacilityKinds={handleClearFacilityKinds}
                     facilityState={facilityState}
+                    onExploreCentre={handleExploreCentre}
                     onSendBeaconAt={openBeaconAt}
                     canBeacon={canBeacon}
                     onOpenAuth={() => setIsAuthOpen(true)}

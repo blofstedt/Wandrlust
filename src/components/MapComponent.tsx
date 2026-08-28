@@ -124,6 +124,16 @@ interface MapComponentProps {
    */
   onOpenBottomSheet: (site: Campsite) => void;
   onLocateUser?: () => void;
+  /**
+   * Where the map is actually looking, after it settles.
+   *
+   * `center` is a fly-to instruction that App sends; this is the opposite
+   * direction, and without it App had no idea the map had moved. Campsites
+   * were therefore only ever loaded around the last place someone SEARCHED
+   * for, so panning to a region full of them showed an empty map — see the
+   * note on `handleExploreCentre` in App.tsx.
+   */
+  onExploreCentre?: (lat: number, lon: number) => void;
   isLocating?: boolean;
 
   /** The pin the user dropped, or the site they selected. Null when neither. */
@@ -290,7 +300,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   destination, onDropDestination, onPinRefused, onSelectHazardReport,
   onSelectBeaconSpot, beaconRefreshKey = 0, bottomSheetPx = 0, topNotice = null,
   onOpenAuth,
-  onSendBeaconAt, canBeacon = false,
+  onSendBeaconAt, canBeacon = false, onExploreCentre,
   facilityKinds = NO_FACILITY_KINDS, onFacilityStateChange, onSelectFacility,
   facilityState = FACILITY_IDLE, onToggleFacilityKind, onClearFacilityKinds,
   selectedFacility = null, onCloseFacility, isSignedIn = false,
@@ -470,6 +480,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   sendBeaconRef.current = onSendBeaconAt;
   /* Read by the effect that grows the pin's row after it has been dropped,
      which must not be re-run just because connectivity flickered. */
+  const exploreRef = useRef(onExploreCentre);
+  exploreRef.current = onExploreCentre;
   const canBeaconRef = useRef(canBeacon);
   canBeaconRef.current = canBeacon;
   const bottomSheetRef = useRef(onOpenBottomSheet);
@@ -5831,6 +5843,42 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     userMarkerRef.current = L.marker(userLocation, { icon, pane: 'mePane' }).addTo(map);
   }, [userLocation, isMapReady]);
+
+  /**
+   * Tell App where the map settled, so campsites can load for the ground
+   * being looked at rather than for the last place somebody searched.
+   *
+   * Every other data layer on this map already refetches on `moveend` —
+   * boundaries, Beacon spots, hazards, facilities, backroads. Campsites were
+   * the exception, and the exception was invisible: they loaded once, around
+   * the searched location, and panning anywhere else showed nothing. Eight
+   * hundred BC recreation sites went into the database and not one of them
+   * appeared, because nothing ever asked for that ground.
+   *
+   * Debounced on the same 700 ms the other layers use, and fired once on
+   * ready so the opening view is loaded too.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) return;
+
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const report = () => {
+      const c = map.getCenter();
+      exploreRef.current?.(c.lat, c.lng);
+    };
+    const schedule = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(report, 700);
+    };
+
+    report();
+    map.on('moveend', schedule);
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      map.off('moveend', schedule);
+    };
+  }, [isMapReady]);
 
   /* ------------------------------------------------------------------ */
   /* Recentre                                                            */
