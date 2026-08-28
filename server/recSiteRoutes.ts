@@ -172,18 +172,37 @@ const fetchFreeCampsites = async (
   const box = `${bbox.minLat.toFixed(5)},${bbox.minLon.toFixed(5)},` +
               `${bbox.maxLat.toFixed(5)},${bbox.maxLon.toFixed(5)}`;
   /*
-   * `fee` is free text in practice, so the common spellings of "nothing to pay"
-   * are all accepted — but ONLY those. An absent `fee` tag is not a match: it
-   * means nobody said, which is the case this whole route exists to exclude.
+   * EXACT `fee=no`, NOT A REGEX — measured, not preferred.
+   *
+   * This started as a case-insensitive alternation over no|free|none|0, to be
+   * generous about how people spell "nothing to pay". Over a province-sized
+   * box that is the difference between an answer and a timeout: an exact tag
+   * match is served from Overpass's index, a regex makes it scan. The first
+   * run of this died at exactly that, twenty seconds in.
+   *
+   * The loss is small and the trade is good. `fee=no` is overwhelmingly the
+   * documented spelling; the alternatives are rare enough that chasing them
+   * costs more sites (through failing entirely) than it wins.
+   *
+   * An ABSENT `fee` tag is still not a match, which is the whole point: it
+   * means nobody said, and that is the case this route exists to exclude.
    */
   const query =
     `[out:json][timeout:${Math.max(5, Math.round(timeoutMs / 1000))}];` +
-    `(node["tourism"="camp_site"]["fee"~"^(no|free|none|0)$",i](${box});` +
-    `way["tourism"="camp_site"]["fee"~"^(no|free|none|0)$",i](${box}););` +
+    `nwr["tourism"="camp_site"]["fee"="no"](${box});` +
     `out center;`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  /*
+   * EACH MIRROR GETS ITS OWN CLOCK.
+   *
+   * One shared controller meant the first mirror to hang burnt the entire
+   * budget and aborted the other two before they were asked — the same
+   * "fallback you cannot afford to call" that beaconSources.ts already had to
+   * unlearn once. The overall deadline still stands; it is just no longer
+   * spendable by whoever goes first.
+   */
+  const startedAll = Date.now();
+  const perMirrorMs = Math.max(6_000, Math.floor(timeoutMs / 2));
   /*
    * What each mirror said. The lesson is already written down at
    * `fetchOverpassScan` in beaconSources.ts: a refusal, a rate limit, a
@@ -195,8 +214,15 @@ const fetchFreeCampsites = async (
 
   try {
     for (const mirror of OVERPASS_MIRRORS) {
+      const left = timeoutMs - (Date.now() - startedAll);
+      if (left < 4_000) {
+        tried.push(`${new URL(mirror).host}: not asked, ${left} ms left`);
+        break;
+      }
       const host = new URL(mirror).host;
       const at = Date.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(perMirrorMs, left));
       try {
         const r = await fetch(mirror, {
           method: 'POST',
@@ -247,13 +273,16 @@ const fetchFreeCampsites = async (
           `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 120)}` +
           ` after ${Date.now() - at} ms`
         );
-        if (controller.signal.aborted) break;
+        // Deliberately NOT a break. This mirror is out of time; the next one
+        // still has its own, which is the entire point of the change above.
+      } finally {
+        clearTimeout(timer);
       }
     }
     console.warn(`[rec-sites] every Overpass mirror refused — ${tried.join(' | ')}`);
     return { ok: false, sites: [], note: `No Overpass mirror answered — ${tried.join('; ')}` };
   } finally {
-    clearTimeout(timer);
+    // Nothing shared left to clear.
   }
 };
 
