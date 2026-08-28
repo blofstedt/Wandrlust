@@ -444,7 +444,17 @@ const fetchSettlements = async (
   const box = `${bbox.minLat.toFixed(4)},${bbox.minLon.toFixed(4)},` +
               `${bbox.maxLat.toFixed(4)},${bbox.maxLon.toFixed(4)}`;
   const startedAll = Date.now();
-  const perMirrorMs = Math.max(5_000, Math.floor(totalMs / OVERPASS_MIRRORS.length));
+  /*
+   * TWELVE SECONDS EACH, NOT A THIRD OF THE BUDGET EACH.
+   *
+   * Splitting the budget evenly across three mirrors gave every one of them
+   * 6.6 seconds, and all three timed out at exactly that — the query needs
+   * longer than that to run, so dividing fairly meant starving all of them
+   * equally. Two real attempts beat three impossible ones, and the loop's
+   * "not enough left to be worth asking" guard turns the third into an
+   * honest skip rather than a doomed request.
+   */
+  const perMirrorMs = 12_000;
   const tried: string[] = [];
 
   for (const mirror of OVERPASS_MIRRORS) {
@@ -886,7 +896,8 @@ export const registerRecSiteRoutes = (app: Express): void => {
    * learn coordinates we already hold would be work for nothing.
    */
   app.get('/api/rec-sites/settings', async (req: Request, res: Response) => {
-    const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '400'), 10) || 400));
+    // A thinner latitude band is a cheaper Overpass query. See `fetchSettlements`.
+    const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '150'), 10) || 150));
     const writer = getWriteClient();
     if (!writer) {
       return res.status(503).json({ ok: false, note: 'No service key — cannot write settings.' });
@@ -933,7 +944,7 @@ export const registerRecSiteRoutes = (app: Express): void => {
       maxLat: Math.max(...lats) + pad,
       minLon: Math.min(...lons) - pad,
       maxLon: Math.max(...lons) + pad
-    }, 20_000);
+    }, 24_000);
     if (!settlements) {
       /*
        * Refusing beats guessing. An unreachable Overpass says nothing about
