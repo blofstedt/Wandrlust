@@ -30,6 +30,53 @@ export const TENT_SVG =
   '<path d="M19 20 12 4 5 20"/><path d="M12 4v16"/><path d="M2 20h20"/></svg>';
 
 /**
+ * ---------------------------------------------------------------------------
+ * THE SECOND AXIS: WHAT KIND OF PLACE, NOT WHO SAYS SO
+ * ---------------------------------------------------------------------------
+ *
+ * The pin's SHAPE says who is claiming there is a campsite here — a plaque
+ * for a government campground, a ring for a camper's spot. The glyph inside
+ * says what you are driving into, which is a completely separate question and
+ * needs a separate channel.
+ *
+ * Not colour, for the third time and the same reason: Beacon's evidence ladder
+ * owns grey through green as a scale and red means somebody was moved on. A
+ * silhouette carries this for free and survives sunlight and greyscale.
+ *
+ * Drawn at the same stroke weight and 24-unit box as the tent so the three
+ * read as one family at 15px rather than three borrowed icons.
+ */
+const HOUSE_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
+  '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/></svg>';
+
+const SKYLINE_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
+  '<path d="M4 20V9l6-4v15"/><path d="M10 20v-8l8-3v11"/><path d="M2 20h20"/></svg>';
+
+/** Urban, suburban, wilderness — or nothing said, which keeps the tent. */
+export type CampsiteSettingGlyph = 'urban' | 'suburban' | 'wilderness' | null;
+
+/**
+ * A NULL SETTING IS NOT A SETTING, so it does not get its own picture.
+ *
+ * It falls back to the tent — the neutral "this is a campsite" mark the app
+ * has always used — rather than to a question mark or a fourth silhouette.
+ * A distinct glyph for "unknown" would put a claim on the map where there is
+ * none, and the card is where the absence gets said in words.
+ */
+export const settingGlyph = (setting: CampsiteSettingGlyph): string => {
+  switch (setting) {
+    case 'urban': return SKYLINE_SVG;
+    case 'suburban': return HOUSE_SVG;
+    case 'wilderness': return TENT_SVG;
+    default: return TENT_SVG;
+  }
+};
+
+/**
  * A spot a camper added themselves.
  *
  * TWO STATES, AND THE WHOLE INTERFACE HANGS OFF THE DIFFERENCE.
@@ -915,7 +962,9 @@ export const buildCampsiteIcon = (
    * somebody saying "I slept here", which is a completely different claim and
    * gets a completely different silhouette.
    */
-  provenance: 'camper' | 'official' = 'camper'
+  provenance: 'camper' | 'official' = 'camper',
+  /** Urban, suburban or wilderness. Null keeps the neutral tent. */
+  setting: CampsiteSettingGlyph = null
 ): L.DivIcon => {
   const row = dots.length
     ? (isSelected ? expandedDotRow(dots, animateKeys) : collapsedDotRing(dots))
@@ -929,7 +978,7 @@ export const buildCampsiteIcon = (
       `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
       `<div class="wl-pin${official ? ' wl-pin-official' : ''}${isSelected ? ' wl-pin-on' : ''}">` +
-      `${TENT_SVG}</div>` +
+      `${settingGlyph(setting)}</div>` +
       `${isSelected ? pinActionsRow([INFO_ACTION_SPOT]) : ''}` +
       `</div>`,
     iconSize: [32, 32],

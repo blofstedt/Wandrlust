@@ -27,6 +27,7 @@ import { Admin1Line } from './Admin1Line';
 import { SubmissionChip } from './SubmissionChip';
 import { SpotByline } from './SpotByline';
 import { ReportContentSheet } from './ReportContentSheet';
+import { CAMPSITE_SETTING, settingProvenanceNote } from '../config/campsiteSetting';
 import { useAuth } from '../contexts/AuthContext';
 import { haptic } from '../utils/animation';
 
@@ -257,6 +258,27 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                 <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 uppercase tracking-wide">
                   {campsite.landType.replace('_', ' ')}
                 </span>
+                {/*
+                  The glyph on the pin, in words. Only ever rendered when
+                  somebody has actually said — an absent setting gets no chip
+                  at all rather than an "Unknown" one, which would be a label
+                  claiming to be a finding. The `title` carries the hedge and
+                  what it means for the night.
+                */}
+                {campsite.setting && (
+                  <span
+                    className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 uppercase tracking-wide"
+                    title={[
+                      CAMPSITE_SETTING[campsite.setting].meaning,
+                      settingProvenanceNote(campsite.settingIsDerived)
+                    ].filter(Boolean).join(' ')}
+                  >
+                    {CAMPSITE_SETTING[campsite.setting].label}
+                    {campsite.settingIsDerived !== false && (
+                      <span className="text-slate-500 normal-case"> · estimated</span>
+                    )}
+                  </span>
+                )}
                 <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold ${capacity.className}`}>
                   {capacity.label}
                 </span>

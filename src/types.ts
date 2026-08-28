@@ -17,6 +17,16 @@ export type ShadeType = 'full' | 'partial' | 'none';
  * `agency_dataset` is a campground a government publishes — authoritative for
  * its location and name, and no evidence at all that anybody has been there.
  */
+/**
+ * What kind of place this is, as opposed to who says it is a place.
+ *
+ * Deliberately has no 'unknown' member: an unknown setting is the ABSENCE of
+ * an answer, not a kind of setting, and giving it a name is how it ends up
+ * being rendered as a finding. `undefined` is the honest shape, and the map
+ * falls back to the neutral tent glyph.
+ */
+export type CampsiteSetting = 'urban' | 'suburban' | 'wilderness';
+
 export type CampsiteSource =
   | 'verified'
   | 'overpass'
@@ -89,6 +99,14 @@ export interface Campsite {
   rating: number; // average
   reviewCount: number;
   source: CampsiteSource;
+  /** Urban, suburban or wilderness. Absent means nobody has said. */
+  setting?: CampsiteSetting;
+  /**
+   * True when this app inferred the setting from distance to the nearest
+   * mapped settlement, false when somebody who was there said so. Shown as a
+   * hedge on the card, because a derived category is a guess about a place.
+   */
+  settingIsDerived?: boolean;
   savedOffline?: boolean;
   /** Live occupancy, when the server has reported one. */
   capacityStatus?: 'empty' | 'light' | 'busy' | 'full' | 'unknown';

@@ -19,7 +19,8 @@ import { rememberFacilityHandoff } from '../utils/facilityCheck';
 import type {
   Campsite, CellCoverage, DestinationLand, FacilityKind, FacilityLookupState,
   FacilityNote,
-  MapDestination, MapFacility, MapTileLayer, NearbyFacility, BeaconSpot, BackroadScan
+  MapDestination, MapFacility, MapTileLayer, NearbyFacility, BeaconSpot, BackroadScan,
+  CampsiteSetting
 } from '../types';
 import { getCachedTile } from '../services/offlineStorage';
 import { pointInGeometry } from '../utils/geo';
@@ -4171,6 +4172,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     [campsites]
   );
 
+  /** The glyph axis: what kind of place each pin is, where anybody has said. */
+  const settingByIdRef = useRef<Map<string, CampsiteSetting>>(new Map());
+  settingByIdRef.current = useMemo(() => {
+    const map = new Map<string, CampsiteSetting>();
+    campsites.forEach((s) => { if (s.setting) map.set(s.id, s.setting); });
+    return map;
+  }, [campsites]);
+
   const iconForId = useCallback((id: string, animate = false) => {
     const isSelected = selectedIdRef.current === id;
     // A fresh tap forgets what the last one showed, so the stack replays.
@@ -4181,7 +4190,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       dots,
       isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined,
       id,
-      officialIdsRef.current.has(id) ? 'official' : 'camper'
+      officialIdsRef.current.has(id) ? 'official' : 'camper',
+      settingByIdRef.current.get(id) ?? null
     );
   }, [dotsForId]);
 

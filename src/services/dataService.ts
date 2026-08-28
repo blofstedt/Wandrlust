@@ -326,6 +326,12 @@ const mapCampsiteRow = (row: any, uid: string | null): Campsite[] => {
     rating: Number(row.rating ?? 0),
     reviewCount: Number(row.review_count ?? 0),
     source: row.source ?? 'user_submitted',
+    // Undefined rather than a fallback: the column is nullable precisely so
+    // "nobody has said" survives the trip to the client.
+    setting: row.setting ?? undefined,
+    settingIsDerived: typeof row.setting_is_derived === 'boolean'
+      ? row.setting_is_derived
+      : undefined,
     capacityStatus: row.capacity_status ?? undefined,
     isStealth: Boolean(row.is_stealth),
     // The server fuzzed this position to ~2 km because the caller has not

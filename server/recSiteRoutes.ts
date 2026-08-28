@@ -366,6 +366,113 @@ const freeCampsitesInBC = async (
   return result;
 };
 
+/**
+ * ---------------------------------------------------------------------------
+ * URBAN, SUBURBAN OR WILDERNESS — DERIVED, AND HONEST ABOUT BEING DERIVED
+ * ---------------------------------------------------------------------------
+ *
+ * Worked out from distance to the nearest mapped settlement, weighted by how
+ * big that settlement is. Two kilometres from Vancouver is a city; two
+ * kilometres from a hamlet of forty people is trees. A single radius cannot
+ * express that, so each `place` kind carries its own pair of rings.
+ *
+ * This is the same signal Beacon already uses to judge the risk of a knock —
+ * proximity to people, weighted by kind — and reusing the idea keeps the two
+ * halves of the app saying the same thing about the same ground.
+ *
+ * IT IS A GUESS AND THE COLUMN SAYS SO. `setting_is_derived` is stored true
+ * for everything here, so a camper who has actually stood there can overwrite
+ * it and the deriver will never overwrite them back.
+ */
+type Setting = 'urban' | 'suburban' | 'wilderness';
+
+interface Settlement { lat: number; lon: number; kind: string }
+
+/** Metres: inside the first is urban, inside the second is suburban. */
+const SETTLEMENT_RINGS: Record<string, [number, number]> = {
+  city: [5000, 20000],
+  town: [2500, 10000],
+  suburb: [2500, 8000],
+  village: [1200, 5000],
+  hamlet: [800, 3000],
+  neighbourhood: [800, 3000]
+};
+
+const settlementsQuery = (box: string, timeoutS: number): string =>
+  `[out:json][timeout:${timeoutS}];` +
+  `node["place"~"^(city|town|village|hamlet|suburb|neighbourhood)$"](${box});` +
+  `out;`;
+
+const BC_SETTLEMENT_TTL_MS = 30 * 60 * 1000;
+let bcSettlements: { at: number; list: Settlement[] } | null = null;
+
+/** Every mapped settlement in the province, fetched once and held. */
+const settlementsInBC = async (timeoutMs: number): Promise<Settlement[] | null> => {
+  if (bcSettlements && Date.now() - bcSettlements.at < BC_SETTLEMENT_TTL_MS) {
+    return bcSettlements.list;
+  }
+  const box = `${BC_BBOX.minLat},${BC_BBOX.minLon},${BC_BBOX.maxLat},${BC_BBOX.maxLon}`;
+  const query = settlementsQuery(box, Math.max(5, Math.round(timeoutMs / 1000)));
+
+  for (const mirror of OVERPASS_MIRRORS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(mirror, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': USER_AGENT
+        },
+        body: `data=${encodeURIComponent(query)}`,
+        signal: controller.signal
+      });
+      if (!r.ok) continue;
+      const data = (await r.json()) as {
+        elements?: { lat?: number; lon?: number; tags?: Record<string, string> }[];
+      };
+      if (!Array.isArray(data.elements) || data.elements.length === 0) continue;
+
+      const list: Settlement[] = [];
+      for (const el of data.elements) {
+        if (typeof el.lat !== 'number' || typeof el.lon !== 'number') continue;
+        const kind = el.tags?.place ?? '';
+        if (!SETTLEMENT_RINGS[kind]) continue;
+        list.push({ lat: el.lat, lon: el.lon, kind });
+      }
+      console.info(`[rec-sites] ${list.length} settlements held for the setting rule`);
+      bcSettlements = { at: Date.now(), list };
+      return list;
+    } catch {
+      // Try the next mirror.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /*
+   * NULL, NOT WILDERNESS. Failing to reach Overpass tells us nothing about
+   * where this campground is, and defaulting to "wilderness" would stamp a
+   * confident answer on 832 sites off the back of an outage.
+   */
+  console.warn('[rec-sites] no settlement data — settings left unset');
+  return null;
+};
+
+const deriveSetting = (lat: number, lon: number, settlements: Settlement[]): Setting => {
+  let best: Setting = 'wilderness';
+  for (const s of settlements) {
+    const rings = SETTLEMENT_RINGS[s.kind];
+    if (!rings) continue;
+    const metres = metresBetween(lat, lon, s.lat, s.lon);
+    // The strongest classification any settlement produces wins: being far
+    // from a hamlet does not make you rural if you are also inside a city.
+    if (metres <= rings[0]) return 'urban';
+    if (metres <= rings[1]) best = 'suburban';
+  }
+  return best;
+};
+
 export const registerRecSiteRoutes = (app: Express): void => {
   app.get('/api/rec-sites', async (req: Request, res: Response) => {
     const offset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
@@ -632,6 +739,7 @@ export const registerRecSiteRoutes = (app: Express): void => {
        * must never reset what people have added.
        */
       let stored = 0;
+      const settlements = await settlementsInBC(12_000);
       const writer = getWriteClient();
       if (writer && sites.length > 0) {
         const rows = sites.map((s) => ({
@@ -659,6 +767,42 @@ export const registerRecSiteRoutes = (app: Express): void => {
           console.warn(`[rec-sites/free] store failed: ${error.message}`);
         } else {
           stored = rows.length;
+        }
+
+        /**
+         * The setting is written SEPARATELY, and only over a derived value.
+         *
+         * It cannot ride in the upsert above: an upsert overwrites the columns
+         * it carries, so re-running a page would stamp this app's guess back
+         * over a setting a camper had corrected by hand. `setting_is_derived`
+         * is the guard, and filtering on it in the update is what makes a
+         * human's answer permanent.
+         *
+         * Grouped into one call per value rather than one per site — three
+         * statements instead of eight hundred.
+         */
+        if (settlements) {
+          const byValue = new Map<Setting, string[]>();
+          for (const s of sites) {
+            const value = deriveSetting(s.lat, s.lon, settlements);
+            const ids = byValue.get(value) ?? [];
+            ids.push(`rstbc-${s.fileId}`);
+            byValue.set(value, ids);
+          }
+          for (const [value, ids] of byValue) {
+            const { error: settingError } = await writer
+              .from('campsites')
+              .update({ setting: value, setting_is_derived: true })
+              .in('id', ids)
+              .eq('setting_is_derived', true);
+            if (settingError) {
+              console.warn(`[rec-sites/free] setting ${value} failed: ${settingError.message}`);
+            }
+          }
+          console.info(
+            `[rec-sites/free] settings derived — ` +
+            [...byValue].map(([v, ids]) => `${v}:${ids.length}`).join(' ')
+          );
         }
       }
 
