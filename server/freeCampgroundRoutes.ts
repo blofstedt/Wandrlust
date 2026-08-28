@@ -125,6 +125,69 @@ const isOfficial = (tags: Record<string, string>): string | null => {
   return null;
 };
 
+/**
+ * ---------------------------------------------------------------------------
+ * A PITCH INSIDE A PARK IS NOT A FREE CAMPGROUND
+ * ---------------------------------------------------------------------------
+ *
+ * The first real ingest stored fifty Ontario rows and forty-seven of them were
+ * called "Site 1" through "Site 47", all operated by Ontario Parks, strung a
+ * few hundred metres apart along one canoe route. They are the individual
+ * backcountry PITCHES inside a provincial park, and Ontario Parks backcountry
+ * camping requires a paid permit — so every one of those pins was the app
+ * telling a camper that a place costing money was free. That is the single
+ * claim this app is least allowed to get wrong.
+ *
+ * `fee=no` on such a node is not even mistagged. It is answering "does this
+ * particular pitch cost extra, on top of the permit you already bought" —
+ * a different question from the one this route is asking.
+ *
+ * So being free and being official is not enough; it also has to be A PLACE
+ * YOU DRIVE TO AND STAY AT, rather than one bookable unit inside somewhere
+ * bigger. Every rejection is counted and returned by reason, because the
+ * difference between "this state has no free campgrounds" and "this state's
+ * free campgrounds were all filtered out" is invisible otherwise — and a
+ * silent zero is how the last two rounds of this went wrong.
+ */
+const SUB_UNIT_NAME: RegExp[] = [
+  // "Site 12", "Campsite 3", "Pitch 7b", "No. 4"
+  /^\s*(site|campsite|camp|pitch|spot|no\.?)\s*#?\s*\d+[a-z]?\s*$/i,
+  // "Saganaga Lake #12" — a named place plus a unit number
+  /#\s*\d+\s*$/,
+  // Bare numbers
+  /^\s*\d+\s*$/
+];
+
+/**
+ * Why this campsite is not a standalone free campground, or null if it is.
+ *
+ * An UNNAMED site is rejected too. Every BC recreation site — the standard
+ * this was asked to match — has a name, and somewhere worth driving to
+ * generally does; an unnamed node is far more often a pitch, a fragment or a
+ * duplicate. It is the conservative reading, which is the one already chosen
+ * for this feature: being short of a few good campgrounds costs a camper one
+ * search, being wrong about a fee costs them a drive and a fine.
+ */
+const notAStandaloneCampground = (tags: Record<string, string>): string | null => {
+  const name = (tags.name ?? '').trim();
+  if (!name) return 'unnamed';
+  if (SUB_UNIT_NAME.some((re) => re.test(name))) return 'numbered-sub-site';
+
+  // Interior sites reached on foot or by paddle, under a permit system.
+  if ((tags.backcountry ?? '').toLowerCase() === 'yes') return 'backcountry';
+  // OSM's own word for one bookable unit inside a larger site.
+  if ((tags.camp_site ?? '').toLowerCase() === 'pitch') return 'pitch';
+
+  const permit = (tags.permit ?? '').toLowerCase();
+  if (permit && permit !== 'no') return 'permit-required';
+  if ((tags.access ?? '').toLowerCase() === 'permit') return 'permit-required';
+  if ((tags.reservation ?? '').toLowerCase() === 'required') return 'reservation-required';
+  // A stated charge contradicts `fee=no`; believe the more expensive one.
+  if ((tags.charge ?? '').trim()) return 'charge-stated';
+
+  return null;
+};
+
 interface Candidate {
   osmId: string;
   lat: number;
@@ -143,7 +206,10 @@ interface Candidate {
 const fetchRegion = async (
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
   timeoutMs: number
-): Promise<{ ok: boolean; found: number; sites: Candidate[]; note?: string }> => {
+): Promise<{
+  ok: boolean; found: number; sites: Candidate[];
+  rejected?: Record<string, number>; note?: string;
+}> => {
   const box = `${bbox.minLat.toFixed(5)},${bbox.minLon.toFixed(5)},` +
               `${bbox.maxLat.toFixed(5)},${bbox.maxLon.toFixed(5)}`;
   const query =
@@ -209,13 +275,21 @@ const fetchRegion = async (
       }
 
       const sites: Candidate[] = [];
+      const rejected: Record<string, number> = {};
+      const reject = (why: string) => { rejected[why] = (rejected[why] ?? 0) + 1; };
+
       for (const el of data.elements) {
         const lat = el.lat ?? el.center?.lat;
         const lon = el.lon ?? el.center?.lon;
-        if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+        if (typeof lat !== 'number' || typeof lon !== 'number') { reject('no-position'); continue; }
         const tags = el.tags ?? {};
+
         const operator = isOfficial(tags);
-        if (!operator) continue;
+        if (!operator) { reject('no-government-operator'); continue; }
+
+        const why = notAStandaloneCampground(tags);
+        if (why) { reject(why); continue; }
+
         sites.push({
           osmId: `${el.type ?? 'node'}/${el.id ?? 0}`,
           lat, lon,
@@ -224,10 +298,10 @@ const fetchRegion = async (
         });
       }
       console.info(
-        `[free-campgrounds] ${host}: ${data.elements.length} free, ` +
-        `${sites.length} of them official, in ${Date.now() - at} ms`
+        `[free-campgrounds] ${host}: ${data.elements.length} free-tagged, ` +
+        `${sites.length} standalone official campgrounds, in ${Date.now() - at} ms`
       );
-      return { ok: true, found: data.elements.length, sites };
+      return { ok: true, found: data.elements.length, sites, rejected };
     } catch (err: any) {
       tried.push(
         `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 100)}` +
@@ -475,6 +549,7 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
         insideTheBorder: inRegion.length,
         newHere: fresh.length,
         stored,
+        rejected: answer.rejected ?? {},
         ...(storeError ? { storeError } : {})
       });
       index += 1;
