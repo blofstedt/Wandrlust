@@ -416,7 +416,9 @@ const settlementsQuery = (box: string, timeoutS: number): string =>
   `node["place"="town"](${box});` +
   `node["place"="village"](${box});` +
   `node["place"="hamlet"](${box});` +
-  ')out;';
+  // `);out;` — the semicolon after the group is required. Without it Overpass
+  // answers HTTP 400, which is what the per-mirror log caught.
+  ');out;';
 
 /**
  * Settlements inside one bounding box, with a clock on each mirror.
