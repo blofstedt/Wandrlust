@@ -518,8 +518,33 @@ export const registerRecSiteRoutes = (app: Express): void => {
         });
       }
 
+      /**
+       * MUTUAL NEAREST, NOT MERELY NEAR.
+       *
+       * Recreation sites cluster. Around Campbell River this layer holds Pye
+       * Lake, Pye Bay and Pye Beach within a couple of kilometres of each
+       * other, and Stella Lake North, Stella Beach and Stella Bay likewise.
+       * A single OpenStreetMap campsite tagged `fee=no` sitting between them
+       * would, on a plain radius test, "confirm" all three — one person's tag
+       * silently vouching for two campgrounds nobody has said anything about.
+       *
+       * So a match counts only when each is the other's nearest: the OSM site
+       * must be the closest one to this recreation site AND this recreation
+       * site must be the closest one to it. A cluster then takes the pairing
+       * it actually earned and the neighbours stay unconfirmed, which is the
+       * honest outcome.
+       */
+      const nearestRecTo = (s: FreeCampsite) => {
+        let best: { index: number; metres: number } | null = null;
+        candidates.forEach((c, index) => {
+          const metres = metresBetween(c.point.lat, c.point.lon, s.lat, s.lon);
+          if (!best || metres < best.metres) best = { index, metres };
+        });
+        return best as { index: number; metres: number } | null;
+      };
+
       const sites = [];
-      for (const c of candidates) {
+      for (const [index, c] of candidates.entries()) {
         let nearest: { site: FreeCampsite; metres: number } | null = null;
         for (const s of free.sites) {
           const metres = metresBetween(c.point.lat, c.point.lon, s.lat, s.lon);
@@ -528,6 +553,9 @@ export const registerRecSiteRoutes = (app: Express): void => {
           }
         }
         if (!nearest) continue;
+        // The other half of the pairing. A tie on distance keeps the match.
+        const back = nearestRecTo(nearest.site);
+        if (!back || back.index !== index) continue;
 
         sites.push({
           fileId: String(c.props.FOREST_FILE_ID ?? ''),
@@ -549,6 +577,13 @@ export const registerRecSiteRoutes = (app: Express): void => {
         `(${Date.now() - startedAt} ms)`
       );
 
+      /*
+       * `compact=1` drops to positional arrays. Same data, roughly half the
+       * bytes, which is what makes paging the whole province practical.
+       * Order: fileId, name, lat, lon, campsites, nearest town.
+       */
+      const compact = String(req.query.compact ?? '') === '1';
+
       return res.json({
         ok: true,
         offset,
@@ -560,7 +595,9 @@ export const registerRecSiteRoutes = (app: Express): void => {
         unconfirmed: candidates.length - sites.length,
         attribution: `${ATTRIBUTION}; fee status from OpenStreetMap contributors (ODbL)`,
         licence: LICENCE,
-        sites
+        sites: compact
+          ? sites.map((s) => [s.fileId, s.name, s.lat, s.lon, s.campsites, s.nearestTown])
+          : sites
       });
     } catch (err: any) {
       const why = controller.signal.aborted ? 'timed out' : String(err?.message ?? err);
