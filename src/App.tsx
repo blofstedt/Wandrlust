@@ -51,7 +51,7 @@ import {
 } from './config/filters';
 import { ROAD_ACCESS_BY_SCALE, RIG_FEET_BY_SCALE } from './config/spotReport';
 import { newUserCampsiteId } from './utils/campsiteId';
-import { distanceMiles } from './utils/geo';
+import { distanceMiles, distanceKm } from './utils/geo';
 import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
@@ -77,6 +77,18 @@ import { haptic } from './utils/animation';
 /** Calgary, AB — the app's home coordinates. */
 const HOME_CENTER: [number, number] = [51.0447, -114.0719];
 const HOME_LABEL = 'Calgary, AB';
+
+/**
+ * How far the camper has to actually move before the drive is worked out
+ * again.
+ *
+ * A live GPS fix wanders tens of metres while the phone lies still, and the
+ * blue dot's watch reports every one of those wanders. A quarter of a
+ * kilometre is far wider than that wander and far narrower than anything this
+ * route claims — it changes no drive time, and it does not move where the
+ * mapped road gives out.
+ */
+const ROUTE_ORIGIN_MOVE_KM = 0.25;
 
 export default function App() {
   // Who's signed in. Drives the rig lookup and the friends list — both are
@@ -894,6 +906,34 @@ export default function App() {
   const origin: [number, number] = userLocation ?? center;
 
   /**
+   * The origin the DRIVE is measured from, which is deliberately not the live
+   * one.
+   *
+   * `userLocation` now comes from a `watchPosition` that runs the whole time
+   * the app is open, so the blue dot stays true — and a GPS fix jitters by
+   * tens of metres while the phone sits still on a table. Every one of those
+   * samples is a new `origin`, and the route effect below re-ran on every one:
+   * it blanked the route, refetched it, and the chips that hang off it —
+   * the drive time, and "1.8 km short", which is where the mapped road gives
+   * out — vanished and came back every few seconds while the camper was
+   * trying to read them.
+   *
+   * So the routing origin only moves when the camper has actually gone
+   * somewhere. A quarter of a kilometre changes no answer this route provides
+   * — not the drive time to a spot an hour away, not where the road stops —
+   * and it is comfortably wider than any fix's wander.
+   */
+  const routeOriginRef = useRef<[number, number]>(origin);
+  if (
+    distanceKm(
+      routeOriginRef.current[0], routeOriginRef.current[1], origin[0], origin[1]
+    ) > ROUTE_ORIGIN_MOVE_KM
+  ) {
+    routeOriginRef.current = origin;
+  }
+  const routeOrigin = routeOriginRef.current;
+
+  /**
    * Work out the drive as soon as somewhere is picked.
    *
    * The app does not drive you there — that is handed off to the maps app on
@@ -907,10 +947,19 @@ export default function App() {
     if (!destination) { setRoute(null); return; }
 
     let cancelled = false;
-    setRoute(null);
-
+    /*
+     * THE OLD ANSWER STAYS UP UNTIL THE NEW ONE LANDS.
+     *
+     * This used to `setRoute(null)` first, which emptied the chip row of the
+     * drive and of "1.8 km short" for however long the routing round trip
+     * took. Recomputing an answer is not the same as not having one, and a
+     * chip that blinks out mid-read is worse than a chip that is a few
+     * seconds stale. It is still cleared outright when the destination
+     * changes — see below — because then the old answer is about somewhere
+     * else, which is the one case where holding it would be a lie.
+     */
     calculateRoute({
-      from: origin,
+      from: routeOrigin,
       to: [destination.latitude, destination.longitude],
       rig: primaryRig
     }).then((result) => {
@@ -919,9 +968,17 @@ export default function App() {
     });
 
     return () => { cancelled = true; };
-    // `origin` is a fresh array each render, so it is spread into primitives.
+    // `routeOrigin` is a fresh array each render, so it is spread into
+    // primitives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destination, origin[0], origin[1], primaryRig]);
+  }, [destination, routeOrigin[0], routeOrigin[1], primaryRig]);
+
+  /*
+   * A route belongs to the destination it was worked out for. The moment that
+   * changes, the old one is about somewhere else and goes immediately, rather
+   * than lingering as a plausible-looking drive to the wrong place.
+   */
+  useEffect(() => { setRoute(null); }, [destination]);
 
   /**
    * Conditions at the destination, fetched once and shared.

@@ -510,8 +510,17 @@ export const conditionDots = (
       color: COLOR.signal,
       hollow: overall.strength === 'none',
       label: SIGNAL_SHORT[overall.strength],
+      /*
+       * This text is the WHOLE answer now — tapping through draws the mast
+       * pinging on its patch of ground and nothing else, no bubble over it.
+       * So whoever operates it is named here, where it used to be named on
+       * the map.
+       */
       full: `${SIGNAL_COPY[overall.strength]} \u2014 nearest mast ` +
-        `${overall.nearestTowerKm} km, terrain ignored`,
+        `${overall.nearestTowerKm} km` +
+        (coverage.towers?.[0]?.operator?.trim()
+          ? ` (${coverage.towers[0].operator!.trim()})` : '') +
+        ', terrain ignored',
       glyph: '\u{1F4F6}',
       // Only when there is an actual mast to go and look at \u2014 the estimate
       // can exist with none in range, and "show me" has nothing to show then.
@@ -680,14 +689,29 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
     });
   }
 
-  if (a.isFree !== undefined) {
+  /*
+   * A FEE IS NEWS. FREE IS NOT.
+   *
+   * Every spot this app puts on the map is a free place to sleep — that is
+   * what the app is for — so a chip saying "Free" on a free campsite spends a
+   * row of the camper's screen telling them the thing they already came here
+   * for. It said nothing, on almost every pin, and crowded out the chips that
+   * did.
+   *
+   * The other half of this chip stays, and is the reason it is not deleted
+   * outright: a handful of sites come through OpenStreetMap tagged `fee=yes`,
+   * and "you will be asked to pay here" is exactly the kind of thing a camper
+   * needs before driving in. Absence of the chip means free or unrecorded;
+   * the card is where that distinction gets said in words.
+   */
+  if (a.isFree === false) {
     dots.push({
       key: 'free',
-      color: a.isFree ? COLOR.free : COLOR.warn,
-      hollow: !a.isFree,
-      label: a.isFree ? 'Free' : 'Fee charged',
+      color: COLOR.warn,
+      hollow: true,
+      label: 'Fee charged',
       glyph: '💲',
-      tone: a.isFree ? 'good' : 'bad'
+      tone: 'bad'
     });
   }
 

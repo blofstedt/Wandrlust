@@ -109,6 +109,18 @@ import {
   featureMinDimPx, parcelFingerprint, landFromFeature, landSubtitle
 } from './mapPinRendering';
 
+/**
+ * How far in a tour will go when everything it is showing sits close together.
+ *
+ * Not the map's own maximum. Two points forty metres apart framed at street
+ * zoom fill the screen with one anonymous patch of ground — the surroundings
+ * are what make a place recognisable, and past about here there are none left
+ * to see. Seventeen is close enough to walk a track with and far enough out
+ * that the ground still says where it is.
+ */
+const TOUR_MAX_ZOOM = 17;
+
+
 interface MapComponentProps {
   campsites: Campsite[];
   selectedCampsite: Campsite | null;
@@ -4818,11 +4830,39 @@ export const MapComponent: React.FC<MapComponentProps> = ({
          *
          * The centring is otherwise Leaflet's own `fitBounds` maths, lifted
          * here because `fitBounds` takes no minimum and would drop the floor.
+         *
+         * ---------------------------------------------------------------
+         * AND THE CEILING GOES UP, TOO — IT WAS ZOOMING OUT ON PURPOSE.
+         * ---------------------------------------------------------------
+         *
+         * The ceiling used to be 11, 12, 14 or 15 depending on the tour, and
+         * that only ever bites when the answer is CLOSE: a mast half a
+         * kilometre away, a track 200 m off the pin. In exactly those cases
+         * the camera pulled OUT to a zoom where the two things it was
+         * comparing sat on top of each other — the tour answered "how far is
+         * it?" by making it look like no distance at all.
+         *
+         * So the fit is used whichever way it points. Close things zoom in
+         * until they nearly touch the edges of the screen; far things pull
+         * out as they always did. The ceiling that remains is only there to
+         * stop two points a few metres apart filling the screen with one
+         * featureless patch of ground, where the surroundings are the thing
+         * that makes a location readable at all.
          */
-        frame: (bounds, maxZoom = 11, minZoom, anchor) => {
+        frame: (bounds, maxZoom = TOUR_MAX_ZOOM, minZoom, anchor) => {
           try {
-            const padTL = L.point(60, 90);
-            const padBR = L.point(60, 110);
+            /*
+             * A SMALL BUFFER, NOT A MARGIN.
+             *
+             * This was 60px each side on a phone that is 390px wide — nearly
+             * a third of the screen given away — so two things 400 m apart
+             * were framed as though they were 4 km apart. The sides are a
+             * thin border now. The top and bottom keep more because a tour's
+             * label bubble hangs off the marker at the edge of these bounds,
+             * and a clipped answer is worse than a loose frame.
+             */
+            const padTL = L.point(26, 84);
+            const padBR = L.point(26, 76);
             const fit = map.getBoundsZoom(bounds, false, padTL.add(padBR));
             let z = Math.min(fit, maxZoom);
             const floored = minZoom != null && z < minZoom;
@@ -4941,7 +4981,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       [point.lat, point.lon] as L.LatLngExpression
     );
     shown.forEach((n) => bounds.extend([n.fire.centroid.lat, n.fire.centroid.lon]));
-    t.frame(bounds, 11);
+    t.frame(bounds);
     await t.wait(750);
 
     for (const { fire, distanceKm } of shown) {
@@ -4983,18 +5023,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const runSignalTour = useCallback(() => runTour(async (t) => {
     const SIGNAL_COLOR = '#22D3EE';
-    const RADIO_TOWER_SVG =
-      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ` +
-      `stroke-linecap="round" stroke-linejoin="round" ` +
-      `style="width:19px;height:19px;color:${SIGNAL_COLOR}">` +
-      '<path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9"/>' +
-      '<path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5"/>' +
-      '<circle cx="12" cy="9" r="2"/>' +
-      '<path d="M16.2 4.8c2 2 2.26 5.11.8 7.47"/>' +
-      '<path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1"/>' +
-      '<path d="M9.5 18h5"/>' +
-      '<path d="m8 22 4-11 4 11"/>' +
-      '</svg>';
     const point = readPointRef.current;
     const tower = coverageRef.current.towers?.[0];
     if (!point || !tower) return;
@@ -5003,7 +5031,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       [point.lat, point.lon] as L.LatLngExpression,
       [tower.latitude, tower.longitude] as L.LatLngExpression
     );
-    t.frame(bounds, 14);
+    t.frame(bounds);
     await t.wait(700);
     if (!t.alive()) return;
 
@@ -5024,18 +5052,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       })
     }).addTo(t.layer);
 
-    const away = tower.distanceKm < 1
-      ? `${Math.round(tower.distanceKm * 1000)} m`
-      : `${tower.distanceKm.toFixed(1)} km`;
-
-    t.label([tower.latitude, tower.longitude], {
-      title: tower.operator?.trim() || 'Nearest mast',
-      detail: `${away} away, straight line — terrain isn't part of this estimate` +
-        (tower.technology ? `, recorded as ${tower.technology}` : ''),
-      glyph: RADIO_TOWER_SVG,
-      color: SIGNAL_COLOR
-    });
-
+    /*
+     * NO LABEL ON THE MAST. The ping IS the answer.
+     *
+     * The question this tour is asked is "where is the signal coming from",
+     * and a radiating dot on a piece of ground answers it completely, in the
+     * time it takes to look. The bubble that used to sit over it repeated the
+     * distance the chip had just been tapped to say, and covered the ground
+     * between the mast and the pin — which is the one part of the picture
+     * worth seeing, because that distance is the whole estimate.
+     *
+     * Nothing honest is lost with it: the coverage chip carries the distance,
+     * the operator and the "terrain ignored" caveat in its own text, and that
+     * chip is what the camper pressed to get here.
+     */
     await t.wait(2600);
   }), [runTour]);
 
@@ -5128,7 +5158,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * backwards from what the tour is for. So the fit is unclamped: whatever
      * zoom shows the entire shape is the one the tour goes to.
      */
-    t.frame(bounds, 11);
+    t.frame(bounds);
     // Longer than the other tours wait: the camera is flying, and the glow
     // has to start once it has actually arrived.
     await t.wait(1000);
@@ -5185,7 +5215,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       }
     }).addTo(t.layer);
 
-    t.frame(shape.getBounds(), 12);
+    t.frame(shape.getBounds());
     await t.wait(700);
     if (!t.alive()) return;
 
@@ -5332,7 +5362,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       color: '#FDE047', weight: 5, opacity: 0.95, lineCap: 'round', lineJoin: 'round'
     }).addTo(t.layer);
 
-    t.frame(line.getBounds().extend([point.lat, point.lon]), 15);
+    t.frame(line.getBounds().extend([point.lat, point.lon]));
     await t.wait(700);
     if (!t.alive()) return;
 
@@ -5423,7 +5453,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       radius: 6, color: '#F59E0B', weight: 3, fillColor: '#0F172A', fillOpacity: 1
     }).addTo(t.layer);
 
-    t.frame(bounds, 14);
+    t.frame(bounds);
     await t.wait(700);
     if (!t.alive()) return;
 
