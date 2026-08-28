@@ -501,6 +501,8 @@
 
 /* The ring. Transparent middle so the terrain under a spot still reads. */
 .wl-pin {
+  /* The containing block for the pentagon plaque and the glyph above it. */
+  position: relative;
   width: 28px;
   height: 28px;
   border-radius: 9999px;
@@ -518,7 +520,7 @@
 .custom-campsite-marker:hover .wl-pin { transform: scale(1.12); }
 
 /* ---------------------------------------------------------------------
-   AN OFFICIAL CAMPGROUND IS A PLAQUE, A CAMPER'S SPOT IS A RING.
+   AN OFFICIAL CAMPGROUND IS A PENTAGON, A CAMPER'S SPOT IS A CIRCLE.
 
    Shape carries provenance because colour cannot. Beacon's evidence ladder
    already owns grey, amber, lime and green, and red means somebody was moved
@@ -526,21 +528,89 @@
    dilute it. A silhouette costs no colour, survives sunlight and greyscale,
    and reads at 28px.
 
-   Not a filled circle, because fill is taken: `.wl-pin-on` floods emerald to
-   mean "selected". Same emerald family as a camper's spot, deliberately —
-   both are free places to sleep, and the colour says that much. The shape
-   says who is claiming it.
+   IT WAS A ROUNDED SQUARE AND THAT WAS NOT ENOUGH. On a phone, at pin size,
+   among forty neighbours, a circle and a square with 7px corners are the same
+   blob — the difference lived in this file and nowhere on screen. A pentagon
+   differs from a circle along its whole outline, not at four points of it.
+
+   Rounded, because every other edge in this app is; a hard-cornered pentagon
+   would read as a warning rather than a category.
+
+   The shape is a STROKED PATH, not a `clip-path`. Clipping would cut the
+   border away with the box and leave an outline-less blob, and the outline is
+   the whole point: it is the same 2.5px emerald ring a camper's spot wears,
+   because both are free places to sleep. Only the shape differs, and only the
+   shape is claiming anything.
 
    The glyph inside is left alone on purpose. That slot belongs to the second
    axis — urban, suburban or wilderness — and putting provenance there too
    would spend it twice.
    --------------------------------------------------------------------- */
+
+/* The circle's own border and fill step aside; the SVG below draws both. */
 .wl-pin-official {
-  border-radius: 7px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
-/* Squarer still when tapped, so the plaque keeps its identity while lit. */
+
+/* Overhangs the 28px box by 3px a side, on purpose. A pentagon drawn inside
+   the same width as a circle covers about a fifth less ground, and side by
+   side on the map that made every government campground read as the quieter,
+   less important pin — the opposite of true. At 34 units the two carry the
+   same weight. `overflow: visible` on the marker already lets a chip sit
+   outside the pin, so the overhang costs nothing.
+
+   The drop-shadow stands in for the circle's `box-shadow`, which cannot
+   follow a shape it does not know about. */
+.wl-pin-plaque {
+  position: absolute;
+  inset: -3px;
+  width: 34px;
+  height: 34px;
+  overflow: visible;
+  filter: drop-shadow(0 1px 4px rgba(2, 6, 23, 0.55));
+}
+.wl-pin-plaque path {
+  fill: rgba(2, 6, 23, 0.34);
+  stroke: #34d399;
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  transition: fill var(--dur-base) var(--ease-standard),
+              stroke var(--dur-base) var(--ease-standard);
+}
+
+/* The glyph rides above the plaque. It is a span for both kinds of pin, so
+   the two share one stacking rule rather than two that can drift apart. */
+.wl-pin-glyph {
+  position: relative;
+  z-index: 1;
+  display: flex;
+}
+
+/* Tapped: the pentagon floods, exactly as the circle does. The circle's
+   selected halo is a 5px box-shadow ring, which cannot follow a shape it does
+   not know about — so the halo is stacked drop-shadows on the alpha of the
+   drawn path instead. `drop-shadow` has no spread, hence two of them: one
+   glow on top of another builds the density a single blur cannot.
+
+   The filter goes on the SVG and not on the pin, so the glyph sitting above
+   it stays sharp. */
 .wl-pin-official.wl-pin-on {
-  border-radius: 7px;
+  background: transparent;
+  /* Without this the circle's white selected border draws AROUND the
+     pentagon, and the shape that carries provenance loses to it. */
+  border-color: transparent;
+  box-shadow: none;
+}
+.wl-pin-official.wl-pin-on .wl-pin-plaque {
+  filter: drop-shadow(0 0 3px rgba(16, 185, 129, 0.55))
+          drop-shadow(0 0 3px rgba(16, 185, 129, 0.45))
+          drop-shadow(0 4px 9px rgba(2, 6, 23, 0.6));
+}
+.wl-pin-official.wl-pin-on .wl-pin-plaque path {
+  fill: #10b981;
+  stroke: #ffffff;
 }
 
 /* Tapped: the ring floods, and pops once so the choice is unmistakable. */

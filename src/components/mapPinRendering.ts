@@ -34,8 +34,8 @@ export const TENT_SVG =
  * THE SECOND AXIS: WHAT KIND OF PLACE, NOT WHO SAYS SO
  * ---------------------------------------------------------------------------
  *
- * The pin's SHAPE says who is claiming there is a campsite here — a plaque
- * for a government campground, a ring for a camper's spot. The glyph inside
+ * The pin's SHAPE says who is claiming there is a campsite here — a pentagon
+ * for a government campground, a circle for a camper's spot. The glyph inside
  * says what you are driving into, which is a completely separate question and
  * needs a separate channel.
  *
@@ -43,14 +43,61 @@ export const TENT_SVG =
  * owns grey through green as a scale and red means somebody was moved on. A
  * silhouette carries this for free and survives sunlight and greyscale.
  *
- * Drawn at the same stroke weight and 24-unit box as the tent so the three
- * read as one family at 15px rather than three borrowed icons.
+ * All three are drawn in the same 24-unit box at the same stroke weight, so
+ * they read as one family at 15px rather than three borrowed icons. They also
+ * differ in HEIGHT on purpose — trees fill the box, houses sit low with sky
+ * above them, towers fill it again but flat-topped — so the three are still
+ * telling them apart when the roof pitch and the trunks are a pixel wide.
  */
-const HOUSE_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
-  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
-  '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/></svg>';
 
+/**
+ * WILDERNESS: TWO CONIFERS.
+ *
+ * This slot used to hold the tent, and the tent was wrong for it. A tent
+ * means "a campsite", which every pin on this map already means — so the
+ * wilderness pin said nothing its neighbours were not also saying, and the
+ * three settings collapsed into two. Trees say the thing a camper actually
+ * wants to know at a glance: there is nothing out here but trees.
+ *
+ * Two of them, not one. A single fir at fifteen pixels reads as an arrow, a
+ * spike or a pine-tree air freshener depending on the eye; a pair reads as
+ * forest, because trees come in groups and one does not. Unequal heights for
+ * the same reason — two matching triangles read as a pattern, two mismatched
+ * ones read as a place.
+ *
+ * No ground line, unlike the tent. Four strokes is the ceiling at this size,
+ * and two trunks ending level draw the ground for free.
+ */
+const TREES_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
+  '<path d="M7.5 3 12.5 16h-10z"/><path d="M7.5 16v4"/>' +
+  '<path d="M17.5 8 21.5 17.5h-8z"/><path d="M17.5 17.5V20"/></svg>';
+
+/**
+ * SUBURBAN: A ROW OF LITTLE PITCHED-ROOF HOUSES.
+ *
+ * One house was not suburban. One house on its own is a farmhouse, a cabin,
+ * a homestead — the most rural thing on this map — and it was carrying the
+ * opposite of its meaning. What makes somewhere suburban is that the houses
+ * REPEAT, so the glyph repeats: two of them, side by side, same shape, at the
+ * same modest height.
+ *
+ * It shares its grammar with the skyline on purpose. Both are a row of
+ * buildings on a ground line, and the only differences are the two that
+ * actually separate a suburb from a downtown — these are SHORT, leaving open
+ * sky across the top of the box, and they have PITCHED roofs where the towers
+ * are flat. That contrast survives being four pixels tall; a difference of
+ * detail would not.
+ */
+const HOUSES_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
+  '<path d="M2 14.5 7 11l5 3.5"/><path d="M3.6 13.4V20h6.8v-6.6"/>' +
+  '<path d="M12 15.5 17 12l5 3.5"/><path d="M13.6 14.4V20h6.8v-5.6"/>' +
+  '<path d="M2 20h20"/></svg>';
+
+/** URBAN: two towers on the same ground line. Tall, and flat on top. */
 const SKYLINE_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
   'stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">' +
@@ -70,8 +117,8 @@ export type CampsiteSettingGlyph = 'urban' | 'suburban' | 'wilderness' | null;
 export const settingGlyph = (setting: CampsiteSettingGlyph): string => {
   switch (setting) {
     case 'urban': return SKYLINE_SVG;
-    case 'suburban': return HOUSE_SVG;
-    case 'wilderness': return TENT_SVG;
+    case 'suburban': return HOUSES_SVG;
+    case 'wilderness': return TREES_SVG;
     default: return TENT_SVG;
   }
 };
@@ -926,8 +973,43 @@ export const BEACON_ACTION: PinAction = {
 };
 
 /**
- * A campground somebody's government runs, drawn as a plaque rather than a
- * ring.
+ * The pentagon a government campground wears.
+ *
+ * A ROUNDED SQUARE WAS NOT DIFFERENT ENOUGH. At the size these actually get
+ * looked at — a 28px pin among forty others, on a phone, in sunlight — a
+ * circle and a square with 7px corners are the same blob. The distinction
+ * existed in the stylesheet and nowhere on screen.
+ *
+ * A pentagon has five corners and a flat-ish bottom, so its outline differs
+ * from a circle at every point on it rather than only at four. It is also the
+ * shape of a road sign and a park badge, which is roughly the right
+ * association for "an agency published this".
+ *
+ * Rounded, because every other edge in this app is. A hard-cornered pentagon
+ * next to Beacon's rings and the camper pin's circle would read as a warning
+ * rather than a category.
+ *
+ * IT OVERHANGS THE 28px PIN BOX, on purpose. A pentagon drawn inside the same
+ * width as a circle covers about a fifth less ground, and side by side on the
+ * map the government campgrounds read as the quieter, less important pins —
+ * which is the opposite of true. Drawn at 34 units and hung 3px outside the
+ * box, the two carry the same weight.
+ *
+ * IT IS DRAWN, NOT CLIPPED. `clip-path` would cut the border off along with
+ * the box and leave a shape with no outline; a stroked path keeps the same
+ * 2.5px emerald ring the camper pin has, which is what makes the two read as
+ * the same family of thing — both are free places to sleep — differing only
+ * in who is claiming it.
+ */
+const PENTAGON_PLAQUE =
+  '<svg class="wl-pin-plaque" viewBox="0 0 34 34" aria-hidden="true">' +
+  '<path d="M13.84 5.54Q17 3.25 20.16 5.54L28.3 11.46Q31.46 13.75 30.25 17.46' +
+  'L27.14 27.04Q25.93 30.75 22.03 30.75L11.97 30.75Q8.07 30.75 6.86 27.04' +
+  'L3.75 17.46Q2.54 13.75 5.7 11.46Z"/></svg>';
+
+/**
+ * A campground somebody's government runs, drawn as a pentagon rather than a
+ * circle.
  *
  * SHAPE CARRIES PROVENANCE HERE, and it does so because colour cannot. The
  * Beacon ladder already owns grey, amber, lime and green as an evidence
@@ -935,7 +1017,7 @@ export const BEACON_ACTION: PinAction = {
  * "official" would put a decorative colour next to a safety one. A silhouette
  * costs nothing, survives sunlight and greyscale, and is legible at 28px.
  *
- * It is a plaque and not a filled circle because a FILLED pin already means
+ * It is an outline and not a filled shape because a FILLED pin already means
  * "selected": `.wl-pin-on` floods emerald on tap. Fill was taken.
  *
  * The same emerald family as a camper's spot, deliberately. Both are free
@@ -978,7 +1060,8 @@ export const buildCampsiteIcon = (
       `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
       `<div class="wl-pin${official ? ' wl-pin-official' : ''}${isSelected ? ' wl-pin-on' : ''}">` +
-      `${settingGlyph(setting)}</div>` +
+      `${official ? PENTAGON_PLAQUE : ''}` +
+      `<span class="wl-pin-glyph">${settingGlyph(setting)}</span></div>` +
       `${isSelected ? pinActionsRow([INFO_ACTION_SPOT]) : ''}` +
       `</div>`,
     iconSize: [32, 32],
