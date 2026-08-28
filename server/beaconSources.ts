@@ -823,13 +823,38 @@ const isForbidden = (tags: Record<string, string>): string | null => {
  * is a place people sleep. It ranks BELOW the first, and its wording never
  * pretends overnight use is the rule there, because usually it is not.
  *
- * `null` — REJECTED. Private land, land whose owner nobody recorded, and the
- * handful of public designations where overnight stays are prohibited outright
- * rather than merely unmentioned. Unknown ownership is rejected on purpose:
- * "nobody said it was private" is not "it is public", and the one thing this
- * feature must never do is send somebody onto private ground.
+ * `tolerated` — ground an ORGANISATION owns and the public is already invited
+ * onto: a gym, a supermarket, a trailhead lot, a business park. Nobody has a
+ * right to sleep there and this tier never pretends otherwise — but a big
+ * unposted lot is where overlanders actually stop, it is the single most
+ * common kind of spot on iOverlander, and refusing to name it does not make
+ * anybody safer. It scores neutrally: it neither earns points for its
+ * ownership nor loses them.
+ *
+ * `null` — REJECTED. Two quite different things, and both must stay rejected:
+ * land belonging to a private INDIVIDUAL (somebody's home, yard, farm or
+ * woodlot), and public designations where overnight stays are prohibited
+ * outright rather than merely unmentioned.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT CHANGED, AND WHY THE OLD RULE WAS WRONG
+ * ---------------------------------------------------------------------------
+ *
+ * This used to reject everything that was not demonstrably public, including
+ * every business car park and all unmapped ground. It was written to stop a
+ * scan coming back as a list of car parks — a real problem, badly solved. The
+ * cost was the whole middle of the map: a gym lot with no posted restriction,
+ * a truck stop, county gravel, an unmapped pullout on a forestry road. Those
+ * are not edge cases, they are most of where people actually sleep, and the
+ * app was silent about all of them.
+ *
+ * The right fix for "too many car parks" is RANKING and honest wording, not a
+ * gate. So the gate now asks the question that actually matters — is this
+ * somebody's private property, or somewhere overnight stays are banned? — and
+ * everything else is allowed through to be ranked, labelled for what it is,
+ * and confirmed or knocked down by campers on the evidence ladder.
  */
-export type LandTier = 'dispersed' | 'public';
+export type LandTier = 'dispersed' | 'public' | 'tolerated';
 
 interface LandReading {
   token: Token;
@@ -934,19 +959,72 @@ const landFromArea = (tags: Record<string, string>): LandReading | null => {
   }
 
   /*
-   * ---- Rejected: nobody said whose this is. ----
+   * ---- Rejected: this belongs to a person. ----
    *
-   * Unmapped forest and a bare residential polygon are the two commonest
-   * shapes here, and neither is public. "Nobody tagged an owner" is not
-   * ownership, and timber company land and a farmer's woodlot both look
-   * exactly like `landuse=forest`.
+   * The line the whole gate now turns on. Somebody's home, garden, farmyard or
+   * field is private property in the sense that matters — you are trespassing
+   * on an individual, and no amount of "there was no sign" makes that
+   * reasonable. Kept ahead of everything permissive below.
    */
-  if (tags.landuse === 'forest') {
-    return { token: 'land=forest', tier: null, basis: 'Mapped forest with no owner recorded. Timber company land looks exactly like this.' };
-  }
-  if (tags.landuse === 'residential') {
+  if (tags.landuse === 'residential' || tags.place === 'farm') {
     return { token: 'land=residential', tier: null, basis: 'Residential ground. Private property.' };
   }
+  if (/^(farmland|farmyard|orchard|vineyard|allotments|greenhouse_horticulture|animal_keeping)$/.test(tags.landuse ?? '')) {
+    return { token: 'land=agricultural', tier: null, basis: "Farmland. This is somebody's working property." };
+  }
+
+  /*
+   * ---- Rejected: somewhere a parked camper is a problem in itself. ----
+   *
+   * Not private, not banned by designation, and still absolutely not a place
+   * to suggest. A school car park at 2am is the clearest example: entirely
+   * legal to drive into, and the wrong place to be asleep.
+   */
+  if (/^(school|college|university|kindergarten|childcare|hospital|clinic|police|fire_station|prison)$/.test(tags.amenity ?? '')) {
+    return {
+      token: 'land=sensitive_site',
+      tier: null,
+      basis: 'A school, hospital or emergency site. Not somewhere to spend the night.'
+    };
+  }
+
+  /*
+   * ---- Allowed, and named for exactly what it is. ----
+   *
+   * An organisation owns this and has already invited the public to drive onto
+   * it. That is not permission to sleep, and the wording below says so every
+   * time — but this is the tier that holds the gym car park, the supermarket,
+   * the trailhead and the truck stop, which is most of what an overlander
+   * actually uses. See the note on `LandTier`.
+   */
+  if (/^(retail|commercial|industrial)$/.test(tags.landuse ?? '')) {
+    return {
+      token: 'land=business',
+      tier: 'tolerated',
+      basis:
+        'Business property, open to the public in the daytime. Nobody has a ' +
+        'right to stay the night here — it is tolerated in some places and ' +
+        'towed from others, so read the signs and be ready to move.'
+    };
+  }
+
+  /*
+   * Forest with no owner recorded. Timber company land and a farmer's woodlot
+   * both look exactly like this, so it is not public and never scores as if it
+   * were — but it is organisation-owned far more often than not, and a
+   * forestry road pullout is a normal place to stop.
+   */
+  if (tags.landuse === 'forest') {
+    return {
+      token: 'land=forest',
+      tier: 'tolerated',
+      basis:
+        'Mapped forest with no owner recorded — this may be timber company ' +
+        'land or a private woodlot rather than public forest. Nobody has ' +
+        'confirmed who owns it.'
+    };
+  }
+
   return null;
 };
 
@@ -1375,14 +1453,24 @@ export const buildCandidates = (
      * if the boundary layer had nothing to say here does OpenStreetMap's own
      * tagging get a turn.
      *
-     * Either way the ground must be PUBLIC. Which kind of public then decides
-     * where the lead ranks: Crown land, BLM and National Forest lead, other
-     * public land follows well behind, private and unknown are dropped.
+     * What the ground must NOT be is private, sensitive, or a designation that
+     * bans overnight stays. Everything else is ranked rather than refused:
+     * Crown land, BLM and National Forest lead; other public land follows;
+     * business property and unmapped ground come last but are still leads.
+     * See the note on `LandTier`.
      */
     const parcel = publicParcelAt(centre.lat, centre.lon, publicLand);
 
+    /**
+     * Which tier this candidate ended up on, kept for the two later rules that
+     * have to know: the business-lot bonus, and how hard being near a town
+     * should count against it.
+     */
+    let tier: LandTier = 'tolerated';
+
     if (parcel) {
       if (parcel.tier === null) continue;
+      tier = parcel.tier;
 
       tokens.push(
         parcel.tier === 'dispersed' ? 'land=official_dispersed' : 'land=official_public',
@@ -1412,15 +1500,80 @@ export const buildCandidates = (
       score += parcel.tier === 'dispersed' ? 3 : 1;
     } else {
       const land = containing ? landFromArea(containing.tags) : null;
-      if (!land || land.tier === null) continue;
 
-      tokens.push(land.token, 'land_src=openstreetmap');
-      // Said out loud: this one rests on a volunteer's tag, not on an agency.
-      basis = `${land.basis} This is from OpenStreetMap's tagging rather than from the managing agency's own boundary.`;
-      generator = 'public_land';
-      // A point below the same tier from official data — the tier decides the
-      // ranking, the source decides the confidence, and both cost something.
-      score += land.tier === 'dispersed' ? 2 : 0.5;
+      // Only an EXPLICIT rejection stops a candidate here: private property, a
+      // sensitive site, or a designation that bans overnight stays. See the
+      // note on `LandTier` for why "nobody mapped an owner" no longer does.
+      if (land && land.tier === null) continue;
+
+      if (land) {
+        tier = land.tier as LandTier;
+        tokens.push(land.token, 'land_src=openstreetmap');
+        // Said out loud: this one rests on a volunteer's tag, not on an agency.
+        basis = `${land.basis} This is from OpenStreetMap's tagging rather than from the managing agency's own boundary.`;
+        generator = land.tier === 'tolerated' ? 'urban' : 'public_land';
+        // A point below the same tier from official data — the tier decides the
+        // ranking, the source decides the confidence, and both cost something.
+        // `tolerated` earns nothing for its ownership and loses nothing either.
+        score += land.tier === 'dispersed' ? 2 : land.tier === 'public' ? 0.5 : 0;
+      } else {
+        /*
+         * ---- NOBODY HAS MAPPED WHO OWNS THIS. ----
+         *
+         * Rejected outright until now, which quietly deleted most of the
+         * backcountry: an unmapped pullout on a forestry road looks exactly
+         * like this, and so does half of rural Canada. It is a real lead and
+         * it is also the weakest thing on the ladder, so it is carried at a
+         * small penalty and labelled as the unknown it is. The vetoes above,
+         * the settlement penalty below and the camper who verifies it are what
+         * make that safe — not silence.
+         */
+        tokens.push('land=unmapped', 'land_src=none');
+        basis =
+          'Nobody has mapped who owns this ground. It is not confirmed public ' +
+          'and it is not confirmed private — treat it as unknown, and look for ' +
+          'gates, fences and signs when you arrive.';
+        generator = 'urban';
+        score -= 0.5;
+      }
+    }
+
+    /**
+     * ---- THE BUSINESS CAR PARK, WHICH IS THE POINT OF ALL THIS.
+     *
+     * A big unposted lot belonging to a gym, a supermarket or a truck stop is
+     * the commonest overnight stop there is, and every other rule in this file
+     * was quietly stacked against it: a car park opens at 0.25, its ownership
+     * earns nothing, and it sits in a town so the settlement penalty buries
+     * it. Left alone the arithmetic said "never show this", which is exactly
+     * the gap being closed.
+     *
+     * So a parking area that belongs to an ORGANISATION — either because it
+     * sits on business land, or because it carries an operator or a name,
+     * which a kerbside space and a farm gate do not — is scored as the real
+     * candidate it is. It still earns nothing for legality, because there is
+     * none to earn: it opens as a grey Lead saying nobody has been here, and
+     * a camper is what turns it into anything more.
+     */
+    const isParking = tags.amenity === 'parking' || tags.amenity === 'parking_space';
+    const namedOperator = Boolean(tags.operator || tags.name || tags.brand);
+    const businessLot = isParking && (tier === 'tolerated' || namedOperator);
+
+    if (businessLot) {
+      tokens.push('lot=business');
+      score += 2.5;
+      if (!basis.startsWith('Business property')) {
+        basis =
+          `${basis} This is a business car park — the kind of place people ` +
+          'commonly stop overnight without it ever being allowed in writing.';
+      }
+      // Tagged for customers is the normal shape of a gym or supermarket lot.
+      // Worth saying, because it is the sentence that decides whether somebody
+      // buys a coffee on the way in.
+      if (tags.access === 'customers') {
+        tokens.push('access=customers');
+        basis += ' It is signed for customers, so be one.';
+      }
     }
 
     // ---- Road context. Somewhere you cannot drive to is not a place to sleep.
@@ -1477,9 +1630,23 @@ export const buildCandidates = (
     score += view.score;
     tokens.push(...view.tokens);
 
-    // ---- How likely is a knock? Distance from people, and nothing else.
+    /**
+     * ---- How likely is a knock? Distance from people — but read differently
+     * depending on what kind of spot this is.
+     *
+     * The penalty is right about a verge, a kerbside space or unmapped ground:
+     * being near people is precisely what gets you noticed somewhere you have
+     * no business being. It is close to meaningless about a business car park,
+     * where being in a town is not a risk factor but the entire premise — a
+     * supermarket lot is *supposed* to be in a settlement, and applying the
+     * full −3 to it was the single biggest reason these never appeared.
+     *
+     * So on a business lot the settlement signal is kept, because a busy
+     * high-street lot really is worse than a quiet edge-of-town one, and cut
+     * to a quarter, because it is measuring the wrong thing there.
+     */
     const risk = riskScore(centre.lat, centre.lon, scan.context);
-    score += risk.score;
+    score += businessLot ? risk.score * 0.25 : risk.score;
     tokens.push(...risk.tokens);
 
     // ---- Distance from where the beacon was dropped. Closer is more useful,

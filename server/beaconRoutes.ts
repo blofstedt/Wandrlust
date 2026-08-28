@@ -265,10 +265,11 @@ const DISCLAIMER =
  * OpenStreetMap is invisible to this scan and very common.
  */
 const NOTHING_FOUND =
-  'Nothing on public land here cleared the bar. Beacon only suggests places ' +
-  'inside land the map names as public — national forest, BLM, Crown land — ' +
-  'so a blank answer often means the boundary is not mapped rather than that ' +
-  'there is nowhere to stay. Try a beacon further out, on land you know is public.';
+  'Nothing here cleared the bar. Beacon looks for places you could actually ' +
+  'pull up — pullouts, rest areas, business car parks, clearings — and drops ' +
+  'anything on private property or signed against. A blank answer usually ' +
+  'means nobody has mapped anything of that kind nearby, not that there is ' +
+  'nowhere to stay. Try a beacon nearer a road, or somewhere further out.';
 
 /* ------------------------------------------------------------------ */
 
@@ -541,6 +542,15 @@ export const registerBeaconRoutes = (app: Express): void => {
     /**
      * A FOURTH FACT, AND IT USED TO BE SPELLED AS THE FIRST ONE.
      *
+     * NOTE, SINCE PUBLIC LAND STOPPED BEING A GATE: this no longer means the
+     * test could not run. Candidates now pass on business property and on
+     * unmapped ground, so a scan without the agency layer still produces real
+     * leads. What it loses is the ranking — a genuine Crown-land pullout is
+     * worth three points it cannot collect, so it can fall below the bar and
+     * go unshown. That is a degraded answer rather than an absent one, which
+     * is why the wording below no longer claims nothing was checked, and why
+     * it is still not cached or charged for.
+     *
      * OpenStreetMap answering is not the whole test. `buildCandidates` drops
      * every candidate the agency boundary layer cannot place on public land —
      * that is deliberate and it is the rule that stopped Beacon returning
@@ -669,9 +679,9 @@ export const registerBeaconRoutes = (app: Express): void => {
         : couldNotAsk
         ? `Could not reach OpenStreetMap just now, so nothing was scanned.${kept}`
         : landWentUnchecked
-        ? 'The government land boundaries could not be reached just now, and Beacon ' +
-          'only suggests ground an agency names as public — so it had nothing to ' +
-          `check against and ruled nothing out. Try again in a moment.${kept}`
+        ? 'The government land boundaries could not be reached just now, so ' +
+          'anything out there on public land could not be ranked properly and ' +
+          `may have been missed. Nothing here has been ruled out.${kept}`
         : persistFailed
         ? 'The scan ran, but its results could not be saved, so nothing can be ' +
           `shown for it. Nothing here has been ruled out — try again shortly.${kept}`
