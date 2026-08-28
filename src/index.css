@@ -517,6 +517,32 @@
 }
 .custom-campsite-marker:hover .wl-pin { transform: scale(1.12); }
 
+/* ---------------------------------------------------------------------
+   AN OFFICIAL CAMPGROUND IS A PLAQUE, A CAMPER'S SPOT IS A RING.
+
+   Shape carries provenance because colour cannot. Beacon's evidence ladder
+   already owns grey, amber, lime and green, and red means somebody was moved
+   on — a decorative hue for "official" would sit next to a safety one and
+   dilute it. A silhouette costs no colour, survives sunlight and greyscale,
+   and reads at 28px.
+
+   Not a filled circle, because fill is taken: `.wl-pin-on` floods emerald to
+   mean "selected". Same emerald family as a camper's spot, deliberately —
+   both are free places to sleep, and the colour says that much. The shape
+   says who is claiming it.
+
+   The glyph inside is left alone on purpose. That slot belongs to the second
+   axis — urban, suburban or wilderness — and putting provenance there too
+   would spend it twice.
+   --------------------------------------------------------------------- */
+.wl-pin-official {
+  border-radius: 7px;
+}
+/* Squarer still when tapped, so the plaque keeps its identity while lit. */
+.wl-pin-official.wl-pin-on {
+  border-radius: 7px;
+}
+
 /* Tapped: the ring floods, and pops once so the choice is unmistakable. */
 .wl-pin-on {
   background: #10b981;

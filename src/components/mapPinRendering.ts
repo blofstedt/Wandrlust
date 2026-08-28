@@ -878,6 +878,22 @@ export const BEACON_ACTION: PinAction = {
   tone: 'beacon'
 };
 
+/**
+ * A campground somebody's government runs, drawn as a plaque rather than a
+ * ring.
+ *
+ * SHAPE CARRIES PROVENANCE HERE, and it does so because colour cannot. The
+ * Beacon ladder already owns grey, amber, lime and green as an evidence
+ * scale, and red means a camper was moved on — introducing new hues for
+ * "official" would put a decorative colour next to a safety one. A silhouette
+ * costs nothing, survives sunlight and greyscale, and is legible at 28px.
+ *
+ * It is a plaque and not a filled circle because a FILLED pin already means
+ * "selected": `.wl-pin-on` floods emerald on tap. Fill was taken.
+ *
+ * The same emerald family as a camper's spot, deliberately. Both are free
+ * places to sleep and the colour says so; the shape says who is claiming it.
+ */
 export const buildCampsiteIcon = (
   isSelected: boolean,
   dots: MarkerDot[] = [],
@@ -890,11 +906,21 @@ export const buildCampsiteIcon = (
    * plugin constantly, and per-marker listeners would have to be reattached
    * every time.
    */
-  siteId?: string
+  siteId?: string,
+  /**
+   * Who says there is a campsite here.
+   *
+   * `official` is a government-published campground — named, with a known
+   * number of pitches, and nobody from this app has been. `camper` is
+   * somebody saying "I slept here", which is a completely different claim and
+   * gets a completely different silhouette.
+   */
+  provenance: 'camper' | 'official' = 'camper'
 ): L.DivIcon => {
   const row = dots.length
     ? (isSelected ? expandedDotRow(dots, animateKeys) : collapsedDotRing(dots))
     : '';
+  const official = provenance === 'official';
 
   return L.divIcon({
     className: 'custom-campsite-marker',
@@ -902,7 +928,8 @@ export const buildCampsiteIcon = (
       `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}"` +
       `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
-      `<div class="wl-pin${isSelected ? ' wl-pin-on' : ''}">${TENT_SVG}</div>` +
+      `<div class="wl-pin${official ? ' wl-pin-official' : ''}${isSelected ? ' wl-pin-on' : ''}">` +
+      `${TENT_SVG}</div>` +
       `${isSelected ? pinActionsRow([INFO_ACTION_SPOT]) : ''}` +
       `</div>`,
     iconSize: [32, 32],

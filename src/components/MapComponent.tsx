@@ -4156,6 +4156,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     return isSelected ? withNavChip(dots) : dots;
   }, []);
 
+  /**
+   * Which pins are a government's campground rather than a camper's spot.
+   *
+   * Held as a set of ids because `iconForId` has to stay a stable callback —
+   * it is a dependency of the cluster effect, and a new identity there tears
+   * down and rebuilds every marker on the map.
+   */
+  const officialIdsRef = useRef<Set<string>>(new Set());
+  officialIdsRef.current = useMemo(
+    () => new Set(
+      campsites.filter((s) => s.source === 'agency_dataset').map((s) => s.id)
+    ),
+    [campsites]
+  );
+
   const iconForId = useCallback((id: string, animate = false) => {
     const isSelected = selectedIdRef.current === id;
     // A fresh tap forgets what the last one showed, so the stack replays.
@@ -4165,7 +4180,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       isSelected,
       dots,
       isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined,
-      id
+      id,
+      officialIdsRef.current.has(id) ? 'official' : 'camper'
     );
   }, [dotsForId]);
 
