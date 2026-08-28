@@ -265,6 +265,30 @@ const metresBetween = (
  */
 const DUPLICATE_RADIUS_M = 400;
 
+/**
+ * Which of the land types this operator actually is.
+ *
+ * ONLY WHEN THE OPERATOR NAMES THE THING THE ENUM NAMES. Rounding to the
+ * nearest value is the tempting version and it is wrong in the way this
+ * codebase keeps refusing: filing a county park under `usfs` is the app
+ * stating who owns a piece of ground, on the strength of nothing, to somebody
+ * deciding whether they are allowed to sleep on it.
+ *
+ * A state WILDLIFE AREA is deliberately not `state_forest` — same government,
+ * different land, different rules — and Parks Canada is not `crown_land`.
+ * Everything without an exact home lands in `other_public`: public land, run
+ * by an agency, and `land_manager` carries which one. See migration 29.
+ */
+const landTypeFor = (operator: string, country: string): string => {
+  if (/forest service|\busfs\b|national forest|usda forest/i.test(operator)) return 'usfs';
+  if (/bureau of land management|\bblm\b/i.test(operator)) return 'blm';
+  if (/state forest|state land/i.test(operator)) return 'state_forest';
+  if (country === 'Canada' && /crown land|\bministry of\b|minist[eè]re|provincial (park|forest|recreation)|recreation sites and trails/i.test(operator)) {
+    return 'crown_land';
+  }
+  return 'other_public';
+};
+
 const describe = (operator: string): string =>
   `Recorded in OpenStreetMap as run by ${operator} and free to use. ` +
   'That is a community-maintained record, not the operator’s own listing — ' +
@@ -407,11 +431,22 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
       });
 
       let stored = 0;
+      /*
+       * A FAILED WRITE IS NOT "NOTHING NEW".
+       *
+       * The first production run reported `stored: 0` for fifty perfectly good
+       * campgrounds, because the upsert was rejected (an invalid `land_type`)
+       * and the only trace was a console warning. Zero-because-nothing-was-new
+       * and zero-because-the-write-failed are opposite facts and they read
+       * identically, which is the exact thing this project keeps writing down
+       * and then doing anyway. The reason now comes back in the response.
+       */
+      let storeError: string | null = null;
       if (!dry && writer && fresh.length > 0) {
         const rows = fresh.map((s) => ({
           id: `osm-free-${s.osmId.replace('/', '-')}`,
           name: s.name || 'Free campground',
-          land_type: 'other' as const,
+          land_type: landTypeFor(s.operator, region.country),
           land_manager: s.operator,
           latitude: Number(s.lat.toFixed(6)),
           longitude: Number(s.lon.toFixed(6)),
@@ -423,8 +458,13 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
           updated_at: new Date().toISOString()
         }));
         const { error } = await writer.from('campsites').upsert(rows, { onConflict: 'id' });
-        if (error) console.warn(`[free-campgrounds] ${region.name} store failed: ${error.message}`);
-        else { stored = rows.length; storedTotal += stored; }
+        if (error) {
+          storeError = error.message;
+          console.warn(`[free-campgrounds] ${region.name} store failed: ${error.message}`);
+        } else {
+          stored = rows.length;
+          storedTotal += stored;
+        }
       }
 
       results.push({
@@ -434,7 +474,8 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
         official: answer.sites.length,
         insideTheBorder: inRegion.length,
         newHere: fresh.length,
-        stored
+        stored,
+        ...(storeError ? { storeError } : {})
       });
       index += 1;
     }

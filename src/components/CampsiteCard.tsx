@@ -14,6 +14,7 @@ const LAND_TYPE_STYLE: Record<LandType, string> = {
   usfs: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
   state_forest: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
   crown_land: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
+  other_public: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
   dispersed: 'bg-violet-500/20 text-violet-300 border-violet-500/40'
 };
 

@@ -5,7 +5,12 @@ import type {
 export type { CarrierId, SignalStrength, CellTechnology };
 export type { BackroadSurface, BackroadAccess, BackroadWay, BackroadScan };
 
-export type LandType = 'blm' | 'usfs' | 'state_forest' | 'dispersed' | 'crown_land';
+export type LandType =
+  | 'blm' | 'usfs' | 'state_forest' | 'dispersed' | 'crown_land'
+  /** Public land run by a named agency that is not one of the four above —
+   *  a county park, a city campground, a Corps of Engineers reservoir, a
+   *  state wildlife area. `landManager` says which. See migration 29. */
+  | 'other_public';
 export type RoadAccess = 'paved' | 'gravel' | 'high_clearance' | '4x4_only';
 export type ToiletType = 'none' | 'vault' | 'flush' | 'pack_out';
 export type WaterType = 'none' | 'potable' | 'natural_stream' | 'seasonal_creek';

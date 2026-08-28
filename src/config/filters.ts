@@ -11,7 +11,7 @@ import type { FilterState, LandType, RoadAccess } from '../types';
  */
 
 export const ALL_LAND_TYPES: LandType[] = [
-  'blm', 'usfs', 'state_forest', 'dispersed', 'crown_land'
+  'blm', 'usfs', 'state_forest', 'dispersed', 'crown_land', 'other_public'
 ];
 
 export const DISTANCE_MIN_MILES = 5;
@@ -60,4 +60,4 @@ export const countActiveFilters = (state: FilterState): number => {
   if (state.roadAccessMax !== DEFAULT_FILTERS.roadAccessMax) count += 1;
   if (state.maxDistanceMiles !== DEFAULT_FILTERS.maxDistanceMiles) count += 1;
   return count;
-};
+};

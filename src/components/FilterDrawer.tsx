@@ -20,6 +20,7 @@ const LAND_TYPE_OPTIONS: { id: LandType; label: string; desc: string }[] = [
   { id: 'usfs', label: 'National forest', desc: 'USFS dispersed' },
   { id: 'state_forest', label: 'State lands', desc: 'State recreation' },
   { id: 'crown_land', label: 'Crown land', desc: 'Canadian public land' },
+  { id: 'other_public', label: 'Other public land', desc: 'County, city, other agency' },
   { id: 'dispersed', label: 'Other free spots', desc: 'Community reported' }
 ];
 
