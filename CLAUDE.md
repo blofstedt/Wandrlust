@@ -236,6 +236,27 @@ npm run vapid    # generate push notification keys
   Brunswick and Nova Scotia shipped, drew perfectly in production, and were
   invisible to the one person watching, because his phone still had a valid
   answer from an hour before they existed.
+- **The app answers on five hostnames and only one of them works.**
+  `wandrlust.dev` is the app. The other four — `www`, and three
+  `*.vercel.app` aliases — are historical, and every `.vercel.app` one sits
+  behind Vercel's SSO login wall (`all_except_custom_domains`), which a camper
+  cannot pass. `vercel.json` redirects page loads off them, but that does not
+  save an INSTALLED app: the manifest's `start_url` is relative, so a
+  home-screen install launches on whichever host it was installed from, and
+  the service worker then serves the shell from that origin's cache with no
+  navigation for the redirect to catch. `localStorage` is per-origin, so the
+  session lives on the wrong site and the app looks completely normal.
+  **Beacon is the only feature that breaks**, because it is the only route
+  that sends the camper's token to our own server — everything else talks to
+  Supabase directly and does not care which origin it is on. That is why this
+  presented as "Beacon is broken" for three rounds of fixes.
+  `src/utils/canonicalHost.ts` now tears down the worker and moves a stranded
+  document to the canonical origin before the app mounts. **The upstream cause
+  is Supabase's Site URL** — an un-allowlisted redirect is not refused, it
+  silently falls back to Site URL, so pointing that at a `.vercel.app` address
+  strands every camper who signs in. Exact values in `AUTH_SETUP.md` §2.3.
+  **A 401 from `/api/beacon/query` logs the host it arrived on** — read that
+  line before theorising; it is what finally answered this.
 - **iOS push needs the app installed to the Home Screen.** `pushService.ts`
   detects this and explains it instead of showing a button that fails.
 - **Migrations must run in order,** `supabase_schema.sql` then 02 through 25.

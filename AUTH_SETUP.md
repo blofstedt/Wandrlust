@@ -107,6 +107,34 @@ Both sign-in styles work off this one provider: magic link uses
 Supabase rejects any redirect not on this allowlist, which shows up as a
 successful Google login that dumps the user on a blank page.
 
+#### In production these are NOT placeholders — they are these exact values
+
+**Site URL**: `https://wandrlust.dev`
+
+**Redirect URLs**:
+```
+https://wandrlust.dev/auth/callback
+http://localhost:3000/auth/callback
+```
+
+READ THIS BEFORE CHANGING EITHER. A redirect that is not on the allowlist is
+not refused with an error — Supabase quietly falls back to the **Site URL**
+instead. So a wrong Site URL does not look like a broken allowlist; it looks
+like sign-in working and landing somewhere else, at `/?code=…` rather than at
+`/auth/callback`.
+
+**Never point either of them at a `*.vercel.app` address.** This project has
+Vercel's SSO protection on, scoped to `all_except_custom_domains`, so every
+`.vercel.app` alias sits behind a Vercel login wall that a camper cannot pass
+— the sign-in round trip ends on `ERR_FAILED`. Only `wandrlust.dev` and
+`www.wandrlust.dev` are exempt, because they are custom domains.
+
+That misconfiguration is also how an install ends up STRANDED. Signing in on
+a `.vercel.app` address creates the session against that origin, `localStorage`
+is per-origin, and the camper is then signed in somewhere the real site cannot
+see — which breaks Beacon permanently and nothing else visibly at all. See
+`src/utils/canonicalHost.ts`.
+
 ### 2.4 Auto-create profiles on signup
 
 The app creates a missing profile as a fallback, but a trigger is more
@@ -190,9 +218,11 @@ A new user should be `tourist` with score 0. That's correct — trust is earned.
 
 ## Production checklist
 
-- [ ] Production origin added to Google **Authorised JavaScript origins**
-- [ ] `https://yourdomain.com/auth/callback` in Supabase **Redirect URLs**
-- [ ] **Site URL** changed off localhost
+- [ ] `https://wandrlust.dev` added to Google **Authorised JavaScript origins**
+- [ ] `https://wandrlust.dev/auth/callback` in Supabase **Redirect URLs**
+- [ ] **Site URL** is `https://wandrlust.dev` — not localhost, and never a
+      `*.vercel.app` address (see 2.3: they are behind Vercel's login wall,
+      and signing in on one strands the install on that origin)
 - [ ] **Confirm email** turned back ON
 - [ ] Custom SMTP configured
 - [ ] Google consent screen published
