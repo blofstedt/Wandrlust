@@ -11,6 +11,7 @@ import {
 } from './alertOverlay';
 import { FACILITY_COLOR, FACILITY_GLYPH, FACILITY_LABEL } from '../config/facilities';
 import { isUnderControl, type ActiveFire } from '../services/fireService';
+import { formatTemperature } from './units';
 
 /**
  * THE COLOURED DOTS THAT SIT ABOVE A PIN.
@@ -398,7 +399,13 @@ export const conditionDots = (
   weather: WeatherSnapshot,
   coverage: CellCoverage,
   land: DestinationLand | undefined,
-  route?: RouteResult | null
+  route?: RouteResult | null,
+  /**
+   * A camper's "Metric units" preference — see `UserSettings` in
+   * `dataService.ts`. Defaults to false (Fahrenheit) so a caller that has
+   * not been updated to pass it keeps behaving exactly as it always did.
+   */
+  useMetric = false
 ): MarkerDot[] => {
   const dots: MarkerDot[] = [];
 
@@ -491,12 +498,13 @@ export const conditionDots = (
 
   const now = weather.periods[0];
   if (now) {
+    const nowTemp = formatTemperature(now.temperature, now.temperatureUnit, useMetric);
     dots.push({
       key: 'weather-now',
       color: COLOR.weather,
       // The sky is the glyph's job, so the chip only carries the number.
-      label: `${now.temperature}\u00B0${now.temperatureUnit}`,
-      full: `${now.temperature}\u00B0${now.temperatureUnit}, ${now.shortForecast}` +
+      label: nowTemp,
+      full: `${nowTemp}, ${now.shortForecast}` +
         (now.windSpeed ? `, wind ${now.windSpeed}` : ''),
       glyph: skyGlyph(now.shortForecast),
       tone: 'neutral'

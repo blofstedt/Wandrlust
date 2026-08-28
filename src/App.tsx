@@ -93,8 +93,18 @@ const ROUTE_ORIGIN_MOVE_KM = 0.25;
 export default function App() {
   // Who's signed in. Drives the rig lookup and the friends list — both are
   // inert without a session, which is the correct behaviour, not a bug.
-  const { user } = useAuth();
+  const { user, settings } = useAuth();
   const toast = useToast();
+
+  /**
+   * Metric-or-imperial, read from Settings.
+   *
+   * False (imperial) when signed out or before Settings has loaded — the
+   * same default `UserSettings.use_metric` has always had for a camper with
+   * no row yet, and the one every weather/temperature display was already
+   * built assuming before this was wired up at all.
+   */
+  const useMetric = settings?.use_metric ?? false;
 
   // Navigation & view
   const [activeView, setActiveView] = useState<AppView>('map');
@@ -1669,6 +1679,7 @@ export default function App() {
                     weather={destWeather}
                     coverage={destCoverage}
                     route={route}
+                    useMetric={useMetric}
                     onOpenDirections={handleOpenDirections}
                     onClearDestination={handleClearDestination}
                     onAddSpotHere={handleAddSpotAt}

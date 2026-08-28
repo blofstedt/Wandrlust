@@ -30,6 +30,7 @@ import { ReportContentSheet } from './ReportContentSheet';
 import { CAMPSITE_SETTING, settingProvenanceNote } from '../config/campsiteSetting';
 import { useAuth } from '../contexts/AuthContext';
 import { haptic } from '../utils/animation';
+import { formatTemperature } from '../utils/units';
 
 type Capacity = 'empty' | 'light' | 'busy' | 'full';
 
@@ -82,7 +83,8 @@ interface CampsiteBottomSheetProps {
 export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
   campsite, isSaved, onClose, onToggleSave, onRequireAuth, onRemoved, onHeightChange
 }) => {
-  const { user } = useAuth();
+  const { user, settings } = useAuth();
+  const useMetric = settings?.use_metric ?? false;
   const [snap, setSnap] = useState<Snap>('half');
   const [weather, setWeather] = useState<WeatherSnapshot>(EMPTY_WEATHER);
   const [rules, setRules] = useState<PointRules[]>([]);
@@ -368,7 +370,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
             {weather.periods.length > 0 && (
               <span className="flex items-center gap-1 text-sky-300">
                 <ThermometerSun className="w-3 h-3" />
-                {summarise(weather)}
+                {summarise(weather, useMetric)}
               </span>
             )}
           </div>
@@ -558,7 +560,7 @@ export const CampsiteBottomSheet: React.FC<CampsiteBottomSheetProps> = ({
                       className="shrink-0 w-24 rounded-xl bg-slate-800/50 border border-slate-700/60 p-2 text-center anim-in-up"
                     >
                       <p className="text-[12px] font-bold text-slate-300 truncate">{p.name}</p>
-                      <p className="text-lg font-bold text-slate-100 my-0.5">{p.temperature}°</p>
+                      <p className="text-lg font-bold text-slate-100 my-0.5">{formatTemperature(p.temperature, p.temperatureUnit, useMetric)}</p>
                       <p className="text-[11px] text-slate-400 leading-tight line-clamp-2">{p.shortForecast}</p>
                       {p.precipProbability != null && p.precipProbability > 0 && (
                         <p className="text-[11px] text-sky-400 mt-0.5">{p.precipProbability}% precip</p>

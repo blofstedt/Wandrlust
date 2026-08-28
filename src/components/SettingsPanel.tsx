@@ -3,7 +3,7 @@ import {
   Settings, Flame, Waves, CloudLightning, Bell, Eye, Ruler,
   Loader2, Check, ExternalLink, Shield, FileText, RefreshCw
 } from 'lucide-react';
-import { fetchSettings, saveSettings, UserSettings } from '../services/dataService';
+import type { UserSettings } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { PushSettings } from './PushSettings';
 import { AlertSourcePanel } from './AlertSourcePanel';
@@ -70,8 +70,14 @@ const LEGAL_LINKS: [LegalDocKind, string][] = [
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   isOpen, onClose, onRequireAuth, center, onOpenLegal
 }) => {
-  const { user } = useAuth();
-  const [settings, setSettings] = useState<UserSettings | null>(null);
+  /*
+   * `settings` now lives in AuthContext, not here — it used to be fetched
+   * fresh every time this panel opened, which meant nothing OUTSIDE this
+   * panel (the weather chip's metric toggle chief among them) ever found out
+   * what a camper had set. One shared copy, loaded once at sign-in, is what
+   * lets the rest of the app actually read it.
+   */
+  const { user, settings, updateSettings } = useAuth();
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   /**
@@ -84,13 +90,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'up-to-date' | 'error'>('idle');
 
   useEffect(() => {
-    if (!isOpen || !user) return;
-    let cancelled = false;
-    fetchSettings().then((s) => { if (!cancelled) setSettings(s); });
-    return () => { cancelled = true; };
-  }, [isOpen, user]);
-
-  useEffect(() => {
     if (!saved) return;
     const timer = setTimeout(() => setSaved(false), 1500);
     return () => clearTimeout(timer);
@@ -98,9 +97,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   const patch = async (changes: Partial<UserSettings>) => {
     if (!settings) return;
-    setSettings({ ...settings, ...changes });
     setBusy(true);
-    await saveSettings(changes);
+    await updateSettings(changes);
     setBusy(false);
     setSaved(true);
   };

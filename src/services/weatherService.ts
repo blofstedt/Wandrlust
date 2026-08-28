@@ -16,6 +16,7 @@ import {
   type HazardFamily, type AlertSeverity, type AlertUrgency
 } from '../../shared/hazards';
 import { fetchOpenMeteoForecast, isUnitedStates } from '../../shared/openMeteo';
+import { formatTemperature } from '../utils/units';
 
 export type { HazardFamily, AlertSeverity, AlertUrgency };
 export { classifyHazard };
@@ -453,11 +454,18 @@ export const fetchAlertFeedStatus = async (
   }
 };
 
-/** Compact "what's it like on arrival" string for cards and sheets. */
-export const summarise = (snapshot: WeatherSnapshot): string => {
+/**
+ * Compact "what's it like on arrival" string for cards and sheets.
+ *
+ * `useMetric` defaults to false — Fahrenheit, matching what a US forecast
+ * has always read as — so a caller that has not been updated to pass a
+ * camper's real preference keeps behaving exactly as it did before, rather
+ * than silently flipping to Celsius for a preference nobody asked it about.
+ */
+export const summarise = (snapshot: WeatherSnapshot, useMetric = false): string => {
   if (snapshot.periods.length === 0) return 'No forecast available';
   const now = snapshot.periods[0];
-  return `${now.shortForecast}, ${now.temperature}°${now.temperatureUnit}`;
+  return `${now.shortForecast}, ${formatTemperature(now.temperature, now.temperatureUnit, useMetric)}`;
 };
 
 /* ------------------------------------------------------------------ *

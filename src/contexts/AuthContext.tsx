@@ -1,6 +1,9 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import {
+  fetchSettings, saveSettings, type UserSettings, type Result
+} from '../services/dataService';
 import type { TrustTier } from '../types';
 
 /**
@@ -31,6 +34,14 @@ interface AuthContextValue {
   session: Session | null;
   profile: Profile | null;
   pointsBalance: number;
+  /**
+   * Metric-or-imperial, notifications, presence sharing — see `UserSettings`
+   * in `dataService.ts`. Null before it has loaded and for a signed-out
+   * camper, who has no row to read; every consumer treats that the same way
+   * the rest of this codebase treats an unanswered question — as unknown,
+   * not as a false default.
+   */
+  settings: UserSettings | null;
   isLoading: boolean;
   isConfigured: boolean;
   error: string | null;
@@ -42,6 +53,8 @@ interface AuthContextValue {
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   updateProfile: (patch: Partial<Profile>) => Promise<{ ok: boolean; message: string }>;
+  refreshSettings: () => Promise<void>;
+  updateSettings: (patch: Partial<UserSettings>) => Promise<Result<boolean>>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -57,6 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [pointsBalance, setPointsBalance] = useState(0);
+  const [settings, setSettings] = useState<UserSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,6 +123,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setPointsBalance(typeof balance === 'number' ? balance : 0);
   }, []);
 
+  /**
+   * `user_settings` — metric-or-imperial, notification toggles, presence
+   * sharing. Loaded alongside the profile so every screen that reads
+   * `useAuth().settings` (the metric toggle chief among them — see
+   * `dataService.ts`) gets the same answer without fetching it itself.
+   * `fetchSettings` creates the row on a first sign-in, so this never has to.
+   */
+  const loadSettings = useCallback(async () => {
+    if (!supabase) { setSettings(null); return; }
+    const row = await fetchSettings();
+    setSettings(row);
+  }, []);
+
   // Bootstrap: read any existing session, then subscribe to changes.
   useEffect(() => {
     if (!supabase) {
@@ -123,7 +150,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSession(data.session);
       setUser(data.session?.user ?? null);
       if (data.session?.user) {
-        loadProfile(data.session.user).finally(() => setIsLoading(false));
+        Promise.all([loadProfile(data.session.user), loadSettings()])
+          .finally(() => setIsLoading(false));
       } else {
         setIsLoading(false);
       }
@@ -136,9 +164,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(newSession?.user ?? null);
       if (newSession?.user) {
         loadProfile(newSession.user);
+        loadSettings();
       } else {
         setProfile(null);
         setPointsBalance(0);
+        setSettings(null);
       }
     });
 
@@ -146,7 +176,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       active = false;
       subscription.unsubscribe();
     };
-  }, [loadProfile]);
+  }, [loadProfile, loadSettings]);
 
   const signInWithGoogle = useCallback(async () => {
     if (!supabase) return;
@@ -199,11 +229,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await supabase.auth.signOut();
     setProfile(null);
     setPointsBalance(0);
+    setSettings(null);
   }, []);
 
   const refreshProfile = useCallback(async () => {
     if (user) await loadProfile(user);
   }, [user, loadProfile]);
+
+  const refreshSettings = useCallback(async () => {
+    await loadSettings();
+  }, [loadSettings]);
+
+  /**
+   * Optimistic, the same way `SettingsPanel`'s own `patch` used to be before
+   * this moved here — a toggle has to feel instant, not wait on a round trip
+   * to Supabase. The local copy updates first; `saveSettings` persists it,
+   * and a failure is reported back rather than silently reverted, since a
+   * flip that quietly snaps back with no explanation is worse than one that
+   * stays wrong until the camper notices and retries.
+   */
+  const updateSettings = useCallback(
+    async (patch: Partial<UserSettings>) => {
+      setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
+      const result = await saveSettings(patch);
+      if (!result.ok) await loadSettings();
+      return result;
+    },
+    [loadSettings]
+  );
 
   const updateProfile = useCallback(
     async (patch: Partial<Profile>) => {
@@ -244,6 +297,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       session,
       profile,
       pointsBalance,
+      settings,
       isLoading,
       isConfigured: isSupabaseConfigured,
       error,
@@ -253,12 +307,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signUpWithPassword,
       signOut,
       refreshProfile,
-      updateProfile
+      updateProfile,
+      refreshSettings,
+      updateSettings
     }),
     [
-      user, session, profile, pointsBalance, isLoading, error,
+      user, session, profile, pointsBalance, settings, isLoading, error,
       signInWithGoogle, signInWithEmail, signInWithPassword,
-      signUpWithPassword, signOut, refreshProfile, updateProfile
+      signUpWithPassword, signOut, refreshProfile, updateProfile,
+      refreshSettings, updateSettings
     ]
   );
 

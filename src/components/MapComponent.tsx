@@ -161,6 +161,8 @@ interface MapComponentProps {
   coverage: CellCoverage;
   /** The drive to that point, or null while it is being worked out. */
   route: RouteResult | null;
+  /** A camper's "Metric units" preference — see `UserSettings` in `dataService.ts`. */
+  useMetric: boolean;
   /** Hands the drive to Apple or Google Maps. See `src/utils/handoff.ts`. */
   onOpenDirections: () => void;
   /** Lets the open pin go, and gives the camera back. */
@@ -307,7 +309,7 @@ interface MapComponentProps {
  */
 export const MapComponent: React.FC<MapComponentProps> = ({
   campsites, selectedCampsite, onSelectCampsite, center, zoom, userLocation, weather,
-  coverage, route, onOpenDirections, onClearDestination, onAddSpotHere, onAddFacilityHere,
+  coverage, route, useMetric, onOpenDirections, onClearDestination, onAddSpotHere, onAddFacilityHere,
   isOfflineMode, onOpenBottomSheet, onLocateUser,
   isLocating = false,
   destination, onDropDestination, onPinRefused, onSelectHazardReport,
@@ -512,8 +514,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
   /** Weather, signal and land for the open point, as chips. */
   const conditions = React.useMemo(
-    () => conditionDots(weather, coverage, destination?.land, route),
-    [weather, coverage, destination?.land, route]
+    () => conditionDots(weather, coverage, destination?.land, route, useMetric),
+    [weather, coverage, destination?.land, route, useMetric]
   );
   const conditionsRef = useRef(conditions);
   conditionsRef.current = conditions;
