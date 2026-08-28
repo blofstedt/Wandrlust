@@ -418,21 +418,45 @@ const settlementsQuery = (box: string, timeoutS: number): string =>
   `node["place"="hamlet"](${box});` +
   ')out;';
 
-const BC_SETTLEMENT_TTL_MS = 30 * 60 * 1000;
-let bcSettlements: { at: number; list: Settlement[] } | null = null;
-
-/** Every mapped settlement in the province, fetched once and held. */
-const settlementsInBC = async (timeoutMs: number): Promise<Settlement[] | null> => {
-  if (bcSettlements && Date.now() - bcSettlements.at < BC_SETTLEMENT_TTL_MS) {
-    return bcSettlements.list;
-  }
-  const box = `${BC_BBOX.minLat},${BC_BBOX.minLon},${BC_BBOX.maxLat},${BC_BBOX.maxLon}`;
-  const query = settlementsQuery(box, Math.max(5, Math.round(timeoutMs / 1000)));
+/**
+ * Settlements inside one bounding box, with a clock on each mirror.
+ *
+ * TWO THINGS WENT WRONG BEFORE THIS SHAPE.
+ *
+ * It asked for the whole province, which is a lot of nodes to move for a
+ * question about four hundred campgrounds. And it gave each of three mirrors a
+ * twenty second timeout, so a single slow mirror spent the entire thirty
+ * second budget before the second was even asked — the same "fallback you
+ * cannot afford to call" already fixed once in this file, rebuilt from
+ * scratch a hundred lines below it.
+ *
+ * Now the caller passes the box its own batch occupies, and each mirror gets
+ * a share of the budget rather than all of it. Every attempt is logged: a
+ * refusal, a rate limit and a timeout are three different faults and reading
+ * "no settlement data" tells you which one none of the time.
+ */
+const fetchSettlements = async (
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  totalMs: number
+): Promise<Settlement[] | null> => {
+  const box = `${bbox.minLat.toFixed(4)},${bbox.minLon.toFixed(4)},` +
+              `${bbox.maxLat.toFixed(4)},${bbox.maxLon.toFixed(4)}`;
+  const startedAll = Date.now();
+  const perMirrorMs = Math.max(5_000, Math.floor(totalMs / OVERPASS_MIRRORS.length));
+  const tried: string[] = [];
 
   for (const mirror of OVERPASS_MIRRORS) {
+    const left = totalMs - (Date.now() - startedAll);
+    if (left < 4_000) {
+      tried.push(`${new URL(mirror).host}: not asked, ${left} ms left`);
+      break;
+    }
+    const host = new URL(mirror).host;
+    const at = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), Math.min(perMirrorMs, left));
     try {
+      const query = settlementsQuery(box, Math.max(5, Math.round(Math.min(perMirrorMs, left) / 1000)));
       const r = await fetch(mirror, {
         method: 'POST',
         headers: {
@@ -442,11 +466,20 @@ const settlementsInBC = async (timeoutMs: number): Promise<Settlement[] | null> 
         body: `data=${encodeURIComponent(query)}`,
         signal: controller.signal
       });
-      if (!r.ok) continue;
+      if (!r.ok) { tried.push(`${host}: HTTP ${r.status}`); continue; }
+
       const data = (await r.json()) as {
         elements?: { lat?: number; lon?: number; tags?: Record<string, string> }[];
+        remark?: string;
       };
-      if (!Array.isArray(data.elements) || data.elements.length === 0) continue;
+      if (!Array.isArray(data.elements)) {
+        tried.push(`${host}: no element list`);
+        continue;
+      }
+      if (data.elements.length === 0 && /error|timed out|timeout/i.test(data.remark ?? '')) {
+        tried.push(`${host}: 200 but failed — ${String(data.remark).slice(0, 100)}`);
+        continue;
+      }
 
       const list: Settlement[] = [];
       for (const el of data.elements) {
@@ -455,22 +488,24 @@ const settlementsInBC = async (timeoutMs: number): Promise<Settlement[] | null> 
         if (!SETTLEMENT_RINGS[kind]) continue;
         list.push({ lat: el.lat, lon: el.lon, kind });
       }
-      console.info(`[rec-sites] ${list.length} settlements held for the setting rule`);
-      bcSettlements = { at: Date.now(), list };
+      console.info(`[rec-sites] ${host}: ${list.length} settlements in ${Date.now() - at} ms`);
       return list;
-    } catch {
-      // Try the next mirror.
+    } catch (err: any) {
+      tried.push(
+        `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 100)}` +
+        ` after ${Date.now() - at} ms`
+      );
     } finally {
       clearTimeout(timer);
     }
   }
 
   /*
-   * NULL, NOT WILDERNESS. Failing to reach Overpass tells us nothing about
-   * where this campground is, and defaulting to "wilderness" would stamp a
-   * confident answer on 832 sites off the back of an outage.
+   * NULL, NOT AN EMPTY LIST. Failing to reach Overpass tells us nothing about
+   * where these campgrounds are, and an empty list would derive "wilderness"
+   * for every one of them off the back of an outage.
    */
-  console.warn('[rec-sites] no settlement data — settings left unset');
+  console.warn(`[rec-sites] no settlement data — ${tried.join(' | ')}`);
   return null;
 };
 
@@ -857,13 +892,21 @@ export const registerRecSiteRoutes = (app: Express): void => {
 
     const startedAt = Date.now();
 
-    // Only rows nobody has corrected by hand, and only those still unset.
+    /*
+     * Ordered by latitude so a batch is a BAND rather than a scatter.
+     *
+     * The settlement lookup is bounded by whatever box the batch occupies, and
+     * an arbitrary four hundred rows out of a province-wide table would put
+     * that box back around the whole province. Sorting first makes each batch
+     * a few degrees tall, which is a query Overpass answers quickly.
+     */
     const { data, error } = await writer
       .from('campsites')
       .select('id, latitude, longitude')
       .eq('source', 'agency_dataset')
       .is('setting', null)
       .eq('setting_is_derived', true)
+      .order('latitude', { ascending: true })
       .limit(limit);
 
     if (error) {
@@ -874,7 +917,21 @@ export const registerRecSiteRoutes = (app: Express): void => {
       return res.json({ ok: true, remaining: 0, classified: 0, note: 'Nothing left to classify.' });
     }
 
-    const settlements = await settlementsInBC(20_000);
+    /*
+     * Padded by the widest ring any settlement projects (20 km for a city), so
+     * a campground near the edge of the band still sees the town just outside
+     * it. Without the pad, a site at the boundary would be judged rural purely
+     * because the batch stopped there.
+     */
+    const pad = 20_000 / 111_000;
+    const lats = rows.map((r) => r.latitude);
+    const lons = rows.map((r) => r.longitude);
+    const settlements = await fetchSettlements({
+      minLat: Math.min(...lats) - pad,
+      maxLat: Math.max(...lats) + pad,
+      minLon: Math.min(...lons) - pad,
+      maxLon: Math.max(...lons) + pad
+    }, 20_000);
     if (!settlements) {
       /*
        * Refusing beats guessing. An unreachable Overpass says nothing about
