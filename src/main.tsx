@@ -7,6 +7,7 @@ import { LandingPage } from './components/LandingPage';
 import { LegalPage } from './components/LegalPage';
 import { ToastProvider, ErrorBoundary, OfflineIndicator } from './components/ui/Feedback';
 import { registerServiceWorker } from './services/pushService';
+import { leaveStrandedHost } from './utils/canonicalHost';
 import './index.css';
 
 /**
@@ -24,6 +25,20 @@ import './index.css';
  *
  * FOUR BRANCHES IS THE LIMIT. A fifth means a router.
  */
+/*
+ * BEFORE ANYTHING ELSE, AND BEFORE THE SERVICE WORKER IS RE-REGISTERED.
+ *
+ * An install pinned to one of the old hostnames runs on an origin where the
+ * signed-in session does not exist, which breaks Beacon permanently and
+ * silently — see `canonicalHost.ts` for how that happens and how it was found.
+ * Registering a worker or mounting the app first would just re-cache the shell
+ * on the origin we are trying to leave.
+ */
+if (leaveStrandedHost()) {
+  // Deliberately nothing else. The redirect is in flight; mounting the app to
+  // be torn down a moment later only risks a flash of the wrong screen.
+} else {
+
 const path = window.location.pathname.replace(/\/+$/, '') || '/';
 
 const isAuthCallback = path.startsWith('/auth/callback');
@@ -65,3 +80,5 @@ createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </StrictMode>
 );
+
+}
