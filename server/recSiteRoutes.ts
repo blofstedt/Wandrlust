@@ -35,6 +35,7 @@ import type { Express, Request, Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 // `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
 import { USER_AGENT } from './alertSources.js';
+import { settingFor, placesKnown, type Setting } from './placeSetting.js';
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -364,173 +365,6 @@ const freeCampsitesInBC = async (
   // into half an hour of "nothing here is free".
   if (result.ok) bcFreeCache = { at: Date.now(), result };
   return result;
-};
-
-/**
- * ---------------------------------------------------------------------------
- * URBAN, SUBURBAN OR WILDERNESS — DERIVED, AND HONEST ABOUT BEING DERIVED
- * ---------------------------------------------------------------------------
- *
- * Worked out from distance to the nearest mapped settlement, weighted by how
- * big that settlement is. Two kilometres from Vancouver is a city; two
- * kilometres from a hamlet of forty people is trees. A single radius cannot
- * express that, so each `place` kind carries its own pair of rings.
- *
- * This is the same signal Beacon already uses to judge the risk of a knock —
- * proximity to people, weighted by kind — and reusing the idea keeps the two
- * halves of the app saying the same thing about the same ground.
- *
- * IT IS A GUESS AND THE COLUMN SAYS SO. `setting_is_derived` is stored true
- * for everything here, so a camper who has actually stood there can overwrite
- * it and the deriver will never overwrite them back.
- */
-type Setting = 'urban' | 'suburban' | 'wilderness';
-
-interface Settlement { lat: number; lon: number; kind: string }
-
-/** Metres: inside the first is urban, inside the second is suburban. */
-const SETTLEMENT_RINGS: Record<string, [number, number]> = {
-  city: [5000, 20000],
-  town: [2500, 10000],
-  village: [1200, 5000]
-};
-
-/**
- * A UNION OF EXACT MATCHES, NOT A REGEX — and this is the second time.
- *
- * The first version asked for `place~"^(city|town|village|hamlet|suburb|
- * neighbourhood)$"` over the whole province and never came back: thirty
- * seconds, no answer, the function killed. Exactly what the `fee=no` query did
- * a few hours earlier, for exactly the same reason — a regex makes Overpass
- * scan where an exact tag match is served from its index.
- *
- * Written out as four separate exact clauses instead. `suburb` and
- * `neighbourhood` are dropped: they only ever sit inside a city or town that
- * is already in the list, so they cost volume and change no answer.
- */
-const settlementsQuery = (box: string, timeoutS: number): string =>
-  `[out:json][timeout:${timeoutS}];` +
-  '(' +
-  `node["place"="city"](${box});` +
-  `node["place"="town"](${box});` +
-  `node["place"="village"](${box});` +
-  // `);out;` — the semicolon after the group is required. Without it Overpass
-  // answers HTTP 400, which is what the per-mirror log caught.
-  ');out;';
-
-/**
- * Settlements inside one bounding box, with a clock on each mirror.
- *
- * TWO THINGS WENT WRONG BEFORE THIS SHAPE.
- *
- * It asked for the whole province, which is a lot of nodes to move for a
- * question about four hundred campgrounds. And it gave each of three mirrors a
- * twenty second timeout, so a single slow mirror spent the entire thirty
- * second budget before the second was even asked — the same "fallback you
- * cannot afford to call" already fixed once in this file, rebuilt from
- * scratch a hundred lines below it.
- *
- * Now the caller passes the box its own batch occupies, and each mirror gets
- * a share of the budget rather than all of it. Every attempt is logged: a
- * refusal, a rate limit and a timeout are three different faults and reading
- * "no settlement data" tells you which one none of the time.
- */
-const fetchSettlements = async (
-  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
-  totalMs: number
-): Promise<Settlement[] | null> => {
-  const box = `${bbox.minLat.toFixed(4)},${bbox.minLon.toFixed(4)},` +
-              `${bbox.maxLat.toFixed(4)},${bbox.maxLon.toFixed(4)}`;
-  const startedAll = Date.now();
-  /*
-   * TWELVE SECONDS EACH, NOT A THIRD OF THE BUDGET EACH.
-   *
-   * Splitting the budget evenly across three mirrors gave every one of them
-   * 6.6 seconds, and all three timed out at exactly that — the query needs
-   * longer than that to run, so dividing fairly meant starving all of them
-   * equally. Two real attempts beat three impossible ones, and the loop's
-   * "not enough left to be worth asking" guard turns the third into an
-   * honest skip rather than a doomed request.
-   */
-  const perMirrorMs = 12_000;
-  const tried: string[] = [];
-
-  for (const mirror of OVERPASS_MIRRORS) {
-    const left = totalMs - (Date.now() - startedAll);
-    if (left < 4_000) {
-      tried.push(`${new URL(mirror).host}: not asked, ${left} ms left`);
-      break;
-    }
-    const host = new URL(mirror).host;
-    const at = Date.now();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(perMirrorMs, left));
-    try {
-      const query = settlementsQuery(box, Math.max(5, Math.round(Math.min(perMirrorMs, left) / 1000)));
-      const r = await fetch(mirror, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': USER_AGENT
-        },
-        body: `data=${encodeURIComponent(query)}`,
-        signal: controller.signal
-      });
-      if (!r.ok) { tried.push(`${host}: HTTP ${r.status}`); continue; }
-
-      const data = (await r.json()) as {
-        elements?: { lat?: number; lon?: number; tags?: Record<string, string> }[];
-        remark?: string;
-      };
-      if (!Array.isArray(data.elements)) {
-        tried.push(`${host}: no element list`);
-        continue;
-      }
-      if (data.elements.length === 0 && /error|timed out|timeout/i.test(data.remark ?? '')) {
-        tried.push(`${host}: 200 but failed — ${String(data.remark).slice(0, 100)}`);
-        continue;
-      }
-
-      const list: Settlement[] = [];
-      for (const el of data.elements) {
-        if (typeof el.lat !== 'number' || typeof el.lon !== 'number') continue;
-        const kind = el.tags?.place ?? '';
-        if (!SETTLEMENT_RINGS[kind]) continue;
-        list.push({ lat: el.lat, lon: el.lon, kind });
-      }
-      console.info(`[rec-sites] ${host}: ${list.length} settlements in ${Date.now() - at} ms`);
-      return list;
-    } catch (err: any) {
-      tried.push(
-        `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 100)}` +
-        ` after ${Date.now() - at} ms`
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /*
-   * NULL, NOT AN EMPTY LIST. Failing to reach Overpass tells us nothing about
-   * where these campgrounds are, and an empty list would derive "wilderness"
-   * for every one of them off the back of an outage.
-   */
-  console.warn(`[rec-sites] no settlement data — ${tried.join(' | ')}`);
-  return null;
-};
-
-const deriveSetting = (lat: number, lon: number, settlements: Settlement[]): Setting => {
-  let best: Setting = 'wilderness';
-  for (const s of settlements) {
-    const rings = SETTLEMENT_RINGS[s.kind];
-    if (!rings) continue;
-    const metres = metresBetween(lat, lon, s.lat, s.lon);
-    // The strongest classification any settlement produces wins: being far
-    // from a hamlet does not make you rural if you are also inside a city.
-    if (metres <= rings[0]) return 'urban';
-    if (metres <= rings[1]) best = 'suburban';
-  }
-  return best;
 };
 
 export const registerRecSiteRoutes = (app: Express): void => {
@@ -880,22 +714,22 @@ export const registerRecSiteRoutes = (app: Express): void => {
   /**
    * Classify stored campgrounds as urban, suburban or wilderness.
    *
-   *   GET /api/rec-sites/settings?limit=400
+   *   GET /api/rec-sites/settings?limit=1000
    *
-   * ITS OWN PASS, and that is not tidiness. Folding this into the free
-   * cross-check meant two province-wide Overpass queries in one request — the
-   * campsites tagged `fee=no` and every mapped settlement in British Columbia
-   * — on top of a DataBC fetch and the writes. It timed out at the thirty
-   * second ceiling, which is the same wall this file has hit twice before.
-   * Separate jobs, separate requests, each comfortably inside the budget.
+   * Reads the campgrounds out of the DATABASE — by the time this runs they are
+   * already stored, and re-fetching a government layer for coordinates we hold
+   * would be work for nothing — and classifies each against the committed town
+   * list in `placeSetting.ts`.
    *
-   * Reads from the DATABASE rather than from DataBC: by the time this runs the
-   * campgrounds are already stored, and re-fetching a government layer to
-   * learn coordinates we already hold would be work for nothing.
+   * NO NETWORK AT ALL, which is the point. The Overpass version of this worked
+   * when it worked and otherwise returned 500s, 502s, a 400 for a malformed
+   * union, and timeouts at six and twelve seconds across all three mirrors. It
+   * turned a one-line job into a manual loop of bounding boxes with retries.
+   * Where a town is does not change, so it is reference data and lives on disk.
    */
   app.get('/api/rec-sites/settings', async (req: Request, res: Response) => {
-    // A thinner latitude band is a cheaper Overpass query. See `fetchSettlements`.
-    const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '150'), 10) || 150));
+    // No upstream call any more, so a batch can be as big as the write allows.
+    const limit = Math.min(2000, Math.max(1, parseInt(String(req.query.limit ?? '1000'), 10) || 1000));
     const writer = getWriteClient();
     if (!writer) {
       return res.status(503).json({ ok: false, note: 'No service key — cannot write settings.' });
@@ -903,42 +737,18 @@ export const registerRecSiteRoutes = (app: Express): void => {
 
     const startedAt = Date.now();
 
-    /**
-     * AN EXPLICIT CELL BEATS A CLEVER BATCH.
-     *
-     * Sorting by latitude made each batch a band — but a band across British
-     * Columbia is still nineteen degrees of longitude, and Overpass timed out
-     * on it at six seconds and again at twelve. The area was always the
-     * problem and no ordering of the rows fixes that.
-     *
-     * So the caller may name the box. Small cells are queries Overpass answers
-     * in a second, and the work becomes a loop of reliable requests instead of
-     * one unreliable request. Without a cell it still falls back to the band,
-     * which is fine where the remaining rows are few.
-     */
-    const cell = ['minLat', 'minLon', 'maxLat', 'maxLon']
-      .map((k) => parseFloat(String(req.query[k] ?? '')));
-    const hasCell = cell.every((n) => Number.isFinite(n));
+    if (placesKnown() === 0) {
+      // The bundled list failed to load — refuse rather than call everywhere
+      // wilderness, which is what an empty list would silently produce.
+      return res.status(500).json({ ok: false, note: 'Town list is empty; nothing classified.' });
+    }
 
-    /*
-     * Ordered by latitude so a batch is a BAND rather than a scatter.
-     *
-     * The settlement lookup is bounded by whatever box the batch occupies, and
-     * an arbitrary four hundred rows out of a province-wide table would put
-     * that box back around the whole province. Sorting first makes each batch
-     * a few degrees tall, which is a query Overpass answers quickly.
-     */
+    // Only rows nobody has corrected by hand, and only those still unset.
     const { data, error } = await writer
       .from('campsites')
       .select('id, latitude, longitude')
-      .eq('source', 'agency_dataset')
       .is('setting', null)
       .eq('setting_is_derived', true)
-      .gte('latitude', hasCell ? cell[0] : -90)
-      .gte('longitude', hasCell ? cell[1] : -180)
-      .lte('latitude', hasCell ? cell[2] : 90)
-      .lte('longitude', hasCell ? cell[3] : 180)
-      .order('latitude', { ascending: true })
       .limit(limit);
 
     if (error) {
@@ -949,36 +759,9 @@ export const registerRecSiteRoutes = (app: Express): void => {
       return res.json({ ok: true, remaining: 0, classified: 0, note: 'Nothing left to classify.' });
     }
 
-    /*
-     * Padded by the widest ring any settlement projects (20 km for a city), so
-     * a campground near the edge of the band still sees the town just outside
-     * it. Without the pad, a site at the boundary would be judged rural purely
-     * because the batch stopped there.
-     */
-    const pad = 20_000 / 111_000;
-    const lats = rows.map((r) => r.latitude);
-    const lons = rows.map((r) => r.longitude);
-    const settlements = await fetchSettlements({
-      minLat: Math.min(...lats) - pad,
-      maxLat: Math.max(...lats) + pad,
-      minLon: Math.min(...lons) - pad,
-      maxLon: Math.max(...lons) + pad
-    }, 24_000);
-    if (!settlements) {
-      /*
-       * Refusing beats guessing. An unreachable Overpass says nothing about
-       * where these campgrounds are, and writing "wilderness" for all of them
-       * off the back of an outage would be a confident answer nobody earned.
-       */
-      return res.status(502).json({
-        ok: false,
-        note: 'Could not reach OpenStreetMap for settlements, so nothing was classified.'
-      });
-    }
-
     const byValue = new Map<Setting, string[]>();
     for (const row of rows) {
-      const value = deriveSetting(row.latitude, row.longitude, settlements);
+      const value = settingFor(row.latitude, row.longitude);
       const ids = byValue.get(value) ?? [];
       ids.push(row.id);
       byValue.set(value, ids);
@@ -1010,7 +793,7 @@ export const registerRecSiteRoutes = (app: Express): void => {
       considered: rows.length,
       classified,
       breakdown: Object.fromEntries([...byValue].map(([v, ids]) => [v, ids.length])),
-      settlementsKnown: settlements.length
+      placesKnown: placesKnown()
     });
   });
 };
