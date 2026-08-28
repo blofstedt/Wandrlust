@@ -111,6 +111,34 @@ const RESERVE_MS = 6_000;
  */
 const MIN_RUNG_MS = 7_000;
 
+/**
+ * The widest rung costs far more than the others and needs its own floor.
+ *
+ * The rungs are not equally expensive. A 500 m or 1 km sweep comes back in
+ * about 1.2 seconds; the 5 km sweep asks for the same geometry over a hundred
+ * times the area, and Overpass simply drops it when it cannot finish. Measured
+ * in production, twice in a row on the same scan:
+ *
+ *   500 m rung  — ok in 1182 ms
+ *   1000 m rung — ok in 1401 ms
+ *   5000 m rung — started with 10521 ms, every mirror timed out
+ *
+ * Under one shared floor of seven seconds that rung looked affordable, so it
+ * was started, and it spent the entire remaining budget failing. The camper
+ * waited ten extra seconds to be told less than was already known.
+ *
+ * Ten seconds is not enough for it and fifteen usually is, so that is the bar.
+ * This is a floor, not a ban: when the narrow rungs come back quickly there is
+ * still room, and the wide sweep still runs. When there is not, the answer is
+ * the smaller circle, delivered at once and honestly labelled as such — which
+ * is strictly better than the same answer ten seconds later.
+ */
+const WIDE_RUNG_M = 5_000;
+const MIN_WIDE_RUNG_MS = 15_000;
+
+const minMsForRung = (radiusM: number): number =>
+  radiusM >= WIDE_RUNG_M ? MIN_WIDE_RUNG_MS : MIN_RUNG_MS;
+
 /* ------------------------------------------------------------------ */
 /* Supabase clients                                                    */
 /* ------------------------------------------------------------------ */
@@ -335,6 +363,13 @@ export const registerBeaconRoutes = (app: Express): void => {
     /** How many rungs of the ladder actually ran. Zero means nothing was asked. */
     let rungsRun = 0;
     /**
+     * Whether ANY rung swept the ground, not whether the last one did.
+     *
+     * `couldNotAsk` was read off the final rung's outcome, which is how two
+     * successful sweeps came to be reported as "nothing was scanned".
+     */
+    let anyRungScanned = false;
+    /**
      * Whether the agency boundary layer actually answered on the last rung.
      *
      * Public land is a REQUIREMENT in `buildCandidates`, not a bonus — a
@@ -377,7 +412,7 @@ export const registerBeaconRoutes = (app: Express): void => {
        * platform is going to kill halfway through — which is what turned a
        * working scan into "could not reach the server".
        */
-      if (left < MIN_RUNG_MS) {
+      if (left < minMsForRung(radiusM)) {
         sources.budget = rungsRun === 0
           ? 'There was not enough time left to scan at all, so nothing here was ruled out.'
           : `Stopped after ${scannedRadius / 1000} km to answer inside the time limit.`;
@@ -403,7 +438,6 @@ export const registerBeaconRoutes = (app: Express): void => {
         `(${Date.now() - startedAt} ms already spent)`
       );
 
-      scannedRadius = radiusM;
       rungsRun += 1;
 
       /*
@@ -433,7 +467,47 @@ export const registerBeaconRoutes = (app: Express): void => {
         )
       ]);
 
-      sources.openstreetmap = scan.ok ? 'ok' : (scan.note ?? 'unavailable');
+      /**
+       * A WIDER SWEEP THAT FAILS MUST NOT ERASE A NARROWER ONE THAT WORKED.
+       *
+       * Every value below used to be overwritten by each rung in turn, so the
+       * LAST rung decided the whole answer. The ladder climbs 500 m → 1 km →
+       * 5 km, and the 5 km query is far the most expensive — it is the one
+       * Overpass drops when the budget is thin. Measured in production, twice
+       * in a row, on a real scan in Alberta:
+       *
+       *   500 m rung  — Overpass answered ok in 1182 ms
+       *   1000 m rung — Overpass answered ok in 1401 ms
+       *   5000 m rung — every Overpass mirror refused
+       *
+       * Two rungs swept the ground successfully. The third failed, overwrote
+       * `sources.openstreetmap` with its failure and `found` with its empty
+       * list, and the camper was told "Could not reach OpenStreetMap just now,
+       * so nothing was scanned" — about ground that had just been scanned
+       * twice. The good results were thrown away to report a failure that
+       * happened after them.
+       *
+       * So a failed rung now keeps its own note for the log and leaves the
+       * standing answer alone, and the ladder stops: rungs only get more
+       * expensive, so the next one cannot do better on a budget that is now
+       * smaller.
+       */
+      if (!scan.ok) {
+        sources.openstreetmap = anyRungScanned
+          ? `${sources.openstreetmap} — the wider ${radiusM / 1000} km sweep ` +
+            'could not be run, so this answer covers the smaller circle'
+          : (scan.note ?? 'unavailable');
+        console.warn(
+          `[beacon] ${radiusM} m rung failed; keeping the ` +
+          `${anyRungScanned ? `${scannedRadius} m answer` : 'empty answer'}`
+        );
+        break;
+      }
+
+      anyRungScanned = true;
+      scannedRadius = radiusM;
+
+      sources.openstreetmap = 'ok';
       sources.mapillary = signs.ok ? `ok (${signs.coverage} coverage)` : (signs.note ?? 'unavailable');
       /*
        * Reported like any other source, because when this one is down every
@@ -457,7 +531,12 @@ export const registerBeaconRoutes = (app: Express): void => {
      * deciding where to sleep needs to know which one they are looking at.
      */
     const ranOutOfTime = rungsRun === 0;
-    const couldNotAsk = !ranOutOfTime && sources.openstreetmap !== 'ok';
+    /*
+     * Read off whether any rung swept, NOT off the last rung's outcome. A wide
+     * sweep failing after two narrow ones succeeded is a smaller answer, not
+     * an unscanned one — see the note in the ladder above.
+     */
+    const couldNotAsk = !ranOutOfTime && !anyRungScanned;
 
     /**
      * A FOURTH FACT, AND IT USED TO BE SPELLED AS THE FIRST ONE.
