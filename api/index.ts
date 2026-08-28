@@ -300,6 +300,13 @@ await safeRegister(
   'registerRecSiteRoutes'
 );
 
+// OpenStreetMap campsites, swept once and cached for everybody.
+await safeRegister(
+  'osm-campsites',
+  () => import('../server/osmCampsiteRoutes.js'),
+  'registerOsmCampsiteRoutes'
+);
+
   /**
    * Scout Paths: user-recorded road surface data from Scout Mode.
    * Closes the loop: recordings are now stored AND displayed on the map.
