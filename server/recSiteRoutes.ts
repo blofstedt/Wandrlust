@@ -392,16 +392,31 @@ interface Settlement { lat: number; lon: number; kind: string }
 const SETTLEMENT_RINGS: Record<string, [number, number]> = {
   city: [5000, 20000],
   town: [2500, 10000],
-  suburb: [2500, 8000],
   village: [1200, 5000],
-  hamlet: [800, 3000],
-  neighbourhood: [800, 3000]
+  hamlet: [800, 3000]
 };
 
+/**
+ * A UNION OF EXACT MATCHES, NOT A REGEX — and this is the second time.
+ *
+ * The first version asked for `place~"^(city|town|village|hamlet|suburb|
+ * neighbourhood)$"` over the whole province and never came back: thirty
+ * seconds, no answer, the function killed. Exactly what the `fee=no` query did
+ * a few hours earlier, for exactly the same reason — a regex makes Overpass
+ * scan where an exact tag match is served from its index.
+ *
+ * Written out as four separate exact clauses instead. `suburb` and
+ * `neighbourhood` are dropped: they only ever sit inside a city or town that
+ * is already in the list, so they cost volume and change no answer.
+ */
 const settlementsQuery = (box: string, timeoutS: number): string =>
   `[out:json][timeout:${timeoutS}];` +
-  `node["place"~"^(city|town|village|hamlet|suburb|neighbourhood)$"](${box});` +
-  `out;`;
+  '(' +
+  `node["place"="city"](${box});` +
+  `node["place"="town"](${box});` +
+  `node["place"="village"](${box});` +
+  `node["place"="hamlet"](${box});` +
+  ')out;';
 
 const BC_SETTLEMENT_TTL_MS = 30 * 60 * 1000;
 let bcSettlements: { at: number; list: Settlement[] } | null = null;
