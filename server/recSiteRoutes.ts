@@ -739,7 +739,6 @@ export const registerRecSiteRoutes = (app: Express): void => {
        * must never reset what people have added.
        */
       let stored = 0;
-      const settlements = await settlementsInBC(12_000);
       const writer = getWriteClient();
       if (writer && sites.length > 0) {
         const rows = sites.map((s) => ({
@@ -769,41 +768,6 @@ export const registerRecSiteRoutes = (app: Express): void => {
           stored = rows.length;
         }
 
-        /**
-         * The setting is written SEPARATELY, and only over a derived value.
-         *
-         * It cannot ride in the upsert above: an upsert overwrites the columns
-         * it carries, so re-running a page would stamp this app's guess back
-         * over a setting a camper had corrected by hand. `setting_is_derived`
-         * is the guard, and filtering on it in the update is what makes a
-         * human's answer permanent.
-         *
-         * Grouped into one call per value rather than one per site — three
-         * statements instead of eight hundred.
-         */
-        if (settlements) {
-          const byValue = new Map<Setting, string[]>();
-          for (const s of sites) {
-            const value = deriveSetting(s.lat, s.lon, settlements);
-            const ids = byValue.get(value) ?? [];
-            ids.push(`rstbc-${s.fileId}`);
-            byValue.set(value, ids);
-          }
-          for (const [value, ids] of byValue) {
-            const { error: settingError } = await writer
-              .from('campsites')
-              .update({ setting: value, setting_is_derived: true })
-              .in('id', ids)
-              .eq('setting_is_derived', true);
-            if (settingError) {
-              console.warn(`[rec-sites/free] setting ${value} failed: ${settingError.message}`);
-            }
-          }
-          console.info(
-            `[rec-sites/free] settings derived — ` +
-            [...byValue].map(([v, ids]) => `${v}:${ids.length}`).join(' ')
-          );
-        }
       }
 
       console.info(
@@ -851,5 +815,98 @@ export const registerRecSiteRoutes = (app: Express): void => {
     } finally {
       clearTimeout(timer);
     }
+  });
+
+  /**
+   * Classify stored campgrounds as urban, suburban or wilderness.
+   *
+   *   GET /api/rec-sites/settings?limit=400
+   *
+   * ITS OWN PASS, and that is not tidiness. Folding this into the free
+   * cross-check meant two province-wide Overpass queries in one request — the
+   * campsites tagged `fee=no` and every mapped settlement in British Columbia
+   * — on top of a DataBC fetch and the writes. It timed out at the thirty
+   * second ceiling, which is the same wall this file has hit twice before.
+   * Separate jobs, separate requests, each comfortably inside the budget.
+   *
+   * Reads from the DATABASE rather than from DataBC: by the time this runs the
+   * campgrounds are already stored, and re-fetching a government layer to
+   * learn coordinates we already hold would be work for nothing.
+   */
+  app.get('/api/rec-sites/settings', async (req: Request, res: Response) => {
+    const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '400'), 10) || 400));
+    const writer = getWriteClient();
+    if (!writer) {
+      return res.status(503).json({ ok: false, note: 'No service key — cannot write settings.' });
+    }
+
+    const startedAt = Date.now();
+
+    // Only rows nobody has corrected by hand, and only those still unset.
+    const { data, error } = await writer
+      .from('campsites')
+      .select('id, latitude, longitude')
+      .eq('source', 'agency_dataset')
+      .is('setting', null)
+      .eq('setting_is_derived', true)
+      .limit(limit);
+
+    if (error) {
+      return res.status(502).json({ ok: false, note: `Could not read campsites: ${error.message}` });
+    }
+    const rows = (data ?? []) as { id: string; latitude: number; longitude: number }[];
+    if (rows.length === 0) {
+      return res.json({ ok: true, remaining: 0, classified: 0, note: 'Nothing left to classify.' });
+    }
+
+    const settlements = await settlementsInBC(20_000);
+    if (!settlements) {
+      /*
+       * Refusing beats guessing. An unreachable Overpass says nothing about
+       * where these campgrounds are, and writing "wilderness" for all of them
+       * off the back of an outage would be a confident answer nobody earned.
+       */
+      return res.status(502).json({
+        ok: false,
+        note: 'Could not reach OpenStreetMap for settlements, so nothing was classified.'
+      });
+    }
+
+    const byValue = new Map<Setting, string[]>();
+    for (const row of rows) {
+      const value = deriveSetting(row.latitude, row.longitude, settlements);
+      const ids = byValue.get(value) ?? [];
+      ids.push(row.id);
+      byValue.set(value, ids);
+    }
+
+    let classified = 0;
+    for (const [value, ids] of byValue) {
+      // `setting_is_derived` in the filter is what makes a camper's own answer
+      // permanent: this pass can only ever touch rows it owns.
+      const { error: updateError } = await writer
+        .from('campsites')
+        .update({ setting: value, setting_is_derived: true })
+        .in('id', ids)
+        .eq('setting_is_derived', true);
+      if (updateError) {
+        console.warn(`[rec-sites/settings] ${value} failed: ${updateError.message}`);
+      } else {
+        classified += ids.length;
+      }
+    }
+
+    const summary = [...byValue].map(([v, ids]) => `${v}:${ids.length}`).join(' ');
+    console.info(
+      `[rec-sites/settings] ${classified} classified — ${summary} (${Date.now() - startedAt} ms)`
+    );
+
+    return res.json({
+      ok: true,
+      considered: rows.length,
+      classified,
+      breakdown: Object.fromEntries([...byValue].map(([v, ids]) => [v, ids.length])),
+      settlementsKnown: settlements.length
+    });
   });
 };
