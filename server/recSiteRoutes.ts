@@ -674,6 +674,13 @@ export const registerRecSiteRoutes = (app: Express): void => {
        * Order: fileId, name, lat, lon, campsites, nearest town.
        */
       const compact = String(req.query.compact ?? '') === '1';
+      /*
+       * `brief=1` returns the counts and drops the list entirely. Running the
+       * ingest across the province is five calls, and the operator doing it
+       * wants to know how many landed, not to read a thousand campgrounds
+       * back. The rows are in the database; that is where to look at them.
+       */
+      const brief = String(req.query.brief ?? '') === '1';
 
       return res.json({
         ok: true,
@@ -687,7 +694,9 @@ export const registerRecSiteRoutes = (app: Express): void => {
         unconfirmed: candidates.length - sites.length,
         attribution: `${ATTRIBUTION}; fee status from OpenStreetMap contributors (ODbL)`,
         licence: LICENCE,
-        sites: compact
+        sites: brief
+          ? undefined
+          : compact
           ? sites.map((s) => [s.fileId, s.name, s.lat, s.lon, s.campsites, s.nearestTown])
           : sites
       });
