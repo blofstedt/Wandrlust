@@ -205,10 +205,25 @@ interface Candidate {
  */
 const fetchRegion = async (
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
-  timeoutMs: number
+  timeoutMs: number,
+  /**
+   * Also report WHICH operators were turned away.
+   *
+   * `no-government-operator` is by far the biggest rejection reason and it
+   * hides two completely different facts: a campsite whose operator tag is
+   * EMPTY, which nobody can do anything about, and one that names an agency
+   * this file's pattern list does not recognise, which is a five-minute fix.
+   * Alberta reporting 382 free campsites and five official ones could be
+   * either, and there was no way to tell from the outside — so a dry run now
+   * says. Collected only on a dry run, because it is a diagnostic and the
+   * strings are unbounded.
+   */
+  sample = false
 ): Promise<{
   ok: boolean; found: number; sites: Candidate[];
-  rejected?: Record<string, number>; note?: string;
+  rejected?: Record<string, number>;
+  operators?: { blank: number; unrecognised: Record<string, number> };
+  note?: string;
 }> => {
   const box = `${bbox.minLat.toFixed(5)},${bbox.minLon.toFixed(5)},` +
               `${bbox.maxLat.toFixed(5)},${bbox.maxLon.toFixed(5)}`;
@@ -278,6 +293,9 @@ const fetchRegion = async (
       const rejected: Record<string, number> = {};
       const reject = (why: string) => { rejected[why] = (rejected[why] ?? 0) + 1; };
 
+      let blankOperator = 0;
+      const unrecognised: Record<string, number> = {};
+
       for (const el of data.elements) {
         const lat = el.lat ?? el.center?.lat;
         const lon = el.lon ?? el.center?.lon;
@@ -285,7 +303,17 @@ const fetchRegion = async (
         const tags = el.tags ?? {};
 
         const operator = isOfficial(tags);
-        if (!operator) { reject('no-government-operator'); continue; }
+        if (!operator) {
+          reject('no-government-operator');
+          if (sample) {
+            const raw = (
+              tags.operator ?? tags['operator:en'] ?? tags.owner ?? tags['owner:en'] ?? ''
+            ).trim();
+            if (raw) unrecognised[raw] = (unrecognised[raw] ?? 0) + 1;
+            else blankOperator += 1;
+          }
+          continue;
+        }
 
         const why = notAStandaloneCampground(tags);
         if (why) { reject(why); continue; }
@@ -301,7 +329,26 @@ const fetchRegion = async (
         `[free-campgrounds] ${host}: ${data.elements.length} free-tagged, ` +
         `${sites.length} standalone official campgrounds, in ${Date.now() - at} ms`
       );
-      return { ok: true, found: data.elements.length, sites, rejected };
+      return {
+        ok: true,
+        found: data.elements.length,
+        sites,
+        rejected,
+        ...(sample
+          ? {
+              operators: {
+                blank: blankOperator,
+                // The commonest twenty, by count. The tail is a long list of
+                // one-offs and is not what a pattern list would be widened for.
+                unrecognised: Object.fromEntries(
+                  Object.entries(unrecognised)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 20)
+                )
+              }
+            }
+          : {})
+      };
     } catch (err: any) {
       tried.push(
         `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 100)}` +
@@ -457,7 +504,7 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
 
       const region = regions[index];
       const perRegionMs = Math.min(16_000, budgetMs - spent - 1_500);
-      const answer = await fetchRegion(region.bbox, perRegionMs);
+      const answer = await fetchRegion(region.bbox, perRegionMs, dry);
 
       if (!answer.ok) {
         results.push({
@@ -550,6 +597,7 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
         newHere: fresh.length,
         stored,
         rejected: answer.rejected ?? {},
+        ...(answer.operators ? { operators: answer.operators } : {}),
         ...(storeError ? { storeError } : {})
       });
       index += 1;
