@@ -12,6 +12,7 @@ import {
 import { FACILITY_COLOR, FACILITY_GLYPH, FACILITY_LABEL } from '../config/facilities';
 import { isUnderControl, type ActiveFire } from '../services/fireService';
 import { formatTemperature } from './units';
+import { permitChipLabel, permitChipFull, type PermitMatch } from '../config/permits';
 
 /**
  * THE COLOURED DOTS THAT SIT ABOVE A PIN.
@@ -118,7 +119,16 @@ export interface MarkerDot {
    *   signal     the nearest mast the estimate is keyed to — a look, not a
    *              route: nobody drives to a tower
    */
-  action?: 'fires' | 'alert' | 'land' | 'road' | 'gap' | 'directions' | 'signal';
+  action?: 'fires' | 'alert' | 'land' | 'road' | 'gap' | 'directions' | 'signal'
+    | 'permit';
+  /**
+   * Which permit regime this chip is about, on the permit chip only.
+   *
+   * Carried as an id so the chip's HTML can name it and the tap handler can
+   * look the whole record up, rather than re-deriving it from a label a human
+   * reads.
+   */
+  permitId?: string;
   /**
    * Which warning family this chip stands for, on hazard chips only.
    *
@@ -162,7 +172,16 @@ const COLOR = {
   fireHeld: '#F97316',
   weather: '#7DD3FC',
   route: '#93C5FD',
-  land: '#A78BFA'
+  land: '#A78BFA',
+  /*
+   * A permit that costs nothing but is still required.
+   *
+   * Deliberately not `warn`. Alabama Hills needs a free form filled in and
+   * Alberta needs $30 — both are "do something first", and painting them the
+   * same red either frightens somebody off a free form or lets them read a
+   * real fee as a formality.
+   */
+  permitFree: '#818CF8'
 } as const;
 
 /**
@@ -578,8 +597,13 @@ export const conditionDots = (
  * where to sleep tends to ask: can I get there, can I drink, can I go, will I
  * cook, will I burn, does it cost.
  */
-export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
-  if (!a) return [];
+export const amenityDots = (
+  a: CampsiteAmenities | undefined,
+  /** The permit regime that applies here, where one is known. */
+  permit: PermitMatch | null = null
+): MarkerDot[] => {
+  if (!a && !permit) return [];
+  a = a ?? {};
   const dots: MarkerDot[] = [];
 
   if (a.roadAccess) {
@@ -723,9 +747,60 @@ export const amenityDots = (a: CampsiteAmenities | undefined): MarkerDot[] => {
     });
   }
 
+  /*
+   * THE PERMIT CHIP, WHICH NOW HAS SOMEWHERE TO SEND YOU.
+   *
+   * It used to say "Permit required" and stop there, which is the start of a
+   * sentence: required by whom, costing what, and got where? A camper reading
+   * it on a forestry road has no way to answer any of that, and the answer is
+   * the difference between a legal night's sleep and a fine.
+   *
+   * So when the permit is one this app actually knows about, the chip carries
+   * its id and opens the record — issuer, price, who needs one, and the link
+   * to go and buy it. Where nothing is known the old bare warning stands,
+   * because "a permit is required and we cannot tell you which" is still worth
+   * saying and is still true.
+   */
   if (a.permitRequired) {
+    dots.push(
+      permit
+        ? {
+            key: 'permit',
+            color: permit.permit.free ? COLOR.permitFree : COLOR.warn,
+            label: permitChipLabel(permit),
+            full: permitChipFull(permit),
+            glyph: '📝',
+            // A free-but-required permit is not bad news, it is an errand.
+            tone: permit.permit.free ? 'neutral' : 'bad',
+            action: 'permit',
+            permitId: permit.permit.id
+          }
+        : {
+            key: 'permit',
+            color: COLOR.warn,
+            label: 'Permit required',
+            full: 'A permit is required here. We do not have a record of which ' +
+                  'one — ask the managing agency before you go.',
+            glyph: '📝',
+            tone: 'bad'
+          }
+    );
+  } else if (permit) {
+    /*
+     * Nobody recorded `permitRequired` on this spot, but it stands inside an
+     * area where a regime applies. That is worth saying and it is a WEAKER
+     * claim, so it gets the hedged wording and never the flat "required".
+     */
     dots.push({
-      key: 'permit', color: COLOR.warn, label: 'Permit required', glyph: '📝', tone: 'bad'
+      key: 'permit',
+      color: COLOR.warn,
+      hollow: true,
+      label: permitChipLabel(permit),
+      full: permitChipFull(permit),
+      glyph: '📝',
+      tone: 'bad',
+      action: 'permit',
+      permitId: permit.permit.id
     });
   }
 

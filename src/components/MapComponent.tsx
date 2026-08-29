@@ -30,6 +30,8 @@ import {
   BACKROAD_STYLES, BACKROAD_CLASS_ORDER, BACKROAD_CASING, backroadClassOf
 } from '../config/backroads';
 import { FACILITY, facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
+import { CAMPING_PERMITS, permitFor, type PermitMatch } from '../config/permits';
+import { PermitSheet } from './PermitSheet';
 import { landRules } from '../config/landRules';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
 import {
@@ -824,6 +826,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
   /** The card the "i" under a dropped pin opens, and how tall it currently is. */
   const [pointCardOpen, setPointCardOpen] = useState(false);
+
+  /**
+   * The permit record a chip was tapped to open.
+   *
+   * Held by the map rather than by the pin, because a pin is torn down and
+   * rebuilt by the cluster plugin constantly and a panel anchored to one
+   * would vanish mid-read.
+   */
+  const [openPermit, setOpenPermit] = useState<PermitMatch | null>(null);
   const [pointCardPx, setPointCardPx] = useState(0);
   /**
    * How much of the map is under a card right now, whoever is rendering it.
@@ -4204,7 +4215,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    */
   const amenityDotsById = React.useMemo(() => {
     const byId = new Map<string, MarkerDot[]>();
-    for (const site of pinnedCampsites) byId.set(site.id, amenityDots(site.amenities));
+    // The permit is a fact about WHERE the spot is as much as about the spot
+    // itself, so it is resolved here rather than stored on every record.
+    for (const site of pinnedCampsites) {
+      byId.set(site.id, amenityDots(site.amenities, permitFor(site)));
+    }
     return byId;
   }, [pinnedCampsites]);
   const amenityDotsRef = useRef(amenityDotsById);
@@ -5740,6 +5755,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         // card at the bottom, which reads the same at any zoom. See
         // `PointInfoSheet`.
         case 'point': setPointCardOpen(true); return;
+        /*
+         * The permit chip. The id is on the element rather than looked up from
+         * the label, so the panel is about the regime the chip was built for
+         * even if the wording changes.
+         *
+         * `certainty` is re-read from the chip's own hollow styling rather than
+         * re-derived: a hollow permit dot is the area match, a solid one is
+         * recorded against the spot, and the panel says different things for
+         * each.
+         */
+        case 'permit': {
+          const id = hit.getAttribute('data-permit');
+          const permit = id ? CAMPING_PERMITS[id] : null;
+          if (!permit) return;
+          const area = Boolean(
+            hit.querySelector('.wl-chip-dot-hollow')
+          ) || (hit.getAttribute('data-label') ?? '').includes('may apply');
+          setOpenPermit({ permit, certainty: area ? 'area' : 'site' });
+          return;
+        }
         case 'add': {
           const at = readPointRef.current;
           if (at) addSpotRef.current(at.lat, at.lon);
@@ -7060,6 +7095,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           onHeightChange={setPointCardPx}
         />
       )}
+
+      {/*
+        What the permit chip opens into — the issuer, the price, who needs one
+        and the link to go and get it. Above the point card, because it is
+        opened from a chip that can be on either.
+      */}
+      <PermitSheet match={openPermit} onClose={() => setOpenPermit(null)} />
     </div>
   );
 };

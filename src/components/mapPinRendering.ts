@@ -337,7 +337,10 @@ export const CHIP_LEAD_MS = 70;
  */
 export const chipSignature = (d: MarkerDot): string => [
   d.color, d.label, d.full ?? '', d.glyph, d.tone,
-  d.hollow ? 'h' : '', d.action ?? '', d.badge ?? '', d.facility?.id ?? ''
+  d.hollow ? 'h' : '', d.action ?? '', d.badge ?? '', d.facility?.id ?? '',
+  // Part of what the chip IS, so a spot whose permit regime changes gets a
+  // rebuilt chip rather than the old one wearing a new label.
+  d.permitId ?? ''
 ].join('\u0001');
 
 /**
@@ -375,6 +378,7 @@ export const chipHtml = (d: MarkerDot, fresh: boolean, delay: number): string =>
     `${go ? `data-facility="${escapeHtml(go.id)}" ` : ''}` +
     `${d.action ? `data-action="${d.action}" ` : ''}` +
     `${d.badge ? `data-badge="${escapeHtml(d.badge)}" ` : ''}` +
+    `${d.permitId ? `data-permit="${escapeHtml(d.permitId)}" ` : ''}` +
     `role="button" tabindex="0" ` +
     `title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}" ` +
     `style="--wl-chip-color:${d.color}` +

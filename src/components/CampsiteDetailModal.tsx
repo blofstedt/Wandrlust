@@ -6,6 +6,7 @@ import { getDirectionsUrl, directionsAppName } from '../utils/handoff';
 import {
   fetchCampsiteReviews, submitCampsiteReview, fetchCampsiteRating
 } from '../services/dataService';
+import { permitFor } from '../config/permits';
 import { useAuth } from '../contexts/AuthContext';
 import { ReportContentSheet } from './ReportContentSheet';
 import { SpotByline } from './SpotByline';
@@ -62,6 +63,8 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
   onRequireAuth
 }) => {
   const { user } = useAuth();
+  // Resolved from where the spot is as well as what is recorded on it.
+  const permit = campsite ? permitFor(campsite) : null;
   const cardRef = React.useRef<HTMLDivElement | null>(null);
   const [copiedCoords, setCopiedCoords] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
@@ -346,55 +349,78 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
             <p>{campsite.description}</p>
           </div>
 
-          {/* Alberta Crown Land Pass Regulations Callout */}
-          {(campsite.landType === 'crown_land' || campsite.address.stateProvince.toLowerCase().includes('alberta')) && (
-            <div className="bg-cyan-950/40 border border-cyan-500/40 rounded-2xl p-4 text-xs text-slate-200 space-y-3 shadow-lg">
-              <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
-                <div className="flex items-center gap-2 font-bold text-sm text-cyan-300">
+          {/*
+            THE PERMIT FOR THIS SPOT, WHEREVER IT IS.
+
+            This was a hardcoded Alberta panel and it fired on
+            `landType === 'crown_land'` OR any address mentioning Alberta —
+            so a Crown land spot in British Columbia or Ontario was told, at
+            length and with a Buy button, to go and get an ALBERTA pass. Being
+            confidently wrong about which government wants money from you is
+            worse than saying nothing.
+
+            `permitFor` answers per spot instead: recorded against the site, or
+            matched to the area it stands in, from `config/permits.ts` where
+            every regime carries its issuer, its price, its link and the date
+            it was last checked. Alberta still gets its pass; Ontario gets the
+            non-resident Crown land permit; Alabama Hills gets the free BLM one.
+            Somewhere with no regime on record gets nothing, which is honest —
+            absence here means nobody has said, not that camping is unrestricted.
+          */}
+          {permit && (
+            <div className="bg-cyan-950/40 border border-cyan-500/40 rounded-2xl p-4 space-y-3 shadow-lg">
+              <div className="flex items-center justify-between gap-3 pb-2 border-b border-cyan-500/20">
+                <div className="flex items-center gap-2 font-bold text-sm text-cyan-300 min-w-0">
                   {/* A pass is a ticket, not a shield — same reasoning as the
                       land badge: nothing here is about the land being guarded. */}
-                  <TicketCheck className="w-4 h-4 text-cyan-400" />
-                  <span>Alberta Public Land Camping Pass Regulations</span>
+                  <TicketCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span className="truncate">{permit.permit.name}</span>
                 </div>
                 <a
-                  href="https://www.albertarelm.com/"
+                  href={permit.permit.url}
                   target="_blank"
-                  rel="noreferrer"
-                  className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-semibold text-xs border border-cyan-400/30 flex items-center gap-1 transition-all"
+                  rel="noopener noreferrer"
+                  className="anim-press shrink-0 px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-semibold text-xs border border-cyan-400/30 flex items-center gap-1 transition-all"
                 >
-                  <span>Buy on AlbertaRELM</span>
+                  <span>{permit.permit.free ? 'Get it' : 'Buy it'}</span>
                   <ExternalLink className="w-3 h-3" />
                 </a>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* When You Need a Pass */}
-                <div className="bg-slate-900/80 p-3 rounded-xl border border-cyan-500/20 space-y-1.5">
-                  <div className="font-bold text-cyan-300 text-xs uppercase tracking-wider flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                    When You Need a Pass
-                  </div>
-                  <ul className="space-y-1 text-slate-300 text-xs list-disc list-inside">
-                    <li><strong>Eastern Slopes:</strong> Mandatory for anyone 18+ random camping along Rocky Mountains.</li>
-                    <li><strong>Pass Cost:</strong> $20 per person for a 3-day pass, or $30 per person for an annual pass.</li>
-                    <li><strong>Where to buy:</strong> Available online via AlbertaRELM.</li>
-                    <li><strong>Specific Zones:</strong> Ghost PLUZ, McLean Creek PLUZ, Porcupine Hills PLUZ, Willmore Wilderness, etc.</li>
-                  </ul>
-                </div>
+              {permit.certainty === 'area' && (
+                <p className="text-xs text-amber-200/90 leading-snug">
+                  This spot is inside the area the pass covers, but the exact
+                  boundary belongs to {permit.permit.issuer} and this app only
+                  holds an approximation of it. Check with them before you rely
+                  on either answer.
+                </p>
+              )}
 
-                {/* When You Do Not Need a Pass */}
-                <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 space-y-1.5">
-                  <div className="font-bold text-slate-400 text-xs uppercase tracking-wider flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    When You Do NOT Need a Pass
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div className="bg-slate-900/80 p-3 rounded-xl border border-cyan-500/20 space-y-1.5">
+                  <div className="font-bold text-cyan-300 text-xs uppercase tracking-wider">
+                    Who needs one
                   </div>
-                  <ul className="space-y-1 text-slate-300 text-xs list-disc list-inside">
-                    <li><strong>General Crown Land:</strong> Random camping on public land outside designated Eastern Slopes pass area is free.</li>
-                    <li><strong>Day Use Exempt:</strong> Parking or recreating on public land during the day requires no pass.</li>
-                    <li><strong>Exemptions:</strong> Status card holders, specific local residents, and low-income assistance recipients.</li>
-                  </ul>
+                  <p className="text-slate-300 leading-snug">{permit.permit.whoNeeds}</p>
+                </div>
+                <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 space-y-1.5">
+                  <div className="font-bold text-slate-400 text-xs uppercase tracking-wider">
+                    What it costs
+                  </div>
+                  <p className="text-slate-300 leading-snug">{permit.permit.cost}</p>
+                  <p className="text-slate-400 leading-snug">Issued by {permit.permit.issuer}</p>
                 </div>
               </div>
+
+              {permit.permit.note && (
+                <p className="text-xs text-slate-300 leading-snug">{permit.permit.note}</p>
+              )}
+
+              <p className="text-[11px] text-slate-500">
+                Checked against {permit.permit.issuer}’s own page on{' '}
+                {permit.permit.checked}. Fees and rules change — that link is the
+                authority, not this panel.
+              </p>
             </div>
           )}
 

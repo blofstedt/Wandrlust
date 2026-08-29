@@ -3,6 +3,7 @@ import { Campsite } from '../types';
 export const CURATED_CAMPSITES: Campsite[] =  [
   {
     "id": "waiparous-ghost-pluz",
+    "permitId": "ab-public-lands-camping-pass",
     "name": "Waiparous Creek Crown Land Dispersed (Ghost PLUZ)",
     "landType": "crown_land",
     "landManager": "Alberta Environment & Protected Areas - Ghost PLUZ",
@@ -28,6 +29,7 @@ export const CURATED_CAMPSITES: Campsite[] =  [
   },
   {
     "id": "mclean-creek-pluz",
+    "permitId": "ab-public-lands-camping-pass",
     "name": "McLean Creek Crown Land Dispersed (PLUZ)",
     "landType": "crown_land",
     "landManager": "Alberta Public Land Use Zone - Kananaskis Country",
@@ -53,6 +55,7 @@ export const CURATED_CAMPSITES: Campsite[] =  [
   },
   {
     "id": "abraham-lake-crown-land",
+    "permitId": "ab-public-lands-camping-pass",
     "name": "Abraham Lake Crown Land Dispersed (David Thompson)",
     "landType": "crown_land",
     "landManager": "Alberta Forestry & Parks - David Thompson Corridor",
@@ -78,6 +81,7 @@ export const CURATED_CAMPSITES: Campsite[] =  [
   },
   {
     "id": "porcupine-hills-pluz",
+    "permitId": "ab-public-lands-camping-pass",
     "name": "Porcupine Hills Crown Land Dispersed (PLUZ)",
     "landType": "crown_land",
     "landManager": "Alberta Environment & Parks - Porcupine Hills PLUZ",
@@ -147,6 +151,7 @@ export const CURATED_CAMPSITES: Campsite[] =  [
   },
   {
     "id": "alabama-hills-blm",
+    "permitId": "blm-alabama-hills",
     "name": "Alabama Hills Dispersed Recreation Area",
     "landType": "blm",
     "landManager": "Bureau of Land Management - Bishop Field Office",
@@ -159,9 +164,10 @@ export const CURATED_CAMPSITES: Campsite[] =  [
       "country": "United States",
       "description": "Movie Road, at the base of Mt. Whitney and the Eastern Sierra"
     },
-    "description": "Surreal rounded rock formations set directly below 14,505ft Mt. Whitney. Famous film location turned world-class free public land campsite.",
+    "description": "Surreal rounded rock formations set directly below 14,505ft Mt. Whitney. Famous film location turned world-class free public land campsite. The free-for-all is over, though: a free BLM permit is now required, and camping is only allowed in the designated semi-primitive sites rather than anywhere you can park. The permit costs nothing and does not reserve you a spot.",
     "amenities": {
-      "isFree": true
+      "isFree": true,
+      "permitRequired": true
     },
     "images": [],
     "reviews": [],
@@ -285,6 +291,7 @@ export const CURATED_CAMPSITES: Campsite[] =  [
   },
   {
     "id": "abraham-lake-alberta",
+    "permitId": "ab-public-lands-camping-pass",
     "name": "Abraham Lake Crown Land Dispersed",
     "landType": "crown_land",
     "landManager": "Alberta Public Land - David Thompson Country",

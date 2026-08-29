@@ -112,6 +112,14 @@ export interface Campsite {
    * hedge on the card, because a derived category is a guess about a place.
    */
   settingIsDerived?: boolean;
+  /**
+   * A permit regime recorded against this exact spot, by id.
+   *
+   * See `config/permits.ts`. Present means "this is required here" and is a
+   * stronger claim than the area match that file can also make. ABSENT MEANS
+   * NOBODY HAS SAID — never "no permit needed".
+   */
+  permitId?: string;
   savedOffline?: boolean;
   /** Live occupancy, when the server has reported one. */
   capacityStatus?: 'empty' | 'light' | 'busy' | 'full' | 'unknown';
