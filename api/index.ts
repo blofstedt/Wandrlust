@@ -322,6 +322,14 @@ await safeRegister(
   'registerGeocodeRoutes'
 );
 
+// Alberta's Public Land Recreation Areas and camping-pass boundary — a probe
+// for now, because this sandbox cannot reach a government host to read a schema.
+await safeRegister(
+  'alberta-rec',
+  () => import('../server/albertaRecRoutes.js'),
+  'registerAlbertaRecRoutes'
+);
+
   /**
    * Scout Paths: user-recorded road surface data from Scout Mode.
    * Closes the loop: recordings are now stored AND displayed on the map.
