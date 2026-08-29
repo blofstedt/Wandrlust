@@ -100,6 +100,13 @@ const OFFICIAL_OPERATOR: RegExp[] = [
   /fish (and|&) wildlife/i,
   // ---- United States, state and local ----
   /\bstate park/i, /\bstate forest/i, /\bstate land/i,
+  /*
+   * "Texas Parks and Wildlife" — the standard shape of a US state agency
+   * name, and none of the patterns around it had a chance: the `parks,
+   * recreation` one wants "recreation", the `department of wildlife` one
+   * wants "department of", and this is neither. Found by the dry run.
+   */
+  /\bparks,?\s+(and|&)\s+wildlife\b/i,
   /department of natural resources/i, /\bdnr\b/i,
   /department of (conservation|environmental|parks|wildlife)/i,
   /\bwildlife (management|resources|department|division)/i,
@@ -125,10 +132,22 @@ const OFFICIAL_OPERATOR: RegExp[] = [
   /\bnys?dec\b/i,
   // ---- Canada ----
   /parks canada/i, /parcs canada/i,
-  /recreation sites and trails/i, /\bcrown land\b/i,
+  /*
+   * AMPERSAND. The layer is "Recreation Sites and Trails BC" and half the
+   * mappers write it "Recreation Sites & Trails" — six of BC's own free
+   * campgrounds were being turned away over the word "and". Found by the dry
+   * run, which is what it is for.
+   */
+  /recreation sites (and|&) trails/i, /\bcrown land\b/i,
   /\bministry of\b/i, /minist[eè]re/i,
   /provincial (park|forest|recreation)/i,
-  /(alberta|ontario|manitoba|saskatchewan|yukon) parks/i,
+  /*
+   * A province's parks agency, under its own name. BC and SaskParks were
+   * both missing — "SaskParks" is one word, which is how Saskatchewan's
+   * only free-tagged campsite in OpenStreetMap was turned away.
+   */
+  /(alberta|ontario|manitoba|saskatchewan|yukon|qu[ée]bec|new brunswick|nova scotia|newfoundland) parks/i,
+  /\bbc parks\b/i, /british columbia parks/i, /\bsask\s?parks\b/i,
   /\bs[ée]paq\b/i, /soci[ée]t[ée] des [ée]tablissements/i,
   /regional (district|municipality)/i, /\bmunicipalit[eé]\b/i,
   /\brural municipality\b/i, /\bmrc\b/i,
@@ -505,7 +524,10 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
    *   GET /api/free-campgrounds/ingest?from=6     resume where the last ended
    *   GET /api/free-campgrounds/ingest?dry=1      look, store nothing
    *
-   * `nextFrom` in the response is the only thing a caller has to carry.
+   * `nextFrom` in the response is the only thing a caller has to carry. It
+   * counts TILES, not regions — a province too big for Overpass to answer in
+   * one go is asked in pieces, see the tiling note below — so a `from` saved
+   * from an older run points somewhere else now. Start again from 0.
    */
   app.get('/api/free-campgrounds/ingest', async (req: Request, res: Response) => {
     const startedAt = Date.now();
@@ -562,6 +584,74 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
       }))
       .filter((r) => r.bbox.minLat < r.bbox.maxLat && r.bbox.minLon < r.bbox.maxLon);
 
+    /*
+     * ---------------------------------------------------------------------
+     * A PROVINCE IS ASKED IN PIECES, BECAUSE ASKED WHOLE IT NEVER ANSWERED.
+     * ---------------------------------------------------------------------
+     *
+     * This walk used to ask Overpass for one province at a time, and for the
+     * four biggest that meant a box roughly twenty degrees on a side. Every
+     * mirror timed out on every one of them, every time — measured in
+     * production, from the dry run:
+     *
+     *   Québec                     no mirror answered
+     *   Ontario                    no mirror answered
+     *   Newfoundland and Labrador  no mirror answered
+     *
+     * Those three are not a rounding error. They are the province with the
+     * most Crown land in the country and two of the next three, and the map
+     * showed nothing across all of them — not "we looked and there is
+     * nothing", which is what an empty map says, but "we never once got an
+     * answer". That is the same failure this codebase has already written
+     * down twice for boundaries: A SOURCE THAT ANSWERS A SMALL BOX PERFECTLY
+     * CAN TIME OUT ON A BIG ONE, and the fix both times was to stop asking
+     * the big one.
+     *
+     * So the unit of work is a TILE now, not a region. A region wider or
+     * taller than `TILE_DEGREES` is cut into a grid of them and each piece is
+     * asked on its own. Small states are one tile and behave exactly as
+     * before; Québec becomes twelve boxes that Overpass answers in a second
+     * or two each.
+     *
+     * This also fixes the resume problem the old loop had to guard against.
+     * It would not START a region it could not FINISH, because a half-done
+     * region left no record of how far it got — with tiles, a tile IS the
+     * unit, `nextFrom` points at the next one, and stopping is always clean.
+     *
+     * SIX DEGREES is the size. Big enough that the fifty small states stay
+     * one tile each and the walk does not get longer for them; small enough
+     * that the worst box in the set — northern Québec, which is empty of
+     * roads and full of lakes — comes back well inside a mirror's patience.
+     */
+    const TILE_DEGREES = 6;
+
+    interface Tile { region: Admin1Region; part: number; parts: number; bbox: Admin1Region['bbox'] }
+
+    const tiles: Tile[] = regions.flatMap((region) => {
+      const { minLat, minLon, maxLat, maxLon } = region.bbox;
+      const rows = Math.max(1, Math.ceil((maxLat - minLat) / TILE_DEGREES));
+      const cols = Math.max(1, Math.ceil((maxLon - minLon) / TILE_DEGREES));
+      const dLat = (maxLat - minLat) / rows;
+      const dLon = (maxLon - minLon) / cols;
+      const out: Tile[] = [];
+      for (let r = 0; r < rows; r += 1) {
+        for (let c = 0; c < cols; c += 1) {
+          out.push({
+            region,
+            part: out.length + 1,
+            parts: rows * cols,
+            bbox: {
+              minLat: minLat + r * dLat,
+              minLon: minLon + c * dLon,
+              maxLat: minLat + (r + 1) * dLat,
+              maxLon: minLon + (c + 1) * dLon
+            }
+          });
+        }
+      }
+      return out;
+    });
+
     const from = Math.max(0, parseInt(String(req.query.from ?? '0'), 10) || 0);
     const writer = dry ? null : getWriteClient();
     if (!dry && !writer) {
@@ -572,23 +662,26 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
     let index = from;
     let storedTotal = 0;
 
-    while (index < regions.length) {
+    while (index < tiles.length) {
       const spent = Date.now() - startedAt;
       /*
-       * Only start a region there is time to FINISH. Stopping half way through
-       * one leaves it partly ingested with nothing recording how far it got,
-       * and the next run would have no way to tell that from a region with
-       * genuinely few campgrounds.
+       * Only start a tile there is time to FINISH — the same rule as before,
+       * against a much smaller unit, so far less of the budget is ever left
+       * unspent at the end of a call.
        */
-      if (spent > budgetMs - 11_000) break;
+      if (spent > budgetMs - 8_000) break;
 
-      const region = regions[index];
-      const perRegionMs = Math.min(16_000, budgetMs - spent - 1_500);
-      const answer = await fetchRegion(region.bbox, perRegionMs, dry);
+      const tile = tiles[index];
+      const region = tile.region;
+      const label = tile.parts > 1
+        ? `${region.name} (${tile.part}/${tile.parts})`
+        : region.name;
+      const perTileMs = Math.min(14_000, budgetMs - spent - 1_500);
+      const answer = await fetchRegion(tile.bbox, perTileMs, dry);
 
       if (!answer.ok) {
         results.push({
-          region: region.name, country: region.country,
+          region: label, country: region.country,
           ok: false, note: answer.note
         });
         index += 1;
@@ -615,8 +708,8 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
           const { data } = await client
             .from('campsites')
             .select('id, latitude, longitude')
-            .gte('latitude', region.bbox.minLat).lte('latitude', region.bbox.maxLat)
-            .gte('longitude', region.bbox.minLon).lte('longitude', region.bbox.maxLon)
+            .gte('latitude', tile.bbox.minLat).lte('latitude', tile.bbox.maxLat)
+            .gte('longitude', tile.bbox.minLon).lte('longitude', tile.bbox.maxLon)
             .limit(5000);
           existing = (data ?? []) as typeof existing;
         }
@@ -670,7 +763,7 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
       }
 
       results.push({
-        region: region.name,
+        region: label,
         country: region.country,
         freeTagged: answer.found,
         official: answer.sites.length,
@@ -684,9 +777,9 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
       index += 1;
     }
 
-    const done = index >= regions.length;
+    const done = index >= tiles.length;
     console.info(
-      `[free-campgrounds] regions ${from}..${index - 1} of ${regions.length}, ` +
+      `[free-campgrounds] tiles ${from}..${index - 1} of ${tiles.length}, ` +
       `${storedTotal} stored (${Date.now() - startedAt} ms)`
     );
 
@@ -696,6 +789,8 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
       from,
       nextFrom: done ? null : index,
       done,
+      // `from` counts TILES now, not regions — see the tiling note above.
+      tilesTotal: tiles.length,
       regionsTotal: regions.length,
       storedThisCall: storedTotal,
       results

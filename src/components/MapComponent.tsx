@@ -1301,6 +1301,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (pane) { pane.style.zIndex = '645'; pane.style.pointerEvents = 'none'; }
     }
 
+    /**
+     * EXCEPT THE PINS. Leaflet's marker pane goes above it, at 648.
+     *
+     * Raising the mask over the data layers took the pins with it, and a pin
+     * is not a data layer. Everything the mask was raised to cover — a heat
+     * area, a fire perimeter, a storm icon — is a SHAPE claiming something
+     * about ground, and greying it is the mask doing its job. A pin claims
+     * nothing about the ground around it, and the row of buttons that opens
+     * under a tapped one is not a claim at all, it is the controls: "Add
+     * spot", "Add amenity", "Beacon", "Take me there".
+     *
+     * That row is wider than the pin and reaches sideways, so a pin sitting
+     * perfectly inside coverage — on the Texas coast, or anywhere within a
+     * couple of hundred kilometres of the edge — had half its own buttons
+     * greyed out over the water beside it. Reported from a phone, and it
+     * reads as the app being broken rather than as a coverage line.
+     *
+     * So the pins and their chips are always on top. Still under Leaflet's
+     * tooltip pane at 650 and its popups at 700, which belong above a marker
+     * by definition.
+     */
+    const markerPane = map.getPane('markerPane');
+    if (markerPane) markerPane.style.zIndex = '648';
+
     const toLatLng = (ring: [number, number][]) =>
       ring.map(([lon, lat]) => [lat, lon] as [number, number]);
 
