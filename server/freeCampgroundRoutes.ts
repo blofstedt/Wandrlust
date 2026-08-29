@@ -50,6 +50,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 // `.js` is required under strict ESM on Vercel. See the note in weatherRoutes.ts.
 import { USER_AGENT } from './alertSources.js';
 import { admin1At, admin1Regions, admin1Known, type Admin1Region } from './admin1Lookup.js';
+import { settingFor, placesKnown } from './placeSetting.js';
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -441,6 +442,61 @@ const describe = (operator: string): string =>
   'the road in to be the things most likely to have changed. Nobody from this ' +
   'app has been.';
 
+/**
+ * Urban, suburban or wilderness, for the rows just written.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS A SECOND WRITE AND NOT A COLUMN ON THE UPSERT
+ * ---------------------------------------------------------------------------
+ *
+ * `setting` decides the pin's glyph — trees for wilderness, houses for
+ * suburban, towers for urban, and a neutral TENT when nobody has said. This
+ * route left it null, so every campground it added drew as a tent until
+ * somebody remembered to call `/api/rec-sites/settings` afterwards. Nobody
+ * did, and the symptom was a forestry campground deep in the Alberta
+ * foothills wearing the "we have no idea what this place is like" mark.
+ *
+ * The obvious fix is to put `setting` in the upsert, and it is wrong. The
+ * upsert runs again every time this route re-walks a region, and it replaces
+ * every column it names — so a camper who stood at that campground and
+ * corrected its setting would have their answer overwritten by an estimate,
+ * on a schedule, forever. `setting_is_derived` exists to stop exactly that,
+ * and it can only stop it from a WHERE clause.
+ *
+ * So: upsert without it, then update only the rows this app still owns. Same
+ * guard `/api/rec-sites/settings` uses, and that endpoint remains the way to
+ * backfill anything stored before this existed.
+ *
+ * `settingFor` is a lookup against a committed list of towns — no network, no
+ * mirrors, no failure mode — which is why this can run inline. An empty town
+ * list would call the entire continent wilderness, so it classifies nothing
+ * at all rather than guess.
+ */
+const classify = async (
+  writer: SupabaseClient,
+  rows: { id: string; latitude: number; longitude: number }[]
+): Promise<void> => {
+  if (placesKnown() === 0 || rows.length === 0) return;
+
+  const byValue = new Map<string, string[]>();
+  for (const row of rows) {
+    const value = settingFor(row.latitude, row.longitude);
+    const ids = byValue.get(value) ?? [];
+    ids.push(row.id);
+    byValue.set(value, ids);
+  }
+
+  for (const [value, ids] of byValue) {
+    const { error } = await writer
+      .from('campsites')
+      .update({ setting: value, setting_is_derived: true })
+      .in('id', ids)
+      // The line that makes a camper's own answer permanent.
+      .eq('setting_is_derived', true);
+    if (error) console.warn(`[free-campgrounds] setting ${value} failed: ${error.message}`);
+  }
+};
+
 export const registerFreeCampgroundRoutes = (app: Express): void => {
   /**
    * Walk the states and provinces, ingesting as it goes.
@@ -609,6 +665,7 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
         } else {
           stored = rows.length;
           storedTotal += stored;
+          await classify(writer, rows);
         }
       }
 

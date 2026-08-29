@@ -314,6 +314,14 @@ await safeRegister(
   'registerFreeCampgroundRoutes'
 );
 
+// The search box's place lookup. Photon first for typo tolerance, Nominatim
+// behind it — and a failure that says so rather than looking like "no results".
+await safeRegister(
+  'geocode',
+  () => import('../server/geocodeRoutes.js'),
+  'registerGeocodeRoutes'
+);
+
   /**
    * Scout Paths: user-recorded road surface data from Scout Mode.
    * Closes the loop: recordings are now stored AND displayed on the map.

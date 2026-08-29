@@ -38,6 +38,16 @@ export interface LocationSearch {
    * about a search that had never run.
    */
   searchedFor: string | null;
+  /**
+   * True when the LAST lookup could not reach either place service.
+   *
+   * Kept apart from an empty `suggestions` on purpose. "There is no place
+   * called that" and "the search is down" are different facts and the box
+   * used to hedge between them in one sentence, because the geocoder
+   * returned an empty list for both. It does not any more, so neither does
+   * this.
+   */
+  lookupFailed: boolean;
   handleInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   handleSelect: (loc: GeocodedLocation) => void;
@@ -64,6 +74,7 @@ export const useLocationSearch = ({
   const [showDropdown, setShowDropdown] = useState(false);
   const [highlighted, setHighlighted] = useState(-1);
   const [searchedFor, setSearchedFor] = useState<string | null>(null);
+  const [lookupFailed, setLookupFailed] = useState(false);
 
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -100,15 +111,21 @@ export const useLocationSearch = ({
 
   const runSearch = useCallback(async (value: string): Promise<GeocodedLocation[]> => {
     const ticket = searchSeq.current;
-    const results = await geocodeSearch(value);
+    const { results, ok } = await geocodeSearch(value);
     // Superseded while we were waiting. Drop it on the floor.
     if (ticket !== searchSeq.current) return results;
 
     setSuggestions(results);
     setSearchedFor(value);
+    setLookupFailed(!ok);
     setHighlighted(-1);
     setIsSearching(false);
-    setShowDropdown(results.length > 0);
+    /*
+     * Open for a failure as well as for results. The panel is where the
+     * explanation lives, and a search box that answers a dead lookup by doing
+     * visibly nothing is the thing this whole change is about.
+     */
+    setShowDropdown(results.length > 0 || !ok);
     return results;
   }, []);
 
@@ -121,6 +138,7 @@ export const useLocationSearch = ({
     if (value.trim().length < 2) {
       setSuggestions([]);
       setSearchedFor(null);
+      setLookupFailed(false);
       setShowDropdown(false);
       return;
     }
@@ -207,6 +225,7 @@ export const useLocationSearch = ({
     setQuery('');
     setSuggestions([]);
     setSearchedFor(null);
+    setLookupFailed(false);
     setShowDropdown(false);
     setHighlighted(-1);
     onQueryCommitted('');
@@ -214,7 +233,7 @@ export const useLocationSearch = ({
 
   return {
     query, suggestions, isSearching, showDropdown, setShowDropdown,
-    highlighted, setHighlighted, searchedFor,
+    highlighted, setHighlighted, searchedFor, lookupFailed,
     handleInputChange, handleKeyDown, handleSelect, clearSearch
   };
 };

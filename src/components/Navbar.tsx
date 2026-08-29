@@ -8,6 +8,7 @@ import type { AppView, FacilityKind, FilterState, GeocodedLocation } from '../ty
 import { useLocationSearch } from '../utils/useLocationSearch';
 import { buildAppSearch, matchAppSearch, type AppSearchEntry } from '../config/appSearch';
 import { haptic } from '../utils/animation';
+import { COVERAGE_LABEL } from '../config/coverage';
 import { UserMenu } from './UserMenu';
 import { BrandMark } from './ui/BrandMark';
 import { ConnectionStatus } from './ui/ConnectionStatus';
@@ -107,7 +108,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
 
   const {
     query, suggestions, isSearching, showDropdown, setShowDropdown,
-    highlighted, setHighlighted, searchedFor, handleInputChange,
+    highlighted, setHighlighted, searchedFor, lookupFailed, handleInputChange,
     handleKeyDown: handleSearchKeyDown, handleSelect, clearSearch
   } = search;
 
@@ -157,12 +158,23 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
   const [dismissed, setDismissed] = useState(true);
 
   const trimmed = query.trim();
-  const nothingFound =
+  const askedAndGotNothing =
     !isSearching && suggestions.length === 0 && appResults.length === 0 &&
     searchedFor === trimmed && trimmed.length >= 2;
+  /*
+    Two outcomes, two sentences. `lookupFailed` means nobody could be reached;
+    `nothingFound` means the search worked and there is genuinely no such
+    place. These used to be one hedged paragraph covering both, because the
+    geocoder returned an empty list either way — and the commonest way to see
+    it was a typo, so a healthy search was routinely described as possibly
+    down.
+  */
+  const searchUnreachable = askedAndGotNothing && lookupFailed;
+  const nothingFound = askedAndGotNothing && !lookupFailed;
   const resultsOpen =
     !dismissed &&
-    (appResults.length > 0 || (showDropdown && suggestions.length > 0) || nothingFound);
+    (appResults.length > 0 || (showDropdown && suggestions.length > 0) ||
+      askedAndGotNothing);
 
   /** Do the thing, then put the list away and take the keyboard with it. */
   const runAppResult = useCallback((entry: AppSearchEntry) => {
@@ -488,17 +500,30 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
                   )}
 
                   {/*
-                    An empty answer is not proof the place does not exist — the
-                    geocoder returns nothing both when it found nothing and
-                    when it could not be reached at all. Saying "no such place"
-                    would be this app inventing a fact out of a failure.
+                    The search ran and there is no such place. Said plainly,
+                    because `/api/geocode` distinguishes this from a failure —
+                    and it matches loosely, so a near-miss spelling has already
+                    been given its chance.
                   */}
                   {nothingFound && (
                     <p className="px-3 py-2.5 text-xs text-slate-400 leading-snug">
-                      Nothing came back for “{query.trim()}”. Either there is no
-                      place by that name, or the lookup could not be reached
-                      just now. You can also close this and tap the spot on the
-                      map.
+                      No place called “{query.trim()}” in {COVERAGE_LABEL}. Check
+                      the spelling, try the nearest town, or close this and tap
+                      the spot on the map.
+                    </p>
+                  )}
+
+                  {/*
+                    Nobody could be reached. NOT reported as "no such place":
+                    that would be the app inventing a fact about the world out
+                    of its own network error.
+                  */}
+                  {searchUnreachable && (
+                    <p className="px-3 py-2.5 text-xs text-amber-300/90 leading-snug">
+                      The place search could not be reached just now, so this is
+                      not an answer about “{query.trim()}” — it is us being
+                      unable to ask. Try again in a moment, or tap the spot on
+                      the map.
                     </p>
                   )}
                 </div>

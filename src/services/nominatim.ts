@@ -1,17 +1,40 @@
 import { GeocodedLocation } from '../types';
 
 /**
- * Geocoding via OpenStreetMap Nominatim.
+ * Place lookup for the search box, via OUR server rather than Nominatim.
  *
- * Nominatim's usage policy caps requests at 1/sec and requires an identifying
- * User-Agent or Referer. Browsers set Referer automatically; we additionally
- * debounce in the UI and cache results here to stay well inside the limit.
+ * ---------------------------------------------------------------------------
+ * WHY THIS STOPPED CALLING NOMINATIM DIRECTLY
+ * ---------------------------------------------------------------------------
  *
- * Results are filtered to only include Canada and Continental USA (excluding
- * Alaska, Hawaii, and US territories).
+ * It failed on the first real thing anybody typed: "brag creek".
+ *
+ * Nominatim matches tokens and has no typo tolerance at all, so one missing
+ * "g" is not a near miss — it is zero results. And zero results reached the
+ * camper as "either there is no place by that name, or the lookup could not
+ * be reached", which is a sentence about a network problem shown for a
+ * perfectly healthy service answering a question anybody would call a typo.
+ *
+ * `/api/geocode` asks Photon first, which is built for search-as-you-type and
+ * matches fuzzily, and falls back to Nominatim. It also carries the
+ * identifying User-Agent Nominatim's usage policy asks for, which a browser
+ * cannot set, and shares one cache across every camper instead of one per tab.
+ *
+ * ---------------------------------------------------------------------------
+ * `ok` IS THE POINT OF THIS FILE
+ * ---------------------------------------------------------------------------
+ *
+ * This used to return `[]` for BOTH "nothing matched" and "could not ask",
+ * and the UI could only hedge between them. They are different facts and the
+ * camper deserves the right one, so they come back as different answers.
  */
 
-const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
+export interface GeocodeAnswer {
+  results: GeocodedLocation[];
+  /** False only when nobody could be reached. An empty list with `ok` is a real "no". */
+  ok: boolean;
+}
+
 /**
  * Search results, capped.
  *
@@ -19,6 +42,9 @@ const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
  * in memory for the life of the tab, and this app is a PWA that people leave
  * open for days. A Map iterates in insertion order, so deleting the first
  * key evicts the oldest entry.
+ *
+ * Only successful answers are remembered. Caching a failure would keep an
+ * outage on screen long after it had passed.
  */
 const CACHE_MAX_ENTRIES = 100;
 const cache = new Map<string, GeocodedLocation[]>();
@@ -32,116 +58,70 @@ const remember = (key: string, value: GeocodedLocation[]): void => {
   }
 };
 
-interface NominatimResult {
-  display_name: string;
-  lat: string;
-  lon: string;
-  boundingbox?: [string, string, string, string];
-  address?: Record<string, string>;
+interface GeocodeRow {
+  displayName?: string;
+  city?: string;
+  stateProvince?: string;
+  country?: string;
+  lat?: number;
+  lon?: number;
+  boundingBox?: [number, number, number, number];
 }
 
-/**
- * Non-continental US states and territories to exclude.
- * This ensures only Continental USA (lower 48) + Canada results are returned.
- */
-const NON_CONTINENTAL_US_STATES = new Set([
-  'Alaska', 'AK',
-  'Hawaii', 'HI',
-  'Puerto Rico', 'PR',
-  'Guam', 'GU',
-  'Virgin Islands', 'VI', 'US Virgin Islands',
-  'American Samoa', 'AS',
-  'Northern Mariana Islands', 'MP',
-  'United States Minor Outlying Islands', 'UM'
-]);
-
-/**
- * Check if a location is in Canada or Continental USA.
- */
-const isValidLocation = (location: GeocodedLocation): boolean => {
-  const country = location.country.toUpperCase();
-  
-  // Canada - always valid
-  if (country === 'CA' || country === 'CANADA') {
-    return true;
+const toLocation = (row: GeocodeRow): GeocodedLocation[] => {
+  if (typeof row?.lat !== 'number' || typeof row?.lon !== 'number') return [];
+  const location: GeocodedLocation = {
+    displayName: row.displayName ?? '',
+    city: row.city ?? '',
+    stateProvince: row.stateProvince ?? '',
+    country: row.country ?? '',
+    lat: row.lat,
+    lon: row.lon
+  };
+  if (Array.isArray(row.boundingBox) && row.boundingBox.length === 4) {
+    location.boundingBox = row.boundingBox;
   }
-  
-  // United States - need to check state
-  if (country === 'US' || country === 'UNITED STATES' || country === 'USA') {
-    const state = location.stateProvince.toUpperCase();
-    // Check if state is in the exclusion list
-    for (const excluded of NON_CONTINENTAL_US_STATES) {
-      if (state.includes(excluded.toUpperCase())) {
-        return false;
-      }
-    }
-    return true;
-  }
-  
-  // Any other country - exclude
-  return false;
+  return [location];
 };
 
+/**
+ * NEVER THROWS. A failure comes back as `{ ok: false }`, not as an empty list
+ * — the house rule for `src/services`, and the whole reason this signature
+ * changed.
+ */
 export const geocodeSearch = async (
   query: string,
   limit = 6
-): Promise<GeocodedLocation[]> => {
+): Promise<GeocodeAnswer> => {
   const trimmed = query.trim();
-  if (trimmed.length < 2) return [];
+  if (trimmed.length < 2) return { results: [], ok: true };
 
   const cacheKey = `${trimmed.toLowerCase()}::${limit}`;
   const cached = cache.get(cacheKey);
-  if (cached) return cached;
-
-  const params = new URLSearchParams({
-    q: trimmed,
-    format: 'jsonv2',
-    addressdetails: '1',
-    limit: String(limit),
-    countrycodes: 'CA,US' // Restrict to Canada and United States
-  });
+  if (cached) return { results: cached, ok: true };
 
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
 
-    const response = await fetch(`${NOMINATIM_ENDPOINT}?${params.toString()}`, {
-      headers: { Accept: 'application/json' },
-      signal: controller.signal
-    });
+    const response = await fetch(
+      `/api/geocode?q=${encodeURIComponent(trimmed)}&limit=${limit}`,
+      { headers: { Accept: 'application/json' }, signal: controller.signal }
+    );
     clearTimeout(timeout);
-    if (!response.ok) return [];
+    if (!response.ok) return { results: [], ok: false };
 
-    const raw: NominatimResult[] = await response.json();
+    const data = (await response.json().catch(() => null)) as
+      { ok?: boolean; results?: GeocodeRow[] } | null;
+    if (!data || data.ok === false || !Array.isArray(data.results)) {
+      return { results: [], ok: false };
+    }
 
-    const results: GeocodedLocation[] = raw
-      .map((item) => {
-        const addr = item.address ?? {};
-        const city =
-          addr.city || addr.town || addr.village || addr.hamlet || addr.county || '';
-
-        const location: GeocodedLocation = {
-          displayName: item.display_name,
-          city,
-          stateProvince: addr.state || addr.province || '',
-          country: addr.country || '',
-          lat: parseFloat(item.lat),
-          lon: parseFloat(item.lon)
-        };
-
-        if (item.boundingbox && item.boundingbox.length === 4) {
-          const [south, north, west, east] = item.boundingbox.map(Number);
-          location.boundingBox = [south, north, west, east];
-        }
-        return location;
-      })
-      .filter(isValidLocation); // Filter to only Canada + Continental USA
-
+    const results = data.results.flatMap(toLocation);
     remember(cacheKey, results);
-    return results;
+    return { results, ok: true };
   } catch {
-    // Network failure, abort, or offline: fail soft with no suggestions.
-    return [];
+    // Network failure, abort, or offline. Not an answer about the world.
+    return { results: [], ok: false };
   }
 };
-

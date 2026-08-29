@@ -4174,11 +4174,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * caution, it is hiding a campsite from somebody looking for one — 832 of
    * them went into the database and none appeared on the map.
    *
-   * The curated rows and OpenStreetMap nodes stay unpinned, for exactly the
-   * original reason. They still fill the list, are searchable, and are still
-   * what the filters filter.
+   * `verified` breaks it for the same reason and was missed the first time.
+   * The curated set is twenty-one named dispersed camping areas somebody
+   * checked by hand and wrote a description for — "McLean Creek Crown Land
+   * Dispersed (PLUZ)", "Alabama Hills", "Valley of the Gods". Not a database
+   * shrugging at a region: a place, with coordinates, that a person confirmed
+   * you can sleep at. Lumping them in with an inferred OpenStreetMap node
+   * meant the app's own hand-picked Alberta spots were invisible on the map
+   * of Alberta, which is how "there are no free campsites out here" gets said
+   * about ground the app already knew.
+   *
+   * OpenStreetMap nodes stay unpinned, for exactly the original reason: a
+   * `tourism=camp_site` dot with nothing else on it asserts less than the
+   * boundary polygons underneath it already do. They still fill the list, are
+   * searchable, and are still what the filters filter.
    */
-  const PINNED_SOURCES = new Set(['user_submitted', 'agency_dataset']);
+  const PINNED_SOURCES = new Set(['user_submitted', 'agency_dataset', 'verified']);
   const pinnedCampsites = React.useMemo(
     () => campsites.filter((site) => PINNED_SOURCES.has(site.source)),
     [campsites]
@@ -4401,8 +4412,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
          * a camper" because every pin was, and saying it over a government
          * campground would be the app inventing a witness who does not exist.
          */
+        /*
+         * Three sources, three claims, and the title has to match the one it
+         * is standing on. Every pin used to say "added by a camper", which
+         * was true when campers were the only pins and is a fabricated
+         * witness over a government campground or a bundled curated spot.
+         */
         title: site.source === 'agency_dataset'
           ? `${site.name} — published by ${site.landManager || 'a government agency'}, not yet visited by anyone here`
+          : site.source === 'verified'
+          ? `${site.name} — a dispersed camping area checked and bundled with the app`
           : `${site.name} — added by a camper`
       });
       marker.on('click', () => {
