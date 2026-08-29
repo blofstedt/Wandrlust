@@ -75,6 +75,31 @@ const OVERPASS_MIRRORS = [
 ];
 
 /**
+ * A MIRROR THAT JUST TIMED OUT DOES NOT GET ASKED FIRST AGAIN.
+ *
+ * Overpass mirrors queue rather than refuse: a busy one accepts the
+ * connection and then says nothing until it gets round to you. So a mirror
+ * having a bad ten minutes does not fail fast, it eats the whole slice every
+ * single time — and with the first mirror in the list doing that, tile after
+ * tile came back "no mirror answered" having only ever really asked one.
+ * Measured in production: Québec's tiles failing at kumi after nine seconds
+ * with a second mirror that was answering fine and never got a turn.
+ *
+ * So a timeout here sends that host to the back of the queue for the rest of
+ * this invocation. Reset every time the function cold-starts, which is often,
+ * and deliberately not persisted: this is about the last ten seconds, not
+ * about which mirror is good.
+ */
+const deprioritised = new Set<string>();
+
+const mirrorOrder = (): string[] => {
+  const fresh = OVERPASS_MIRRORS.filter((m) => !deprioritised.has(m));
+  const tired = OVERPASS_MIRRORS.filter((m) => deprioritised.has(m));
+  // All of them cold means the trouble is not the mirrors; use the real order.
+  return fresh.length ? [...fresh, ...tired] : [...OVERPASS_MIRRORS];
+};
+
+/**
  * Operators that are a government of some kind.
  *
  * Deliberately a list of explicit patterns rather than "anything that is not
@@ -285,12 +310,22 @@ const fetchRegion = async (
    * because the box is genuinely large, and six seconds turns "slow" into
    * "nothing at all".
    */
-  const perMirrorMs = Math.max(9_000, Math.floor(timeoutMs / 2));
+  /*
+   * A SLICE EACH, NOT HALF THE BUDGET TO THE FIRST ONE.
+   *
+   * This was nine seconds a mirror, measured back when the unit of work was a
+   * whole province and nine seconds was the difference between slow and
+   * nothing. Provinces are asked in tiles now, and a tile that Overpass is
+   * actually going to answer comes back in a second or two — so nine seconds
+   * at the first mirror is not patience, it is the other two never being
+   * asked. A third of the budget each, with a floor, so all three get a turn.
+   */
+  const perMirrorMs = Math.max(4_500, Math.floor(timeoutMs / 3));
   const tried: string[] = [];
 
-  for (const mirror of OVERPASS_MIRRORS) {
+  for (const mirror of mirrorOrder()) {
     const left = timeoutMs - (Date.now() - startedAll);
-    if (left < 4_000) {
+    if (left < 3_000) {
       tried.push(`${new URL(mirror).host}: not asked, ${left} ms left`);
       break;
     }
@@ -369,6 +404,8 @@ const fetchRegion = async (
           operator
         });
       }
+      // Answered: it is not the one holding us up, whatever it did last tile.
+      deprioritised.delete(mirror);
       console.info(
         `[free-campgrounds] ${host}: ${data.elements.length} free-tagged, ` +
         `${sites.length} standalone official campgrounds, in ${Date.now() - at} ms`
@@ -394,6 +431,9 @@ const fetchRegion = async (
           : {})
       };
     } catch (err: any) {
+      // Sent to the back of the queue for the rest of this invocation, so the
+      // next tile does not pay the same nine seconds over again.
+      if (controller.signal.aborted) deprioritised.add(mirror);
       tried.push(
         `${host}: ${controller.signal.aborted ? 'timed out' : String(err?.message ?? err).slice(0, 100)}` +
         ` after ${Date.now() - at} ms`
