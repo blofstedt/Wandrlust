@@ -56,6 +56,18 @@ const BLM: PublishedLandRules = {
   basis: "The BLM's general rule for its land, not a record for this parcel"
 };
 
+/* Loi sur les terres du domaine de l'État. Keyed on three ids below — see
+   the note there for why that is not belt-and-braces but a bug that was. */
+const QUEBEC: PublishedLandRules = {
+  rules: [
+    '21 consecutive days in one spot',
+    'Stay 60 m back from water, roads and private land',
+    'Free, no permit, on plain public land',
+    'ZECs, réserves and pourvoiries run their own way'
+  ],
+  basis: "Québec's general public land rule, not a record for this zone"
+};
+
 export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
   /*
    * BLM under both ids it travels under: `blm_lands` is the live map's
@@ -160,11 +172,20 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
   },
 
   /*
-   * KEPT AHEAD OF ITS SOURCE. Quebec has no boundary source yet — its public
-   * land use plan will not serve geometry, see the note in boundaryRoutes.ts —
-   * so nothing on the map carries `quebec_patp` today. The rules are right and
-   * researched, and the day a working service is wired this is one thing that
-   * will not need finding again.
+   * QUEBEC — AND THE ID THAT DID NOT MATCH, WHICH IS WHY THIS COMMENT IS LONG.
+   *
+   * These rules were written before Quebec had a boundary source, keyed on
+   * `quebec_patp` against the day one arrived. Two arrived — `qc_patp_multi_use`
+   * and `qc_patp_north_multi_use` — and neither is called `quebec_patp`, so
+   * from the day Quebec started drawing on the map until this was found, every
+   * one of its parcels answered "stay limit and permit rules not recorded —
+   * ask the agency" with the researched, correct rules sitting in this file
+   * three lines away. This is exactly the trap the BLM entry above is doubled
+   * up to avoid, and it caught us anyway: A RULEBOOK KEYED ON AN ID THAT
+   * NOBODY SENDS FAILS SILENTLY AND LOOKS LIKE HONESTY.
+   *
+   * Both live ids are listed now, and the old key is kept beside them so a
+   * seeder or a cache still carrying it does not lose its rules either.
    *
    * Quebec's 21 days come from the Loi sur les terres du domaine de l'État,
    * and the setback is the part that catches people out — 60 m from water is
@@ -175,14 +196,34 @@ export const PUBLISHED_LAND_RULES: Record<string, PublishedLandRules> = {
    * gate, fee and register, and none of them are cut out of the polygons this
    * app draws.
    */
-  quebec_patp: {
+  quebec_patp: QUEBEC,
+  qc_patp_multi_use: QUEBEC,
+  qc_patp_north_multi_use: QUEBEC,
+
+  /*
+   * NEWFOUNDLAND AND LABRADOR GETS NO NUMBER, FOR NOVA SCOTIA'S REASON.
+   *
+   * Crown land here draws as the province minus its alienated titles — 95% of
+   * the island and almost all of Labrador — and it had no entry in this file
+   * at all, so every parcel of it answered "rules not recorded". That is worse
+   * than useless on the province with the most public land in the country.
+   *
+   * The day count is still not stated. "21 days a year for Canadians" is
+   * everywhere in the camping guides and nowhere in anything the province
+   * publishes, and the house rule is that a number with no source does not go
+   * on the screen — see Nova Scotia above. What IS published is the residency
+   * condition and where camping is not allowed, so that is what this says.
+   */
+  nl_crown_land: {
     rules: [
-      '21 consecutive days in one spot',
-      'Stay 60 m back from water, roads and private land',
-      'Free, no permit, on plain public land',
-      'ZECs, réserves and pourvoiries run their own way'
+      'Free for residents of Canada, no permit',
+      'Not in parks, protected areas or on private land',
+      'Posted signs override this — read them',
+      'How long you may stay is not published — ask Crown Lands'
     ],
-    basis: "Québec's general public land rule, not a record for this zone"
+    basis:
+      "Newfoundland and Labrador's general Crown land guidance, not a record " +
+      'for this parcel'
   },
 
   /* New Brunswick calls a night out "occasional use", which needs no
@@ -286,7 +327,19 @@ export const landRules = (
     permitRequired?: boolean;
     permitName?: string;
     fireBanActive?: boolean;
-  }
+  },
+  /**
+   * The permit regime that applies AT THIS POINT, where one does.
+   *
+   * A parcel record cannot answer this and used to try: every Alberta parcel
+   * said the Public Lands Camping Pass was required, across a Green Area that
+   * reaches the Northwest Territories, for a pass that covers a strip down the
+   * Eastern Slopes. Removing that flag alone would have swapped one wrong
+   * answer for another — "no permit recorded" on the Ghost — so the point is
+   * asked instead, against the province's own published outline. See
+   * `permitForLandPoint` in `config/permits.ts`.
+   */
+  permitHere?: { name: string; certainty: 'site' | 'boundary' | 'area' } | null
 ): LandRuleCard => {
   const rules: string[] = [];
 
@@ -309,13 +362,26 @@ export const landRules = (
         (land.moveDistanceKm != null ? ` at least ${land.moveDistanceKm} km` : ' on')
       );
     }
-    if (land.permitRequired === true) {
+    /*
+     * The point beats the parcel, always. It is the agency's own shape asked
+     * at the camper's own coordinates, where the parcel flag is a property of
+     * a polygon that may be a tenth inside the regime and nine tenths out.
+     */
+    if (permitHere) {
+      rules.push(
+        permitHere.certainty === 'area'
+          ? `${permitHere.name} may apply — check before you go`
+          : `${permitHere.name} required before you camp`
+      );
+    } else if (land.permitRequired === true) {
       rules.push(`${land.permitName ?? 'A permit'} required before you camp`);
     } else if (land.permitRequired === false) {
       rules.push('No permit recorded for dispersed camping');
     }
     if (land.stayLimitDays == null) rules.push('Stay limit not recorded — ask the agency');
-    if (land.permitRequired == null) rules.push('Permit rules not recorded — ask the agency');
+    if (!permitHere && land.permitRequired == null) {
+      rules.push('Permit rules not recorded — ask the agency');
+    }
     return { rules, basis: null };
   }
 
@@ -323,6 +389,16 @@ export const landRules = (
   if (published) {
     rules.push(...published.rules);
     return { rules, basis: published.basis };
+  }
+
+  if (permitHere) {
+    rules.push(
+      permitHere.certainty === 'area'
+        ? `${permitHere.name} may apply — check before you go`
+        : `${permitHere.name} required before you camp`
+    );
+    rules.push('Stay limit not recorded — ask the agency');
+    return { rules, basis: null };
   }
 
   rules.push('Stay limit and permit rules not recorded — ask the agency');

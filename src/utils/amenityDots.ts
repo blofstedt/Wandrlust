@@ -12,7 +12,9 @@ import {
 import { FACILITY_COLOR, FACILITY_GLYPH, FACILITY_LABEL } from '../config/facilities';
 import { isUnderControl, type ActiveFire } from '../services/fireService';
 import { formatTemperature } from './units';
-import { permitChipLabel, permitChipFull, type PermitMatch } from '../config/permits';
+import {
+  permitChipLabel, permitChipFull, permitForLandPoint, type PermitMatch
+} from '../config/permits';
 
 /**
  * THE COLOURED DOTS THAT SIT ABOVE A PIN.
@@ -432,7 +434,14 @@ export const conditionDots = (
    * `dataService.ts`. Defaults to false (Fahrenheit) so a caller that has
    * not been updated to pass it keeps behaving exactly as it always did.
    */
-  useMetric = false
+  useMetric = false,
+  /**
+   * WHERE ON THE PARCEL. Optional, and the permit chip is the only thing that
+   * reads it — but it is the difference between an answer and a guess. See
+   * `permitForLandPoint`: a permit regime covers a shape, the parcel under the
+   * pin is a different shape, and only the point is in both or neither.
+   */
+  point?: { lat: number; lon: number } | null
 ): MarkerDot[] => {
   const dots: MarkerDot[] = [];
 
@@ -566,10 +575,25 @@ export const conditionDots = (
   }
 
   if (land) {
+    /*
+     * The permit for THIS POINT, not for the parcel it stands on.
+     *
+     * Alberta's Green Area reaches the Northwest Territories and its camping
+     * pass covers a strip down the Eastern Slopes, so a flag carried by the
+     * parcel put "a pass is required here" over Crown land six hundred
+     * kilometres from any ground the pass mentions. The pass area is a shape
+     * the province publishes and this app holds, so it is answered where the
+     * camper actually is.
+     */
+    const pointPermit = point ? permitForLandPoint(land.sourceId, point.lat, point.lon) : null;
+    const permitHere = pointPermit
+      ? pointPermit.permit.name
+      : land.permitRequired ? land.permitName ?? 'permit required' : null;
+
     const detail = [
       land.designation,
       land.stayLimitDays != null ? `${land.stayLimitDays}-day limit` : null,
-      land.permitRequired ? land.permitName ?? 'permit required' : null
+      permitHere
     ].filter(Boolean).join(' \u00B7 ');
 
     dots.push({
@@ -583,9 +607,29 @@ export const conditionDots = (
       action: 'land'
     });
 
-    // A permit is a thing to go and get before leaving, so it is not allowed
-    // to hide at the end of a sentence about the name of the forest.
-    if (land.permitRequired) {
+    /*
+     * A permit is a thing to go and get before leaving, so it is not allowed
+     * to hide at the end of a sentence about the name of the forest.
+     *
+     * When we know WHICH permit it is, the chip is a door into the record —
+     * issuer, price, and the agency's own page to buy it on — and it says how
+     * sure it is. Where all we have is a parcel that says "some permit", the
+     * bare warning stands, because that is still worth saying and is still all
+     * that is true.
+     */
+    if (pointPermit) {
+      dots.push({
+        key: 'permit',
+        color: pointPermit.permit.free ? COLOR.permitFree : COLOR.warn,
+        label: permitChipLabel(pointPermit),
+        full: permitChipFull(pointPermit),
+        glyph: '\u{1F3AB}',
+        tone: pointPermit.permit.free ? 'neutral' : 'bad',
+        action: 'permit',
+        permitId: pointPermit.permit.id,
+        permitCertainty: pointPermit.certainty
+      });
+    } else if (land.permitRequired) {
       dots.push({
         key: 'permit',
         color: COLOR.warn,

@@ -400,8 +400,13 @@ const CACHE_MAX_ENTRIES = 40;
  *   7 → water is cut out of the green: NL carries OSM water holes, QC
  *        north carries Natural Earth reservoir holes, and the static
  *        overview cuts lakes for every source
+ *   8 → Alberta parcels stop carrying "a Public Lands Camping Pass is
+ *        required here". They all did, across a Green Area that reaches
+ *        the Northwest Territories, for a pass covering a strip down the
+ *        Eastern Slopes. The claim now comes from the province's own
+ *        outline at the camper's own point, not from the parcel.
  */
-const BOUNDARY_DATA_EPOCH = '7';
+const BOUNDARY_DATA_EPOCH = '8';
 
 interface DiskEntry { at: number; collection: BoundaryCollection }
 

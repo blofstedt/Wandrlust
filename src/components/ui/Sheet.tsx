@@ -246,11 +246,22 @@ export const Sheet: React.FC<SheetProps> = ({
           isSheet
             ? 'max-h-[90vh] border-t sm:border rounded-t-3xl sm:rounded-2xl anim-sheet-up sm:anim-expand'
             : isDock
-              /* Shorter than a centred dialog because it starts from the
-                 bottom of the screen: 70vh from down there still leaves the
-                 header, the beacon pill and the top of the map in view, which
-                 is the whole point of docking it rather than drawering it. */
-              ? 'max-h-[70vh] border rounded-2xl anim-in-up'
+              /*
+                Shorter than a centred dialog because it starts from the
+                bottom of the screen: 70vh from down there still leaves the
+                header, the beacon pill and the top of the map in view, which
+                is the whole point of docking it rather than drawering it.
+
+                `fitContent` buys a dock ten more points of height, and it is
+                for the one kind of card where the ceiling was doing damage:
+                a short, self-contained answer that has to be read in one go.
+                The permit card is a price, who needs one, and a button to go
+                and buy it — a camper who scrolls past the button on a small
+                phone does not know there is a button. 80 rather than 90
+                because the dock also carries the tab bar's height underneath
+                it, and the two together still have to clear the screen.
+              */
+              ? `${fitContent ? 'max-h-[80vh]' : 'max-h-[70vh]'} border rounded-2xl anim-in-up`
               /*
                 A dialog is a card floating in the middle of the screen, so it
                 stops short of the edges the sheet is allowed to reach — the

@@ -394,7 +394,25 @@ export const LAND_SOURCES: LandSourceSpec[] = [
       'but this is inferred from that policy rather than from any designation in the data. ' +
       'A Public Lands Camping Pass is required in the Eastern Slopes, and individual areas are closed.',
     stayLimitDays: () => 14,
-    permit: () => ({ required: true, name: 'Alberta Public Lands Camping Pass (Eastern Slopes)' }),
+    /*
+     * NO PARCEL-LEVEL PERMIT FLAG, DELIBERATELY.
+     *
+     * This used to record "Alberta Public Lands Camping Pass (Eastern Slopes)"
+     * as required on every parcel of the Green Area — which runs from the
+     * Montana border to the Northwest Territories, while the pass covers a
+     * 66,710 km² strip down the Eastern Slopes, about a twelfth of it. So the
+     * app told a camper on Crown land near Lac La Biche or Fort Vermilion to
+     * go and buy a pass for ground it says nothing about. Inventing a fee is
+     * the same failure as inventing a permission.
+     *
+     * A parcel genuinely cannot answer this: parcels straddle the pass
+     * boundary and a flag on one is a claim about all of it. The province
+     * publishes the pass area as a shape, `src/config/albertaCampingPass.ts`
+     * holds it, and `permitForLandPoint` answers the camper's actual
+     * coordinates against it. That is an answer; this was a guess covering
+     * eleven times too much country.
+     */
+    permit: () => ({ required: false, name: null }),
     notes:
       'Endpoint and GWA_CODE filter carried over from server/boundaryRoutes.ts, where both were verified against the live service. Campability is a policy inference, not a designation — Alberta publishes no general-use layer.'
   },
@@ -420,7 +438,9 @@ export const LAND_SOURCES: LandSourceSpec[] = [
         p.PLUZ_NAME ?? 'unnamed'
       }). Random camping permitted subject to zone-specific rules, seasonal closures and, in the Eastern Slopes, a Public Land Camping Pass.`,
     stayLimitDays: () => 14,
-    permit: () => ({ required: true, name: 'Alberta Public Land Camping Pass (Eastern Slopes zones)' }),
+    // Same reason as the Green Area above: the pass area is a shape, and
+    // `permitForLandPoint` answers it at the camper's own coordinates.
+    permit: () => ({ required: false, name: null }),
     notes:
       'Covers DESIGNATED MANAGEMENT ZONES only — not all Alberta Crown land. Large areas of campable Alberta Crown land fall outside any PLUZ and are absent here.'
   },

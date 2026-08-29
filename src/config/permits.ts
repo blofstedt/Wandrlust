@@ -214,6 +214,70 @@ const PERMIT_AREAS: PermitArea[] = [
   }
 ];
 
+/**
+ * WHICH BOUNDARY SOURCES A REGIME CAN APPLY TO.
+ *
+ * A camper who taps open ground rather than a pin has no `Campsite` to match
+ * on — no address, no state, no province — but the parcel underneath does
+ * carry the id of the government layer it came from, and that id already says
+ * which jurisdiction it is. So the point is matched through the source.
+ *
+ * Keyed on the `_source` a boundary feature carries; see BOUNDARY_SOURCES in
+ * `server/boundaryRoutes.ts`.
+ */
+const PERMIT_AREA_SOURCES: Record<string, string[]> = {
+  'ab-public-lands-camping-pass': ['alberta_green_area', 'alberta_pluz'],
+  'on-crown-land-non-resident': ['ontario_clupa_general_use']
+};
+
+const areasForSource = (sourceId: string | undefined): PermitArea[] =>
+  sourceId
+    ? PERMIT_AREAS.filter((a) =>
+        (PERMIT_AREA_SOURCES[a.permitId] ?? []).includes(sourceId))
+    : [];
+
+/**
+ * The permit for a POINT on a parcel, rather than for a recorded spot.
+ *
+ * THIS IS THE FIX FOR A WARNING THAT WAS SHOWN OVER HALF A PROVINCE. Alberta's
+ * Green Area is Crown land from the Montana border to the Northwest
+ * Territories, and the Public Lands Camping Pass covers a 66,710 km² strip of
+ * it down the Eastern Slopes — about a twelfth. The parcel records said the
+ * pass was required on ALL of it, so tapping Crown land near Lac La Biche or
+ * Fort Vermilion, six hundred kilometres from the nearest ground the pass has
+ * anything to say about, produced "a Public Lands Camping Pass is required
+ * here". That is the app inventing a fee, which is the same failure as
+ * inventing a permission and is no more forgivable for costing the camper
+ * money instead of a fine.
+ *
+ * A parcel cannot answer this. Parcels straddle the pass boundary, and a flag
+ * on one is a claim about the whole of it. A POINT can be answered, exactly,
+ * against the province's own published outline — so it is, here, and the
+ * parcel no longer carries a permit claim at all.
+ */
+export const permitForLandPoint = (
+  sourceId: string | undefined,
+  lat: number,
+  lon: number
+): PermitMatch | null => {
+  for (const area of areasForSource(sourceId)) {
+    const permit = CAMPING_PERMITS[area.permitId];
+    if (!permit) continue;
+
+    if (area.contains) {
+      if (area.contains(lat, lon)) return { permit, certainty: 'boundary' };
+      continue;
+    }
+
+    if (area.bbox) {
+      const { minLat, minLon, maxLat, maxLon } = area.bbox;
+      if (lat < minLat || lat > maxLat || lon < minLon || lon > maxLon) continue;
+    }
+    return { permit, certainty: 'area' };
+  }
+  return null;
+};
+
 export interface PermitMatch {
   permit: CampingPermit;
   /**

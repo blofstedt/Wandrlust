@@ -286,47 +286,124 @@ export const CAMPING_GUIDE: GuideSection[] = [
   {
     id: 'crown-land',
     title: 'Canadian Crown Land',
-    summary: 'Free camping on provincial Crown land, and the residency rules that catch visitors out.',
+    summary: 'Free camping on provincial Crown land, province by province, and the residency rules that catch visitors out.',
     icon: 'trees',
     accent: 'sky',
     scope: 'Canada',
     source: 'Provincial land management ministries',
     subsections: [
       {
-        id: 'crown-ontario',
-        title: 'Ontario',
+        id: 'crown-how-it-works',
+        title: 'How it works, everywhere',
         entries: [
           {
-            term: '21 days',
-            text: 'Canadian residents may camp free on most Crown land for up to 21 days at any one site in a calendar year.'
+            term: 'Free, and usually no paperwork',
+            text: 'Every province below lets a resident of Canada camp on open Crown land without paying or registering. The exceptions are Alberta’s Eastern Slopes, which needs a pass, and Ontario’s north for non-residents.'
           },
           {
-            term: 'Non-residents need a permit',
-            text: 'Visitors who are not residents of Canada require a Crown land camping permit to camp on Crown land in much of Northern Ontario.'
+            term: 'The limit is per SPOT, not per forest',
+            text: 'Every stay limit here counts the piece of ground your camp occupies — the pullout, the clearing, the beach. Crossing an internal boundary on the map does not restart the clock; moving your camp does.'
           },
           {
-            term: 'Not all Crown land is open',
-            text: 'Some parcels are withdrawn from camping, licensed to other users, or closed seasonally. Crown land is also interleaved with private property.'
+            term: 'Open Crown land is not all Crown land',
+            text: 'Leases, licences, woodlots, parks, protected areas and posted closures all sit inside the same polygons this app draws, and none of them are cut out of it. A sign on the ground beats anything on this screen.'
           }
         ]
+      },
+      {
+        id: 'crown-west',
+        title: 'The West',
+        entries: [
+          {
+            term: 'British Columbia — 14 days',
+            text: 'Fourteen consecutive days in one spot on open Crown land, free and with nothing to register. You then have to be away 72 hours before the count restarts — leaving for a single night does not reset it. Tenures, parks and recreation sites have their own rules.'
+          },
+          {
+            term: 'Alberta — 14 days, and a pass on the Eastern Slopes',
+            text: 'Fourteen consecutive nights, then move at least 1 km for 72 hours. A Public Lands Camping Pass is required to random camp in the Eastern Slopes pass area — $30 a year or $20 for three days, per person 18 and over — and nowhere else in the province. Parking in Kananaskis Country needs the separate $90 Kananaskis Conservation Pass.'
+          },
+          {
+            term: 'Saskatchewan — 21 days',
+            text: 'Twenty-one consecutive days at one site on vacant provincial Crown land, free, with nothing to buy or register. Leased agricultural and commercial land is not open. Parks and recreation sites inside the provincial forest charge their own fees.'
+          },
+          {
+            term: 'Manitoba — 21 nights',
+            text: 'Twenty-one nights in one spot unless posted otherwise, free and with no permit, for residents of Canada. Provincial parks are separate: parking at one needs a Park Vehicle Permit, which has nothing to do with camping on Crown land.'
+          }
+        ]
+      },
+      {
+        id: 'crown-central',
+        title: 'Ontario and Quebec',
+        entries: [
+          {
+            term: 'Ontario — 21 days',
+            text: 'A resident of Canada may camp free for up to 21 days at any one site per calendar year, then must move on. Some parcels are withdrawn from camping, licensed to others, or closed seasonally, and Crown land is interleaved with private property.'
+          },
+          {
+            term: 'Ontario — non-residents need a permit',
+            text: 'If you are not a resident of Canada and you are 18 or over, camping on Crown land in much of Northern Ontario needs a Non-Resident Crown Land Camping Permit — $10.57 a person a night including HST. There are exemptions, including a camping unit rented from an Ontario business.'
+          },
+          {
+            term: 'Quebec — 21 days, and a 60 m setback',
+            text: 'Twenty-one consecutive days in one spot on plain public land, free and with no permit, under the Loi sur les terres du domaine de l’État. Stay 60 m back from water, roads and private land — further than it sounds when the lake is the reason you drove there.'
+          },
+          {
+            term: 'Quebec — ZECs and réserves are not plain public land',
+            text: 'ZECs, réserves fauniques and pourvoiries cover a great deal of southern Quebec’s public land. Each has its own gate, road fee and register, and none of them are cut out of the boundaries this app draws.'
+          }
+        ]
+      },
+      {
+        id: 'crown-atlantic',
+        title: 'Atlantic Canada',
+        entries: [
+          {
+            term: 'New Brunswick — 21 days',
+            text: 'The province calls a night out "occasional use" and says plainly that occasional use needs no authorisation. Twenty-one days is the usual limit for casual camping. RVs must stay 75 m back from any waterway; tents are exempt. Never block a road, trail or waterway.'
+          },
+          {
+            term: 'Nova Scotia — short stays, and no published number',
+            text: 'Nova Scotia publishes what you may do on Crown land without a permit, and a day count is not in it: short recreational stays need no permit, and staying longer needs the department’s permission. Any number you read elsewhere came from a camping guide, not from the province. Wilderness areas and wildlife management areas have their own rules.'
+          },
+          {
+            term: 'Newfoundland and Labrador — free, number unpublished',
+            text: 'Free for residents of Canada with no permit, on the most public land of any province — but the province publishes no stay limit either, so this app does not state one. Not in parks, protected areas or on private land, and posted signs override all of it.'
+          },
+          {
+            term: 'Prince Edward Island — assume there is none',
+            text: 'PEI is overwhelmingly private land and this app draws no Crown land there at all. Plan on a licensed campground rather than a night on public land.'
+          }
+        ],
+        caveat: 'Where a province has not published a stay limit, this app leaves it blank rather than repeating a number from a camping guide.'
       },
       {
         id: 'crown-coverage',
         title: 'What this app actually knows',
         entries: [
           {
-            term: 'Two provinces of boundary data',
-            text: 'Wandrlust currently carries Crown land boundaries for Ontario and Alberta only. Everywhere else in Canada is recorded as a coverage gap.'
+            term: 'Nine provinces of boundary data, at very different depths',
+            text: 'Alberta, Ontario, New Brunswick, Nova Scotia, Quebec and Newfoundland and Labrador are drawn broadly. British Columbia, Saskatchewan and Manitoba are only their PROVINCIAL FORESTS — a small share of each province’s Crown land — so a blank there is usually missing data, not private land.'
+          },
+          {
+            term: 'Two provinces publish the real thing',
+            text: 'New Brunswick and Nova Scotia publish the extent of their Crown land itself, rather than a designation that has to be read as a proxy for it. A blank in those two really is land the province does not own.'
           },
           {
             term: 'A gap is not an answer',
             text: 'If no polygon appears, it means nobody has loaded data for that area. It does not mean the land is private, and it does not mean camping is allowed.'
           }
         ],
-        caveat: 'Rules differ substantially between provinces. Check with the provincial ministry for anywhere outside Ontario and Alberta.'
+        caveat: 'Rules differ substantially between provinces and change without notice. The ministry’s own page is the authority, not this one.'
       }
     ],
-    links: [{ label: 'Ontario Crown land camping', href: 'https://www.ontario.ca/page/crown-land-camping' }]
+    links: [
+      { label: 'Ontario Crown land camping', href: 'https://www.ontario.ca/page/crown-land-camping' },
+      { label: 'Ontario non-resident permit', href: 'https://www.ontario.ca/page/non-resident-crown-land-camping-and-green-zones' },
+      { label: 'Alberta public lands camping', href: 'https://www.alberta.ca/camping-on-public-land' },
+      { label: 'BC Crown land recreation', href: 'https://www2.gov.bc.ca/gov/content/sports-culture/recreation/camping' },
+      { label: 'Quebec — terres du domaine de l’État', href: 'https://www.quebec.ca/tourisme-et-loisirs/activites-sportives-et-de-plein-air/camping' }
+    ]
   },
 
   /* ---------------------------------------------------------------- */
@@ -518,4 +595,4 @@ export const CAMPING_GUIDE: GuideSection[] = [
       }
     ]
   }
-];
+];

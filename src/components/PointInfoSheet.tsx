@@ -4,6 +4,7 @@ import type { DestinationLand } from '../types';
 import type { MarkerDot } from '../utils/amenityDots';
 import { Admin1Line } from './Admin1Line';
 import { landRules } from '../config/landRules';
+import { permitForLandPoint } from '../config/permits';
 import { haptic } from '../utils/animation';
 
 /**
@@ -148,7 +149,13 @@ export const PointInfoSheet: React.FC<PointInfoSheetProps> = ({
             parcel, that is the condition on showing them at all.
           */}
           {land && (() => {
-            const card = landRules(land);
+            const permitHere = permitForLandPoint(land.sourceId, latitude, longitude);
+            const card = landRules(
+              land,
+              permitHere
+                ? { name: permitHere.permit.name, certainty: permitHere.certainty }
+                : null
+            );
             return (
               <section className="rounded-xl border border-violet-900/50 bg-violet-950/25 px-3 py-2.5">
                 <h3 className="text-[12px] font-bold uppercase tracking-wider text-violet-300 mb-1.5">

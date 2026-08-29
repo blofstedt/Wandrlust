@@ -30,7 +30,9 @@ import {
   BACKROAD_STYLES, BACKROAD_CLASS_ORDER, BACKROAD_CASING, backroadClassOf
 } from '../config/backroads';
 import { FACILITY, facilityKindFromDb, facilitySourceStyle } from '../config/facilities';
-import { CAMPING_PERMITS, permitFor, type PermitMatch } from '../config/permits';
+import {
+  CAMPING_PERMITS, permitFor, permitForLandPoint, type PermitMatch
+} from '../config/permits';
 import { PermitSheet } from './PermitSheet';
 import { landRules } from '../config/landRules';
 import { mergeFacilities, poiToMapFacility } from '../utils/mergeFacilities';
@@ -516,8 +518,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
   /** Weather, signal and land for the open point, as chips. */
   const conditions = React.useMemo(
-    () => conditionDots(weather, coverage, destination?.land, route, useMetric),
-    [weather, coverage, destination?.land, route, useMetric]
+    () => conditionDots(
+      weather, coverage, destination?.land, route, useMetric,
+      // Where the pin actually is. The permit chip is answered against the
+      // agency's own outline at this point, never from a flag on the parcel —
+      // see `permitForLandPoint`.
+      destination ? { lat: destination.latitude, lon: destination.longitude } : null
+    ),
+    [weather, coverage, destination, route, useMetric]
   );
   const conditionsRef = useRef(conditions);
   conditionsRef.current = conditions;
@@ -4457,6 +4465,82 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     (clusterViewRef.current ?? map).addLayer(cluster);
     clusterRef.current = cluster;
+
+    /*
+     * SWEEP UP ANY COUNT LEFT BEHIND BY A SPLIT.
+     *
+     * A group splitting as you zoom in is an animation: the pins are put on
+     * the map first, and the circle with the number in it is taken off three
+     * hundred milliseconds later, from a queue. If that queue is interrupted —
+     * a second zoom lands on top of the first, the list reloads mid-split, the
+     * phone drops the frames — the pins arrive and the number stays, so the
+     * map shows five spots AND a badge claiming five more. Reported from a
+     * phone, and it is the kind of thing that only happens when the timing is
+     * unlucky, which is why it happens on a phone and not here.
+     *
+     * So rather than chase the timing, the settled state is checked against
+     * two things that are true of every honest badge:
+     *
+     *   1. its pins are NOT also drawn — a group and its members are never
+     *      both on the map, that is what grouping means; and
+     *   2. it belongs to the zoom level the group is currently drawing.
+     *
+     * Both were verified to hold through several hundred zooms of ordinary
+     * use, so a badge failing either is not a judgement call — it is a leftover
+     * counting spots that are already on screen, and it goes. Nothing is added
+     * back and no count is edited: the only thing this can do is remove a
+     * circle that is lying.
+     */
+    const sweepStaleCounts = (): void => {
+      const group = clusterRef.current as any;
+      const top = group?._topClusterLevel;
+      if (!group || !top) return;
+
+      const walk = (node: any, visit: (n: any) => void): void => {
+        visit(node);
+        for (const child of node._childClusters ?? []) walk(child, visit);
+      };
+
+      const stale: any[] = [];
+      walk(top, (node) => {
+        // Only the ones actually on the screen; the rest are just tree.
+        if (!node._icon || !document.body.contains(node._icon)) return;
+        if (node._zoom !== group._zoom) { stale.push(node); return; }
+        let drawn = 0;
+        walk(node, (descendant) => {
+          for (const m of descendant._markers ?? []) {
+            if (m._icon && document.body.contains(m._icon)) drawn += 1;
+          }
+        });
+        if (drawn > 0) stale.push(node);
+      });
+
+      // The plugin's own way of taking a group off the map, so it stays in the
+      // tree and comes straight back when you zoom out again.
+      for (const node of stale) {
+        try { group._featureGroup.removeLayer(node); } catch { /* already gone */ }
+      }
+    };
+
+    /*
+     * Only ever after everything has settled. `animationend` is the plugin
+     * saying its split or merge is finished; the two map events cover the
+     * zooms and pans that end without one. A frame's delay on top, because
+     * the last icon is removed inside that same event.
+     */
+    let sweep = 0;
+    const scheduleSweep = (): void => {
+      cancelAnimationFrame(sweep);
+      sweep = requestAnimationFrame(sweepStaleCounts);
+    };
+    cluster.on('animationend', scheduleSweep);
+    map.on('zoomend moveend', scheduleSweep);
+
+    return () => {
+      cancelAnimationFrame(sweep);
+      cluster.off('animationend', scheduleSweep);
+      map.off('zoomend moveend', scheduleSweep);
+    };
   }, [pinnedCampsites, isMapReady, onSelectCampsite, onOpenBottomSheet, iconForId]);
 
   /**
@@ -5368,7 +5452,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     } catch { /* map torn down mid-tour */ }
 
     const land = landFromFeature(best.feature.properties as any);
-    const card = land ? landRules(land) : null;
+    const permitHere = land
+      ? permitForLandPoint(land.sourceId, point.lat, point.lon)
+      : null;
+    const card = land
+      ? landRules(
+          land,
+          permitHere
+            ? { name: permitHere.permit.name, certainty: permitHere.certainty }
+            : null
+        )
+      : null;
 
     t.label([point.lat, point.lon], {
       title: land?.name ?? 'Public land',
