@@ -90,6 +90,56 @@ const HOME_LABEL = 'Calgary, AB';
  */
 const ROUTE_ORIGIN_MOVE_KM = 0.25;
 
+/**
+ * Everything the filters ask about a site EXCEPT how far away it is.
+ *
+ * Pulled out of `filteredCampsites` so the map and the list share one
+ * definition rather than two that drift. The list adds a distance cut on top;
+ * the map deliberately does not — see `mapSites`.
+ *
+ * REQUIREMENTS ARE ONLY SATISFIED BY A RECORDED FACT. Every amenity is
+ * optional, so each of these has to decide what an unknown means, and it means
+ * "does not qualify": asking for a site with water and being shown one where
+ * nobody has ever checked is how somebody arrives somewhere dry expecting a
+ * creek. A filter that is switched off still shows everything, so nothing is
+ * lost by being strict here.
+ */
+const passesAttributeFilters = (
+  site: Campsite,
+  filterState: FilterState
+): boolean => {
+  if (filterState.landTypes.length > 0 && !filterState.landTypes.includes(site.landType)) {
+    return false;
+  }
+
+  const { amenities } = site;
+  if (filterState.waterOnly && (!amenities.water || amenities.water === 'none')) return false;
+  if (filterState.toiletOnly && (!amenities.toilet || amenities.toilet === 'none')) return false;
+  if (filterState.petFriendlyOnly && amenities.petFriendly !== true) return false;
+
+  if (filterState.cellSignalOnly) {
+    const best = bestCellSignal(amenities);
+    if (best === undefined || best < 2) return false;
+  }
+
+  if (
+    filterState.rigLengthMinFt > 0 &&
+    (amenities.maxRvLengthFeet ?? 0) < filterState.rigLengthMinFt
+  ) {
+    return false;
+  }
+
+  if (filterState.roadAccessMax !== 'all') {
+    // An unrecorded road could be anything, including worse than asked for.
+    if (!amenities.roadAccess) return false;
+    if (ROAD_ACCESS_RANK[amenities.roadAccess] > ROAD_ACCESS_RANK[filterState.roadAccessMax]) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 export default function App() {
   // Who's signed in. Drives the rig lookup and the friends list — both are
   // inert without a session, which is the correct behaviour, not a bug.
@@ -667,18 +717,39 @@ export default function App() {
     const [lat, lon] = exploreCentre;
     const seq = ++exploreSeq.current;
 
+    /*
+     * THE TWO SOURCES LAND SEPARATELY, AND THAT IS THE WHOLE POINT.
+     *
+     * This was one `Promise.all`, which meant the fast half waited for the
+     * slow half every single time. Supabase answers this in a few hundred
+     * milliseconds from an index — it is the campgrounds we have already
+     * stored, which is most of what is on screen — while the OpenStreetMap
+     * sweep behind `fetchOverpassCampsites` can take twenty seconds on a cold
+     * cell, because a cache miss goes out to Overpass and waits on it.
+     * Pairing them meant the stored sites were held hostage by the live ones
+     * and the map sat empty for the length of the slower request.
+     *
+     * Two independent writes instead. Whatever arrives first is drawn first,
+     * and `mergeCampsites` folds the other in when it lands — it is additive
+     * and keyed by id, so neither can erase the other, and both keep `prev`.
+     */
     void (async () => {
       try {
-        const [shared, live] = await Promise.all([
-          fetchCampsitesNear(lat, lon, filterState.maxDistanceMiles),
-          fetchOverpassCampsites(lat, lon, filterState.maxDistanceMiles)
-        ]);
+        const shared = await fetchCampsitesNear(lat, lon, filterState.maxDistanceMiles);
         if (seq !== exploreSeq.current) return;
-        // Same precedence as a search: the server's copy wins, and anything
-        // held only on this device survives untouched.
-        setCampsites((prev) => mergeCampsites(shared, prev, live));
+        setCampsites((prev) => mergeCampsites(shared, prev));
       } catch (err) {
-        console.warn('Campsite lookup for the visible map failed:', err);
+        console.warn('Stored campsites for the visible map failed:', err);
+      }
+    })();
+
+    void (async () => {
+      try {
+        const live = await fetchOverpassCampsites(lat, lon, filterState.maxDistanceMiles);
+        if (seq !== exploreSeq.current) return;
+        setCampsites((prev) => mergeCampsites(prev, live));
+      } catch (err) {
+        console.warn('OpenStreetMap campsites for the visible map failed:', err);
       }
     })();
   }, [exploreCentre, isOfflineMode, filterState.maxDistanceMiles]);
@@ -1437,48 +1508,10 @@ export default function App() {
       distance: distanceMiles(lat, lon, site.latitude, site.longitude)
     }));
 
-    const matches = withDistance.filter(({ site, distance }) => {
-      if (distance > filterState.maxDistanceMiles) return false;
-      if (filterState.landTypes.length > 0 && !filterState.landTypes.includes(site.landType)) {
-        return false;
-      }
-
-      /**
-       * Requirements are only satisfied by a recorded fact.
-       *
-       * Every amenity is optional now, so each of these has to decide what an
-       * unknown means. It means "does not qualify": asking for a site with
-       * water and being shown one where nobody has ever checked is how someone
-       * arrives somewhere dry expecting a creek. A filter that is switched off
-       * still shows everything, so nothing is lost by being strict here.
-       */
-      const { amenities } = site;
-      if (filterState.waterOnly && (!amenities.water || amenities.water === 'none')) return false;
-      if (filterState.toiletOnly && (!amenities.toilet || amenities.toilet === 'none')) return false;
-      if (filterState.petFriendlyOnly && amenities.petFriendly !== true) return false;
-
-      if (filterState.cellSignalOnly) {
-        const best = bestCellSignal(amenities);
-        if (best === undefined || best < 2) return false;
-      }
-
-      if (
-        filterState.rigLengthMinFt > 0 &&
-        (amenities.maxRvLengthFeet ?? 0) < filterState.rigLengthMinFt
-      ) {
-        return false;
-      }
-
-      if (filterState.roadAccessMax !== 'all') {
-        // An unrecorded road could be anything, including worse than asked for.
-        if (!amenities.roadAccess) return false;
-        if (ROAD_ACCESS_RANK[amenities.roadAccess] > ROAD_ACCESS_RANK[filterState.roadAccessMax]) {
-          return false;
-        }
-      }
-
-      return true;
-    });
+    const matches = withDistance.filter(
+      ({ site, distance }) =>
+        distance <= filterState.maxDistanceMiles && passesAttributeFilters(site, filterState)
+    );
 
     matches.sort((a, b) => {
       switch (filterState.sortBy) {
@@ -1520,24 +1553,37 @@ export default function App() {
   );
 
   /**
-   * What the MAP draws pins for: every camper-submitted spot, filters or not.
+   * What the MAP draws pins for.
    *
-   * The list's filters answer "which of these would suit me"; a pin answers
-   * "somebody camped here". Running the second through the first meant a spot
-   * you had just submitted disappeared as soon as it fell outside the
-   * distance slider, or the moment any amenity filter was on — because a spot
-   * added in thirty seconds on a phone records almost nothing, and an
-   * unrecorded fact does not satisfy a requirement. It looked like the
-   * submission had been lost. Submitted pins now stay on the map; the list
-   * still filters exactly as before.
+   * ---------------------------------------------------------------------
+   * THE DISTANCE SLIDER IS A LIST CONTROL. IT MUST NOT REACH THE MAP.
+   * ---------------------------------------------------------------------
+   *
+   * `filteredCampsites` drops anything further than `maxDistanceMiles` from
+   * `exploreCentre`, and `exploreCentre` FOLLOWS THE MAP. So every pin more
+   * than the slider's distance from the middle of the screen was deleted from
+   * the map, and panning re-drew the whole set from the new middle — pins
+   * vanishing behind you and reappearing when you came back. Reported as
+   * "they pop in and out", and it was: the sites were in Supabase the whole
+   * time, held in state the whole time, and thrown away one layer before
+   * being drawn.
+   *
+   * A radius measured from the centre of the screen is meaningless on a map
+   * anyway. The VIEWPORT is the distance filter; that is what a map is.
+   *
+   * The attribute filters — land type, water, toilet, pets, signal — still
+   * apply, because those answer "would this suit me" and a camper who set one
+   * means it. Only the distance cut is dropped, and camper-submitted spots
+   * stay regardless of any filter, which is the rule that was already here:
+   * a spot added in thirty seconds records almost nothing, and an unrecorded
+   * fact must not read as a failed requirement.
    */
-  const mapSites = useMemo(() => {
-    const seen = new Set(visibleSites.map((site) => site.id));
-    const extras = campsites.filter(
-      (site) => site.source === 'user_submitted' && !seen.has(site.id)
-    );
-    return extras.length ? [...visibleSites, ...extras] : visibleSites;
-  }, [visibleSites, campsites]);
+  const mapSites = useMemo(
+    () => campsites.filter(
+      (site) => site.source === 'user_submitted' || passesAttributeFilters(site, filterState)
+    ),
+    [campsites, filterState]
+  );
 
   const activeFilterCount = useMemo(() => countActiveFilters(filterState), [filterState]);
 
