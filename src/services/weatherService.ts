@@ -333,6 +333,16 @@ export interface AreaAlertResult {
    * so the map must not record the whole padded box as loaded.
    */
   clipped: boolean;
+  /**
+   * The ground this answer actually covers, which is NOT always the ground
+   * that was asked about — the server clamps very wide viewports (see
+   * MAX_SPAN_LAT in server/weatherRoutes.ts) and says so with `clipped`.
+   *
+   * The map uses this to remember what it has, so a clipped answer still
+   * counts as "loaded" for the part it really covers instead of counting as
+   * nothing at all. Null when the lookup failed and nothing was covered.
+   */
+  area: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
 }
 
 /** Nothing was learned. Every field says so rather than implying a clear sky. */
@@ -342,7 +352,8 @@ const NO_AREA_ALERTS = (aborted: boolean): AreaAlertResult => ({
   aborted,
   feeds: { nws: 'skipped', eccc: 'skipped' },
   partial: false,
-  clipped: false
+  clipped: false,
+  area: null
 });
 
 const asFeeds = (raw: unknown): Record<AlertFeedId, AlertFeedState> => {
@@ -378,7 +389,12 @@ export const fetchAreaAlerts = async (
       aborted: false,
       feeds: asFeeds(data.feeds),
       partial: data.partial === true,
-      clipped: data.clipped === true
+      clipped: data.clipped === true,
+      area:
+        data.area &&
+        ['minLat', 'minLon', 'maxLat', 'maxLon'].every((k) => typeof data.area[k] === 'number')
+          ? data.area
+          : null
     };
   } catch {
     // An abort is the caller changing their mind, and the caller already
@@ -543,4 +559,4 @@ export const forecastOnArrival = (
     isNow: false,
     note: 'That is further out than the forecast goes'
   };
-};
+};

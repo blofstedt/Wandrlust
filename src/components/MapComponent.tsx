@@ -3544,6 +3544,25 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     let retryDelay = 4000;
     const RETRY_MAX = 60_000;
 
+    /**
+     * A FLOOR ON HOW OFTEN THE AGENCIES GET ASKED, WHATEVER THE MAP DOES.
+     *
+     * The coverage guard above is about whether we NEED to ask; this is about
+     * how often we are willing to, and the two are not the same thing. Zoomed
+     * out past the server's clamp the covered area is always smaller than the
+     * view, so the guard can never hold and a camper dragging the map across a
+     * province would otherwise fire a National Weather Service and an
+     * Environment Canada query every time their thumb settled.
+     *
+     * Fifteen seconds, with the suppressed attempt scheduled rather than
+     * dropped — a warning must never be missed because a request was throttled,
+     * only delayed. Both government feeds are free, unfunded and shared by
+     * everybody; this is the difference between using them and leaning on them.
+     */
+    const MIN_FETCH_GAP_MS = 15_000;
+    let lastFetchStartedAt = 0;
+    let pendingRunTimer: ReturnType<typeof setTimeout> | null = null;
+
     const scheduleAlertRetry = () => {
       if (retryTimer) return;
       retryTimer = setTimeout(() => {
@@ -3687,6 +3706,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // the constant refetch-and-rebuild on every small pan or zoom.
       if (loadedAlertBox && loadedAlertBox.contains(b)) return;
 
+      // Asked too recently. Not dropped — re-armed for the moment the floor
+      // lifts, so a genuinely new view still gets its warnings.
+      const since = Date.now() - lastFetchStartedAt;
+      if (since < MIN_FETCH_GAP_MS) {
+        if (!pendingRunTimer) {
+          pendingRunTimer = setTimeout(() => {
+            pendingRunTimer = null;
+            void run();
+          }, MIN_FETCH_GAP_MS - since);
+        }
+        return;
+      }
+      lastFetchStartedAt = Date.now();
+
       controller?.abort();
       const myId = ++requestId;
       controller = new AbortController();
@@ -3765,14 +3798,45 @@ export const MapComponent: React.FC<MapComponentProps> = ({
        * half-answer away entirely, which did not make the map honest — it just
        * left the previous answer on screen with nothing saying it was stale.
        */
-      const complete = !result.partial && !result.clipped;
+      /*
+       * ---------------------------------------------------------------
+       * WHAT COUNTS AS LOADED, AND WHY IT IS NEVER "NOTHING"
+       * ---------------------------------------------------------------
+       *
+       * This used to set `loadedAlertBox = null` for any answer that was not
+       * perfect, which meant the guard at the top of `run` could not suppress
+       * anything and EVERY pan re-asked the agencies. Two situations made that
+       * permanent rather than temporary, and both are the common case:
+       *
+       *   CLIPPED is not a failure. The server deliberately narrows a very
+       *   wide viewport (MAX_SPAN_LAT) and tells us how much it really
+       *   covered. Zoomed out far enough, every answer is clipped forever —
+       *   so the map re-queried the National Weather Service and Environment
+       *   Canada on every single pan, indefinitely, by design.
+       *
+       *   PARTIAL means one agency did not answer. Refetching on every pan is
+       *   the worst possible response to an agency that is already
+       *   struggling: it is a retry storm aimed at the thing that is down,
+       *   and it makes the outage that produced it worse.
+       *
+       * So the area actually covered is always recorded, and recovery is the
+       * TIMED retry's job — which already exists, already backs off, and
+       * already resets on success. The camper's thumb is not a retry policy.
+       */
+      const covered = result.area
+        ? L.latLngBounds(
+            [result.area.minLat, result.area.minLon],
+            [result.area.maxLat, result.area.maxLon]
+          )
+        : padded;
 
-      if (complete) {
-        loadedAlertBox = padded;
-        retryDelay = 4000;
+      loadedAlertBox = covered;
+
+      if (result.partial) {
+        // Still incomplete, so keep asking — on a clock, not on every gesture.
+        scheduleAlertRetry();
       } else {
-        loadedAlertBox = null;
-        if (result.partial) scheduleAlertRetry();
+        retryDelay = 4000;
       }
 
       setAlertGap(alertGapNote(result));
@@ -3816,6 +3880,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       controller?.abort();
       if (debounce) clearTimeout(debounce);
       if (retryTimer) clearTimeout(retryTimer);
+      if (pendingRunTimer) clearTimeout(pendingRunTimer);
       map.off('moveend zoomend', load);
       document.removeEventListener('visibilitychange', onWake);
       window.removeEventListener('online', onWake);
