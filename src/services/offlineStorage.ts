@@ -206,6 +206,34 @@ export const deleteCustomCampsite = async (id: string): Promise<void> => {
 const SHARED_KEY = 'shared_campsites';
 const SEEN_KEY = 'seen_campsites';
 
+/**
+ * Bump this when a change alters WHAT A STORED SPOT MEANS.
+ *
+ * ---------------------------------------------------------------------------
+ * THE MISTAKE THIS EXISTS TO NOT REPEAT
+ * ---------------------------------------------------------------------------
+ *
+ * `BOUNDARY_DATA_EPOCH` is in this repo for exactly this reason, and the note
+ * about it in CLAUDE.md says the rule was written and then broken the same
+ * day. Then this cache shipped with no epoch at all — which is the same trap
+ * one layer over: a fix to the data is invisible for six hours on every phone
+ * that already holds an answer, and the person watching reports it as still
+ * broken, because from where they are standing it is.
+ *
+ * It cost that within a day. The free-campground ingest was not recording a
+ * spot's setting, so 41 campgrounds drew as the neutral "nobody has said"
+ * tent instead of the wilderness trees. Fixing it server-side changed nothing
+ * on a device holding a stored set from before the fix.
+ *
+ * Bump it for anything that changes the meaning or shape of a stored record.
+ * Not for adding spots — the six-hour refresh handles those, and throwing the
+ * set away for a routine ingest would be a download nobody needed.
+ *
+ *   1  the cache itself
+ *   2  settings backfilled, so agency campgrounds stop drawing as tents
+ */
+const CACHE_EPOCH = 2;
+
 /** How many per-view spots the device will hold. Roughly a megabyte. */
 const SEEN_CAP = 2000;
 
@@ -219,6 +247,8 @@ const SEEN_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 export interface StoredCampsiteSet {
   /** When the set was fetched, epoch ms. */
   fetchedAt: number;
+  /** `CACHE_EPOCH` when it was written. A mismatch throws the set away. */
+  epoch?: number;
   /**
    * False when the server hit its row ceiling and withheld spots.
    *
@@ -234,6 +264,8 @@ interface SeenCampsite {
   site: Campsite;
   /** Epoch ms, for the age-out and for deciding what to drop when full. */
   seenAt: number;
+  /** `CACHE_EPOCH` when it was written. A mismatch drops the entry. */
+  epoch?: number;
 }
 
 /**
@@ -271,6 +303,11 @@ export const getStoredSharedCampsites = async (): Promise<StoredCampsiteSet | nu
   try {
     const value = await dataStore.getItem<StoredCampsiteSet>(SHARED_KEY);
     if (!value || !Array.isArray(value.sites)) return null;
+    /*
+     * Written under an older understanding of what these records mean. Not
+     * repaired — refetched, because this file cannot know what changed.
+     */
+    if ((value.epoch ?? 0) !== CACHE_EPOCH) return null;
     return {
       fetchedAt: Number(value.fetchedAt) || 0,
       complete: value.complete !== false,
@@ -321,6 +358,7 @@ export const putStoredSharedCampsites = async (
   try {
     await dataStore.setItem<StoredCampsiteSet>(SHARED_KEY, {
       fetchedAt: Date.now(),
+      epoch: CACHE_EPOCH,
       complete,
       sites: toStore
     });
@@ -341,7 +379,11 @@ export const getSeenCampsites = async (): Promise<Campsite[]> => {
   if (stored.length === 0) return [];
 
   const cutoff = Date.now() - SEEN_MAX_AGE_MS;
-  const live = stored.filter((entry) => entry?.site && (entry.seenAt ?? 0) > cutoff);
+  // Same epoch rule as the shared set — these are the same records, arriving
+  // by a different door. An entry with no epoch predates the check.
+  const live = stored.filter(
+    (entry) => entry?.site && (entry.seenAt ?? 0) > cutoff && entry.epoch === CACHE_EPOCH
+  );
   if (live.length !== stored.length) await writeList(SEEN_KEY, live);
 
   return live.map((entry) => entry.site);
@@ -371,7 +413,7 @@ export const rememberSeenCampsites = async (sites: Campsite[]): Promise<void> =>
   for (const entry of await readList<SeenCampsite>(SEEN_KEY)) {
     if (entry?.site?.id) byId.set(entry.site.id, entry);
   }
-  for (const site of fresh) byId.set(site.id, { site, seenAt: now });
+  for (const site of fresh) byId.set(site.id, { site, seenAt: now, epoch: CACHE_EPOCH });
 
   const kept = [...byId.values()]
     .sort((a, b) => (b.seenAt ?? 0) - (a.seenAt ?? 0))

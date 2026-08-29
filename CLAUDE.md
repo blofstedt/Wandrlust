@@ -248,6 +248,16 @@ npm run vapid    # generate push notification keys
   instead). Every merge now prints one line — parcels, rings, trims, time,
   pieces, and why it fell back. **Read it before theorising**; working out
   which of the three it was by elimination cost three deploys.
+- **The campsite cache has its own epoch, and it is a SECOND one.**
+  `CACHE_EPOCH` in `src/services/offlineStorage.ts` invalidates the stored
+  campsite set the same way `BOUNDARY_DATA_EPOCH` invalidates boundaries, and
+  it exists because the cache shipped without one and was caught by the
+  documented trap within a day: 41 campgrounds were drawing as the neutral
+  tent because the ingest never set their `setting`, and fixing that
+  server-side changed nothing on a phone already holding a stored answer.
+  Bump it when a change alters WHAT A STORED SPOT MEANS. Do NOT bump it for
+  merely adding spots — the six-hour refresh covers those, and discarding the
+  set for a routine ingest is a download nobody needed.
 - **A change to what the map draws needs `BOUNDARY_DATA_EPOCH` bumped**
   (`src/services/boundaryService.ts`). Boundaries are cached twelve hours in
   memory, seven days on disk and six in the browser, so without it a fix is
