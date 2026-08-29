@@ -317,16 +317,24 @@ const fetchRegion = async (
    * "nothing at all".
    */
   /*
-   * A SLICE EACH, NOT HALF THE BUDGET TO THE FIRST ONE.
+   * TWO MIRRORS A TILE, NOT ONE AND NOT THREE.
    *
-   * This was nine seconds a mirror, measured back when the unit of work was a
-   * whole province and nine seconds was the difference between slow and
-   * nothing. Provinces are asked in tiles now, and a tile that Overpass is
-   * actually going to answer comes back in a second or two — so nine seconds
-   * at the first mirror is not patience, it is the other two never being
-   * asked. A third of the budget each, with a floor, so all three get a turn.
+   * Nine seconds was the old number, from when the unit of work was a whole
+   * province — it meant the first mirror got everything and the other two were
+   * never asked at all. Splitting the budget three ways fixed that and
+   * overshot: four and a half seconds is enough for a mirror that is ready and
+   * not enough for one that is merely busy, so on a loaded evening all three
+   * were given a slice too small to answer in and every tile came back with
+   * nothing. Measured both ways, in production, an hour apart.
+   *
+   * Seven seconds is the middle: long enough for a mirror that is working
+   * through a queue, short enough that a second one still gets a real turn.
+   * The third mirror is not the safety net here — ANOTHER PASS IS. A tile that
+   * fails is retried by the next sweep, against mirrors that have had minutes
+   * to recover, and that is a far better use of the wait than a third slice in
+   * the same ten seconds.
    */
-  const perMirrorMs = Math.max(4_500, Math.floor(timeoutMs / 3));
+  const perMirrorMs = Math.max(6_500, Math.floor(timeoutMs / 2));
   const tried: string[] = [];
 
   for (const mirror of mirrorOrder()) {

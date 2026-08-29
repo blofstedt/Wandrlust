@@ -35,7 +35,7 @@ on:
       passes:
         description: 'How many times to sweep all 149 tiles (later passes retry what Overpass refused)'
         required: false
-        default: '3'
+        default: '2'
       dry:
         description: 'Look but store nothing — prints the diagnostics and leaves the map alone'
         type: boolean
@@ -51,9 +51,10 @@ on:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    # Three passes over 149 tiles, a few seconds a tile, plus whatever the
+    # Two passes over 149 tiles, a few seconds a tile, plus whatever the
     # mirrors make us wait for. Generous, because being killed half way leaves
-    # the map in exactly the state this job exists to fix.
+    # the map in exactly the state this job exists to fix — and the job gives
+    # up on its own long before this when Overpass is the thing that is down.
     timeout-minutes: 90
 
     steps:
@@ -67,11 +68,18 @@ jobs:
 
           stored_total=0
           unanswered=""
+          overpass_down=""
 
           for pass in $(seq 1 "$PASSES"); do
             echo "::group::Pass $pass of $PASSES"
             from=0
             unanswered=""
+            # Tiles in a row that nobody answered. Overpass being down is not
+            # something this job can fix by asking harder, and an hour of
+            # asking harder produces a log nobody can read and a summary that
+            # looks like a code failure. Twelve in a row is the whole of Québec
+            # going unanswered — well past a slow minute.
+            blind=0
 
             while [ "$from" != "null" ] && [ -n "$from" ]; do
               url="$BASE/api/free-campgrounds/ingest?from=$from&budgetMs=24000"
@@ -95,15 +103,26 @@ jobs:
                 else "  \(.region): \(.freeTagged) free-tagged, \(.official) official, \(.insideTheBorder) in the border, \(.stored) stored"
                 end' <<<"$resp"
 
+              answered_here=$(jq -r '[.results[] | select(.ok != false)] | length' <<<"$resp")
+              failed_here=$(jq -r '[.results[] | select(.ok == false)] | length' <<<"$resp")
+              if [ "$answered_here" -gt 0 ]; then blind=0; else blind=$(( blind + failed_here )); fi
+
               unanswered="$unanswered$(jq -r '.results[] | select(.ok == false) | .region' <<<"$resp")
           "
               stored_total=$(( stored_total + $(jq -r '.storedThisCall // 0' <<<"$resp") ))
               from=$(jq -r '.nextFrom' <<<"$resp")
 
+              if [ "$blind" -ge 12 ]; then
+                overpass_down="yes"
+                echo "  twelve tiles running with no answer from any mirror — Overpass is down, not this job. Stopping."
+                break
+              fi
+
               # Polite to three volunteer-run mirrors we are about to ask again.
               sleep 3
             done
             echo "::endgroup::"
+            [ -n "$overpass_down" ] && break
           done
 
           left=$(printf '%s' "$unanswered" | grep -c . || true)
@@ -113,6 +132,12 @@ jobs:
             echo "- Campgrounds stored: **$stored_total**"
             echo "- Tiles still unanswered after $PASSES passes: **$left**"
             echo
+            if [ -n "$overpass_down" ]; then
+              echo "**Overpass was down.** Twelve tiles running went unanswered by every"
+              echo "mirror, so the walk stopped rather than spend an hour proving it. Nothing"
+              echo "in this run is a fact about the ground — re-run when the mirrors recover."
+              echo
+            fi
             if [ "$left" -gt 0 ]; then
               echo "Unanswered means Overpass never replied for that ground — not that"
               echo "there is nothing there. Re-run this job; a later pass usually gets it."
