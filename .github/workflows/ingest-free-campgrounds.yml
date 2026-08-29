@@ -1,0 +1,126 @@
+# Walk the free-campground ingest across the whole coverage area.
+#
+# WHY THIS RUNS IN CI RATHER THAN ANYWHERE ELSE
+#
+# Same reason as `build-land-overlay.yml`. The ingest is 149 tiles and the API
+# is one serverless function with a 30-second ceiling, so a single request can
+# only ever get through a handful of them before it has to hand back a cursor
+# and stop. Something has to hold the cursor and keep calling, for several
+# minutes, and a CI runner is the only place in this project that can.
+#
+# AND WHY IT DOES MORE THAN ONE PASS
+#
+# Overpass mirrors queue rather than refuse: a busy one accepts the connection
+# and then says nothing until it gets round to you. On a bad evening every
+# mirror does that at once and a tile comes back "no mirror answered" — which
+# is not a fact about the ground, it is a fact about the last ten seconds.
+# That is exactly how Québec, Ontario and Newfoundland came to show nothing at
+# all on the map: they were never once successfully asked.
+#
+# So the walk is run more than once, and a later pass picks up what an earlier
+# one could not get an answer for. The ingest is an upsert keyed on the OSM id,
+# so running it again is free — it rewrites what it already had and adds
+# whatever it missed.
+#
+# The summary at the end says how many tiles still went unanswered. That
+# number is the honest measure of the run: campgrounds stored says what was
+# found, unanswered tiles says what was never looked at, and the two must not
+# be read as one.
+
+name: Ingest free campgrounds
+
+on:
+  workflow_dispatch:
+    inputs:
+      passes:
+        description: 'How many times to sweep all 149 tiles (later passes retry what Overpass refused)'
+        required: false
+        default: '3'
+      dry:
+        description: 'Look but store nothing — prints the diagnostics and leaves the map alone'
+        type: boolean
+        required: false
+        default: false
+  # Monthly, and deliberately not nightly. Campgrounds do change — one opens,
+  # one closes, somebody finally tags an operator — but they change on the
+  # timescale of a season, and hammering public Overpass infrastructure every
+  # night to find that out would be rude.
+  schedule:
+    - cron: '20 6 1 * *'
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    # Three passes over 149 tiles, a few seconds a tile, plus whatever the
+    # mirrors make us wait for. Generous, because being killed half way leaves
+    # the map in exactly the state this job exists to fix.
+    timeout-minutes: 90
+
+    steps:
+      - name: Walk the tiles
+        env:
+          BASE: https://wandrlust.dev
+          PASSES: ${{ github.event.inputs.passes || '3' }}
+          DRY: ${{ github.event.inputs.dry == 'true' && '1' || '' }}
+        run: |
+          set -uo pipefail
+
+          stored_total=0
+          unanswered=""
+
+          for pass in $(seq 1 "$PASSES"); do
+            echo "::group::Pass $pass of $PASSES"
+            from=0
+            unanswered=""
+
+            while [ "$from" != "null" ] && [ -n "$from" ]; do
+              url="$BASE/api/free-campgrounds/ingest?from=$from&budgetMs=24000"
+              [ -n "$DRY" ] && url="$url&dry=1"
+
+              # A serverless function that dies mid-write answers nothing, so a
+              # failed call is retried once before the cursor is given up on.
+              resp=$(curl -sS --max-time 45 "$url" || true)
+              if [ -z "$resp" ]; then
+                sleep 5
+                resp=$(curl -sS --max-time 45 "$url" || true)
+              fi
+              if [ -z "$resp" ] || [ "$(jq -r '.ok // false' <<<"$resp")" != "true" ]; then
+                echo "  tile $from: the API did not answer — stopping this pass"
+                break
+              fi
+
+              # One line per tile: what it found, or why it found nothing.
+              jq -r '.results[] | if .ok == false
+                then "  \(.region): NO ANSWER — \(.note)"
+                else "  \(.region): \(.freeTagged) free-tagged, \(.official) official, \(.insideTheBorder) in the border, \(.stored) stored"
+                end' <<<"$resp"
+
+              unanswered="$unanswered$(jq -r '.results[] | select(.ok == false) | .region' <<<"$resp")
+          "
+              stored_total=$(( stored_total + $(jq -r '.storedThisCall // 0' <<<"$resp") ))
+              from=$(jq -r '.nextFrom' <<<"$resp")
+
+              # Polite to three volunteer-run mirrors we are about to ask again.
+              sleep 3
+            done
+            echo "::endgroup::"
+          done
+
+          left=$(printf '%s' "$unanswered" | grep -c . || true)
+          {
+            echo "## Free campground ingest"
+            echo
+            echo "- Campgrounds stored: **$stored_total**"
+            echo "- Tiles still unanswered after $PASSES passes: **$left**"
+            echo
+            if [ "$left" -gt 0 ]; then
+              echo "Unanswered means Overpass never replied for that ground — not that"
+              echo "there is nothing there. Re-run this job; a later pass usually gets it."
+              echo
+              echo '```'
+              printf '%s' "$unanswered" | grep . | sort -u
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "stored $stored_total, $left tiles unanswered"
