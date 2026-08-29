@@ -40,8 +40,11 @@ export const CURATED_CAMPSITES: Campsite[] =  [
       "country": "Canada",
       "description": "40 km SW of Calgary via Highway 22 & Highway 66"
     },
-    "description": "Legal Crown Land dispersed camping zone nestled along McLean Creek in the Kananaskis Foothills. Popular for off-grid overland rigs, truck campers, and tenters. Gorgeous pine forest with creek access.",
-    "amenities": {},
+    "description": "Legal Crown Land dispersed camping zone nestled along McLean Creek in the Kananaskis Foothills. Popular for off-grid overland rigs, truck campers, and tenters. Gorgeous pine forest with creek access. Alberta's Public Lands Camping Pass is required to camp here — $30 a year or $20 for three days, per person 18 and over. It covers random camping along the Eastern Slopes and this spot is inside that area, so there is no nightly fee but it is not free of charge. Buy the pass before you go. This is the PLUZ, not the McLean Creek Provincial Recreation Area campground next to it, which charges nightly. Random camping is not allowed within 1 km of a road in the McLean Creek OHV zone.",
+    "amenities": {
+      "isFree": true,
+      "permitRequired": true
+    },
     "images": [],
     "reviews": [],
     "rating": 0,
@@ -62,8 +65,11 @@ export const CURATED_CAMPSITES: Campsite[] =  [
       "country": "Canada",
       "description": "Highway 11 (David Thompson Hwy) along the shores of Abraham Lake"
     },
-    "description": "World-famous turquoise glacier reservoir surrounded by dramatic Rocky Mountain peaks. 100% legal Crown Land dispersed camping along designated lake shore pull-offs and forest clearings.",
-    "amenities": {},
+    "description": "World-famous turquoise glacier reservoir surrounded by dramatic Rocky Mountain peaks. 100% legal Crown Land dispersed camping along designated lake shore pull-offs and forest clearings. Alberta's Public Lands Camping Pass is required to camp here — $30 a year or $20 for three days, per person 18 and over. It covers random camping along the Eastern Slopes and this spot is inside that area, so there is no nightly fee but it is not free of charge. Buy the pass before you go.",
+    "amenities": {
+      "isFree": true,
+      "permitRequired": true
+    },
     "images": [],
     "reviews": [],
     "rating": 0,
@@ -84,8 +90,11 @@ export const CURATED_CAMPSITES: Campsite[] =  [
       "country": "Canada",
       "description": "Secondary Hwy 520 west into the Porcupine Hills PLUZ ridge"
     },
-    "description": "Rolling pine ridge slopes and open meadows in the Southern Alberta Foothills. Panoramic high-elevation prairie views extending all the way to the Rocky Mountain Front Range.",
-    "amenities": {},
+    "description": "Rolling pine ridge slopes and open meadows in the Southern Alberta Foothills. Panoramic high-elevation prairie views extending all the way to the Rocky Mountain Front Range. Alberta's Public Lands Camping Pass is required to camp here — $30 a year or $20 for three days, per person 18 and over. It covers random camping along the Eastern Slopes and this spot is inside that area, so there is no nightly fee but it is not free of charge. Buy the pass before you go.",
+    "amenities": {
+      "isFree": true,
+      "permitRequired": true
+    },
     "images": [],
     "reviews": [],
     "rating": 0,
@@ -288,9 +297,10 @@ export const CURATED_CAMPSITES: Campsite[] =  [
       "country": "Canada",
       "description": "David Thompson Highway (Hwy 11), west of Rocky Mountain House"
     },
-    "description": "Turquoise glacial lake surrounded by Canadian Rocky summits. Free crown land camping along shoreline inlets and forestry roads.",
+    "description": "Turquoise glacial lake surrounded by Canadian Rocky summits. Crown Land camping along shoreline inlets and forestry roads. Alberta's Public Lands Camping Pass is required to camp here — $30 a year or $20 for three days, per person 18 and over. It covers random camping along the Eastern Slopes and this spot is inside that area, so there is no nightly fee but it is not free of charge. Buy the pass before you go.",
     "amenities": {
-      "isFree": true
+      "isFree": true,
+      "permitRequired": true
     },
     "images": [],
     "reviews": [],
@@ -474,4 +484,4 @@ export const CURATED_CAMPSITES: Campsite[] =  [
     "reviewCount": 0,
     "source": "verified"
   }
-];
+];
