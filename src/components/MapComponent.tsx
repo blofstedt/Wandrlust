@@ -939,9 +939,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
      * constrain anything at that scale. Whatever minimum was passed to
      * the constructor got overwritten a few lines later.
      *
-     * `getBoundsZoom` asks the right question instead: how far out can we
-     * go before the frame stops fitting? Zooming out past that only ever
-     * reveals the parts of the world this app has nothing to say about.
+     * The right question is how far out we can go before the frame stops
+     * FILLING THE SCREEN TOP TO BOTTOM. Zooming out past that only ever
+     * trades land for grey — either the parts of the world this app has
+     * nothing to say about, or the matte where there is no world at all.
      *
      * Recomputed on resize, so rotating a phone or dragging a window
      * narrower can't strand the user below the new minimum.
@@ -960,47 +961,63 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       if (!frameWidth || !frameHeight) return;
 
       /**
-       * Fractional on purpose. `getBoundsZoom` would floor this to a
-       * whole level, and on a phone the fit lands around 2.65 — so
-       * flooring to 2 halves the scale and leaves the continent as a
-       * small rectangle adrift in a field of grey. Landing exactly on
-       * the fit means the frame meets the left and right edges of the
-       * screen at full zoom-out, which is the shape of the thing.
+       * HEIGHT ONLY. The frame meets the TOP and BOTTOM of the screen at
+       * full zoom-out, and the east and west of it run off the sides.
        *
-       * Computed rather than asked for, because `getBoundsZoom` also
-       * clamps its answer to the minimum currently in force — so once
-       * this had been set, widening the window could never lower it
-       * again, and the map would stay stuck at the phone-sized minimum.
+       * Fitting BOTH dimensions is the obvious thing and it is wrong on a
+       * phone. The frame is half again as wide as it is tall, a phone held
+       * upright is twice as tall as it is wide, so the width won and the
+       * continent landed as a thin strip across the middle of the screen
+       * with a thick field of grey above it and another below — every pin,
+       * coastline and coverage line too small to read, and two-thirds of
+       * the screen spent on nothing.
+       *
+       * Solving for the height instead spends the whole screen on land.
+       * Less of the continent is visible at once and the rest is reached
+       * by dragging sideways, which is the trade worth making. On a wide
+       * screen nothing changes: the height was already the binding
+       * dimension there, so this is the same number the fit gave.
+       *
+       * Fractional on purpose — `getBoundsZoom` would floor it to a whole
+       * level, which halves the scale and undoes the point. Computed
+       * rather than asked for, too, because `getBoundsZoom` clamps its
+       * answer to the minimum currently in force: once this had been set,
+       * widening the window could never lower it again and the map would
+       * stay stuck at the phone-sized minimum.
        */
-      const next = Math.log2(Math.min(size.x / frameWidth, size.y / frameHeight));
+      const next = Math.log2(size.y / frameHeight);
 
       map.setMinZoom(next);
 
       /**
-       * Fully zoomed out means one exact view, so snap to it.
-       *
-       * At the minimum the frame either fits the screen exactly in one
-       * dimension and is letterboxed in the other, or fits both. Either
-       * way there is nowhere to pan to — so the view is completely
-       * determined, and it should be the frame, dead centre, with the
-       * leftover band split evenly between the two edges.
-       *
+       * At the floor the VERTICAL position is completely determined —
+       * the frame's top and bottom are the screen's — so settle it here.
        * Leaflet gets there on its own most of the time, but not after a
        * resize: `invalidateSize` shifts the view without re-running the
-       * bounds clamp, so rotating a phone could leave the continent
-       * sitting high or low in the frame with all the grey below it.
+       * bounds clamp, so rotating a phone or the address bar sliding away
+       * could leave the continent sitting high or low with the grey
+       * gathered on one side of it.
        *
-       * The centre is measured in PROJECTED space, not by averaging the
-       * corner latitudes. Mercator stretches the north, so the halfway
-       * latitude and the halfway pixel are two different places — about
-       * four degrees apart over a frame this tall, which is a visibly
-       * off-centre map.
+       * The east-west position is NOT determined, and must not be reset.
+       * The whole point of the floor above is that the frame is wider than
+       * the screen, so where the camper has dragged to is real information
+       * — and the address bar alone fires this several times a scroll.
+       * Snapping the longitude back to the middle of the continent every
+       * time would yank the map out from under them. Only the y moves;
+       * Leaflet's own `maxBounds` clamp keeps the x inside the frame, and
+       * centres it on a screen wide enough that it fits.
+       *
+       * The vertical middle is measured in PROJECTED space, not by
+       * averaging the corner latitudes. Mercator stretches the north, so
+       * the halfway latitude and the halfway pixel are two different
+       * places — about four degrees apart over a frame this tall, which is
+       * a visibly off-centre map.
        */
       if (map.getZoom() <= next + 1e-9) {
+        const frameNW = map.project(PAN_BOUNDS.getNorthWest(), next);
+        const frameSE = map.project(PAN_BOUNDS.getSouthEast(), next);
         const middle = map.unproject(
-          map.project(PAN_BOUNDS.getNorthWest(), next)
-            .add(map.project(PAN_BOUNDS.getSouthEast(), next))
-            .divideBy(2),
+          L.point(map.project(map.getCenter(), next).x, (frameNW.y + frameSE.y) / 2),
           next
         );
         map.setView(middle, next, { animate: false });
