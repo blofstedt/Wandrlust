@@ -118,4 +118,47 @@ export const registerAlbertaRecRoutes = (app: Express): void => {
 
     return res.json({ ok: true, layers: out });
   });
+
+  /**
+   * The camping-pass boundary as GeoJSON, simplified enough to commit.
+   *
+   *   GET /api/alberta-rec/pass-geometry?tolerance=0.01
+   *
+   * A one-off. `config/permits.ts` currently approximates this 66,710 km²
+   * polygon with a rectangle and hedges every Alberta answer because of it —
+   * "may apply, check with the province". With the real outline the hedge
+   * becomes an answer.
+   *
+   * ArcGIS simplifies server-side via `maxAllowableOffset`, in the units of
+   * `outSR` — degrees here, so 0.01 is roughly a kilometre. That is far finer
+   * than the question needs (nobody camps within a kilometre of the boundary
+   * by accident and then argues about it) and small enough to live in
+   * `public/map/`, which is where this repo puts big static reference data.
+   *
+   * Read once by a developer, saved to a file, committed. Not called at
+   * runtime — see the rule about the serverless filesystem.
+   */
+  app.get('/api/alberta-rec/pass-geometry', async (req: Request, res: Response) => {
+    const tolerance = Math.min(0.1, Math.max(0.001,
+      Number(req.query.tolerance) || 0.01));
+
+    const answer = await ask(
+      `${LAYERS.campingPass}/query?where=1%3D1&outFields=Name&returnGeometry=true` +
+      `&maxAllowableOffset=${tolerance}&outSR=4326&f=geojson`,
+      20_000
+    );
+    if (!answer.ok) return res.status(502).json({ ok: false, note: answer.note });
+
+    const body = answer.body;
+    const rings = (body?.features ?? []).reduce(
+      (n: number, f: any) => n + JSON.stringify(f.geometry?.coordinates ?? []).length, 0
+    );
+    return res.json({
+      ok: true,
+      tolerance,
+      ms: answer.ms,
+      approxBytes: rings,
+      geojson: body
+    });
+  });
 };
