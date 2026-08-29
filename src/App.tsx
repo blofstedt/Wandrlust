@@ -427,10 +427,12 @@ export default function App() {
        */
       const cached = [...(stored?.sites ?? []), ...seen];
       if (cached.length > 0) {
-        setCampsites((prev) => {
-          const ids = new Set(prev.map((s) => s.id));
-          return [...prev, ...cached.filter((c) => !ids.has(c.id))];
-        });
+        // Through the merge rather than concatenated, because a cached
+        // OpenStreetMap node and a curated spot are regularly the same
+        // pullout under two ids — and two pins forty metres apart reads as
+        // two places to sleep. `prev` goes first, so anything already here
+        // wins the tie.
+        setCampsites((prev) => mergeCampsites(prev, cached));
       }
     })();
 
