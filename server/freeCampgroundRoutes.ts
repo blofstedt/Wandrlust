@@ -87,7 +87,13 @@ const OFFICIAL_OPERATOR: RegExp[] = [
   // ---- United States, federal ----
   /\bforest service\b/i, /\busfs\b/i, /\bu\.?\s?s\.?\s?d\.?\s?a\.?\b/i,
   /bureau of land management/i, /\bblm\b/i,
-  /national park service/i, /\bnps\b/i, /\bnational forest\b/i,
+  /national park service/i, /\bnps\b/i,
+  /*
+   * PLURAL. "Huron-Manistee National Forests" is one administrative unit
+   * covering two forests and it is spelled that way on every sign; the
+   * singular pattern missed it and five of its campgrounds with it.
+   */
+  /\bnational forests?\b/i,
   /army corps of engineers/i, /\busace\b/i,
   /bureau of reclamation/i, /tennessee valley authority/i,
   /fish (and|&) wildlife/i,
@@ -97,7 +103,25 @@ const OFFICIAL_OPERATOR: RegExp[] = [
   /department of (conservation|environmental|parks|wildlife)/i,
   /\bwildlife (management|resources|department|division)/i,
   /\bcounty (park|of)\b/i, /\bcity of\b/i, /\btown of\b/i, /\bvillage of\b/i,
-  /\btownship\b/i, /\bmunicipal/i, /\bparks (and|&) rec/i,
+  /\btownship\b/i, /\bmunicipal/i,
+  /*
+   * The comma is not optional decoration. "Office of Parks, Recreation and
+   * Historic Preservation" is New York's parks agency and the old
+   * `parks (and|&) rec` never had a chance at it.
+   */
+  /\bparks,?\s+(and\s+|&\s+)?recreation\b/i, /\bparks (and|&) rec/i,
+  /**
+   * A state or province naming ITSELF as the operator.
+   *
+   * "State of Minnesota", "The Province of Alberta". Both are as plainly
+   * government as an agency name and neither matched anything above, which
+   * cost Alberta four campgrounds it publishes under its own name. Safe
+   * against the obvious false friend: `\bstate of\b` does not fire inside
+   * "estate of", because there is no word boundary in the middle of a word.
+   */
+  /\bstate of\b/i, /\bprovince of\b/i,
+  /** New York's environmental agency, which signs itself by acronym. */
+  /\bnys?dec\b/i,
   // ---- Canada ----
   /parks canada/i, /parcs canada/i,
   /recreation sites and trails/i, /\bcrown land\b/i,
