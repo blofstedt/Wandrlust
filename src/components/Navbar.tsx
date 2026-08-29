@@ -19,6 +19,8 @@ interface NavbarProps {
   filterState: FilterState;
   setFilterState: React.Dispatch<React.SetStateAction<FilterState>>;
   onSelectLocation: (loc: GeocodedLocation) => void;
+  /** Where the map is looking, so place results near it sort first. */
+  mapCenter?: [number, number] | null;
   /**
    * Whether the device believes it has a connection.
    *
@@ -82,7 +84,7 @@ interface ToolButton {
  *  changes below it. */
 export const Navbar: React.FC<NavbarProps> = React.memo(({
   activeView, setActiveView, filterState, setFilterState, onSelectLocation,
-  isOnline, onOpenOfflineManager,
+  mapCenter, isOnline, onOpenOfflineManager,
   onOpenAddModal, onOpenGuideModal, onOpenFilterDrawer, onOpenAuth, onOpenPresence,
   onOpenScout, onOpenSettings, onOpenReport, nearbyCount = 0,
   activeFilterCount = 0, savedCount,
@@ -103,7 +105,8 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
       [setFilterState]
     ),
     onSelectLocation,
-    onPicked: useCallback(() => setDismissed(true), [])
+    onPicked: useCallback(() => setDismissed(true), []),
+    near: mapCenter
   });
 
   const {

@@ -1874,6 +1874,9 @@ export default function App() {
           filterState={filterState}
           setFilterState={setFilterState}
           onSelectLocation={handleSelectLocation}
+          // Where the map actually settled, falling back to where it was sent.
+          // A place search on a map should prefer what is near you.
+          mapCenter={exploreCentre ?? center}
           isOnline={isOnline}
           onOpenOfflineManager={() => setIsOfflineManagerOpen(true)}
           onOpenAddModal={() => setIsAddHereOpen(true)}

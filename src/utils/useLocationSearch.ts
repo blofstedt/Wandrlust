@@ -63,10 +63,17 @@ interface Options {
   onSelectLocation: (loc: GeocodedLocation) => void;
   /** Called after a result is picked — the caller closes its own panel. */
   onPicked?: () => void;
+  /**
+   * Where the map is looking, so place results near it sort first.
+   *
+   * Optional, and the search works without it — it only decides the order
+   * when a fuzzy match has several plausible answers in different places.
+   */
+  near?: [number, number] | null;
 }
 
 export const useLocationSearch = ({
-  searchQuery, onQueryCommitted, onSelectLocation, onPicked
+  searchQuery, onQueryCommitted, onSelectLocation, onPicked, near
 }: Options): LocationSearch => {
   const [query, setQuery] = useState(searchQuery ?? '');
   const [suggestions, setSuggestions] = useState<GeocodedLocation[]>([]);
@@ -109,9 +116,18 @@ export const useLocationSearch = ({
     setIsSearching(false);
   }, []);
 
+  /*
+   * Read through a ref so `runSearch` keeps a stable identity. It is a
+   * dependency of the Enter-key handler, and the map centre changes on every
+   * pan — rebuilding the callback that often would churn every consumer for
+   * a value only read at the moment a search fires.
+   */
+  const nearRef = useRef(near);
+  nearRef.current = near;
+
   const runSearch = useCallback(async (value: string): Promise<GeocodedLocation[]> => {
     const ticket = searchSeq.current;
-    const { results, ok } = await geocodeSearch(value);
+    const { results, ok } = await geocodeSearch(value, 6, nearRef.current);
     // Superseded while we were waiting. Drop it on the floor.
     if (ticket !== searchSeq.current) return results;
 

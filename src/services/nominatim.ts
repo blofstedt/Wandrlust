@@ -91,12 +91,24 @@ const toLocation = (row: GeocodeRow): GeocodedLocation[] => {
  */
 export const geocodeSearch = async (
   query: string,
-  limit = 6
+  limit = 6,
+  /**
+   * Where the map is looking, so near places sort first.
+   *
+   * Fuzzy matching cuts both ways — "brag creek" finds Bragg Creek, Alberta,
+   * and also Big Black Creek, Alabama. On a map there is an obvious tiebreak
+   * and this is it. Optional: without it the search still works.
+   */
+  near?: [number, number] | null
 ): Promise<GeocodeAnswer> => {
   const trimmed = query.trim();
   if (trimmed.length < 2) return { results: [], ok: true };
 
-  const cacheKey = `${trimmed.toLowerCase()}::${limit}`;
+  const bias = near && Number.isFinite(near[0]) && Number.isFinite(near[1])
+    ? `&lat=${near[0].toFixed(4)}&lon=${near[1].toFixed(4)}`
+    : '';
+
+  const cacheKey = `${trimmed.toLowerCase()}::${limit}::${bias}`;
   const cached = cache.get(cacheKey);
   if (cached) return { results: cached, ok: true };
 
@@ -105,7 +117,7 @@ export const geocodeSearch = async (
     const timeout = setTimeout(() => controller.abort(), 8000);
 
     const response = await fetch(
-      `/api/geocode?q=${encodeURIComponent(trimmed)}&limit=${limit}`,
+      `/api/geocode?q=${encodeURIComponent(trimmed)}&limit=${limit}${bias}`,
       { headers: { Accept: 'application/json' }, signal: controller.signal }
     );
     clearTimeout(timeout);

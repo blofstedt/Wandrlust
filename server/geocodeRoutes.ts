@@ -123,9 +123,24 @@ const fetchJson = async (url: string, timeoutMs: number): Promise<any | null> =>
  * label is assembled from the administrative fields, because Photon has no
  * single display string of its own.
  */
-const searchPhoton = async (q: string, limit: number): Promise<GeocodeHit[] | null> => {
+const searchPhoton = async (
+  q: string,
+  limit: number,
+  near: { lat: number; lon: number } | null
+): Promise<GeocodeHit[] | null> => {
+  /*
+   * BIASED TOWARDS WHERE THE MAP IS LOOKING, when the client says.
+   *
+   * Fuzzy matching cuts both ways: "brag creek" finds Bragg Creek, Alberta,
+   * and it also finds Big Black Creek, Alabama, and without a hint it has no
+   * reason to prefer one. On a map, it does have a reason — the camper is
+   * looking at somewhere — so the centre of the view goes with the query and
+   * near things sort first. Missing is fine: the search still works, it just
+   * ranks by relevance alone.
+   */
+  const bias = near ? `&lat=${near.lat.toFixed(4)}&lon=${near.lon.toFixed(4)}` : '';
   const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}` +
-              `&limit=${limit * 3}&lang=en`;
+              `&limit=${limit * 3}&lang=en${bias}`;
   const data = await fetchJson(url, 6_000);
   if (!data || !Array.isArray(data.features)) return null;
 
@@ -226,7 +241,19 @@ export const registerGeocodeRoutes = (app: Express): void => {
 
     if (q.length < 2) return res.json({ ok: true, results: [], source: 'none' });
 
-    const key = `${q.toLowerCase()}::${limit}`;
+    const lat = Number(req.query.lat);
+    const lon = Number(req.query.lon);
+    const near = Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+
+    /*
+     * The bias is part of the question, so it is part of the cache key — the
+     * same words asked from Alberta and from Arizona are two different
+     * searches. Rounded to a degree, though: an answer is not worth
+     * re-fetching because the map drifted a kilometre, and a key that fine
+     * would mean a cache that never hits.
+     */
+    const key = `${q.toLowerCase()}::${limit}::` +
+      (near ? `${Math.round(near.lat)},${Math.round(near.lon)}` : 'anywhere');
     const hit = cached(key);
     if (hit) return res.json({ ok: true, results: hit, source: 'cache' });
 
@@ -236,7 +263,7 @@ export const registerGeocodeRoutes = (app: Express): void => {
      * answer from a fuzzy matcher is a strong hint the query is unusual rather
      * than misspelled, and that is the kind of thing Nominatim is better at.
      */
-    const photon = await searchPhoton(q, limit);
+    const photon = await searchPhoton(q, limit, near);
     if (photon && photon.length > 0) {
       remember(key, photon);
       return res.json({ ok: true, results: photon, source: 'photon' });
