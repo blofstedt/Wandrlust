@@ -13,7 +13,11 @@ import {
   getCustomCampsites,
   addCustomCampsite,
   deleteCustomCampsite,
-  getOfflineCampsites
+  getOfflineCampsites,
+  getStoredSharedCampsites,
+  putStoredSharedCampsites,
+  getSeenCampsites,
+  rememberSeenCampsites
 } from './services/offlineStorage';
 import { Navbar } from './components/Navbar';
 import { MapComponent } from './components/MapComponent';
@@ -56,7 +60,8 @@ import { bestCellSignal } from './utils/amenities';
 import { openDirections } from './utils/handoff';
 import { updateAlertLocation } from './services/pushService';
 import {
-  fetchCampsitesNear, fetchMyRigs, submitCampsite, fetchMySubmissionStates,
+  fetchCampsitesNear, fetchAllSharedCampsites, fetchMyRigs, submitCampsite,
+  fetchMySubmissionStates,
   saveCampsiteRemote, unsaveCampsiteRemote, fetchSavedCampsitesRemote,
   type HazardRecord, type NearbyCamper, type Rig
 } from './services/dataService';
@@ -68,6 +73,15 @@ import { calculateRoute, type RouteResult } from './services/routingService';
 import { fetchWeather, EMPTY_WEATHER, type WeatherSnapshot } from './services/weatherService';
 import { fetchCellCoverage, UNKNOWN_COVERAGE } from './services/cellCoverageService';
 import { useAuth } from './contexts/AuthContext';
+
+/**
+ * How long a stored copy of the shared campsite set is treated as current.
+ *
+ * See the effect that uses it: campgrounds are ingested in batches, so a
+ * refresh on every app open would spend a camper's data re-downloading an
+ * answer that has not moved.
+ */
+const SHARED_REFRESH_MS = 6 * 60 * 60 * 1000;
 import {
   Bookmark, MapPinOff, SlidersHorizontal, Waves
 } from 'lucide-react';
@@ -331,10 +345,12 @@ export default function App() {
     let cancelled = false;
 
     (async () => {
-      const [saved, custom, packed] = await Promise.all([
+      const [saved, custom, packed, stored, seen] = await Promise.all([
         getSavedCampsites(),
         getCustomCampsites(),
-        getOfflineCampsites()
+        getOfflineCampsites(),
+        getStoredSharedCampsites(),
+        getSeenCampsites()
       ]);
       if (cancelled) return;
 
@@ -389,10 +405,150 @@ export default function App() {
           ];
         });
       }
+
+      /**
+       * ---------------------------------------------------------------------
+       * THE MAP IS FULL BEFORE THE FIRST REQUEST GOES OUT.
+       * ---------------------------------------------------------------------
+       *
+       * Everything above this line is the camper's own — their bookmarks,
+       * their submissions, the pack they downloaded. This is the CACHE: the
+       * shared set of free campgrounds as of the last refresh, plus whatever
+       * OpenStreetMap spots this device has been shown before.
+       *
+       * It goes on last and adds only ids nothing else has claimed, so a
+       * fresher record always wins. Nothing here is authoritative and nothing
+       * here is permanent — the refresh below replaces the shared half
+       * wholesale a moment later, which is how a spot taken down at the
+       * server stops being drawn here.
+       *
+       * With an empty cache this is a no-op and the app behaves exactly as it
+       * did before: an empty map until the network answers.
+       */
+      const cached = [...(stored?.sites ?? []), ...seen];
+      if (cached.length > 0) {
+        setCampsites((prev) => {
+          const ids = new Set(prev.map((s) => s.id));
+          return [...prev, ...cached.filter((c) => !ids.has(c.id))];
+        });
+      }
     })();
 
     return () => { cancelled = true; };
   }, []);
+
+  /**
+   * Spots that are already held somewhere better than the "seen" cache.
+   *
+   * The bundled curated set, and every id in the shared set — both of those
+   * arrive complete and in one piece, so writing them into the capped
+   * per-view cache would spend its two thousand slots on records that are
+   * already on the device, and evict the OpenStreetMap nodes it exists for.
+   */
+  const alreadyHeldRef = useRef<Set<string>>(
+    new Set(CURATED_CAMPSITES.map((site) => site.id))
+  );
+  /** Ids already written to the per-view cache this session. */
+  const rememberedRef = useRef<Set<string>>(new Set());
+
+  /**
+   * ---------------------------------------------------------------------
+   * THE WHOLE SHARED SET, ONCE, INSTEAD OF A ROUND TRIP PER VIEW.
+   * ---------------------------------------------------------------------
+   *
+   * Every published free campground the app knows about is about 1,200 rows
+   * and a few hundred kilobytes, so it is fetched in one call rather than
+   * three hundred at a time as the map moves. It lands on the device, and the
+   * next open paints from there before this request is even sent.
+   *
+   * SKIPPED WHEN THE STORED COPY IS STILL FRESH. Campgrounds are ingested in
+   * batches, not by the minute, so re-downloading the set every time somebody
+   * reopens the app spends a camper's data on an answer that has not changed.
+   * Six hours is well inside how often the ingest runs and well outside how
+   * often a phone gets opened.
+   *
+   * The per-view read in the explore effect below is NOT replaced by this. It
+   * is still the only thing that can return a stealth spot or a camper's own
+   * unpublished submission, neither of which is in the bulk answer and
+   * neither of which may be cached.
+   */
+  useEffect(() => {
+    if (isOfflineMode) return;
+    let cancelled = false;
+
+    void (async () => {
+      const stored = await getStoredSharedCampsites();
+      if (cancelled) return;
+
+      stored?.sites.forEach((site) => alreadyHeldRef.current.add(site.id));
+
+      if (stored && Date.now() - stored.fetchedAt < SHARED_REFRESH_MS) return;
+
+      const answer = await fetchAllSharedCampsites();
+      // `ok: false` is "could not ask" — no Supabase, no signal, a bad
+      // minute at the server. The device keeps what it has rather than
+      // being told the world is empty.
+      if (cancelled || !answer.ok) return;
+
+      answer.sites.forEach((site) => alreadyHeldRef.current.add(site.id));
+      await putStoredSharedCampsites(answer.sites, answer.complete);
+      if (cancelled) return;
+
+      /*
+       * The server's copy goes first, so it wins any tie against what is
+       * already on screen — the same rule as the search read, and for the
+       * same reason: a cached record is a photograph, the answer that just
+       * arrived is the thing itself.
+       *
+       * A spot taken down at the server is still on screen until this tab is
+       * closed; nothing here removes a pin from a running session. What the
+       * write above guarantees is that it does not come back — the stored set
+       * is replaced whole, not merged, so the next open has never heard of
+       * it.
+       */
+      setCampsites((prev) => mergeCampsites(answer.sites, prev));
+    })();
+
+    return () => { cancelled = true; };
+  }, [isOfflineMode]);
+
+  /**
+   * ---------------------------------------------------------------------
+   * KEEP WHAT THE MAP WAS SHOWN, SO NEXT TIME IT IS ALREADY THERE.
+   * ---------------------------------------------------------------------
+   *
+   * One place rather than four. Campsites reach this list from a search, from
+   * the map settling somewhere new, from the OpenStreetMap sweep behind
+   * either of those, and from a submission being accepted — watching the list
+   * itself catches all of them without every call site having to remember to
+   * write.
+   *
+   * What actually gets written is narrow, and `offlineStorage.cacheable`
+   * decides: nothing stealth or fuzzed, nothing unpublished, nothing that
+   * only exists on this device, and never the flags that say whose a spot is.
+   *
+   * Two seconds after the list stops changing, so a pan that fires three
+   * merges in a row costs one write. The ids already written are held in a
+   * ref, because the alternative — re-reading and re-writing a two thousand
+   * item list on every settle — is the kind of thing that makes a map stutter
+   * on a phone.
+   */
+  useEffect(() => {
+    if (campsites.length === 0) return;
+
+    const timer = setTimeout(() => {
+      const fresh = campsites.filter(
+        (site) =>
+          !rememberedRef.current.has(site.id) && !alreadyHeldRef.current.has(site.id)
+      );
+      if (fresh.length === 0) return;
+
+      fresh.forEach((site) => rememberedRef.current.add(site.id));
+      void rememberSeenCampsites(fresh);
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [campsites]);
 
   /**
    * EMPTY THE OUTBOX WHENEVER THERE IS A CHANCE OF IT WORKING.

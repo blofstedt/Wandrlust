@@ -169,6 +169,218 @@ export const deleteCustomCampsite = async (id: string): Promise<void> => {
 };
 
 /* ------------------------------------------------------------------ */
+/* The shared campsite set, kept on the device                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ---------------------------------------------------------------------------
+ * WHY THE MAP KEEPS ITS OWN COPY OF EVERY SPOT IT HAS BEEN SHOWN
+ * ---------------------------------------------------------------------------
+ *
+ * Nothing about the campgrounds used to survive closing the tab. Every open
+ * started from the twenty-two curated spots bundled into the app and then
+ * waited: a round trip to Supabase for what is near you, another to our own
+ * server for what OpenStreetMap knows, and the second of those can take
+ * twenty seconds on a cold cell. For that whole time the map is a picture of
+ * empty country — which is the one thing this app must never say by accident.
+ *
+ * So the device keeps what it has been told, in two lists that mean two
+ * different things and must not be run together:
+ *
+ *   SHARED   the complete set of published, non-stealth spots, fetched in one
+ *            call and replaced wholesale on each refresh. Because it is
+ *            replaced rather than merged, a spot taken down at the server
+ *            disappears here too — which is exactly why it is not merged.
+ *
+ *   SEEN     spots that arrived from a per-view read and are NOT in the
+ *            shared set: OpenStreetMap nodes, mostly. Merged, capped and
+ *            aged out, because nothing enumerates them and nothing ever
+ *            tells us one has gone.
+ *
+ * Neither is the camper's. `SAVED_KEY` is what they bookmarked and
+ * `OFFLINE_SITES_KEY` is what came down with a map pack; both of those are
+ * theirs and behave accordingly. These two are a cache, and the app must be
+ * correct with them empty — losing them costs a slow first paint, nothing
+ * else.
+ */
+const SHARED_KEY = 'shared_campsites';
+const SEEN_KEY = 'seen_campsites';
+
+/** How many per-view spots the device will hold. Roughly a megabyte. */
+const SEEN_CAP = 2000;
+
+/**
+ * The same ninety days our server holds an OpenStreetMap sweep for, and for
+ * the same reason: past that, a record nobody has re-checked is old enough
+ * that re-asking is cheaper than trusting it.
+ */
+const SEEN_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+
+export interface StoredCampsiteSet {
+  /** When the set was fetched, epoch ms. */
+  fetchedAt: number;
+  /**
+   * False when the server hit its row ceiling and withheld spots.
+   *
+   * A truncated answer is not a census, so it must not be used to conclude
+   * that a spot missing from it has been taken down. See `campsites_bulk` in
+   * migration 30 and `fetchAllSharedCampsites`.
+   */
+  complete: boolean;
+  sites: Campsite[];
+}
+
+interface SeenCampsite {
+  site: Campsite;
+  /** Epoch ms, for the age-out and for deciding what to drop when full. */
+  seenAt: number;
+}
+
+/**
+ * A spot in the shape it is safe to write to a shared device.
+ *
+ * Returns null for anything that must not be cached at all, and strips the
+ * two flags that mean something only to the account that was signed in when
+ * the record arrived.
+ *
+ *   STEALTH AND FUZZED POSITIONS. Their coordinates are gated on a trust
+ *   tier, and bytes on disk outlive the entitlement that produced them. They
+ *   are re-read per view, per caller, every time.
+ *
+ *   ANYTHING NOT PUBLISHED. A submission awaiting review is visible to its
+ *   author alone; it belongs to `custom_campsites` until the server takes it.
+ *
+ *   `submittedByMe` AND `savedOffline`. Both answer "whose?", the cache has
+ *   no idea whose browser it will be read in, and a stale `submittedByMe`
+ *   puts another camper's spot behind this camper's own controls.
+ */
+const cacheable = (site: Campsite): Campsite | null => {
+  if (!site?.id || typeof site.latitude !== 'number' || typeof site.longitude !== 'number') {
+    return null;
+  }
+  if (site.isStealth || site.isApproximate) return null;
+  if (site.id.startsWith('user-') || site.id.startsWith('custom-')) return null;
+  if (site.submissionState && site.submissionState !== 'published') return null;
+
+  const { submittedByMe: _a, savedOffline: _b, submittedBy: _c, ...rest } = site;
+  return rest as Campsite;
+};
+
+/** The whole shared set as last fetched, or null if there isn't one. */
+export const getStoredSharedCampsites = async (): Promise<StoredCampsiteSet | null> => {
+  try {
+    const value = await dataStore.getItem<StoredCampsiteSet>(SHARED_KEY);
+    if (!value || !Array.isArray(value.sites)) return null;
+    return {
+      fetchedAt: Number(value.fetchedAt) || 0,
+      complete: value.complete !== false,
+      sites: value.sites
+    };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Store a shared set the server just handed over.
+ *
+ * A COMPLETE answer REPLACES what was there. That is the whole reason this
+ * list is kept apart from the other one: replacing is what makes a spot taken
+ * down at the server disappear from this device, rather than sitting on the
+ * map forever because nothing ever says "that one is gone".
+ *
+ * A TRUNCATED answer MERGES. The server hit its row ceiling and withheld
+ * spots; it did not say they had gone. Replacing on the strength of that
+ * would delete real campgrounds from the device because there were too many
+ * of them, and the camper would watch the map get emptier the more the app
+ * learned. New records still win their ids — a truncated answer is stale
+ * about nothing, it is merely short.
+ *
+ * @returns whether the write landed. A full disk costs a slow next open and
+ *          nothing more, so callers are free to ignore it.
+ */
+export const putStoredSharedCampsites = async (
+  sites: Campsite[],
+  complete: boolean
+): Promise<boolean> => {
+  const clean = sites.flatMap((site) => {
+    const kept = cacheable(site);
+    return kept ? [kept] : [];
+  });
+
+  let toStore = clean;
+  if (!complete) {
+    const previous = await getStoredSharedCampsites();
+    if (previous && previous.sites.length > 0) {
+      const byId = new Map(previous.sites.map((site) => [site.id, site]));
+      for (const site of clean) byId.set(site.id, site);
+      toStore = [...byId.values()];
+    }
+  }
+
+  try {
+    await dataStore.setItem<StoredCampsiteSet>(SHARED_KEY, {
+      fetchedAt: Date.now(),
+      complete,
+      sites: toStore
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Spots seen on a previous look at some piece of ground.
+ *
+ * Anything past `SEEN_MAX_AGE_MS` is dropped on the way out AND rewritten, so
+ * the list does not carry records it will never hand back.
+ */
+export const getSeenCampsites = async (): Promise<Campsite[]> => {
+  const stored = await readList<SeenCampsite>(SEEN_KEY);
+  if (stored.length === 0) return [];
+
+  const cutoff = Date.now() - SEEN_MAX_AGE_MS;
+  const live = stored.filter((entry) => entry?.site && (entry.seenAt ?? 0) > cutoff);
+  if (live.length !== stored.length) await writeList(SEEN_KEY, live);
+
+  return live.map((entry) => entry.site);
+};
+
+/**
+ * Remember spots a per-view read just brought back.
+ *
+ * Merged rather than replaced: this list is whatever the camper happened to
+ * look at, in no particular order, and a read of one valley says nothing
+ * about the next. When it is full the OLDEST-SEEN go first, which keeps the
+ * ground somebody actually uses and lets a road trip taken once fade out.
+ *
+ * Never throws, and does nothing at all if there is nothing new worth
+ * keeping.
+ */
+export const rememberSeenCampsites = async (sites: Campsite[]): Promise<void> => {
+  const fresh = sites.flatMap((site) => {
+    const kept = cacheable(site);
+    return kept ? [kept] : [];
+  });
+  if (fresh.length === 0) return;
+
+  const now = Date.now();
+  const byId = new Map<string, SeenCampsite>();
+
+  for (const entry of await readList<SeenCampsite>(SEEN_KEY)) {
+    if (entry?.site?.id) byId.set(entry.site.id, entry);
+  }
+  for (const site of fresh) byId.set(site.id, { site, seenAt: now });
+
+  const kept = [...byId.values()]
+    .sort((a, b) => (b.seenAt ?? 0) - (a.seenAt ?? 0))
+    .slice(0, SEEN_CAP);
+
+  await writeList(SEEN_KEY, kept);
+};
+
+/* ------------------------------------------------------------------ */
 /* Map tile caching                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -499,4 +711,4 @@ export const deleteOfflineRegion = async (id: string): Promise<void> => {
       .map((key) => tileStore.removeItem(key).catch(() => undefined))
   );
 };
-
+

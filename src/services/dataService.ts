@@ -410,6 +410,73 @@ export const fetchCampsitesNear = async (
 };
 
 /**
+ * How many spots one bulk read will accept.
+ *
+ * A real ceiling, matching `campsites_bulk`'s own. The shared table holds
+ * about 1,200 rows today, so this is roughly four times the whole thing —
+ * but the moment it is not, the answer is short and `complete` says so.
+ */
+export const SHARED_CAMPSITE_LIMIT = 5000;
+
+export interface SharedCampsiteSet {
+  sites: Campsite[];
+  /**
+   * True only when the server returned everything it holds.
+   *
+   * A short answer is a census and can be used to conclude that a spot which
+   * is NOT in it has been taken down. A truncated one cannot, and the caller
+   * must not prune anything on the strength of it.
+   */
+  complete: boolean;
+  /** False when the read did not happen — no Supabase, no signal, an error. */
+  ok: boolean;
+}
+
+/**
+ * Every published, non-stealth campsite, in one request.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS ALONGSIDE `fetchCampsitesNear`
+ * ---------------------------------------------------------------------------
+ *
+ * `fetchCampsitesNear` answers "what is around here", which is the right
+ * question while somebody moves a map and the wrong one when the app opens.
+ * It costs a round trip before the first pin appears, another on every
+ * meaningful pan, and it stops at 300 rows.
+ *
+ * The whole shared set is about 1,200 rows and a few hundred kilobytes. So it
+ * is fetched once, written to the device, and drawn from disk on every
+ * subsequent open while a refresh runs behind it — see `offlineStorage`.
+ *
+ * TWO KINDS OF SPOT ARE DELIBERATELY MISSING and both still come from the
+ * per-view read: stealth spots, whose position is gated on a trust tier that
+ * a cached copy would outlive, and a camper's own unpublished submission,
+ * which is visible to them alone. Migration 30 has the long version.
+ *
+ * Never throws. Returns `ok: false` and an empty list when it cannot say,
+ * which leaves whatever the device already holds alone.
+ */
+export const fetchAllSharedCampsites = async (): Promise<SharedCampsiteSet> => {
+  const nothing: SharedCampsiteSet = { sites: [], complete: false, ok: false };
+  if (!supabase) return nothing;
+
+  const { data, error } = await supabase.rpc('campsites_bulk', {
+    in_limit: SHARED_CAMPSITE_LIMIT
+  });
+  if (error || !Array.isArray(data)) return nothing;
+
+  const uid = await currentUserId();
+
+  return {
+    sites: data.flatMap((row: any) => mapCampsiteRow(row, uid)),
+    // The server stopped exactly where it was told to, so there is no way to
+    // know whether anything was left behind. Assume there was.
+    complete: data.length < SHARED_CAMPSITE_LIMIT,
+    ok: true
+  };
+};
+
+/**
  * Share a spot the user just added, so other campers can eventually see it.
  *
  * ---------------------------------------------------------------------------
