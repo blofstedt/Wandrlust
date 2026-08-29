@@ -48,25 +48,108 @@ const PLACES: Place[] = Array.isArray((placeData as any)?.places)
 /**
  * How far a settlement's influence reaches, in metres, by how big it is.
  *
- * Inside the first ring is urban, inside the second is suburban. A single
- * radius cannot work: two kilometres from Vancouver is a city and two
- * kilometres from a village of four hundred is trees.
+ * ---------------------------------------------------------------------------
+ * THIS WAS FIXED RINGS AND EVERY ONE OF THEM WAS FAR TOO WIDE
+ * ---------------------------------------------------------------------------
  *
- * An unknown population takes the smallest pair deliberately. Guessing small
- * makes the app claim less — the failure is a genuinely suburban site reading
- * as back country, which understates how likely a knock is rather than
- * overstating how remote somewhere feels.
+ * The first version used five population buckets with hand-picked radii —
+ * 5 km of "suburban" around a place of unknown size, 14 km around a town of
+ * 25,000. Reported as wilderness sites showing suburban, and measured
+ * afterwards, which is the order it should have been done in:
+ *
+ *   Blue Cloud, a BLM site in the Mojave, 4.2 km from a dot with no
+ *   population recorded                                        -> suburban
+ *   Goat Rock, BLM back country, 11.1 km from a town of 27,828  -> suburban
+ *   A Forest Service dispersed site 10.2 km from Prescott       -> suburban
+ *   Clear Creek, in the North Cascades, 4.5 km from another
+ *   unnamed-population dot                                      -> suburban
+ *
+ * Eleven kilometres from a town of twenty-eight thousand is open country, and
+ * two thirds of the place list (13,378 of 19,919) has NO population recorded
+ * at all — so the unknown bucket's 5 km ring was doing most of the
+ * classifying, on the least evidence.
+ *
+ * ---------------------------------------------------------------------------
+ * SO THE RADIUS IS DERIVED FROM THE POPULATION RATHER THAN GUESSED
+ * ---------------------------------------------------------------------------
+ *
+ * A settlement's built-up area is roughly its population divided by how
+ * densely people live in it, and the radius is the radius of that circle.
+ * That is one line of arithmetic and it scales continuously, where five
+ * buckets have four cliffs in them and no reasoning behind any number.
+ *
+ *   25,000 people ->  2.3 km built up,  5.1 km to the edge of the fringe
+ *   100,000       ->  4.6 km        , 10.1 km
+ *   500,000       -> 10.3 km        , 22.7 km
+ *
+ * All four sites above come out `wilderness` now, and a campsite 3 km from a
+ * town of 30,000 still comes out `suburban`, which is the case this is for.
  */
-const RINGS: { minPop: number; urban: number; suburban: number }[] = [
-  { minPop: 500_000, urban: 10_000, suburban: 35_000 },
-  { minPop: 100_000, urban: 6_000, suburban: 22_000 },
-  { minPop: 25_000, urban: 4_000, suburban: 14_000 },
-  { minPop: 5_000, urban: 2_500, suburban: 9_000 },
-  { minPop: 0, urban: 1_200, suburban: 5_000 }
-];
 
-const ringsFor = (pop: number) =>
-  RINGS.find((r) => pop >= r.minPop) ?? RINGS[RINGS.length - 1];
+/**
+ * People per square kilometre in the built-up part of a settlement.
+ *
+ * North American towns and suburbs sit around 1,000–2,000; the middle of that
+ * is the honest choice given the answer is a category, not a distance.
+ */
+const BUILT_UP_DENSITY = 1_500;
+
+/** How far past the built-up edge the fringe reaches, as a multiple of it. */
+const SUBURBAN_REACH = 2.2;
+
+/**
+ * Below this, a settlement cannot make anywhere URBAN — only suburban.
+ *
+ * Camping beside a town of eight thousand is "there are houses here", which
+ * is what suburban means on this map. It is not a city. Two of exactly that
+ * were what the report called urban-when-really-suburban: a Corps of
+ * Engineers site on the edge of Fort Worth, and a city RV park in Ashland,
+ * Wisconsin, population eight thousand.
+ */
+const URBAN_MIN_POP = 50_000;
+
+/**
+ * What to assume for a place with no population recorded.
+ *
+ * Two thirds of the list. They are overwhelmingly hamlets, localities and
+ * named crossroads, so they are treated as a small settlement — which puts
+ * the fringe at about 700 m, i.e. you are basically standing in the place.
+ * They can never produce `urban`: knowing a settlement is HERE is not knowing
+ * it is a CITY, and the old code claimed exactly that within 1.2 km.
+ */
+const ASSUMED_UNKNOWN_POP = 500;
+
+/**
+ * Nothing reaches further than this, whatever the arithmetic says.
+ *
+ * Fifty kilometres from a city centre is not its suburbs by any definition a
+ * camper cares about. It also keeps every ring inside the one-degree grid
+ * search below: a degree of longitude is 55.8 km at 60°N, the top of the
+ * coverage area, so a cell and its neighbours always contain the whole reach.
+ */
+const MAX_FRINGE_M = 50_000;
+
+/** Radius of the built-up area itself, in metres. */
+const builtUpRadiusM = (pop: number): number =>
+  Math.sqrt(pop / (Math.PI * BUILT_UP_DENSITY)) * 1000;
+
+interface Reach {
+  /** Inside this and it is urban — only for places big enough to be a city. */
+  urban: number;
+  /** Inside this and it is suburban. */
+  suburban: number;
+}
+
+const reachFor = (pop: number): Reach => {
+  const known = pop > 0;
+  const people = known ? pop : ASSUMED_UNKNOWN_POP;
+  const core = builtUpRadiusM(people);
+  return {
+    // An unknown or small place cannot claim a city, so its urban reach is nil.
+    urban: known && people >= URBAN_MIN_POP ? Math.min(core, MAX_FRINGE_M) : 0,
+    suburban: Math.min(core * SUBURBAN_REACH, MAX_FRINGE_M)
+  };
+};
 
 /**
  * A one-degree grid over the place list, built once.
@@ -117,10 +200,10 @@ export const settingFor = (lat: number, lon: number): Setting => {
       const cell = grid.get(`${gy + dy}:${gx + dx}`);
       if (!cell) continue;
       for (const [plat, plon, pop] of cell) {
-        const rings = ringsFor(pop);
+        const reach = reachFor(pop);
         const metres = metresBetween(lat, lon, plat, plon);
-        if (metres <= rings.urban) return 'urban';
-        if (metres <= rings.suburban) best = 'suburban';
+        if (reach.urban > 0 && metres <= reach.urban) return 'urban';
+        if (metres <= reach.suburban) best = 'suburban';
       }
     }
   }
