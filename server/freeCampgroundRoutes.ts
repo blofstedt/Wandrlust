@@ -126,6 +126,12 @@ const OFFICIAL_OPERATOR: RegExp[] = [
   // ---- United States, state and local ----
   /\bstate park/i, /\bstate forest/i, /\bstate land/i,
   /*
+   * "Maine Public Lands" — the Bureau of Parks and Lands' own name for the
+   * 600,000 acres it manages, and nothing here matched it. Turned up by the
+   * dry run on the tile that straddles the Québec border.
+   */
+  /\bpublic (lands?|reserved lands?)\b/i,
+  /*
    * "Texas Parks and Wildlife" — the standard shape of a US state agency
    * name, and none of the patterns around it had a chance: the `parks,
    * recreation` one wants "recreation", the `department of wildlife` one
