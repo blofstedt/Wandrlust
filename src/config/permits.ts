@@ -108,7 +108,44 @@ export const CAMPING_PERMITS: Record<string, CampingPermit> = {
     note:
       'It covers random camping on public land, NOT the province’s developed ' +
       'campgrounds, which charge their own nightly fee. Buy it before you go — ' +
-      'there is nowhere to buy one at the roadside.',
+      'there is nowhere to buy one at the roadside. Separately, parking in ' +
+      'Kananaskis Country needs a Kananaskis Conservation Pass — though not in ' +
+      'the Ghost, McLean Creek or Fisher Creek areas, which are exempt from it.',
+    checked: '2026-08-29'
+  },
+
+  /**
+   * A PARKING pass, not a camping one, and it is in here because the two get
+   * confused and the confusion costs $90.
+   *
+   * DELIBERATELY HAS NO AREA RULE. Kananaskis Country needs one to park —
+   * except in the Ghost, McLean Creek and Fisher Creek areas, which are
+   * exempt, and except on municipal land like the Canmore townsite. Those
+   * exemptions are holes, and a rectangle cannot express a hole: an area rule
+   * for this would fire on Waiparous and McLean Creek, two of the bundled
+   * spots, and tell a camper standing on exempt ground to go and spend $90.
+   *
+   * So it is recorded, linkable and attachable to a spot by hand, and it
+   * matches nothing on its own. When the province's own boundary layer for it
+   * turns up — the camping-pass one did — this can do what Alberta's other
+   * pass now does.
+   */
+  'ab-kananaskis-conservation-pass': {
+    id: 'ab-kananaskis-conservation-pass',
+    name: 'Kananaskis Conservation Pass',
+    issuer: 'Government of Alberta',
+    whoNeeds:
+      'Anyone PARKING a vehicle in Kananaskis Country or the Bow Valley ' +
+      'corridor. The Ghost, McLean Creek and Fisher Creek areas are exempt, ' +
+      'and so is municipal land such as the Canmore townsite.',
+    cost: '$90 a year, covering up to three vehicles',
+    free: false,
+    url: 'https://www.alberta.ca/kananaskis-conservation-pass',
+    note:
+      'This is for parking, and it is separate from the Public Lands Camping ' +
+      'Pass — random camping in the Eastern Slopes can need both, one, or ' +
+      'neither depending on exactly where you leave the vehicle. It can be ' +
+      'bought at the Kananaskis visitor centres if you arrive without one.',
     checked: '2026-08-29'
   },
 
