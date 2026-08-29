@@ -130,6 +130,14 @@ export interface MarkerDot {
    */
   permitId?: string;
   /**
+   * How strong the permit claim is — see `PermitMatch`.
+   *
+   * Stamped on the chip so the panel it opens says the same thing the chip
+   * did. The map used to infer this from whether the dot was drawn hollow,
+   * which worked while there were two strengths and quietly broke at three.
+   */
+  permitCertainty?: 'site' | 'boundary' | 'area';
+  /**
    * Which warning family this chip stands for, on hazard chips only.
    *
    * Carried so the map can find the alert again when the chip is tapped,
@@ -773,7 +781,8 @@ export const amenityDots = (
             // A free-but-required permit is not bad news, it is an errand.
             tone: permit.permit.free ? 'neutral' : 'bad',
             action: 'permit',
-            permitId: permit.permit.id
+            permitId: permit.permit.id,
+            permitCertainty: permit.certainty
           }
         : {
             key: 'permit',
@@ -800,7 +809,8 @@ export const amenityDots = (
       glyph: '📝',
       tone: 'bad',
       action: 'permit',
-      permitId: permit.permit.id
+      permitId: permit.permit.id,
+      permitCertainty: permit.certainty
     });
   }
 

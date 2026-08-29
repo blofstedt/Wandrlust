@@ -5769,10 +5769,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const id = hit.getAttribute('data-permit');
           const permit = id ? CAMPING_PERMITS[id] : null;
           if (!permit) return;
-          const area = Boolean(
-            hit.querySelector('.wl-chip-dot-hollow')
-          ) || (hit.getAttribute('data-label') ?? '').includes('may apply');
-          setOpenPermit({ permit, certainty: area ? 'area' : 'site' });
+          /*
+           * Read, not inferred. This used to work out the strength of the
+           * claim from whether the dot was drawn hollow, which was fine while
+           * there were two strengths and silently wrong the moment there were
+           * three. The chip carries it.
+           */
+          const certainty =
+            (hit.getAttribute('data-permit-certainty') as PermitMatch['certainty'] | null)
+            ?? 'area';
+          setOpenPermit({ permit, certainty });
           return;
         }
         case 'add': {

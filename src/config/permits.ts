@@ -35,6 +35,7 @@
  * camper, so an old answer looks old.
  */
 import type { Campsite } from '../types';
+import { insideCampingPassArea } from './albertaCampingPass';
 
 export interface CampingPermit {
   id: string;
@@ -71,6 +72,15 @@ interface PermitArea {
   country: string;
   stateProvince: string;
   bbox?: { minLat: number; minLon: number; maxLat: number; maxLon: number };
+  /**
+   * The agency's OWN published boundary, where we hold it.
+   *
+   * Beats a bbox and is reported as such — a rectangle around the Alberta
+   * pass area swallows Edmonton, Red Deer and a great deal of farmland, so
+   * every match had to be hedged into "may apply" and the hedge was doing the
+   * work of the shape. With the real outline the answer is an answer.
+   */
+  contains?: (lat: number, lon: number) => boolean;
   /**
    * Only ever matches DISPERSED camping, never a named campground.
    *
@@ -150,12 +160,11 @@ const PERMIT_AREAS: PermitArea[] = [
     country: 'Canada',
     stateProvince: 'Alberta',
     /*
-     * The Eastern Slopes strip, approximately: the BC border across to about
-     * Highway 22, from the US border up past Grande Prairie. The real boundary
-     * follows highways and is published by the province; this is a rectangle
-     * around it, which is why an area match only ever says "may apply".
+     * The province's own 66,710 km² outline, simplified to about 2 km. See
+     * `albertaCampingPass.ts` — this replaced a bounding box that was wrong
+     * by most of Alberta.
      */
-    bbox: { minLat: 49.0, minLon: -120.0, maxLat: 55.2, maxLon: -113.8 },
+    contains: insideCampingPassArea,
     dispersedOnly: true
   },
   {
@@ -171,12 +180,17 @@ const PERMIT_AREAS: PermitArea[] = [
 export interface PermitMatch {
   permit: CampingPermit;
   /**
-   * `site` — recorded against this exact spot, so it is a requirement.
-   * `area`  — this spot falls inside a regime's approximate area, so it is a
-   *           thing to check. The wording the camper sees differs, because
-   *           these are different strengths of claim and must not read alike.
+   * Three strengths of claim, and they must not read alike.
+   *
+   * `site`     recorded against this exact spot. A requirement.
+   * `boundary` inside the agency's OWN published area, which this app holds
+   *            simplified to a couple of kilometres. As good as an answer,
+   *            except within sight of the edge — and it says so.
+   * `area`     inside a rectangle this app drew around a regime because it
+   *            does not hold the real shape. A thing to go and check, never
+   *            an answer.
    */
-  certainty: 'site' | 'area';
+  certainty: 'site' | 'boundary' | 'area';
 }
 
 /**
@@ -205,6 +219,14 @@ export const permitFor = (site: Campsite): PermitMatch | null => {
 
   for (const area of PERMIT_AREAS) {
     if (area.country !== country || area.stateProvince !== state) continue;
+
+    if (area.contains) {
+      if (!area.contains(site.latitude, site.longitude)) continue;
+      const permit = CAMPING_PERMITS[area.permitId];
+      if (permit) return { permit, certainty: 'boundary' };
+      continue;
+    }
+
     if (area.bbox) {
       const { minLat, minLon, maxLat, maxLon } = area.bbox;
       if (
@@ -220,15 +242,24 @@ export const permitFor = (site: Campsite): PermitMatch | null => {
 };
 
 /** The chip's short label. Two words, and it has to carry the difference. */
-export const permitChipLabel = (match: PermitMatch): string =>
-  match.certainty === 'site'
-    ? (match.permit.free ? 'Permit needed' : 'Permit to buy')
-    : 'Permit may apply';
+export const permitChipLabel = (match: PermitMatch): string => {
+  if (match.certainty === 'area') return 'Permit may apply';
+  return match.permit.free ? 'Permit needed' : 'Permit to buy';
+};
 
 /** The whole hedged sentence, for the tooltip and the screen reader. */
-export const permitChipFull = (match: PermitMatch): string =>
-  match.certainty === 'site'
-    ? `${match.permit.name} — ${match.permit.cost.toLowerCase()}. Tap for the details and where to get one.`
-    : `${match.permit.name} may apply here (${match.permit.cost.toLowerCase()}). ` +
-      'This spot is inside the area it covers, but the exact boundary is the ' +
-      'agency’s. Tap to check before you go.';
+export const permitChipFull = (match: PermitMatch): string => {
+  const cost = match.permit.cost.toLowerCase();
+  switch (match.certainty) {
+    case 'site':
+      return `${match.permit.name} — ${cost}. Tap for the details and where to get one.`;
+    case 'boundary':
+      return `${match.permit.name} — ${cost}. This spot is inside ` +
+        `${match.permit.issuer}’s published area for it; the line this app holds ` +
+        'is accurate to a couple of kilometres. Tap for the details.';
+    default:
+      return `${match.permit.name} may apply here (${cost}). This spot is inside ` +
+        'a rectangle drawn around the area it covers, which is not the same as ' +
+        'the real boundary. Tap to check before you go.';
+  }
+};

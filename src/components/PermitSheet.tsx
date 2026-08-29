@@ -29,14 +29,18 @@ interface PermitSheetProps {
 
 export const PermitSheet: React.FC<PermitSheetProps> = ({ match, onClose }) => {
   const permit = match?.permit;
-  const certain = match?.certainty === 'site';
+  const how = match?.certainty ?? 'area';
 
   return (
     <Sheet
       isOpen={Boolean(match)}
       onClose={onClose}
       title={permit?.name ?? 'Permit'}
-      subtitle={certain ? 'Required to camp here' : 'May apply here — worth checking'}
+      subtitle={
+        how === 'area'
+          ? 'May apply here — worth checking'
+          : 'Required to camp here'
+      }
       icon={<TicketCheck className="w-5 h-5 text-indigo-400" />}
       variant="dock"
       fitContent
@@ -48,12 +52,25 @@ export const PermitSheet: React.FC<PermitSheetProps> = ({ match, onClose }) => {
             would let somebody read the cost, decide, and never reach the line
             saying we are not certain this applies to them.
           */}
-          {!certain && (
+          {how === 'area' && (
             <p className="rounded-lg bg-amber-500/10 border border-amber-500/25 px-3 py-2.5 text-xs text-amber-200/90 leading-snug">
-              This spot sits inside the area this permit covers, but the exact
-              boundary is {permit.issuer}’s and this app only holds an
-              approximation of it. Check with them before you rely on either
-              answer.
+              This spot sits inside a rectangle drawn around the area this
+              permit covers, which is not the same as the real boundary — that
+              one belongs to {permit.issuer}. Check with them before you rely on
+              either answer.
+            </p>
+          )}
+
+          {/*
+            A boundary match is the agency's own outline, held to about two
+            kilometres. That is an answer, not a hedge, so it is said quietly
+            and only where it matters: near the edge.
+          */}
+          {how === 'boundary' && (
+            <p className="rounded-lg bg-slate-800/60 px-3 py-2.5 text-xs text-slate-400 leading-snug">
+              This spot is inside {permit.issuer}’s own published area for the
+              pass. The outline this app holds is simplified to about two
+              kilometres, so if you are camping right on the edge of it, check.
             </p>
           )}
 

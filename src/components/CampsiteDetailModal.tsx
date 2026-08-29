@@ -389,10 +389,17 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
 
               {permit.certainty === 'area' && (
                 <p className="text-xs text-amber-200/90 leading-snug">
-                  This spot is inside the area the pass covers, but the exact
-                  boundary belongs to {permit.permit.issuer} and this app only
-                  holds an approximation of it. Check with them before you rely
-                  on either answer.
+                  This spot is inside a rectangle drawn around the area the pass
+                  covers, which is not the same as the real boundary — that one
+                  belongs to {permit.permit.issuer}. Check with them before you
+                  rely on either answer.
+                </p>
+              )}
+              {permit.certainty === 'boundary' && (
+                <p className="text-xs text-slate-400 leading-snug">
+                  Inside {permit.permit.issuer}’s own published area for this
+                  pass. The outline held here is simplified to about two
+                  kilometres, so check if you are camping right on its edge.
                 </p>
               )}
 
