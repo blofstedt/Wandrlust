@@ -196,6 +196,26 @@ npm run vapid    # generate push notification keys
   either again. `coverage_gaps` records the rest, and `landDataGap` in
   `src/config/coverage.ts` puts the caveat on screen. Absence of a polygon
   means "no data", never "no public land".
+- **The free-campground pins are 95% British Columbia, and that is the source
+  data, not a bug.** Asked twice now, so the numbers are written down. 838 of
+  the 1,208 shared spots are in BC and 832 of those come from ONE government
+  layer — Recreation Sites and Trails BC, the only province or state in the
+  coverage area that publishes its free recreation sites as an open,
+  no-key layer. Everywhere else falls back to OpenStreetMap via
+  `freeCampgroundRoutes.ts`, which requires `fee=no` AND a government
+  operator, and the second half is where Canada east of BC falls away:
+  Alberta has 382 campsites tagged free and **359 of them name no operator at
+  all** (Ontario: 353 and 85). The US tags operators routinely — "US Forest
+  Service", "BLM" — so Washington turns 298 free-tagged into 80 official and
+  Idaho 108 into 80. Run `?dry=1` on the ingest to see the blank count and the
+  unrecognised operator strings per region before theorising again. Widening
+  the operator patterns is worth doing when the diagnostic shows a real miss —
+  it found five in August 2026 (a province or state naming itself, plural
+  "National Forests", NYSDEC, "Parks, Recreation and…") and those were worth
+  41 campgrounds — but it will never turn the east into BC. What answers "where
+  can I camp free" in Alberta and east is the CROWN LAND BOUNDARIES, not
+  campground pins, and the unattributed OSM sites still reach the list through
+  `/api/osm-campsites`; they just do not earn a pin.
 - **BC is the one source that is not ArcGIS.** DataBC publishes WFS, which
   cannot generalise geometry server-side, so `boundaryRoutes.ts` reads it
   against a byte budget, simplifies locally, and past 2.5° asks only for the
