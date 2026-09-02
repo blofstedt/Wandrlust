@@ -312,20 +312,8 @@ interface Candidate {
   lat: number;
   lon: number;
   name: string;
-  /** The government body that runs it, or '' when nobody has recorded one. */
+  /** The government body that runs it. Never empty — see `isOfficial`. */
   operator: string;
-  /**
-   * WHO SAYS SO, and it decides which pin this gets.
-   *
-   * `official` — a named government operator. Earns the pentagon.
-   * `osm_free` — OpenStreetMap says free, nobody says who runs it. Earns a
-   *              dashed ring and a chip that admits the gap.
-   *
-   * Both have passed the same disqualifiers: named, not backcountry, no
-   * permit, no reservation, no stated charge. The only difference is the
-   * authority, so the only difference in the record is the authority.
-   */
-  tier: 'official' | 'osm_free';
 }
 
 /**
@@ -455,29 +443,44 @@ const fetchRegion = async (
         const operator = isOfficial(tags);
 
         /*
-         * NO OPERATOR IS NOT A REASON TO DROP IT ANY MORE — see migration 32.
+         * NO OPERATOR, NO PIN. Restored after being relaxed for one day, and
+         * the day is the reason this comment is long.
          *
-         * This used to `continue` here, and that one line is why the map was
-         * empty from Alberta east: 359 of Alberta's 382 free-tagged campsites
-         * name no operator at all. OpenStreetMap routinely records what a
-         * place is without recording who owns it, so the gate was not removing
-         * noise, it was removing almost every free campground in the country.
+         * The gate was dropped because it was keeping the map empty east of
+         * British Columbia — 359 of Alberta's 382 free-tagged campsites name
+         * no operator at all — and the unattributed ones were pinned instead
+         * at a weaker tier: a dashed ring, and a chip saying nobody had
+         * recorded who ran the place. It looked like the honest compromise.
          *
-         * The site is kept at the weaker tier instead. The pentagon still
-         * needs a named government body; this one gets a dashed ring and says
-         * why. The diagnostic counters are still gathered either way, because
-         * a widened operator pattern still PROMOTES a site from one tier to
-         * the other and we still want to know which strings to widen for.
+         * IT PUT PINS ON PRIVATE LAND. Checked on the map by the one person
+         * using it, and almost all of them were somebody's property. That is
+         * the failure this whole codebase is built not to commit, and a chip
+         * admitting we did not know who owned the ground did not save it: a
+         * pin is an invitation, and hedging the caption does not make it less
+         * of one.
+         *
+         * `fee=no` says a mapper answered the fee question. It says NOTHING
+         * about who owns the ground, and OpenStreetMap is full of free
+         * campsites on private land — a farm field, a driveway, a spot
+         * somebody wild-camped once and mapped. The operator tag was doing
+         * more work than it looked like it was doing: it was the only thing
+         * standing between "free" and "yours to use".
+         *
+         * The east stays thin because of this, and thin is the correct answer.
+         * What answers "where can I camp free" out there is the Crown land
+         * boundaries, which are drawn from government sources and actually
+         * know who owns the ground.
          */
         if (!operator) {
           reject('no-government-operator');
-          const raw = (
-            tags.operator ?? tags['operator:en'] ?? tags.owner ?? tags['owner:en'] ?? ''
-          ).trim();
           if (sample) {
+            const raw = (
+              tags.operator ?? tags['operator:en'] ?? tags.owner ?? tags['owner:en'] ?? ''
+            ).trim();
             if (raw) unrecognised[raw] = (unrecognised[raw] ?? 0) + 1;
             else blankOperator += 1;
           }
+          continue;
         }
 
         const why = notAStandaloneCampground(tags);
@@ -487,17 +490,14 @@ const fetchRegion = async (
           osmId: `${el.type ?? 'node'}/${el.id ?? 0}`,
           lat, lon,
           name: (tags.name ?? '').trim(),
-          operator: operator || '',
-          tier: operator ? 'official' : 'osm_free'
+          operator
         });
       }
       // Answered: it is not the one holding us up, whatever it did last tile.
       deprioritised.delete(mirror);
       console.info(
         `[free-campgrounds] ${host}: ${data.elements.length} free-tagged, ` +
-        `${sites.filter((s) => s.tier === 'official').length} attributed and ` +
-        `${sites.filter((s) => s.tier === 'osm_free').length} unattributed ` +
-        `standalone campgrounds, in ${Date.now() - at} ms`
+        `${sites.length} standalone official campgrounds, in ${Date.now() - at} ms`
       );
       return {
         ok: true,
@@ -584,27 +584,11 @@ const landTypeFor = (operator: string, country: string): string => {
 };
 
 const describe = (operator: string): string =>
-  operator
-    ? `Recorded in OpenStreetMap as run by ${operator} and free to use. ` +
-      'That is a community-maintained record, not the operator’s own listing — ' +
-      'check the agency before relying on it, and expect the fee, the season and ' +
-      'the road in to be the things most likely to have changed. Nobody from this ' +
-      'app has been.'
-    /*
-     * THE MISSING HALF IS THE FIRST THING THIS SAYS.
-     *
-     * Everything above is true of this one too, minus the part that matters
-     * most: nobody has recorded who runs it. A camper reading "free" without
-     * reading "and we do not know whose land this is" would be reading a
-     * stronger claim than the data makes, so the sentence leads with the gap
-     * rather than burying it after the good news.
-     */
-    : 'Recorded in OpenStreetMap as free to use, and NOBODY HAS RECORDED WHO '
-      + 'RUNS IT — so this app cannot tell you whether it is a government '
-      + 'campground, a community field or somebody’s land. Free in the record '
-      + 'is not the same as open to you. Look for a sign at the entrance, and '
-      + 'treat the fee, the season and the road in as the things most likely to '
-      + 'have changed. Nobody from this app has been.';
+  `Recorded in OpenStreetMap as run by ${operator} and free to use. ` +
+  'That is a community-maintained record, not the operator’s own listing — ' +
+  'check the agency before relying on it, and expect the fee, the season and ' +
+  'the road in to be the things most likely to have changed. Nobody from this ' +
+  'app has been.';
 
 /**
  * Urban, suburban or wilderness, for the rows just written.
@@ -886,14 +870,6 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
           id: `osm-free-${s.osmId.replace('/', '-')}`,
           name: s.name || 'Free campground',
           land_type: landTypeFor(s.operator, region.country),
-          /*
-           * EMPTY, not "Unknown", and not null — the column is NOT NULL and
-           * defaults to '', which is this schema's existing shape for "nobody
-           * said": `dataService` maps a missing manager to '' on the way in,
-           * and the pin title already reads '' as absent. A literal "Unknown"
-           * would be a name, and a name here is read as somebody having given
-           * one.
-           */
           land_manager: s.operator,
           latitude: Number(s.lat.toFixed(6)),
           longitude: Number(s.lon.toFixed(6)),
@@ -901,12 +877,7 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
           country: region.country,
           description: describe(s.operator),
           is_free: true,
-          // The tier decides the pin. See migration 32: the pentagon still
-          // means a government publishes this, and nothing without a named
-          // operator may wear one.
-          source: s.tier === 'official'
-            ? ('agency_dataset' as const)
-            : ('osm_free' as const),
+          source: 'agency_dataset' as const,
           updated_at: new Date().toISOString()
         }));
         const { error } = await writer.from('campsites').upsert(rows, { onConflict: 'id' });
@@ -924,13 +895,7 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
         region: label,
         country: region.country,
         freeTagged: answer.found,
-        // Both tiers. `official` counted the same thing back when an
-        // unattributed site was dropped rather than kept at a weaker tier, and
-        // leaving the old name on it would read as 102 government campgrounds
-        // in a box that has eight.
-        kept: answer.sites.length,
-        attributed: answer.sites.filter((c) => c.tier === 'official').length,
-        unattributed: answer.sites.filter((c) => c.tier === 'osm_free').length,
+        official: answer.sites.length,
         insideTheBorder: inRegion.length,
         newHere: fresh.length,
         stored,

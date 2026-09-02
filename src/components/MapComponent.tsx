@@ -71,7 +71,6 @@ import {
 } from '../utils/alertOverlay';
 import {
   MarkerDot, amenityDots, conditionDots, facilityDots, fireDots, hazardDots,
-  unattributedDot,
   FACILITY_COLOR, LAND_GLYPH
 } from '../utils/amenityDots';
 import {
@@ -4233,21 +4232,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
    * boundary polygons underneath it already do. They still fill the list, are
    * searchable, and are still what the filters filter.
    */
-  const PINNED_SOURCES = new Set([
-    'user_submitted', 'agency_dataset', 'verified',
-    /*
-     * Free in OpenStreetMap with nobody recorded as running it. Pinned as of
-     * migration 32, because the alternative was the map showing almost nothing
-     * from Alberta east — 359 of Alberta's 382 free-tagged campsites name no
-     * operator, and refusing to draw them was not caution, it was a blank map.
-     * It gets its own dashed pin and says what it does not know.
-     *
-     * `overpass` is still NOT here and must not be: that is a live sweep with
-     * the fee unknown, and pinning it would put a pin on every private
-     * campground in the country.
-     */
-    'osm_free'
-  ]);
+  /*
+   * `osm_free` WAS HERE FOR ONE DAY AND MUST NOT COME BACK without a source
+   * that knows who owns the ground. Pinning OpenStreetMap's free-tagged
+   * campsites with no operator put pins on private land — checked on the map,
+   * almost all of them — and the dashed ring and the chip admitting we did not
+   * know whose land it was did not save it. A pin is an invitation. See the
+   * note in `server/freeCampgroundRoutes.ts` and migration 32.
+   */
+  const PINNED_SOURCES = new Set(['user_submitted', 'agency_dataset', 'verified']);
   const pinnedCampsites = React.useMemo(
     () => campsites.filter((site) => PINNED_SOURCES.has(site.source)),
     [campsites]
@@ -4315,12 +4308,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       // Weather, signal and the land under it: also the open pin only,
       // because App fetches them for the point that is open.
       ...(isSelected ? conditionsRef.current : []),
-      /*
-       * Leads the spot's own facts, because it is a caveat about all of them:
-       * everything below is what OpenStreetMap recorded about a place whose
-       * owner it did not record.
-       */
-      ...(osmFreeIdsRef.current.has(id) ? [unattributedDot()] : []),
       ...(amenityDotsRef.current.get(id) ?? []),
       // Facilities up the road belong to the open pin only — they are the
       // one part of the row you can tap through to, and they are only
@@ -4347,18 +4334,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     [campsites]
   );
 
-  /**
-   * Which pins are free in OpenStreetMap with nobody recorded as running them.
-   *
-   * Kept apart from the official set rather than folded into it, because the
-   * whole point of the tier is that these two are not the same claim. See
-   * migration 32.
-   */
-  const osmFreeIdsRef = useRef<Set<string>>(new Set());
-  osmFreeIdsRef.current = useMemo(
-    () => new Set(campsites.filter((s) => s.source === 'osm_free').map((s) => s.id)),
-    [campsites]
-  );
 
   /** The glyph axis: what kind of place each pin is, where anybody has said. */
   const settingByIdRef = useRef<Map<string, CampsiteSetting>>(new Map());
@@ -4378,9 +4353,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       dots,
       isSelected ? freshChipKeys(shownChipKeysRef.current, dots) : undefined,
       id,
-      officialIdsRef.current.has(id) ? 'official'
-        : osmFreeIdsRef.current.has(id) ? 'osm_free'
-        : 'camper',
+      officialIdsRef.current.has(id) ? 'official' : 'camper',
       settingByIdRef.current.get(id) ?? null
     );
   }, [dotsForId]);
@@ -4503,8 +4476,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
          */
         title: site.source === 'agency_dataset'
           ? `${site.name} — published by ${site.landManager || 'a government agency'}, not yet visited by anyone here`
-          : site.source === 'osm_free'
-          ? `${site.name} — OpenStreetMap says free; nobody has recorded who runs it`
           : site.source === 'verified'
           ? `${site.name} — a dispersed camping area checked and bundled with the app`
           : `${site.name} — added by a camper`

@@ -38,17 +38,21 @@ export type CampsiteSource =
   | 'user_submitted'
   | 'agency_dataset'
   /**
-   * OpenStreetMap says there is a free campsite here and NOBODY HAS SAID WHO
-   * RUNS IT.
+   * TRIED FOR ONE DAY, WITHDRAWN, AND KEPT ONLY SO THE ENUM STILL PARSES.
    *
-   * Weaker than `agency_dataset` in exactly one way — the authority — and it
-   * is drawn weaker: a dashed ring rather than the government pentagon, with
-   * the missing half said out loud on the pin. The pentagon still requires a
-   * named government operator; that rule was not relaxed to make room for
-   * this one.
+   * Nothing writes this any more and nothing may. It meant "OpenStreetMap
+   * says free and nobody has recorded who runs it", it was pinned as a dashed
+   * ring with a chip admitting the gap, and it put pins on PRIVATE LAND —
+   * checked on the map, almost all of them. `fee=no` says a mapper answered
+   * the fee question; it says nothing about who owns the ground, and OSM is
+   * full of free campsites in farm fields and driveways. The operator tag was
+   * doing more work than it looked like it was doing: it was the only thing
+   * standing between "free" and "yours to use".
    *
-   * Not `overpass`, which is a live per-viewport sweep with the fee unknown
-   * and is never pinned. See migration 32.
+   * Hedged wording did not rescue it, and that is the lesson worth keeping. A
+   * PIN IS AN INVITATION. Qualifying the caption does not make it less of one,
+   * so a claim that cannot be made plainly should not be pinned at all. See
+   * migration 33.
    */
   | 'osm_free';
 

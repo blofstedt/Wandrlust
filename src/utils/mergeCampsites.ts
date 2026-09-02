@@ -58,17 +58,8 @@ const PRECEDENCE: Record<CampsiteSource, number> = {
    * two keeps the agency's description AND the camper's amenities.
    */
   agency_dataset: 2,
-  /*
-   * Below the agency and above a live sweep, because that is exactly what it
-   * knows: the same OpenStreetMap node, plus a fee that somebody tagged and
-   * the disqualifier checks it survived — and minus the one thing the agency
-   * record has, which is who runs it.
-   *
-   * Losing to `agency_dataset` is the important half. Where the ingest later
-   * recognises an operator it did not recognise before, the same node arrives
-   * as the stronger tier and takes over, which is how a widened operator
-   * pattern PROMOTES a pin instead of leaving two.
-   */
+  /* Withdrawn — see the note in `types.ts`. Nothing writes it and nothing is
+     stored under it; the key is here only because the Record must be total. */
   osm_free: 1.5,
   overpass: 1
 };

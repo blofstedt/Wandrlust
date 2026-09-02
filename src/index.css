@@ -520,38 +520,6 @@
 .custom-campsite-marker:hover .wl-pin { transform: scale(1.12); }
 
 /* ---------------------------------------------------------------------
-   FREE IN OPENSTREETMAP, AND NOBODY SAID WHOSE LAND IT IS.
-
-   A BROKEN LINE FOR A BROKEN RECORD. This is the same device the backroads
-   layer uses for a road whose surface nobody wrote down, and the facility
-   pins use for a place only one source has seen: the shape says what kind of
-   thing it is, and the line says how well we know it.
-
-   It keeps the camper's CIRCLE rather than taking the government pentagon,
-   because the missing piece here is precisely the authority — a pentagon
-   would be the app inventing one. And it is dashed rather than a new colour
-   because the palette is already spoken for: the Beacon ladder owns grey,
-   amber, lime and green as an evidence scale, and red means a camper was
-   moved on. A dash costs no hue.
-
-   Dimmer than a solid pin on purpose. It should read as the quieter of two
-   answers at a glance, before anybody taps it and reads the chip that spells
-   the gap out in words.
-   --------------------------------------------------------------------- */
-.wl-pin-unattributed {
-  border-style: dashed;
-  border-color: #6ee7b7;
-  opacity: 0.82;
-}
-/* A tapped pin floods emerald and is no longer making the weaker claim
-   quietly — it is making it in words, in the chips above it. So the dash
-   goes and the pin reads as solid, like every other open pin. */
-.wl-pin-unattributed.wl-pin-on {
-  border-style: solid;
-  opacity: 1;
-}
-
-/* ---------------------------------------------------------------------
    AN OFFICIAL CAMPGROUND IS A PENTAGON, A CAMPER'S SPOT IS A CIRCLE.
 
    Shape carries provenance because colour cannot. Beacon's evidence ladder
