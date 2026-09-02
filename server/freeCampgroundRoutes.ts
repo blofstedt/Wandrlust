@@ -230,8 +230,48 @@ const SUB_UNIT_NAME: RegExp[] = [
   // "Saganaga Lake #12" — a named place plus a unit number
   /#\s*\d+\s*$/,
   // Bare numbers
-  /^\s*\d+\s*$/
+  /^\s*\d+\s*$/,
+  /*
+   * "Camping Area 1" through "Camping Area 7" — one Alberta campground that
+   * arrived as seven pins on top of each other. The pattern above wanted the
+   * number to follow "camp" or "site" directly and these have a word in
+   * between, which is all it took.
+   */
+  /^\s*(camping|camp)?\s*(area|loop|section|zone)\s*#?\s*\d+[a-z]?\s*$/i
 ];
+
+/**
+ * A `name` that is not a name.
+ *
+ * FOUND BY LOOKING AT WHAT THE NEW TIER ACTUALLY PINNED. Dropping the operator
+ * requirement let through four Alberta campsites called "Please Pack Out Your
+ * Garbage" — mappers using the name field for the sign that is standing there,
+ * which is a reasonable thing to do to a map and a terrible thing to put on a
+ * pin. The operator gate had been hiding them by accident.
+ *
+ * Also here: camps that are somebody's programme rather than somewhere a
+ * passing camper can sleep. A children's ranch, a scout camp and a church
+ * camp are all genuinely `tourism=camp_site` and genuinely free, and none of
+ * them are free TO YOU. This is the strict direction on purpose — the cost of
+ * being wrong here is a real campground staying off the map, and the cost of
+ * being wrong the other way is somebody pulling into a children's camp at
+ * dusk.
+ */
+const NOT_A_NAME: RegExp[] = [
+  // Signage. An instruction, not a place.
+  /^\s*(please|do not|don'?t|no)\b/i,
+  /\bpack (it|your rubbish|out)\b/i, /\bpack out\b/i,
+  /\bleave no trace\b/i, /\bcarry in,? carry out\b/i,
+  /\bclosed\b/i, /\bpermanently closed\b/i,
+  // Somebody's programme, not a public campground.
+  /\b(scout|scouts|guides|guiding|cub|cadet)\b/i,
+  /\bchildren'?s\b/i, /\bbible\b/i, /\bchurch\b/i, /\b4-?h\b/i,
+  /\b(ymca|ywca)\b/i, /\bbible camp\b/i,
+  /\bprivate\b/i, /\bmembers only\b/i
+];
+
+/** `access` values that mean this is not open to a passing camper. */
+const CLOSED_ACCESS = new Set(['private', 'no', 'customers', 'members', 'permissive_no']);
 
 /**
  * Why this campsite is not a standalone free campground, or null if it is.
@@ -247,6 +287,10 @@ const notAStandaloneCampground = (tags: Record<string, string>): string | null =
   const name = (tags.name ?? '').trim();
   if (!name) return 'unnamed';
   if (SUB_UNIT_NAME.some((re) => re.test(name))) return 'numbered-sub-site';
+  if (NOT_A_NAME.some((re) => re.test(name))) return 'not-a-campground-name';
+
+  const access = (tags.access ?? '').toLowerCase();
+  if (CLOSED_ACCESS.has(access)) return 'not-open-to-the-public';
 
   // Interior sites reached on foot or by paddle, under a permit system.
   if ((tags.backcountry ?? '').toLowerCase() === 'yes') return 'backcountry';
