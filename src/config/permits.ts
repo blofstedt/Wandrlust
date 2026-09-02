@@ -298,7 +298,18 @@ export interface PermitMatch {
  * A named campground run by an agency, rather than a place you pull off a
  * forestry road and sleep. Area regimes never match one — see `dispersedOnly`.
  */
-const isDeveloped = (site: Campsite): boolean => site.source === 'agency_dataset';
+const isDeveloped = (site: Campsite): boolean =>
+  site.source === 'agency_dataset' ||
+  /*
+   * `osm_free` too, and for the same reason rather than a weaker one. It is a
+   * NAMED `tourism=camp_site` that passed the ingest's disqualifiers — a
+   * campground, whoever runs it. Alberta's pass covers random camping and
+   * explicitly not the province's developed campgrounds, so firing an area
+   * rule on one would put "buy a $30 pass" over precisely the places the pass
+   * does not apply to. That exact mistake was shipped once already; see
+   * migration 31.
+   */
+  site.source === 'osm_free';
 
 /**
  * Which permit, if any, a camper needs for this spot.

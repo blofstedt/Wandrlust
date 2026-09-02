@@ -1162,8 +1162,15 @@ export const buildCampsiteIcon = (
    * number of pitches, and nobody from this app has been. `camper` is
    * somebody saying "I slept here", which is a completely different claim and
    * gets a completely different silhouette.
+   *
+   * `osm_free` is the third: OpenStreetMap says it is free and NOBODY HAS
+   * RECORDED WHO RUNS IT. It keeps the camper's circle, because it is not a
+   * government claim and must never wear the pentagon — and it dashes that
+   * circle, because it is not a camper's word either. A broken line for a
+   * broken record: the same thing the dotted backroad means when nobody wrote
+   * the surface down.
    */
-  provenance: 'camper' | 'official' = 'camper',
+  provenance: 'camper' | 'official' | 'osm_free' = 'camper',
   /** Urban, suburban or wilderness. Null keeps the neutral tent. */
   setting: CampsiteSettingGlyph = null
 ): L.DivIcon => {
@@ -1171,6 +1178,7 @@ export const buildCampsiteIcon = (
     ? (isSelected ? expandedDotRow(dots, animateKeys) : collapsedDotRing(dots))
     : '';
   const official = provenance === 'official';
+  const unattributed = provenance === 'osm_free';
 
   return L.divIcon({
     className: 'custom-campsite-marker',
@@ -1178,7 +1186,9 @@ export const buildCampsiteIcon = (
       `<div class="wl-pin-wrap${isSelected ? ' wl-pin-wrap-on' : ''}"` +
       `${siteId ? ` data-site-id="${escapeHtml(siteId)}"` : ''}>` +
       row +
-      `<div class="wl-pin${official ? ' wl-pin-official' : ''}${isSelected ? ' wl-pin-on' : ''}">` +
+      `<div class="wl-pin${official ? ' wl-pin-official' : ''}` +
+      `${unattributed ? ' wl-pin-unattributed' : ''}` +
+      `${isSelected ? ' wl-pin-on' : ''}">` +
       /*
        * A pentagon carries its glyph INSIDE its own SVG; a circle wears it as
        * a sibling span. The two are deliberately not unified: a circle's glyph

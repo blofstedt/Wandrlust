@@ -862,6 +862,33 @@ export const amenityDots = (
 };
 
 /**
+ * THE CHIP THAT ADMITS THE GAP.
+ *
+ * A pin whose only claim is "OpenStreetMap says free" is one word short of a
+ * useful fact, and the missing word is WHOSE. A camper who reads "free" and
+ * drives four hours to a locked gate on somebody's field has been let down by
+ * this app, not by the mapper — so the pin carries the gap in words as well as
+ * in its dashed outline, and this is the words.
+ *
+ * Hollow and neutral, deliberately. It is not bad news and it is not a
+ * warning; it is the shape of what is known, and a red chip here would cry
+ * wolf next to the ones that mean a fire ban.
+ */
+export const unattributedDot = (): MarkerDot => ({
+  key: 'unattributed',
+  color: COLOR.free,
+  hollow: true,
+  label: 'Free, unattributed',
+  full:
+    'OpenStreetMap records a free campsite here and nobody has recorded who ' +
+    'runs it — it could be a government campground, a community field or ' +
+    'private land. Free in the record is not the same as open to you: look ' +
+    'for a sign at the entrance before you settle in.',
+  glyph: '\u2753',
+  tone: 'neutral'
+});
+
+/**
  * Facilities near the spot, as dots you can tap.
  *
  * These are NOT facts about the spot — they are a toilet somebody mapped a

@@ -36,7 +36,21 @@ export type CampsiteSource =
   | 'verified'
   | 'overpass'
   | 'user_submitted'
-  | 'agency_dataset';
+  | 'agency_dataset'
+  /**
+   * OpenStreetMap says there is a free campsite here and NOBODY HAS SAID WHO
+   * RUNS IT.
+   *
+   * Weaker than `agency_dataset` in exactly one way — the authority — and it
+   * is drawn weaker: a dashed ring rather than the government pentagon, with
+   * the missing half said out loud on the pin. The pentagon still requires a
+   * named government operator; that rule was not relaxed to make room for
+   * this one.
+   *
+   * Not `overpass`, which is a live per-viewport sweep with the fee unknown
+   * and is never pinned. See migration 32.
+   */
+  | 'osm_free';
 
 export interface CellSignal {
   verizon: number; // 0 to 5 bars
