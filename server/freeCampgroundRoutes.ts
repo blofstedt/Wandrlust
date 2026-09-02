@@ -842,9 +842,15 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
           id: `osm-free-${s.osmId.replace('/', '-')}`,
           name: s.name || 'Free campground',
           land_type: landTypeFor(s.operator, region.country),
-          // Null, not "Unknown". A name here is read as somebody having said
-          // one, and for this tier nobody has.
-          land_manager: s.operator || null,
+          /*
+           * EMPTY, not "Unknown", and not null — the column is NOT NULL and
+           * defaults to '', which is this schema's existing shape for "nobody
+           * said": `dataService` maps a missing manager to '' on the way in,
+           * and the pin title already reads '' as absent. A literal "Unknown"
+           * would be a name, and a name here is read as somebody having given
+           * one.
+           */
+          land_manager: s.operator,
           latitude: Number(s.lat.toFixed(6)),
           longitude: Number(s.lon.toFixed(6)),
           state_province: region.name,
@@ -874,7 +880,13 @@ export const registerFreeCampgroundRoutes = (app: Express): void => {
         region: label,
         country: region.country,
         freeTagged: answer.found,
-        official: answer.sites.length,
+        // Both tiers. `official` counted the same thing back when an
+        // unattributed site was dropped rather than kept at a weaker tier, and
+        // leaving the old name on it would read as 102 government campgrounds
+        // in a box that has eight.
+        kept: answer.sites.length,
+        attributed: answer.sites.filter((c) => c.tier === 'official').length,
+        unattributed: answer.sites.filter((c) => c.tier === 'osm_free').length,
         insideTheBorder: inRegion.length,
         newHere: fresh.length,
         stored,

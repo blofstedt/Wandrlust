@@ -194,8 +194,11 @@ export const CampsiteDetailModal: React.FC<CampsiteDetailModalProps> = ({
             <span className="px-2.5 py-1 rounded-md bg-emerald-950 text-emerald-400 font-bold text-xs border border-emerald-800 uppercase whitespace-nowrap shrink-0">
               {campsite.landType.replace('_', ' ')}
             </span>
+            {/* An unattributed site has no manager, and an empty span here
+                left a gap that read as a name that failed to load. Saying
+                nobody has recorded one is the honest fill. */}
             <span className="text-xs text-slate-400 truncate">
-              {campsite.landManager}
+              {campsite.landManager || 'Operator not recorded'}
             </span>
           </div>
 
