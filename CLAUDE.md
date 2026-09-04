@@ -409,3 +409,15 @@ npm run vapid    # generate push notification keys
   purpose — mechanical, with an overshoot that settles. That's the personality.
 - **No purchase prompts outside Settings.** The support link buys nothing in the
   app. Points are earned, never sold.
+- **A function that takes a user id as an ARGUMENT is not protected by RLS.**
+  `SECURITY DEFINER` is exactly the point of these functions — they run as
+  `postgres` and RLS does not apply — so a parameter named `in_user` is a
+  request, not an identity. Three of them trusted it: `points_balance`,
+  `pending_legal_documents` and `are_friends`. `profiles` is world-readable by
+  design (handle, display name, trust tier — no email, no location), so anybody
+  holding the anon key that ships in the JavaScript bundle could list every
+  profile id and then read every camper's points balance, their unsigned legal
+  documents, and the friendship graph pair by pair. Migration 34 makes the
+  argument something to CHECK (`in_user = auth.uid()`, or the caller holds the
+  server key) rather than something to obey. When a definer function names a
+  camper, ask who is asking.
