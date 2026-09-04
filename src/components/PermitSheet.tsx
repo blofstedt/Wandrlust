@@ -31,32 +31,53 @@ import type { PermitMatch } from '../config/permits';
  * it is there — the card reads as a warning with no way out of it, which is
  * the opposite of what it is for.
  *
- * So the layout is built to a budget rather than laid out and hoped for. The
- * two one-line facts share a row instead of taking one each; the labels sit
- * beside their icons rather than above them; the hedge, the caveat and the
- * date are set at the small size they deserve. Nothing was cut — every fact
- * that was on this card is still on it. Anything added here has to earn its
- * height, because the button is what pays for it.
+ * So THE BUTTON IS PINNED, not budgeted for. It sits in the sheet's footer,
+ * outside the scrolling area, which is the only arrangement that survives a
+ * long note, a small phone and a large system font all at once. Fitting it by
+ * squeezing the layout only ever worked on the phone it was measured on: at
+ * 375x667 this card wants about 150 points more than it is allowed, and every
+ * one of them used to come off the bottom, where the button was.
+ *
+ * That frees the rest to be laid out for reading. The labels sit beside their
+ * icons; the three facts share one panel with one gap between them; the hedge,
+ * the caveat and the date are set at the small size they deserve. Nothing was
+ * cut — every fact that was on this card is still on it.
+ *
+ * The two short facts USED to share a row, and that was the wrong saving. The
+ * body also had no padding of its own at the time, so with the card's full
+ * width to spend the split looked survivable; padded properly, half of a dock
+ * is about 150px and Alberta's price — a year, a three-day, and "per person" —
+ * came apart into four ragged lines beside a two-word issuer with dead air
+ * under it. They get a row each now, and the pinned button pays for it.
  */
 interface PermitSheetProps {
   match: PermitMatch | null;
   onClose: () => void;
 }
 
-/** One short fact and its label, on a single line, beside its icon. */
+/**
+ * One fact: its label on the icon's line, its answer on the next, and the
+ * answer starting under the label rather than under the icon. Every fact is
+ * full width, because the one that matters most here is a price with a
+ * condition attached — "$30 a year, or $20 for three days, per person" — and
+ * a half-width column breaks that into four ragged lines.
+ */
 const Fact: React.FC<{
   icon: React.ReactNode;
   label: string;
   children: React.ReactNode;
 }> = ({ icon, label, children }) => (
-  <div className="flex items-start gap-2 min-w-0">
-    <div className="shrink-0 mt-[3px]">{icon}</div>
-    <div className="min-w-0">
-      <p className="text-[10px] uppercase tracking-wide text-slate-500 leading-none mb-1">
+  <div className="min-w-0">
+    <div className="flex items-center gap-1.5">
+      <span className="shrink-0 flex">{icon}</span>
+      <p className="text-[10px] uppercase tracking-[0.08em] text-slate-500 leading-none">
         {label}
       </p>
-      <p className="text-[13px] text-slate-100 leading-snug">{children}</p>
     </div>
+    {/* 1.25rem is the icon plus its gap, so answers line up under labels. */}
+    <p className="mt-1 pl-5 text-[13px] text-slate-100 leading-snug">
+      {children}
+    </p>
   </div>
 );
 
@@ -77,16 +98,45 @@ export const PermitSheet: React.FC<PermitSheetProps> = ({ match, onClose }) => {
       icon={<TicketCheck className="w-5 h-5 text-indigo-400" />}
       variant="dock"
       fitContent
+      footer={
+        permit && (
+          <div className="space-y-2">
+            {/*
+              Out to the agency itself. `noopener` because this opens a tab
+              from our origin, and `noreferrer` because where somebody camps
+              is not the agency's business to log against us.
+            */}
+            <a
+              href={permit.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="anim-press flex items-center justify-center gap-2 w-full rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-3 text-[15px] font-semibold text-slate-950"
+            >
+              <ExternalLink className="w-4 h-4" />
+              {permit.free ? 'Get the permit' : 'Buy the pass'}
+            </a>
+
+            {/*
+              A price with no date is a claim with no shelf life. Fees change,
+              and an old answer should look old rather than sounding current.
+            */}
+            <p className="px-2 text-[10px] text-slate-500 text-center leading-relaxed">
+              Checked against {permit.issuer}’s own page on {permit.checked}.
+              The link above is the authority, not this card.
+            </p>
+          </div>
+        )
+      }
     >
       {permit && (
-        <div className="space-y-2.5">
+        <div className="p-4 space-y-2.5">
           {/*
             The hedge goes FIRST when there is one. Putting it under the price
             would let somebody read the cost, decide, and never reach the line
             saying we are not certain this applies to them.
           */}
           {how === 'area' && (
-            <p className="rounded-lg bg-amber-500/10 border border-amber-500/25 px-2.5 py-2 text-[11px] text-amber-200/90 leading-snug">
+            <p className="rounded-xl bg-amber-500/10 border border-amber-500/25 px-3 py-2 text-[11px] text-amber-200/90 leading-relaxed">
               This spot sits inside a rectangle drawn around the area this
               permit covers, which is not the same as the real boundary — that
               one belongs to {permit.issuer}. Check with them before you rely
@@ -100,7 +150,7 @@ export const PermitSheet: React.FC<PermitSheetProps> = ({ match, onClose }) => {
             and only where it matters: near the edge.
           */}
           {how === 'boundary' && (
-            <p className="rounded-lg bg-slate-800/60 px-2.5 py-2 text-[11px] text-slate-400 leading-snug">
+            <p className="rounded-xl bg-slate-800/50 border border-slate-800 px-3 py-2 text-[11px] text-slate-400 leading-relaxed">
               Inside {permit.issuer}’s own published area for the pass. The
               outline this app holds is simplified to about two kilometres, so
               if you are camping right on the edge of it, check.
@@ -108,11 +158,11 @@ export const PermitSheet: React.FC<PermitSheetProps> = ({ match, onClose }) => {
           )}
 
           {/*
-            The two one-line facts share a row. They are a price and a name —
-            neither ever wraps far — and giving each its own row cost a
-            phone-height of nothing.
+            The three facts share one panel, evenly spaced, so they read as a
+            block of answers rather than three loose paragraphs at three
+            different distances from each other.
           */}
-          <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
+          <div className="rounded-xl bg-slate-800/40 border border-slate-800 px-3 py-2.5 space-y-2.5">
             <Fact
               icon={<Tag className="w-3.5 h-3.5 text-emerald-400" />}
               label="Cost"
@@ -125,44 +175,20 @@ export const PermitSheet: React.FC<PermitSheetProps> = ({ match, onClose }) => {
             >
               {permit.issuer}
             </Fact>
+            <Fact
+              icon={<Users className="w-3.5 h-3.5 text-sky-400" />}
+              label="Who needs one"
+            >
+              <span className="text-slate-300">{permit.whoNeeds}</span>
+            </Fact>
           </div>
 
-          <Fact
-            icon={<Users className="w-3.5 h-3.5 text-sky-400" />}
-            label="Who needs one"
-          >
-            <span className="text-slate-300">{permit.whoNeeds}</span>
-          </Fact>
-
           {permit.note && (
-            <p className="rounded-lg bg-slate-800/60 px-2.5 py-2 text-[11px] text-slate-300 leading-snug">
+            <p className="rounded-xl bg-slate-800/50 border border-slate-800 px-3 py-2 text-[11px] text-slate-300 leading-relaxed">
               {permit.note}
             </p>
           )}
 
-          {/*
-            Out to the agency itself. `noopener` because this opens a tab from
-            our origin, and `noreferrer` because where somebody camps is not
-            the agency's business to log against us.
-          */}
-          <a
-            href={permit.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="anim-press flex items-center justify-center gap-2 w-full rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2.5 text-[15px] font-semibold text-slate-950"
-          >
-            <ExternalLink className="w-4 h-4" />
-            {permit.free ? 'Get the permit' : 'Buy the pass'}
-          </a>
-
-          {/*
-            A price with no date is a claim with no shelf life. Fees change,
-            and an old answer should look old rather than sounding current.
-          */}
-          <p className="text-[10px] text-slate-500 text-center leading-snug">
-            Checked against {permit.issuer}’s own page on {permit.checked}. The
-            link above is the authority, not this card.
-          </p>
         </div>
       )}
     </Sheet>
