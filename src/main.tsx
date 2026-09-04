@@ -5,6 +5,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { AuthCallback } from './components/AuthCallback';
 import { LandingPage } from './components/LandingPage';
 import { LegalPage } from './components/LegalPage';
+import { InstallPrompt } from './components/InstallPrompt';
 import { ToastProvider, ErrorBoundary, OfflineIndicator } from './components/ui/Feedback';
 import { registerServiceWorker } from './services/pushService';
 import { leaveStrandedHost } from './utils/canonicalHost';
@@ -72,7 +73,13 @@ createRoot(document.getElementById('root')!).render(
           ) : publicPage ? (
             <LegalPage kind={publicPage} />
           ) : (
-            <App />
+            <>
+              <App />
+              {/* The /home pitch page has its own install flow already —
+                  this nudge is only for someone who opened the map straight
+                  from a bookmark or a shared link and never saw it. */}
+              <InstallPrompt />
+            </>
           )}
           <OfflineIndicator />
         </AuthProvider>
